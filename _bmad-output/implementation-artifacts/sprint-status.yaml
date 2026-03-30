@@ -1,0 +1,125 @@
+# generated: 2026-03-30
+# last_updated: 2026-03-30
+# project: surviveTheTalk2
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-03-30
+last_updated: 2026-03-30
+project: surviveTheTalk2
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 1: Voice Pipeline Proof of Concept (Phase 0)
+  epic-1: in-progress
+  1-1-initialize-monorepo-and-deploy-server-infrastructure: ready-for-dev
+  1-2-build-pipecat-voice-pipeline-with-sarcastic-character: backlog
+  1-3-create-minimal-flutter-app-with-voice-call: backlog
+  1-4-validate-poc-kill-gates: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: UX Design Completion & Asset Creation
+  epic-2: backlog
+  2-1-design-onboarding-flow-screens: backlog
+  2-2-design-first-call-incoming-call-animation: backlog
+  2-3-design-call-ended-transition-screen: backlog
+  2-4-design-debrief-screen: backlog
+  2-5-design-paywall-screen: backlog
+  2-6-create-rive-character-puppet-file: backlog
+  2-7-create-visual-assets: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Scenario Content Design & Authoring
+  epic-3: backlog
+  3-1-define-scenario-structure-and-authoring-format: backlog
+  3-2-create-launch-scenarios: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: User Onboarding & Authentication
+  epic-4: backlog
+  4-1-restructure-flutter-project-to-mvp-architecture: backlog
+  4-1b-implement-design-system: backlog
+  4-2-build-fastapi-server-with-passwordless-auth-system: backlog
+  4-3-build-email-authentication-flow-in-flutter: backlog
+  4-4-build-consent-ai-disclosure-and-microphone-permission-flow: backlog
+  4-5-build-first-call-incoming-call-experience: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Scenario Browsing & Progression
+  epic-5: backlog
+  5-1-build-scenarios-api-and-database: backlog
+  5-2-build-scenario-list-screen-with-scenariocard-component: backlog
+  5-3-build-bottomoverlaycard-and-daily-call-limit-enforcement: backlog
+  5-4-build-content-warning-display-for-intense-scenarios: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Animated Call Experience
+  epic-6: backlog
+  6-1-build-call-initiation-from-scenario-list-with-connection-animation: backlog
+  6-2-build-call-screen-with-rive-character-canvas: backlog
+  6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: backlog
+  6-4-implement-silence-handling-and-character-hang-up-mechanic: backlog
+  6-5-build-voluntary-call-end-and-no-network-screen: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: Post-Call Debrief & Learning
+  epic-7: backlog
+  7-1-build-debrief-generation-backend: backlog
+  7-2-build-call-ended-overlay-transition: backlog
+  7-3-build-debrief-screen: backlog
+  7-4-build-pre-scenario-briefing-display: backlog
+  epic-7-retrospective: optional
+
+  # Epic 8: Monetization & Subscription
+  epic-8: backlog
+  8-1-integrate-storekit-2-and-google-play-billing: backlog
+  8-2-build-paywall-screen-with-invisible-tier-design: backlog
+  8-3-build-subscription-management-and-full-tier-enforcement: backlog
+  epic-8-retrospective: optional
+
+  # Epic 9: Offline Access & Data Sync
+  epic-9: backlog
+  9-1-build-local-cache-with-sqflite-for-scenarios-and-debriefs: backlog
+  9-2-build-automatic-data-sync-on-network-availability: backlog
+  epic-9-retrospective: optional
+
+  # Epic 10: App Publication & Launch Readiness
+  epic-10: backlog
+  10-1-create-privacy-policy-terms-of-service-and-legal-compliance-pages: backlog
+  10-2-provision-domain-dns-ssl-and-server-infrastructure: backlog
+  10-3-configure-app-store-and-play-store-listings: backlog
+  10-4-set-up-beta-testing-pipeline-and-analytics: backlog
+  10-5-execute-final-launch-checklist-and-store-submission: backlog
+  epic-10-retrospective: optional
