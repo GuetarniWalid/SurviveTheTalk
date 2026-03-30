@@ -1,6 +1,7 @@
 api.survivethetalk.com {
     handle /static/* {
-        root * /opt/survive-the-talk/server
+        uri strip_prefix /static
+        root * /opt/survive-the-talk/server/static
         file_server
     }
     handle {

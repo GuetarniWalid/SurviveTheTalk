@@ -45,7 +45,7 @@ development_status:
   # Epic 1: Voice Pipeline Proof of Concept (Phase 0)
   epic-1: in-progress
   1-1-initialize-monorepo-and-deploy-server-infrastructure: review
-  1-2-build-pipecat-voice-pipeline-with-sarcastic-character: backlog
+  1-2-build-pipecat-voice-pipeline-with-sarcastic-character: review
   1-3-create-minimal-flutter-app-with-voice-call: backlog
   1-4-validate-poc-kill-gates: backlog
   epic-1-retrospective: optional
