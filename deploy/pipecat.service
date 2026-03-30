@@ -1,0 +1,17 @@
+[Unit]
+Description=SurviveTheTalk Pipecat Voice Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/survive-the-talk/server
+EnvironmentFile=/opt/survive-the-talk/.env
+ExecStart=/opt/survive-the-talk/server/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5s
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

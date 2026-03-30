@@ -1,0 +1,9 @@
+api.survivethetalk.com {
+    handle /static/* {
+        root * /opt/survive-the-talk/server
+        file_server
+    }
+    handle {
+        reverse_proxy localhost:8000
+    }
+}
