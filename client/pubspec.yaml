@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   livekit_client: ^2.6.4
   rive: ^0.14.2
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

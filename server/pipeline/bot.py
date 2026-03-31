@@ -50,6 +50,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
         api_key=settings.openrouter_api_key,
         settings=OpenRouterLLMService.Settings(
             model="qwen/qwen3.5-flash-02-23",
+            extra={"extra_body": {"reasoning": {"enabled": False}}},
             system_instruction=SARCASTIC_CHARACTER_PROMPT,
             temperature=0.7,
             max_tokens=256,
@@ -122,9 +123,9 @@ async def run_bot(url: str, room: str, token: str) -> None:
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(
-        transport: LiveKitTransport, participant_id: str
+        transport: LiveKitTransport, participant_id: str, reason: str = ""
     ) -> None:
-        logger.info(f"Participant left: {participant_id}")
+        logger.info(f"Participant left: {participant_id} (reason: {reason})")
         await task.queue_frames([EndFrame()])
 
     runner = PipelineRunner()
