@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-03-30
+# last_updated: 2026-03-31
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-03-30
+last_updated: 2026-03-31
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -46,8 +46,8 @@ development_status:
   epic-1: in-progress
   1-1-initialize-monorepo-and-deploy-server-infrastructure: done
   1-2-build-pipecat-voice-pipeline-with-sarcastic-character: done
-  1-3-create-minimal-flutter-app-with-voice-call: review
-  1-4-validate-poc-kill-gates: backlog
+  1-3-create-minimal-flutter-app-with-voice-call: done
+  1-4-validate-poc-kill-gates: done
   epic-1-retrospective: optional
 
   # Epic 2: UX Design Completion & Asset Creation
