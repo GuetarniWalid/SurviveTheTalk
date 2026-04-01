@@ -246,7 +246,7 @@ Critical lessons learned from a previous production project. These rules are **n
 | `auth_codes` | email, code, expires_at, used | Temporary, cleaned by cron |
 | `scenarios` | id, title, system_prompt, difficulty, is_free, briefing_text, content_warning | Operator-managed content. briefing_text = pre-call vocabulary/context (FR14). content_warning = nullable, shown before threat/confrontation scenarios (FR38) |
 | `call_sessions` | user_id, scenario_id, started_at, duration, cost_cents | Per-call cost tracking |
-| `debriefs` | call_session_id, survival_pct, errors_json, idioms_json | LLM-generated post-call |
+| `debriefs` | call_session_id, survival_pct, debrief_json | LLM-generated post-call. `debrief_json` stores the complete LLM output (errors, hesitation_contexts, idioms, areas_to_work_on, inappropriate_behavior) plus backend-merged fields (hesitation durations, encouraging_framing). See `debrief-content-strategy.md` for full schema. |
 | `user_progress` | user_id, scenario_id, best_score, attempts | Progression tracking |
 
 **Client-Side Storage (MVP, not PoC):**
@@ -302,7 +302,7 @@ Critical lessons learned from a previous production project. These rules are **n
 | GET | `/scenarios/{id}` | JWT | Scenario detail + system prompt metadata |
 | POST | `/calls/initiate` | JWT | Start call, return LiveKit room token |
 | POST | `/calls/{id}/end` | JWT | End call, trigger debrief generation |
-| GET | `/debriefs/{call_id}` | JWT | Retrieve generated debrief |
+| GET | `/debriefs/{call_id}` | JWT | Retrieve generated debrief. Response assembles: backend-calculated fields (survival_pct, character_name, scenario_title, attempt_number, previous_best, encouraging_framing) + LLM-generated content (errors, hesitation_contexts, idioms, areas_to_work_on, inappropriate_behavior) + backend-measured hesitation durations. Full response schema in `debrief-content-strategy.md` |
 | GET | `/user/profile` | JWT | User tier, stats, progression |
 
 **Static Assets (Caddy-served):**

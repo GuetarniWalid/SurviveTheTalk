@@ -499,10 +499,14 @@ When the debrief screen fades in, it's complete — no loading spinners, no prog
 1. Survival percentage (large, prominent)
 2. Attempt number for this scenario
 3. Previous best (if applicable) for comparison
-4. List of specific errors with corrections
-5. Longest hesitation moment with context
-6. Idioms or slang encountered with explanations
-7. "Areas to work on" summary at the bottom
+4. Encouraging framing — conditional, shown only when survival >40% (proximity to threshold, improvement since last attempt)
+5. List of specific language errors with corrections (max 5, deduplicated, with repetition count)
+6. Hesitation moments with context (top 1-3, only silences >3 seconds)
+7. Idioms or slang encountered with explanations (hidden if none)
+8. Inappropriate behavior explanation (conditional, FR37)
+9. "Areas to work on" summary at the bottom (2-3 items)
+
+Content decisions, JSON schema, LLM/backend field split, and tone register are defined in `debrief-content-strategy.md`.
 
 The debrief ends. There is no call-to-action button at the bottom. The user navigates back to the scenario list using standard back navigation when they're ready — after they've absorbed the feedback.
 
@@ -639,18 +643,26 @@ Scrollable vertical list of scenario cards. No header, no nav bar. Cards are fla
 | "No network available" | Inter Regular 16px `#8A8A95`, centered, ~8px below |
 | Hang-up button | 64x64px circle `#E74C3C`, phone-down icon 28px `#FFFFFF`, centered, bottom padding ~50px. Tap returns to scenario list |
 
-#### Screen 3: Debrief Screen — PENDING DESIGN
+#### Screen 3: Debrief Screen — DESIGNED
 
-**Status:** Content direction to be defined first. Design will follow once the debrief value proposition and content structure are finalized through separate content strategy work.
+**Status:** Content strategy finalized (`debrief-content-strategy.md`). Visual design complete (`debrief-screen-design.md`).
 
-**Known constraints from UX spec:**
+**Content sections (in order):**
+1. Hero section — survival % (64px Bold, `#E74C3C` <100% / `#2ECC40` 100%), character name, scenario title, attempt number, previous best
+2. Encouraging framing — conditional (>40%), proximity to threshold + improvement since last attempt
+3. Language errors — max 5 deduplicated errors with corrections, context, and repetition count
+4. Hesitation analysis — 1-3 moments (>3s threshold) with duration and context
+5. Idioms & slang — hidden if none encountered
+6. About this call — conditional (FR37 inappropriate behavior)
+7. Areas to work on — 2-3 actionable improvement areas
+
+**Design constraints:**
 - Scrollable vertical screen
-- Hero element: survival percentage (large, prominent, `#E74C3C` if < 100%, `#2ECC40` if 100%)
 - No retry button — user navigates back to scenario list via back arrow
 - The debrief is the takeaway, not the trampoline
-- Must be screenshot-worthy for viral sharing potential
-- Minimum content: survival %, errors with corrections, areas to work on
-- Full content and section structure: TBD pending content strategy review
+- Must be screenshot-worthy for viral sharing potential (hero section is self-contained ~280px)
+- Tone: clinical, factual, specific — no praise, no persona voice
+- Full specs: `debrief-screen-design.md` (visual) + `debrief-content-strategy.md` (content)
 
 #### Bottom Overlay Card (Scenario List) — VALIDATED
 

@@ -1178,7 +1178,7 @@ So that I receive specific, actionable feedback on my English performance.
 
 **Given** the debrief is generated
 **When** the result is stored
-**Then** a row is created in the `debriefs` table (requires `003_debriefs.sql` migration) with call_session_id, survival_pct, errors_json, idioms_json
+**Then** a row is created in the `debriefs` table (requires `003_debriefs.sql` migration) with call_session_id, survival_pct (backend-calculated), and debrief_json (complete LLM output merged with backend-measured hesitation durations and encouraging_framing). Schema defined in `debrief-content-strategy.md`
 **And** the `user_progress` table is updated with the new best_score (if higher) and incremented attempts count
 
 **Given** FR37 requires explanation when a call ends due to inappropriate behavior
@@ -1418,7 +1418,7 @@ So that I can browse scenarios and review my feedback even without internet.
 
 **Given** the local database mirrors the server data model
 **When** sqflite tables are created
-**Then** local tables exist for scenarios (id, title, difficulty, is_free, briefing_text, content_warning), user_progress (scenario_id, best_score, attempts), and debriefs (call_session_id, survival_pct, errors_json, idioms_json)
+**Then** local tables exist for scenarios (id, title, difficulty, is_free, briefing_text, content_warning), user_progress (scenario_id, best_score, attempts), and debriefs (call_session_id, survival_pct, debrief_json). Schema for debrief_json defined in `debrief-content-strategy.md`
 
 ### Story 9.2: Build Automatic Data Sync on Network Availability
 
