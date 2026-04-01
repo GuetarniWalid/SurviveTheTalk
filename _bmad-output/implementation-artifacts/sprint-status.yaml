@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-01 (story 2-1 done)
+# last_updated: 2026-04-01 (story 2-3 review)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-01 (story 2-1 done)
+last_updated: 2026-04-01 (story 2-4 review)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -53,9 +53,9 @@ development_status:
   # Epic 2: UX Design Completion & Asset Creation
   epic-2: in-progress
   2-1-design-onboarding-flow-screens: done
-  2-2-design-first-call-incoming-call-animation: backlog
-  2-3-design-call-ended-transition-screen: backlog
-  2-4-design-debrief-screen: backlog
+  2-2-design-first-call-incoming-call-animation: done
+  2-3-design-call-ended-transition-screen: review
+  2-4-design-debrief-screen: review
   2-5-design-paywall-screen: backlog
   2-6-create-rive-character-puppet-file: backlog
   2-7-create-visual-assets: backlog
