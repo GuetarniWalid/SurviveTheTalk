@@ -424,6 +424,8 @@ Shown briefly after successful purchase confirmation from the payment system.
 | BottomOverlayCard | Scenario list — overlay card now hidden (paid state) |
 | Debrief FR29 | Debrief screen — paywall closes, debrief stays visible |
 
+**Dismiss paths during success hold:** All manual dismiss paths (swipe, scrim tap, Android back) are **disabled** during the 1.5s/5s hold. The auto-dismiss is the only exit. This prevents the user from accidentally interrupting the post-purchase state update (scenario list refresh, overlay card removal).
+
 **Design rationale:** "You're in" is short and affirming. The 1.5-second auto-dismiss respects the user's time (extended to 5s when screen reader is active, matching Story 2.3 call-ended pattern). Consistent with the "no success toasts, no confetti" principle.
 
 ### State 4: Subscription Error/Failure (Subtask 3.4)
@@ -455,6 +457,15 @@ Shown when the payment system returns an error (card declined, network issue, pa
 | Free user taps call icon on paid scenario | Sheet slides down | Scenario list, unchanged. No call initiated. |
 | Free user taps BottomOverlayCard | Sheet slides down | Scenario list, unchanged. Overlay card remains visible. |
 | Free user reaches debrief after 3rd free scenario (FR29) | Sheet slides down | Debrief screen stays visible. Paywall closes. User continues reading debrief. |
+
+**Android system back button behavior per state:**
+
+| State | Back Button Behavior |
+|-------|---------------------|
+| Default | Dismisses sheet (same as "Not now") |
+| Loading | Blocked — no action (dismiss disabled during purchase) |
+| Success hold | Blocked — auto-dismiss only |
+| Error | Dismisses sheet (same as "Not now") |
 
 **Clean dismiss principle (AC #2):** All three entry points produce the same dismiss animation (slide down). The underlying screen is never modified by the dismiss. No penalty, no nag, no "are you sure?" confirmation.
 
@@ -498,13 +509,7 @@ Shown when the payment system returns an error (card declined, network issue, pa
 
 ### Reduced Motion Behavior
 
-| Element | Standard | Reduced Motion |
-|---------|----------|----------------|
-| Sheet slide-up | 300ms | Instant appear (0ms) |
-| Scrim fade | 200ms | Instant appear (0ms) |
-| Sheet slide-down (dismiss) | 250ms | Instant disappear (0ms) |
-| Success content crossfade | 200ms | Instant swap (0ms) |
-| Success hold | 1.5 seconds | Unchanged — functional, not decorative |
+**Deferred to post-MVP.** Full animations only at launch. Can be added later without breaking changes.
 
 ### Navigation Context
 
@@ -555,11 +560,12 @@ flowchart TD
 |-------------|-------|--------|
 | `paywall-text` (#1E1F23) on `paywall-surface` (#F0F0F0) | 14.8:1 | Pass AA & AAA |
 | `paywall-text-secondary` (#4C4C4C) on `paywall-surface` (#F0F0F0) | 5.7:1 | Pass AA (matches UX spec BottomOverlayCard verification) |
-| `accent` (#00E5A0) on `paywall-surface` (#F0F0F0) | 1.6:1 | Fail text — used as decorative icon only, not text |
+| `accent` (#00E5A0) on `paywall-surface` (#F0F0F0) | 1.6:1 | Fail text — decorative icon only (see note below) |
+| "Not now" disabled (#4C4C4C @ 40% ≈ #B3B3B7) on `paywall-surface` (#F0F0F0) | ~1.7:1 | N/A — disabled state, not required to meet AA (WCAG SC 1.4.3 exempts disabled components) |
 | `destructive` (#C0392B) on `paywall-surface` (#F0F0F0) | 4.7:1 | Pass AA for normal text |
 | CTA text (#1E1F23) on `accent` (#00E5A0) | 9.1:1 | Pass AA & AAA |
 
-**Note on accent checkmarks:** The green checkmarks (#00E5A0) on #F0F0F0 have a 1.6:1 ratio — below AA for text. However, the checkmarks are **decorative icons**, not informational text. The benefit text in `#1E1F23` (14.8:1) carries the content. Screen readers announce the text, not the icon. This is compliant with SC 1.4.11 (non-text contrast) since the icon is supplementary — the text alone conveys the information.
+**Note on accent checkmarks:** The green checkmarks (#00E5A0) on #F0F0F0 have a 1.6:1 ratio — below the 3:1 threshold for non-text contrast (SC 1.4.11). Justification: the checkmarks are **supplementary decorative icons** — removing them does not change the informational content. Each benefit row's text in `#1E1F23` (14.8:1) conveys the complete meaning. Screen readers skip the icon and announce the text only. Per SC 1.4.11, contrast requirements apply to graphical objects "required for understanding the content" — these icons are not required, the text stands alone. The final mockup confirms this visual treatment.
 
 **Note on error text:** The error color is `#C0392B` (darkened from the system `destructive` #E74C3C) to meet WCAG 2.1 AA for normal text on the light paywall surface. #C0392B on #F0F0F0 yields 4.7:1 — above the 4.5:1 AA threshold for normal text at 13px caption size.
 
@@ -567,7 +573,7 @@ flowchart TD
 
 | Element | VoiceOver/TalkBack Announcement |
 |---------|--------------------------------|
-| Sheet (on appear) | "Subscription offer. Speak English for real. Practice with characters who won't go easy on you. One dollar ninety-nine per week." |
+| Sheet (on appear) | "Subscription offer. One dollar ninety-nine per week." (concise — detail available via sequential focus navigation) |
 | Title | "Speak English for real" |
 | Subtitle | "Practice with characters who won't go easy on you." |
 | Price | "One dollar ninety-nine" |
@@ -581,6 +587,9 @@ flowchart TD
 | Legal text | "Auto-renewable. Three calls per day. Cancel anytime." |
 | Success state | "Subscription confirmed. You're in." |
 | Error state | "Something went wrong. Try again. Let's go, button." |
+| Transition: default → loading | Live-region polite announcement: "Processing purchase, please wait." |
+| Transition: loading → success | Live-region assertive announcement: "Subscription confirmed. You're in." |
+| Transition: loading → error | Live-region assertive announcement: "Purchase failed. Something went wrong. Try again." |
 
 **Focus order:** Drag handle (accessibility skip) -> title -> subtitle -> price -> price period -> benefit 1 -> benefit 2 -> benefit 3 -> CTA -> dismiss -> legal text. Standard top-to-bottom reading order.
 
@@ -636,7 +645,8 @@ All interactive elements meet the 48px minimum touch target requirement.
 | Success title | `Text` "You're in" with Inter SemiBold 18px `#1E1F23` | Replaces "Speak English for real" |
 | Error text | `Text` with Inter Regular 13px `#C0392B` | Centered, 8px below CTA |
 | Scrim | Material `ModalBarrier` | `#000000` @ 50% — handled by `showModalBottomSheet` |
-| Reduced motion | `MediaQuery.disableAnimations` | Instant sheet show/hide when enabled |
+| Android back button | `PopScope` with `canPop` controlled by state | `canPop: true` in default/error, `canPop: false` in loading/success |
+| Reduced motion | Deferred to post-MVP | Full animations only at launch. No `MediaQuery.disableAnimations` handling until post-MVP. |
 
 ### File Locations (Subtask 6.2)
 
@@ -696,9 +706,10 @@ Design decisions resolved during creation and visual design iteration (2026-04-0
 
 ## Open Questions for Epic 8
 
-These questions were surfaced during code review (2026-04-02) and should be resolved during Epic 8 implementation (Story 8.2).
+These questions were surfaced during code review (2026-04-02, updated 2026-04-13) and should be resolved during Epic 8 implementation (Story 8.2).
 
 | # | Question | Context | Suggested Resolution |
 |---|----------|---------|---------------------|
 | 1 | FR29 paywall timing on debrief screen — when exactly does the paywall auto-present? | FR29 says "paywall presented after 3rd free scenario on debrief screen" but does not specify: immediately on debrief load? After a delay? After scroll? | Recommend: present immediately on debrief load (0ms delay). The debrief content remains visible behind the scrim. User can dismiss to read debrief. |
 | 2 | Product unavailable state — what if the subscription product cannot be loaded? | StoreKit 2 / Play Billing may fail to load the product (no product ID, store unavailable, region restriction). Currently no state defined for this. | Recommend: do not show the paywall at all if the product cannot be loaded. The CTA should never be tappable without a valid product. Log the error for analytics. |
+| 3 | 15s loading timeout vs native payment sheet interaction | The 15s timeout may fire while the user is still authenticating (Face ID, password) in the native StoreKit/Play Billing sheet above the paywall. The timeout cannot distinguish "store never responded" from "user is actively completing payment." | Recommend: suspend or cancel the 15s timer when the native payment sheet becomes visible (app lifecycle → background/inactive state). Only apply timeout when the app remains in foreground with no native sheet presented. |

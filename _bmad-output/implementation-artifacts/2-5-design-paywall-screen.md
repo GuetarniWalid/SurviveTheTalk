@@ -1,6 +1,6 @@
 # Story 2.5: Design Paywall Screen
 
-Status: review
+Status: done
 
 ## Story
 
@@ -13,7 +13,7 @@ so that Epic 8 (Monetization & Subscription) can be implemented with complete vi
 1. **Given** the UX spec defines paywall as Material BottomSheet or full screen
    **When** the design is complete
    **Then** it includes price display ($1.99/week), value proposition copy, subscribe CTA, and dismiss/decline action
-   **And** visual treatment follows the dark theme with the established design tokens
+   **And** visual treatment follows the established design tokens (inverted light theme permitted per BottomOverlayCard pattern)
 
 2. **Given** the paywall triggers at moments of maximum intent (after paid scenario tap or overlay card tap)
    **When** reviewing the design
@@ -80,7 +80,7 @@ A single design specification document following the format established in Stori
 
 **Paywall Content Requirements:**
 - Single price point: **$1.99/week** (auto-renewable)
-- Value proposition: "All scenarios unlocked + 3 calls/day"
+- Value proposition: three benefit lines (access, habit, insight) — "3 calls/day" disclosed in legal fine print per final mockup
 - Subscribe CTA: prominent, clear, single action
 - Dismiss/decline: visible, no dark patterns, returns cleanly to previous context
 - No trial period in MVP (weekly only, no monthly option until Phase 2)
@@ -109,10 +109,10 @@ A single design specification document following the format established in Stori
 |-------|------|--------|----------------|
 | `headline` | 18px | SemiBold (600) | Screen/sheet title |
 | `body` | 16px | Regular (400) | Value proposition description |
-| `body-emphasis` | 16px | Medium (500) | Key benefit callouts |
+| `body` | 16px | Regular (400) | Benefit text (per final mockup — Regular preferred over Medium for visual lightness on light surface) |
 | `display` or custom | TBD | Bold (700) | Price display ($1.99/week) — size TBD, should be prominent |
 | `caption` | 13px | Regular (400) | Legal text, "auto-renewable" note |
-| `label` | 12px | Medium (500) | Button label |
+| `button-label` | 14px | SemiBold (600) | CTA button text (established in Story 2.1, NOT system `label` 12px) |
 
 **Spacing:**
 
