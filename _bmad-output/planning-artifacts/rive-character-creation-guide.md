@@ -287,12 +287,17 @@ The lip sync layer must be **independent** from the emotion layer:
 | **Character patience = 0** | Character | `emotion` set to `disgust_hangup` → grimace expression (~500ms) → `onHangUpAnimComplete` fires | Flutter waits for event, then cuts to "Call Ended" |
 | **Natural end (user did well)** | Character | `emotion` set to `impressed` → reluctant nod (~500ms) → `onHangUpAnimComplete` fires | Flutter cuts to "Call Ended" |
 
-### disgust_hangup Animation (emotion index 9)
+### Exit Expressions (two paths, both fire `onHangUpAnimComplete`)
 
-The only exit animation needed. Facial expression only (no body movement):
+Both exit expressions are facial only (no body movement), generic across all 5 character variants:
 
+**Path A — `disgust_hangup` (emotion index 9):**
 1. **Grimace expression** (~500ms): sourcils froncés, bouche en grimace, yeux plissés — "I'm done with you"
 2. **Fire `onHangUpAnimComplete`** at end of timeline — Flutter cuts the screen immediately after (coupure sèche, like FaceTime)
+
+**Path B — `impressed` (emotion index 8):**
+1. **Reluctant nod** (~500ms): eyebrow raised, slight smirk, grudging respect — "ok fine, not bad"
+2. **Fire `onHangUpAnimComplete`** at end of timeline — Flutter cuts to "Call Ended"
 
 ### Events Summary
 
@@ -325,9 +330,9 @@ The only exit animation needed. Facial expression only (no body movement):
 
 ```
 // Flutter code (Epic 6 — NOT part of this story, just context)
-final character = viewModel.enum_('character');     // EnumInput? (string-based)
-final emotion = viewModel.enum_('emotion');         // EnumInput? (index-based)
-final viseme = viewModel.enum_('visemeId');         // EnumInput? (string-based)
+final character = viewModel.enumerator('character');     // EnumInput? (string-based)
+final emotion = viewModel.enumerator('emotion');         // EnumInput? (index-based)
+final viseme = viewModel.enumerator('visemeId');         // EnumInput? (string-based)
 // final reduced = viewModel.boolean('reduced_motion'); // DEFERRED (post-MVP)
 // Setting values:
 character?.value = 'girlfriend';  // Set character variant for this scenario
@@ -426,14 +431,15 @@ Run through this checklist before marking the story complete:
 
 ### Hang-Up Button
 - [x] 64x64px circle, fill `#E74C3C`
-- [x] Phone-down icon 28px, `#FOFOFO`
+- [x] Phone-down icon 28px, `#FFFFFF`
 - [x] Centered horizontally, 50px from bottom
 - [x] Click fires `onHangUp` event
 
 ### Animations
 - [x] Smooth transitions between emotional states (200-500ms)
 - [x] Disgust hang-up expression (~500ms grimace, facial only)
-- [x] `onHangUpAnimComplete` fires after disgust expression completes
+- [x] Impressed exit expression (~500ms reluctant nod, facial only)
+- [x] `onHangUpAnimComplete` fires after both `disgust_hangup` and `impressed` expressions complete
 - [x] Viseme transitions fast enough for real-time lip sync (<16ms target)
 
 ### Reduced Motion — DEFERRED (post-MVP)

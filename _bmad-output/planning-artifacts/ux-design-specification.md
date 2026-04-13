@@ -280,7 +280,7 @@ Many games place a large "PLAY AGAIN" button immediately after failure. This enc
 **Adapt for SurviveTheTalk:**
 - Wordle's daily scarcity → energy system with 1-2 calls/day (not one universal daily puzzle, but per-user call limits)
 - Getting Over It's theatrical failure → character-specific dramatic hang-up animations (the mugger walks away disgusted, the girlfriend slams the phone, the cop says "we're done here")
-- South Park's minimalist character design → single Rive puppet file with maximum expressiveness through minimal geometry
+- South Park's minimalist character design → single Rive puppet file with 5 character skins (mugger, waiter, girlfriend, cop, landlord switchable via EnumInput) and maximum expressiveness through minimal geometry. Each scenario selects a character variant — new scenarios only need a system prompt and a character skin selection, not new art assets
 
 **Avoid entirely:**
 - Any gamification layer (streaks, badges, XP, leaderboards)
@@ -741,10 +741,7 @@ Triggered when free user taps call icon on a paid scenario. Subscription offer (
 - Call screen: hang-up button labeled "End call"
 - Voice-first call experience inherently accessible to visually impaired users
 
-**Reduced Motion:**
-- Rive animations respect system "Reduce Motion" setting where applicable
-- Essential animations play at reduced intensity
-- Character emotional reactions remain functional as static expression changes
+**Reduced Motion:** Deferred to post-MVP. Full animations only at launch. Can be added later without breaking changes.
 
 ## Design Direction Decision
 
@@ -1294,12 +1291,7 @@ The core experience (voice conversation) is inherently accessible to visually im
 
 #### Reduced Motion
 
-| Setting | Behavior |
-|---------|----------|
-| System "Reduce Motion" ON | Rive character shows static expression changes (no fluid transitions). Screen transitions use fade instead of slide. "Connecting..." animation simplified |
-| System "Reduce Motion" OFF | Full Rive animation, standard transitions |
-
-**Implementation:** Check `MediaQuery.of(context).disableAnimations` in Flutter.
+**Deferred to post-MVP.** Full animations only at launch. Can be added later as an additive change (e.g., `reduced_motion` BooleanInput in Rive, `MediaQuery.disableAnimations` check in Flutter) without breaking existing functionality.
 
 ### Testing Strategy
 
@@ -1320,7 +1312,7 @@ The core experience (voice conversation) is inherently accessible to visually im
 | Color contrast | Flutter accessibility debug overlay | Every screen change |
 | Screen reader | VoiceOver (iOS) + TalkBack (Android) | Before each release |
 | Touch targets | Flutter debug intrinsic sizes | During development |
-| Reduced motion | System settings toggle | Before each release |
+| ~~Reduced motion~~ | ~~System settings toggle~~ | ~~Before each release~~ — **Deferred to post-MVP** |
 
 #### Performance Testing
 

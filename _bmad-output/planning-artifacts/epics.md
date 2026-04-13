@@ -220,7 +220,7 @@ UX-DR10: Implement forward-only call navigation — scenario list → connecting
 
 UX-DR11: Implement loading state masking — zero loading spinners. "Connecting..." phone dial animation masks LiveKit/Pipecat initialization. "Call Ended" overlay masks debrief LLM generation. Scenario list renders progressively. Background image blur makes low-res acceptable during load
 
-UX-DR12: Implement WCAG 2.1 AA accessibility — all color combinations validated (minimum 5.2:1 contrast). All interactive elements minimum 48px touch target. Screen reader announcements per screen (scenario card reads name/tagline/status/actions, call screen announces hang-up, no-network announces state). Support system "Reduce Motion" setting via MediaQuery.disableAnimations
+UX-DR12: Implement WCAG 2.1 AA accessibility — all color combinations validated (minimum 5.2:1 contrast). All interactive elements minimum 48px touch target. Screen reader announcements per screen (scenario card reads name/tagline/status/actions, call screen announces hang-up, no-network announces state). ~~Support system "Reduce Motion" setting via MediaQuery.disableAnimations~~ — **Reduced motion deferred to post-MVP**
 
 UX-DR13: Implement Rive character emotional reaction system — 7 states driven in real-time during call: satisfaction (correct response), smirk (minor error), frustration (significant error), impatience (long hesitation >3s), anger (very long silence >5s), confusion (off-topic/incomprehensible), disgust → hang-up (inappropriate content). Reactions happen DURING user speech, not after
 
@@ -631,9 +631,9 @@ So that scenarios can be created consistently and loaded by the Pipecat pipeline
 
 **Acceptance Criteria:**
 
-**Given** the Architecture defines a `scenarios` table (id, title, system_prompt, difficulty, is_free, briefing_text, content_warning)
+**Given** the Architecture defines a `scenarios` table (id, title, system_prompt, difficulty, is_free, briefing_text, content_warning, rive_character)
 **When** the scenario structure is finalized
-**Then** a documented template exists covering: system prompt format (personality, vocabulary challenges, escalation triggers, patience thresholds, fail conditions), debrief generation template, briefing text format, content warning criteria, and difficulty calibration parameters
+**Then** a documented template exists covering: system prompt format (personality, vocabulary challenges, escalation triggers, patience thresholds, fail conditions), debrief generation template, briefing text format, content warning criteria, difficulty calibration parameters, and rive_character assignment (which Rive character visual variant to display — one of: mugger, waiter, girlfriend, cop, landlord)
 
 **Given** the operator (Walid) authors scenarios manually
 **When** the authoring workflow is defined
@@ -1038,10 +1038,11 @@ So that the experience feels like talking to a real person, not using an app.
 **Then** Flutter loads a scenario-specific background image and applies BackdropFilter gaussian blur (~15-25px, no overlay)
 **And** a full-screen Rive canvas renders on top with the character puppet
 
-**Given** the Rive character file from Epic 2 is available
+**Given** the Rive character file from Epic 2 is available (with 5 character variants via `character` EnumInput)
 **When** the character loads
 **Then** it is loaded via the Rive hot-update pattern: check manifest.json → download if newer → cache locally → load from bytes (File.decode)
 **And** the character displays in Rive `Fit.cover` for full-screen immersive rendering
+**And** the `character` EnumInput is set to the scenario's `rive_character` value before the conversation begins (e.g., 'girlfriend' for The Furious Girlfriend scenario)
 
 **Given** Rive 0.14.x integration rules are non-negotiable
 **When** the Rive canvas initializes

@@ -244,7 +244,7 @@ Critical lessons learned from a previous production project. These rules are **n
 |-------|-------------|-------|
 | `users` | email, jwt_hash, created_at, tier (free/paid) | ~500 rows max MVP |
 | `auth_codes` | email, code, expires_at, used | Temporary, cleaned by cron |
-| `scenarios` | id, title, system_prompt, difficulty, is_free, briefing_text, content_warning | Operator-managed content. briefing_text = pre-call vocabulary/context (FR14). content_warning = nullable, shown before threat/confrontation scenarios (FR38) |
+| `scenarios` | id, title, system_prompt, difficulty, is_free, briefing_text, content_warning, rive_character | Operator-managed content. briefing_text = pre-call vocabulary/context (FR14). content_warning = nullable, shown before threat/confrontation scenarios (FR38). rive_character = Rive EnumInput value selecting character visual variant (e.g., 'mugger', 'girlfriend', 'cop') — each scenario maps to one of the 5 character skins in the .riv file |
 | `call_sessions` | user_id, scenario_id, started_at, duration, cost_cents | Per-call cost tracking |
 | `debriefs` | call_session_id, survival_pct, debrief_json | LLM-generated post-call. `debrief_json` stores the complete LLM output (errors, hesitation_contexts, idioms, areas_to_work_on, inappropriate_behavior) plus backend-merged fields (hesitation durations, encouraging_framing). See `debrief-content-strategy.md` for full schema. |
 | `user_progress` | user_id, scenario_id, best_score, attempts | Progression tracking |
@@ -363,6 +363,12 @@ lib/
 - If same or offline: load from local cache
 - Rive loaded from bytes (`File.decode`) instead of asset bundle (`FileLoader.fromAsset`)
 - Enables instant animation iteration without App Store resubmission
+
+**Rive Character Variants:**
+- The Rive character file exposes a `character` EnumInput that selects the visual variant (mugger, waiter, girlfriend, cop, landlord)
+- Each scenario defines a `rive_character` value in the database — Flutter sets the Rive input when the call screen loads, before the conversation begins
+- All 5 variants share the same state machine (emotions, visemes, hang-up button) — only the visual appearance changes
+- Future scenarios can reuse existing variants or add new ones (EnumInput is additive, no breaking changes)
 
 ### Infrastructure & Deployment
 

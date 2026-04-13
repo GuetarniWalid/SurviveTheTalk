@@ -580,14 +580,7 @@ All text elements pass WCAG 2.1 AA minimum contrast requirements. The progress b
 
 ### Reduced Motion Behavior (Subtask 4.3)
 
-When system "Reduce Motion" is ON:
-
-| Element | Standard | Reduced Motion |
-|---------|----------|----------------|
-| Entry transition (fade-in) | 500ms fade-in | Instant cut (0ms) — screen appears immediately |
-| Hold duration | 3-10 seconds | Unchanged — functional, not decorative |
-| Exit transition (crossfade) | 900ms crossfade | Instant cut (0ms) — debrief appears immediately |
-| Progress bar | Static (no animation) | Unchanged — already static |
+**Deferred to post-MVP.** Full animations only at launch. Can be added later without breaking changes.
 
 ### Back Navigation Blocking (P-4)
 
@@ -665,7 +658,7 @@ flowchart TD
 | Exit transition | `FadeTransition` + crossfade | 600ms fade-out + 600ms fade-in, 300ms overlap |
 | Hold timer | `Timer` or `Future.delayed` | Minimum 3s, waits for debrief data |
 | Debrief readiness | `StreamSubscription` on debrief data channel | Triggers exit when data arrives AND timer elapsed |
-| Reduced motion check | `MediaQuery.disableAnimations` | Instant cuts when enabled |
+| ~~Reduced motion check~~ | ~~`MediaQuery.disableAnimations`~~ | ~~Instant cuts when enabled~~ — **Deferred to post-MVP** |
 | Screen reader | `Semantics` with live region | Combined announcement on appear |
 
 ### File Locations (per Architecture)

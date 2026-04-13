@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-13 (story 2-5 done)
+# last_updated: 2026-04-13 (story 2-6 done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-13 (story 2-5 done)
+last_updated: 2026-04-13 (story 2-6 done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -57,7 +57,7 @@ development_status:
   2-3-design-call-ended-transition-screen: done
   2-4-design-debrief-screen: done
   2-5-design-paywall-screen: done
-  2-6-create-rive-character-puppet-file: review
+  2-6-create-rive-character-puppet-file: done
   2-7-create-visual-assets: backlog
   epic-2-retrospective: optional
 

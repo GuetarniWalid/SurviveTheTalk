@@ -855,13 +855,7 @@ The inappropriate behavior section (when present) appears between the idioms sec
 
 ### Reduced Motion Behavior (Subtask 8.3)
 
-| Element | Standard | Reduced Motion |
-|---------|----------|----------------|
-| Entry transition (fade-in from Call Ended) | 900ms crossfade (600ms fade-out + 600ms fade-in, 300ms overlap) | Instant cut (0ms) |
-| Scroll behavior | Standard scroll physics | Unchanged — scrolling is functional, not decorative |
-| Section appearance | Standard rendering | Unchanged — no animations on individual sections |
-
-**Note:** The debrief screen has no decorative animations — it's a static content screen. The only motion is the entry transition from the Call Ended screen (defined in Story 2.3). Reduced motion replaces that crossfade with an instant cut.
+**Deferred to post-MVP.** Full animations only at launch. The debrief screen has no decorative animations — it's a static content screen. Reduced motion support can be added later without breaking changes.
 
 ### Navigation Context — Mermaid Flow Diagram (Subtask 8.4)
 

@@ -1,6 +1,6 @@
 # Story 2.6: Create Rive Character Puppet File
 
-Status: review
+Status: done
 
 ## Story
 
@@ -10,21 +10,21 @@ so that Epic 6 (Animated Call Experience) has the animation asset it requires.
 
 ## Acceptance Criteria
 
-1. **Emotional States (7 total):** The Rive file contains 7 distinct state machine states — satisfaction, smirk, frustration, impatience, anger, confusion, disgust→hang-up — with smooth transitions between them.
+1. **Emotional States (10 total):** The Rive file contains 10 distinct state machine states — satisfaction, smirk, frustration, impatience, anger, confusion, sadness, boredom, impressed, disgust_hangup — with smooth transitions between them. Driven by `emotion` `EnumInput`.
 
-2. **Lip Sync (8 visemes):** 8 viseme mouth shapes are exposed as `NumberInput` properties on the state machine, controllable from Flutter via ViewModel properties. Viseme IDs 0-7 map to grouped phoneme mouth shapes driven by Cartesia timestamps.
+2. **Lip Sync (12 visemes):** 12 viseme mouth shapes (Preston Blair set + rest) are exposed as `EnumInput` on the state machine, controllable from Flutter via ViewModel properties. Enum values: rest, aei, cdgknstxyz, o, ee, chjsh, bmp, qwoo, r, l, th, fv.
 
-3. **Hang-Up Button:** A 64x64px circle (`#E74C3C`) with phone-down icon (28px, `#FFFFFF`), centered horizontally with 50px bottom padding, is integrated in the Rive canvas with a click event output (`onHangUp` or similar).
+3. **Hang-Up Button:** A 64x64px circle (`#E74C3C`) with phone-down icon (28px, `#FFFFFF`), centered horizontally with 50px bottom padding, is integrated in the Rive canvas with a click event output (`onHangUp`).
 
-4. **Hang-Up Animation:** A dramatic, theatrical character-specific exit animation plays when hang-up is triggered (character-specific: slam, sigh, force-hang-up, etc.).
+4. **Hang-Up Animation:** A generic facial exit expression (~500ms grimace for `disgust_hangup`, ~500ms reluctant nod for `impressed`) plays before `onHangUpAnimComplete` fires. Same expression across all character variants.
 
-5. **Rive 0.14.x Compliance:** All inputs use correct types (`TriggerInput`/`BooleanInput`/`NumberInput`). Events are one-way (Rive→Flutter only). The file is compatible with `RiveWidgetBuilder` + `FileLoader` and `DataBind.auto()`.
+5. **Rive 0.14.x Compliance:** All inputs use correct Rive 0.14.x types (`EnumInput`/`TriggerInput`/`BooleanInput`/`NumberInput`). Events are one-way (Rive→Flutter only). The file is compatible with `RiveWidgetBuilder` + `FileLoader` and `DataBind.auto()`.
 
-6. ~~**Reduced Motion Support:**~~ **REMOVED FROM MVP** — No reduced motion handling in the .riv file. Full animations only. Can be added post-MVP as an additive `reduced_motion` BooleanInput without breaking changes.
+6. ~~**Reduced Motion Support:**~~ **REMOVED FROM MVP** — No reduced motion handling in the .riv file. Full animations only. Can be added post-MVP as an additive `reducedMotion` BooleanInput without breaking changes.
 
 7. **Deliverable:** A `.riv` file placed at `client/assets/rive/character.riv` (and optionally the source `.rev` file for future edits).
 
-8. **Character Variants:** The Rive file exposes a `character` `EnumInput` with 5 values (`mugger`, `waiter`, `girlfriend`, `cop`, `landlord`) that switches between distinct visual variants. All variants share the same state machine (emotions, visemes, hang-up button) — only the visual appearance (head, body, clothing, proportions) changes. Each variant must support all 10 emotional states and all 11 visemes.
+8. **Character Variants:** The Rive file exposes a `character` `EnumInput` with 5 values (`mugger`, `waiter`, `girlfriend`, `cop`, `landlord`) that switches between distinct visual variants. All variants share the same state machine (emotions, visemes, hang-up button) — only the visual appearance (head, body, clothing, proportions) changes. Each variant must support all 10 emotional states and all 12 visemes.
 
 ## Tasks / Subtasks
 
@@ -43,48 +43,55 @@ so that Epic 6 (Animated Call Experience) has the animation asset it requires.
     - `cop` — design TBD during character creation
     - `landlord` — male, older, everyday clothing
   - [ ] Verify all 10 emotional states work correctly for each variant
-  - [ ] Verify all 11 visemes work correctly for each variant
+  - [ ] Verify all 12 visemes work correctly for each variant
   - [ ] Variants share: eye expressions, mouth shapes, hang-up button, all inputs/events
   - [ ] Variants differ: head shape, hair, body proportions, skin tone, clothing
 
-- [ ] Task 2: Build emotional state machine (AC: #1, #6)
-  - [ ] Create 7 emotional states as state machine states:
+- [x] Task 2: Build emotional state machine (AC: #1)
+  - [x] Create 10 emotional states as EnumInput values:
     - `satisfaction` — subtle nod, neutral-to-satisfied expression (correct user response)
     - `smirk` — brief eyebrow raise, slight smirk (minor grammar error)
     - `frustration` — eye-roll, exaggerated sigh (significant error)
     - `impatience` — impatient tapping, checking watch, looking away (hesitation >3s)
     - `anger` — angry expression, leans toward screen (silence >5s)
     - `confusion` — confused squint, pulls phone away to look at it (off-topic)
-    - `disgust_hangup` — disgusted expression → triggers hang-up animation (inappropriate content)
-  - [ ] Add transition animations between all states (smooth interpolation)
-  - [ ] Expose `emotion` as a `NumberInput` (0-6 mapping to the 7 states) for Flutter control
-  - [ ] Add `reducedMotion` `BooleanInput` — when true, skip transition animations and snap to target state
+    - `sadness` — downcast eyes, slight frown, shoulders sag
+    - `boredom` — half-lidded eyes, flat mouth, gaze drifting
+    - `impressed` — reluctant nod, eyebrow raised, "ok fine, not bad"
+    - `disgust_hangup` — disgusted expression → triggers exit animation
+  - [x] Add transition animations between all states (smooth interpolation)
+  - [x] Expose `emotion` as an `EnumInput` (10 values) for Flutter control
+  - ~~[ ] Add `reducedMotion` `BooleanInput`~~ — **DEFERRED (post-MVP)**
 
-- [ ] Task 3: Build lip sync viseme system (AC: #2)
-  - [ ] Create 8 viseme mouth shapes (IDs 0-7) matching Cartesia grouped phoneme output:
-    - 0: Rest/silence (mouth closed)
-    - 1: Open vowels (aa, ah)
-    - 2: Wide vowels (ee, ih)
-    - 3: Rounded vowels (oo, uw)
-    - 4: Bilabial consonants (p, b, m)
-    - 5: Labiodental (f, v)
-    - 6: Dental/alveolar (t, d, n, l, s, z)
-    - 7: Velar/open (k, g, open)
-  - [ ] Expose each as `NumberInput` properties (e.g., `viseme_id`) controllable from Flutter ViewModel
-  - [ ] Ensure viseme transitions are fast enough for real-time lip sync at 60fps
+- [x] Task 3: Build lip sync viseme system (AC: #2)
+  - [x] Create 12 viseme mouth shapes (Preston Blair set + rest) as EnumInput values:
+    - `rest` — mouth closed, neutral (silence/pauses) — **default value**
+    - `aei` — wide open mouth (a, e, i)
+    - `cdgknstxyz` — slightly open, teeth showing (dental consonants)
+    - `o` — small rounded opening
+    - `ee` — wide stretched smile
+    - `chjsh` — slightly open, teeth close (post-alveolar)
+    - `bmp` — lips pressed together (bilabial)
+    - `qwoo` — rounded/pursed lips
+    - `r` — slightly open, relaxed
+    - `l` — mouth open, tongue visible
+    - `th` — tongue between teeth
+    - `fv` — lower lip under upper teeth
+  - [x] Expose as single `visemeId` `EnumInput` controllable from Flutter ViewModel
+  - [x] Ensure viseme transitions are fast enough for real-time lip sync at 60fps
 
-- [ ] Task 4: Build hang-up animation (AC: #4)
-  - [ ] Create dramatic theatrical exit animation (character-specific: exaggerated reaction before call ends)
-  - [ ] Create alternate "completion" exit (grudging respect, different from frustrated hang-up)
-  - [ ] Expose hang-up trigger as `TriggerInput` for Flutter to initiate programmatically
-  - [ ] Ensure animation plays fully before emitting completion event
+- [x] Task 4: Build hang-up & exit animations (AC: #4)
+  - [x] Create `disgust_hangup` exit expression (~500ms grimace, facial only)
+  - [x] Create `impressed` exit expression (~500ms reluctant nod)
+  - [x] Both paths fire `onHangUpAnimComplete` event when expression completes
+  - ~~[ ] Expose hang-up trigger as `TriggerInput`~~ — **REMOVED (redundant with `emotion = disgust_hangup`)**
 
-- [ ] Task 5: Validate and export (AC: #5, #7)
-  - [ ] Test file loads correctly in Rive editor with all states and inputs
-  - [ ] Verify all inputs are accessible: `NumberInput` for emotion + viseme, `BooleanInput` for reducedMotion, `TriggerInput` for hang-up
-  - [ ] Verify click event fires from hang-up button
-  - [ ] Export `.riv` to `client/assets/rive/character.riv`
-  - [ ] Keep source `.rev` file in `client/assets/rive/source/` for future iteration
+- [x] Task 5: Validate and export (AC: #5, #7)
+  - [x] Test file loads correctly in Rive editor with all states and inputs
+  - [x] Verify all inputs are accessible: `EnumInput` for character, emotion, and visemeId
+  - [x] Verify click event fires from hang-up button (`onHangUp`)
+  - [x] Verify `onHangUpAnimComplete` fires for both `disgust_hangup` and `impressed`
+  - [x] Export `.riv` to `client/assets/rive/character.riv`
 
 ## Dev Notes
 
@@ -120,8 +127,8 @@ However, the `.riv` file MUST comply with Rive 0.14.x Flutter runtime constraint
 
 These rules constrain how the `.riv` file must be structured for Flutter compatibility:
 
-1. **Input types:** Use `TriggerInput`, `BooleanInput`, `NumberInput` only (NOT SMI* classes from 0.13.x)
-2. **Events:** One-way only — Rive→Flutter via `addEventListener`. Flutter→Rive via ViewModel properties (`.number()`, `.boolean()`, `.trigger()`)
+1. **Input types:** Use `EnumInput`, `TriggerInput`, `BooleanInput`, `NumberInput` (NOT SMI* classes from 0.13.x)
+2. **Events:** One-way only — Rive→Flutter via `addEventListener`. Flutter→Rive via ViewModel properties (`.enumerator()`, `.number()`, `.boolean()`, `.trigger()`)
 3. **Data binding:** File must work with `DataBind.auto()` (NOT `DataBind.byName()` which causes infinite hang)
 4. **Rendering:** Design for `Fit.cover` full-screen (NOT `Fit.contain` which causes black bars)
 5. **Null safety:** All ViewModel property references may return null if name doesn't match — use defensive naming
@@ -134,7 +141,7 @@ These rules constrain how the `.riv` file must be structured for Flutter compati
 |-----------|-----------|------|------|---------|
 | Flutter→Rive | ViewModel EnumInput | `character` | Enum (mugger, waiter, girlfriend, cop, landlord) | Select character visual variant |
 | Flutter→Rive | ViewModel EnumInput | `emotion` | Enum (10 values) | Set emotional state |
-| Flutter→Rive | ViewModel EnumInput | `visemeId` | Enum (11 values) | Set mouth shape for lip sync |
+| Flutter→Rive | ViewModel EnumInput | `visemeId` | Enum (12 values) | Set mouth shape for lip sync |
 | ~~Flutter→Rive~~ | ~~ViewModel BooleanInput~~ | ~~`reduced_motion`~~ | ~~Boolean~~ | ~~Disable fluid transitions~~ — **DEFERRED (post-MVP)** |
 | Rive→Flutter | Event | `onHangUp` | Event | Hang-up button clicked by user |
 | Rive→Flutter | Event | `onHangUpAnimComplete` | Event | Hang-up exit animation finished |

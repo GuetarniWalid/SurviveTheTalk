@@ -167,7 +167,7 @@ SurviveTheTalk enters a $7.36B language learning app market (16% CAGR) where the
 | # | Capability | Why It's Non-Negotiable |
 |---|-----------|------------------------|
 | 1 | Real-time voice call with AI pipeline (PoC foundation + scenario logic) | This IS the product. PoC validates the pipeline; MVP adds scenario structure on top |
-| 2 | Animated 2D Rive character with emotional reactions + lip sync | Without animation, it's a voice chatbot. Single Rive puppet file reused across all scenarios — new scenarios = new system prompts, not new art |
+| 2 | Animated 2D Rive character with emotional reactions + lip sync | Without animation, it's a voice chatbot. Single Rive puppet file with 5 character skins (mugger, waiter, girlfriend, cop, landlord) switchable via EnumInput — new scenarios = new system prompts + character variant selection, not new .riv files |
 | 3 | Post-call debrief with specific error flagging | "The debrief is the real value." No debrief = no learning = no reason to pay |
 | 4 | 5 scenarios at launch (3 free + 2 paid) | Minimum content to test retention and conversion. First scenario calibrated for near-guaranteed success. Character hang-up mechanic doubles as natural call duration limit = controlled API costs |
 | 5 | Scenario list with completion % + call/report buttons | Three screens total: list, call, report. Minimalist, no mobile nav |

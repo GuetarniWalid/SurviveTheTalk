@@ -488,13 +488,7 @@ This screen picks up exactly where Story 2.1's Transition 3 ends.
 
 **Live region:** The screen announcement fires as a live region **500ms after** the incoming call screen becomes fully visible (at the 1300ms mark of the overall entry sequence). This delay ensures the vibration feedback is perceived first, and the announcement does not compete with the initial haptic sensation.
 
-**Reduced motion:** When system "Reduce Motion" is ON:
-- Ring animation: replaced by a static green ring border (2px `#50D95D`) around the avatar at 180px diameter. No animation.
-- Avatar scale pulse: disabled. Avatar remains at scale 1.0.
-- Button pressed state: opacity change still applies (instant, no animation). No easing.
-- Connecting animation: crossfade replaced by instant cut. Spinner replaced by static "Connecting..." text only.
-- Screen transitions (entry fade-in 500ms, decline fade-out 300ms): reduced to instant cuts (0ms). The screen appears/disappears without fade.
-- Vibration: unchanged (haptic feedback is not affected by Reduce Motion).
+**Reduced motion:** Deferred to post-MVP. Full animations only at launch. Can be added later without breaking changes.
 
 ### Incoming Call in Context — Flow Diagram (Subtask 5.3)
 
