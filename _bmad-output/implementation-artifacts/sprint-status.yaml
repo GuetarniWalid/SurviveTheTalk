@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-14 (story 3-0 done, review corrections applied)
+last_updated: 2026-04-14 (story 3-1 done, review corrections applied)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -64,7 +64,7 @@ development_status:
   # Epic 3: Scenario Content Design & Authoring
   epic-3: in-progress
   3-0-build-scenario-calibration-testing-tools: done
-  3-1-define-scenario-structure-and-authoring-format: review
+  3-1-define-scenario-structure-and-authoring-format: done
   3-2-create-launch-scenarios: backlog
   epic-3-retrospective: optional
 
