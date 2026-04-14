@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.135.2",
+    "httpx>=0.28.0",
     "pipecat-ai[cartesia,livekit,openai,soniox]>=0.0.108",
     "pydantic-settings>=2.13.1",
     "uvicorn>=0.42.0",

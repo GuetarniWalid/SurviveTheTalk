@@ -1641,6 +1641,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pipecat-ai", extra = ["cartesia", "livekit", "openai", "soniox"] },
     { name = "pydantic-settings" },
     { name = "uvicorn" },
@@ -1655,6 +1656,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.135.2" },
+    { name = "httpx", specifier = ">=0.28.0" },
     { name = "pipecat-ai", extras = ["cartesia", "livekit", "openai", "soniox"], specifier = ">=0.0.108" },
     { name = "pydantic-settings", specifier = ">=2.13.1" },
     { name = "uvicorn", specifier = ">=0.42.0" },

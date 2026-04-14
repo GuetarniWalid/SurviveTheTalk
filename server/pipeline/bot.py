@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import time
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -25,6 +26,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
 from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
+from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
 
 
 async def run_bot(url: str, room: str, token: str) -> None:
@@ -93,12 +95,18 @@ async def run_bot(url: str, room: str, token: str) -> None:
         ),
     )
 
+    collector = TranscriptCollector(session_id=f"call_{int(time.time())}")
+    transcript_user = TranscriptLogger(collector=collector, role="user")
+    transcript_character = TranscriptLogger(collector=collector, role="character")
+
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
+            transcript_user,
             context_aggregator.user(),
             llm,
+            transcript_character,
             tts,
             transport.output(),
             context_aggregator.assistant(),
