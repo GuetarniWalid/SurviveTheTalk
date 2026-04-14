@@ -621,6 +621,10 @@ So that the app has a complete visual identity for development and store submiss
 
 Define the complete scenario structure (system prompt format, personality parameters, escalation triggers, fail conditions, debrief templates), establish the authoring workflow, and create the 5 launch scenarios (3 free + 2 paid). First scenario calibrated for near-guaranteed user success. Requires dedicated collaborative session — stories are high-level placeholders to be refined.
 
+**Key References:**
+- [`difficulty-calibration.md`](difficulty-calibration.md) — Defines difficulty levels (easy/medium/hard), scoring criteria, calibration targets, AI scoring prompt, and technical implementation mapping. All scenarios MUST conform to this framework.
+- [`scenario-testing-process.md`](scenario-testing-process.md) — Defines the testing workflow for scenario calibration: transcript capture (TranscriptLogger), AI scoring (score_transcript.py), checklist templates, and minimum 2 test passes per scenario. Both technical tools must be built before Story 3.2.
+
 **User value:** The scenarios ARE the product content. Without them, users have nothing to play. This epic produces the 5 conversations that users will experience at launch — the characters, their personalities, and the vocabulary challenges that drive engagement and retention.
 
 ### Story 3.1: Define Scenario Structure and Authoring Format
@@ -1000,6 +1004,8 @@ So that I can make an informed choice about whether to proceed.
 
 A user experiences a visually immersive voice call: an animated 2D character reacts emotionally in real-time to their English, synchronizes lip movements with speech, and hangs up dramatically when patience runs out. Character stays within behavioral boundaries and handles inappropriate content in-persona. Depends on Epic 2 (Rive character file) and Epic 3 (scenario content).
 
+**Key Reference:** [`difficulty-calibration.md`](difficulty-calibration.md) §8 — Defines `PatienceTracker` (patience state, silence timers, escalation, hang-up), `ExchangeClassifier` (async parallel LLM for exchange success/fail), and `TranscriptLogger` (timestamped transcript capture) pipeline components required by this epic.
+
 ### Story 6.1: Build Call Initiation from Scenario List with Connection Animation
 
 As a user,
@@ -1160,6 +1166,8 @@ So that I always have a graceful exit and the app behaves like a real phone even
 ## Epic 7: Post-Call Debrief & Learning
 
 After each call, the user receives a brutally honest debrief: specific errors flagged with correct alternatives, hesitation analysis, idiom explanations, pre-scenario briefing for first attempts, and clear areas to work on. The debrief is the real value that justifies payment. Depends on Epic 2 (debrief screen design, Call Ended transition design).
+
+**Key Reference:** [`difficulty-calibration.md`](difficulty-calibration.md) §5 — Defines the AI scoring system prompt, input/output JSON schemas, and evaluation boundaries for the `PostCallScorer` component built in this epic.
 
 ### Story 7.1: Build Debrief Generation Backend
 
