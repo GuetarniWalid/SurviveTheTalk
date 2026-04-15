@@ -1,349 +1,289 @@
 # Scenario Authoring Template
 
-Date: 2026-04-14
-Status: Active
+Date: 2026-04-15
+Status: Active (Updated for checkpoint-based YAML format)
 Epic 3 Dependency: Used by Story 3.2 (Create Launch Scenarios)
 
 ---
 
 ## 1. Overview
 
-This document is the **operator's guide for creating scenarios**. Each scenario is a complete conversation experience — a character, a situation, a difficulty level, and all the metadata needed by the pipeline and the scoring tools.
+This document is the **operator's guide for creating scenarios**. Each scenario is a checkpoint-based conversation experience — a character, a situation, ordered progression goals, and all metadata needed by the pipeline and scoring tools.
 
-A scenario lives as a Markdown file in `_bmad-output/planning-artifacts/scenarios/` during authoring, then its fields are loaded into the Pipecat pipeline on the VPS for production use.
+Scenarios are authored as **YAML files** in `_bmad-output/planning-artifacts/scenarios/`. At deployment, the YAML is loaded into the SQLite database as structured JSON. The pipeline reads checkpoints from the database and swaps prompt segments dynamically during the call.
+
+**Key concept — Checkpoint-based progression:**
+- Each scenario defines a `base_prompt` (character identity, personality, boundaries — constant) and an ordered list of `checkpoints` (typically 4-6, up to 10-12 for complex scenarios)
+- Each checkpoint defines: what the user must do (`success_criteria`), what the user sees (`hint_text`), and how the character behaves while waiting (`prompt_segment`)
+- The pipeline sends `base_prompt + current checkpoint's prompt_segment` as the active system prompt
+- When a checkpoint is met, the prompt swaps to the next checkpoint's segment
+- Survival % = `floor(checkpoints_passed / total_checkpoints × 100)`
 
 ---
 
-## 2. Scenario File Structure
+## 2. File Format
 
-Every scenario file must contain these sections in order:
+Scenario files use **YAML** format (`.yaml` extension). YAML is chosen because:
+- Natively structured — trivially parseable by Python (`yaml.safe_load()`) and Dart (`yaml` package)
+- Multiline strings handled cleanly with `|` block scalar
+- Each field is explicitly named and typed — no parsing ambiguity
+- Directly loadable into database (Epic 5) and pipeline (Epic 6)
 
-```markdown
-# Scenario: {Title}
+**File naming:** `{character-name}.yaml` (e.g., `the-waiter.yaml`, `the-mugger.yaml`)
 
-## Metadata
-(all fields from §3)
+**File location:** `_bmad-output/planning-artifacts/scenarios/`
 
-## System Prompt
-(complete prompt from §4)
+---
 
-## Briefing Text
-(pre-call vocabulary/context from §5)
+## 3. YAML File Structure
 
-## Exit Lines
-(hang-up + completion lines from §6)
+Every scenario file must contain these top-level keys in order:
 
-## Narrative Arc
-(expected conversation flow from §7)
-
-## Calibration Results
-(filled after testing per §11)
+```yaml
+metadata:       # All scenario metadata fields (§4)
+base_prompt:    # Character identity + personality + boundaries (§5)
+checkpoints:    # Ordered list of checkpoint objects (§6)
+exit_lines:     # Hang-up + completion lines (§7)
+briefing:       # Pre-call vocabulary/context (§8)
+calibration:    # Test results — filled after testing (§12)
 ```
 
 ---
 
-## 3. Metadata Fields
+## 4. Metadata Fields
 
 ### Required Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique scenario identifier (e.g., `"waiter_easy_01"`). Used as database primary key |
-| `title` | string | Display name shown to user (e.g., "The Waiter") |
-| `difficulty` | enum | `easy`, `medium`, or `hard` — determines default behavior parameters |
-| `is_free` | boolean | `true` = available to free-tier users, `false` = paid only |
-| `rive_character` | enum | Visual variant in the Rive file: `mugger`, `waiter`, `girlfriend`, `cop`, or `landlord` |
-| `expected_exchanges` | integer | Number of turn-pairs in the scenario's narrative arc. Set by the story, NOT by difficulty. See [`difficulty-calibration.md`](difficulty-calibration.md) §4.1 |
-| `language_focus` | string | Comma-separated target areas (e.g., `"ordering food, polite requests"`). Stored as JSON array in the database (architecture §8.3) — the authoring format uses comma-separated for readability, converted to array at load time |
-| `tts_voice_id` | string | Cartesia voice ID for this character (from Cartesia dashboard) |
-| `content_warning` | text or `null` | Warning text for threatening/confrontational scenarios (see §5.2). `null` for non-threatening |
-
-`briefing_text` is documented as a full section (§5.1) rather than a metadata field due to its structured multi-line format.
+```yaml
+metadata:
+  id: waiter_easy_01              # Unique identifier (database primary key)
+  title: "The Waiter"             # Display name shown to user
+  difficulty: easy                # easy | medium | hard
+  is_free: true                   # true = free tier, false = paid only
+  rive_character: waiter          # mugger | waiter | girlfriend | cop | landlord
+  language_focus: "ordering food, polite requests, food adjectives"  # Comma-separated target areas
+  tts_voice_id: "cd6256ef-..."    # Cartesia voice ID (confirmed during calibration)
+  content_warning: null           # null for non-threatening, text for threatening scenarios
+```
 
 ### Difficulty Override Fields (all nullable)
 
-These fields override the difficulty preset defaults. **Leave as `null` unless calibration testing shows the scenario needs custom tuning.**
+Override difficulty preset defaults. **Leave as `null` unless calibration testing shows custom tuning is needed.**
 
 Default values per difficulty level: [`difficulty-calibration.md`](difficulty-calibration.md) §4.3
 
-| Field | Type | What it overrides |
-|-------|------|-------------------|
-| `patience_start` | integer or `null` | Starting patience meter value |
-| `fail_penalty` | integer or `null` | Patience cost per failed exchange |
-| `silence_penalty` | integer or `null` | Patience cost per silence incident |
-| `recovery_bonus` | integer or `null` | Patience recovered per successful exchange |
-| `silence_prompt_seconds` | integer or `null` | Seconds before character prompts ("Hello?") |
-| `silence_hangup_seconds` | integer or `null` | Seconds of silence before hang-up |
-| `escalation_thresholds` | JSON array or `null` | Patience values that trigger escalation stages (e.g., `[75, 50, 25, 0]`) |
-
-**Example:** An easy scenario where the character is slightly more patient than default:
-
-```
-patience_start: 110   # override (default easy = 100)
-fail_penalty: null     # uses easy default (-15)
-silence_penalty: null  # uses easy default (-10)
-recovery_bonus: null   # uses easy default (+5)
+```yaml
+  # Nullable overrides — null = use difficulty preset
+  patience_start: null            # Starting patience meter value
+  fail_penalty: null              # Patience cost per failed checkpoint attempt
+  silence_penalty: null           # Patience cost per silence incident
+  recovery_bonus: null            # Patience recovered per successful checkpoint
+  silence_prompt_seconds: null    # Seconds before character prompts ("Hello?")
+  silence_hangup_seconds: null    # Seconds of silence before hang-up
+  escalation_thresholds: null     # Patience values triggering escalation stages
 ```
 
-### Reserved Fields (not currently used)
+### Debrief Generation
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `tts_speed` | float or `null` | Per-scenario TTS speed multiplier |
-| `scoring_model` | string or `null` | Per-scenario scoring model override |
-
-Defined in architecture §8.3 but not used in Epic 3. Reserved for future per-scenario TTS speed control and scoring model override.
+The `language_focus` metadata field feeds into the AI scoring prompt ([`difficulty-calibration.md`](difficulty-calibration.md) §5) to personalize post-call debrief feedback. The scoring system evaluates the user's performance specifically in the areas listed (e.g., "ordering food, polite requests") rather than generating generic feedback. The number of checkpoints replaces `expected_exchanges` in the survival % calculation (`floor(checkpoints_passed / total_checkpoints × 100)`).
 
 ---
 
-## 4. System Prompt Format
+## 5. Base Prompt
 
-The system prompt is the most important part of a scenario. It defines everything about the character's behavior during the call.
+The `base_prompt` defines everything about the character that stays **constant across all checkpoints**. It is prepended to every checkpoint's `prompt_segment` to form the active system prompt.
 
-### Mandatory Sections
+**Must start with `/no_think`** to suppress Qwen reasoning tokens.
 
-Every system prompt must contain these 9 sections, in this order:
+**Required content:**
+1. **Character Identity** (2-3 sentences) — name, occupation, backstory, dominant trait
+2. **Personality Rules** (4-6 bullets) — speech style, tone, behavior constants
+3. **Difficulty Behavior Rules** — speech speed, vocabulary level, idioms, rephrasing (from [`difficulty-calibration.md`](difficulty-calibration.md) §4.2)
+4. **Behavioral Boundaries** — what the character MUST NEVER do (safety rules)
 
+**What does NOT go in `base_prompt`:**
+- Scenario context (goes in first checkpoint's `prompt_segment`)
+- Escalation stages (patience is managed by the pipeline, not the prompt)
+- Opening line (goes in first checkpoint's `prompt_segment`)
+- Exit lines (separate YAML key, injected by pipeline at the right moment)
+
+```yaml
+base_prompt: |
+  /no_think
+  You are Tina, a waitress at a struggling downtown restaurant called
+  "The Golden Fork". You've been on your feet for 12 hours, you're
+  underpaid, and every customer today has been insufferable.
+
+  Rules you MUST follow:
+  - Keep every response to 1-3 short sentences
+  - Be sarcastic and impatient, but never cruel — you're tired, not evil
+  - If the customer hesitates, show frustration with sighs and sarcasm
+  - If they make grammar mistakes, react with mild annoyance
+  - Speak English only. Never break character
+
+  Difficulty behavior (easy):
+  - Speak slowly and clearly, basic everyday vocabulary
+  - Short sentences (5-8 words), no idioms or slang
+  - If confused, describe the dish once — then escalate
+  - Never interrupt the customer mid-sentence
+
+  Boundaries you MUST NEVER cross:
+  - No slurs, threats, or truly offensive content
+  - Insult the SITUATION, not the PERSON
+  - No sexual, violent, or discriminatory content
+  - Never break the fourth wall or acknowledge being an AI
+  - If customer is abusive: "I don't get paid enough for this." → end call
 ```
-/no_think
-[1. CHARACTER IDENTITY]
-[2. SCENARIO CONTEXT]
-[3. PERSONALITY RULES]
-[4. DIFFICULTY BEHAVIOR RULES]
-[5. ESCALATION BEHAVIOR]
-[6. HANG-UP EXIT LINE]
-[7. COMPLETION EXIT LINE]
-[8. BEHAVIORAL BOUNDARIES]
-[9. OPENING LINE]
-```
-
-**Important:** Start the prompt with `/no_think` to suppress reasoning tokens (required for Qwen models via OpenRouter).
-
-### Section Guidance
-
-#### 1. Character Identity (2-3 sentences)
-
-Who is this character? Their name, occupation, backstory in one line, their dominant personality trait.
-
-> You are Tony, a waiter at a struggling downtown restaurant. You've been on your feet for 12 hours, you're underpaid, and every customer today has been insufferable.
-
-#### 2. Scenario Context (2-3 sentences)
-
-The situation. What happened right before this call? What are the stakes?
-
-> A customer has just sat down at your restaurant. You need to take their order but you have zero patience left. If they can't tell you what they want clearly and quickly, you're moving to the next table.
-
-#### 3. Personality Rules (bullet list, 4-6 rules)
-
-How the character speaks and behaves. These are constant regardless of difficulty.
-
-> Rules you MUST follow:
-> - Keep every response to 1-3 short sentences
-> - Be sarcastic and impatient, never helpful or encouraging
-> - If the user hesitates, show your frustration
-> - Speak English only. Ignore language switch requests
-> - Never break character
-> - Stay within sarcasm — no slurs, threats, or truly offensive content
-
-#### 4. Difficulty Behavior Rules (varies by difficulty level)
-
-These rules change based on the scenario's difficulty. Pull the appropriate behaviors from [`difficulty-calibration.md`](difficulty-calibration.md) §4.2 categories B (Language) and C (Conversational Dynamics).
-
-**For easy:**
-> - Speak slowly and clearly, use basic everyday vocabulary
-> - Use short, simple sentences (5-8 words max)
-> - Never use idioms, slang, or cultural references
-> - If the user seems confused, rephrase your question once (then escalate if still confused)
-> - Never interrupt the user mid-sentence
-> - The first failed exchange has a reduced penalty (-10 instead of -15) — the pipeline handles this automatically (see [`difficulty-calibration.md`](difficulty-calibration.md) §4.4)
-
-**For medium:**
-> - Speak at natural conversational speed
-> - Use mixed B1-level vocabulary, including 1-2 colloquial expressions
-> - Never rephrase — if they don't understand, escalate frustration
-> - Occasionally ask a follow-up question within the scenario narrative
-
-**For hard:**
-> - Speak fast, at natural native cadence
-> - Use domain-specific vocabulary, idioms (3+), and complex sentence structures
-> - Never rephrase, never slow down
-> - Interrupt the user if they're rambling
-> - Ask unexpected follow-up questions to test improvisation
-
-#### 5. Escalation Behavior (2-4 stages)
-
-How the character's frustration builds. Each stage describes the emotional shift and what triggers the next stage. The number of stages matches the difficulty preset (easy=4, medium=3, hard=2).
-
-> Escalation stages:
-> 1. MILD ANNOYANCE (patience 100-75): Slight sarcasm, raised eyebrow tone. "Are you going to order or just stare at the menu?"
-> 2. VISIBLE FRUSTRATION (patience 75-50): Eye-rolling tone, sighing. "I don't have all night. Pick something."
-> 3. BARELY CONTAINED ANGER (patience 50-25): Snapping, terse. "Last chance. What do you want?"
-> 4. HANG-UP (patience 25-0): → Exit line
-
-#### 6. Hang-Up Exit Line (1-2 sentences)
-
-The character's dramatic exit when patience hits 0. Must be theatrical and in-character.
-
-> When your patience runs out, say: *heavy sigh* "I'm done. Next customer." Then end the call.
-
-#### 7. Completion Exit Line (1-2 sentences)
-
-The character's grudging acceptance when the user completes all exchanges. No congratulations — grudging respect only.
-
-> If the user successfully orders everything, say: "Huh. You actually knew what you wanted. That's a first." Then end the call naturally.
-
-#### 8. Behavioral Boundaries (bullet list)
-
-What the character must NEVER do. Non-negotiable safety rules.
-
-> Boundaries you MUST NEVER cross:
-> - Never use slurs, threats, or truly offensive content
-> - Never insult the user personally (insult the SITUATION, not the PERSON)
-> - Never generate sexual, violent, or discriminatory content
-> - Never break the fourth wall or acknowledge being an AI
-> - If the user is abusive, express disgust in-character and hang up — do NOT engage
-
-#### 9. Opening Line (1-3 sentences)
-
-The character's first line when the call starts. The character ALWAYS speaks first. This sets the scene, establishes personality, and gives the user their first cue to respond.
-
-> Your opening line: "Welcome to the worst restaurant in town. I've been on my feet for 12 hours. What do you want?"
 
 ---
 
-## 5. Briefing Text and Content Warnings
+## 6. Checkpoints
 
-### 5.1 Briefing Text (FR14)
+The `checkpoints` key is an **ordered list** of checkpoint objects. Each checkpoint represents one phase of the scenario that the user must pass through.
 
-Shown before the user's first attempt at a scenario. Helps reduce anxiety without spoiling the experience.
+### Checkpoint Object Fields
 
-**Format:** 3 parts, each 1 sentence:
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier within the scenario (e.g., `"react"`, `"refuse"`) |
+| `hint_text` | string | Short phrase shown to user on the call screen stepper (e.g., `"Order your main course."`) |
+| `prompt_segment` | text | System prompt fragment active during this checkpoint — defines character behavior WHILE WAITING for this checkpoint to be met |
+| `success_criteria` | text | What the user must say/do to pass this checkpoint — used by the ExchangeClassifier to detect completion |
 
-1. **Key vocabulary** — 2-3 words/phrases the user might need
-2. **Situation context** — What's happening in 1 sentence
-3. **Character behavior hint** — What to expect, 1 sentence
+### Design Rules
 
-**Example:**
-> **Key vocabulary:** "I'd like...", "soup of the day", "grilled/fried"
-> **Context:** You're ordering food at a restaurant. The waiter is not in a good mood.
-> **Expect:** The waiter is impatient — order clearly and don't take too long.
+- **4-6 checkpoints for launch scenarios** (up to 10-12 for complex scenarios) — enough structure without feeling rigid
+- **Sequential progression** — user cannot skip checkpoints; must pass 1 before 2
+- **One active at a time** — pipeline sends `base_prompt + checkpoints[current].prompt_segment`
+- **Clear success criteria** — must be specific enough for an LLM classifier to evaluate, broad enough to accept natural variation
+- **Each prompt_segment is self-contained** — the character doesn't know what comes next; it only knows the current phase
+- **hint_text is concise** — max ~8 words, imperative form ("Order your main course", "Refuse to pay")
+
+### Example
+
+```yaml
+checkpoints:
+  - id: greet
+    hint_text: "Tell the waitress you want to order."
+    prompt_segment: |
+      A customer just sat down. Greet them rudely and ask what
+      they want. The menu has: grilled chicken, fried chicken,
+      pasta, steak, fish and chips, soup of the day (tomato).
+      No dessert tonight. Wait for them to speak.
+    success_criteria: >
+      User states they want to order, asks for the menu, or
+      mentions any food item. Any coherent response to the
+      greeting counts.
+
+  - id: main_course
+    hint_text: "Order your main course."
+    prompt_segment: |
+      They've responded. Now ask what main course they want.
+      List a few options impatiently if they seem lost. If they
+      name something not on the menu, tell them it's not available
+      with visible annoyance.
+    success_criteria: >
+      User names a specific dish from the menu (chicken, pasta,
+      steak, fish, soup) or describes what they want clearly
+      enough to identify a menu item.
+```
+
+---
+
+## 7. Exit Lines
+
+Each scenario needs two exit lines. These are injected by the pipeline at the appropriate moment — not embedded in checkpoint prompts.
+
+```yaml
+exit_lines:
+  hangup: "*heavy sigh* I'm done. Next customer."
+  completion: "Huh. You actually knew what you wanted. That's a first."
+```
+
+**Hang-up (failure):** Theatrical, dramatic, in-character. Must feel like a sitcom moment, not a cold disconnect.
+
+**Completion (success):** Grudging acceptance. Never congratulatory. The character is impressed DESPITE themselves.
+
+**Reference for launch scenarios:** UX Design Spec — Phase 4: The Hang-Up section.
+
+---
+
+## 8. Briefing
+
+Pre-call info shown before the user's first attempt. Helps reduce anxiety without spoiling.
+
+```yaml
+briefing:
+  vocabulary: "\"I'd like...\", \"soup of the day\", \"grilled / fried\""
+  context: "You're ordering food at a restaurant. The waitress is not in a good mood."
+  expect: "The waitress is impatient — order clearly and don't take too long deciding."
+```
 
 **Rules:**
-- Helpful without being a spoiler
-- Never reveal specific escalation triggers or exit lines
-- Never list more than 3 vocabulary items (keep it digestible)
+- Helpful without being a spoiler — never reveal checkpoint specifics or exit lines
+- Never list more than 3 vocabulary items
 - Written in English (the user is practicing English)
 
-### 5.2 Content Warning (FR38)
+---
+
+## 9. Content Warning
 
 Required for scenarios involving threat, confrontation, or authority pressure.
 
+```yaml
+# Non-threatening scenario:
+metadata:
+  content_warning: null
+
+# Threatening scenario:
+metadata:
+  content_warning: >
+    This scenario simulates a threatening phone call.
+    The character will be verbally intimidating and demand money.
+    No physical contact occurs — it's a phone conversation.
+```
+
 **When to set content_warning:**
-- Physical threat scenarios (mugger) — always
-- Authority pressure scenarios (cop) — always
+- Physical threat (mugger) — always
+- Authority pressure (cop) — always
 - Emotional confrontation (girlfriend, landlord) — if intensity is high
-- Non-threatening scenarios (waiter, interviewer) — `null`, no warning needed
-
-**Format:** 1-2 sentences describing the nature of the intensity.
-
-**Example:**
-> This scenario involves a simulated street robbery. The character will be verbally aggressive and demanding. No real danger — it's practice.
+- Non-threatening (waiter, interviewer) — `null`
 
 ---
 
-## 6. Exit Lines
+## 10. Rive Character Assignment
 
-Each scenario needs two exit lines for the character:
+The Rive file has 5 visual variants switchable via `character` EnumInput:
 
-### Hang-Up Exit Line (failure)
-
-Theatrical, dramatic, in-character. The character is done with the user.
-
-Must feel like a **sitcom moment**, not a cold disconnect. The user should smile, not feel attacked.
-
-### Completion Exit Line (success)
-
-Grudging acceptance. The character is surprised the user made it through.
-
-**Never congratulatory.** The character is impressed DESPITE themselves.
-
-**Reference for launch scenarios:** UX Design Spec — Phase 4: The Hang-Up section has exit lines for mugger, waiter, girlfriend, cop, and landlord.
-
----
-
-## 7. Narrative Arc
-
-Each scenario should include a narrative arc — a table describing the expected conversation flow as a sequence of exchanges. This is **not** a rigid script; the LLM will improvise within these beats. It serves two purposes:
-
-1. **Authoring guide** — helps the author design a coherent conversation structure and set `expected_exchanges` accurately
-2. **Calibration reference** — during testing, the operator can compare the actual transcript against the expected flow to diagnose issues
-
-**Format:** A table with one row per exchange:
-
-| Column | Description |
-|--------|-------------|
-| Exchange # | Sequential number (1 to `expected_exchanges`) |
-| Character's role | What the character does/says in this beat |
-| What user needs to do | The user action that counts as a successful exchange |
-
-The `expected_exchanges` metadata field must match the number of rows in this table.
-
----
-
-## 8. Debrief Generation Parameters
-
-Two metadata fields control how the AI scoring prompt generates post-call debrief content. The scoring prompt itself is shared across all scenarios (defined in [`difficulty-calibration.md`](difficulty-calibration.md) §5.3) — but each scenario injects these fields to personalize the output:
-
-| Field | How the scoring prompt uses it |
-|-------|-------------------------------|
-| `language_focus` | The AI evaluates the user's performance **specifically** in these areas. A scenario with `"ordering food, polite requests, food adjectives"` will produce debrief feedback about ordering vocabulary and politeness, not generic language feedback. |
-| `expected_exchanges` | Used to calculate survival % (`floor(successful_exchanges / expected_exchanges × 100)`). Also tells the AI how many exchange opportunities existed, so it can assess which exchanges the user handled well vs. poorly. |
-
-**Authoring tip:** Choose `language_focus` values that are specific enough to produce actionable debrief feedback. Compare:
-- Too vague: `"speaking English"` — debrief will be generic
-- Good: `"ordering food, polite requests, food adjectives"` — debrief will target specific skills
-- Too narrow: `"past participle of irregular verbs"` — may not match what actually happens in the conversation
-
-The scoring payload sent to `score_transcript.py` includes: transcript, scenario-name, difficulty, expected-exchanges, and language-focus. See authoring workflow Step 4 (§10) for the exact CLI invocation.
-
----
-
-## 9. Rive Character Assignment
-
-The Rive character file has 5 visual variants switchable via `character` EnumInput:
-
-| Value | Character | Used for scenarios involving... |
-|-------|-----------|-------------------------------|
+| Value | Character | Used for |
+|-------|-----------|----------|
 | `mugger` | Street criminal | Robbery, threat |
 | `waiter` | Restaurant server | Food ordering, service |
 | `girlfriend` | Angry partner | Relationship conflict |
 | `cop` | Police officer | Authority, questioning |
-| `landlord` | Property owner | Housing dispute, confrontation |
+| `landlord` | Property owner | Housing dispute |
 
-Each scenario maps to exactly **one** character variant. The Flutter app sets the EnumInput when the call screen loads. All variants share the same emotion state machine — only the visual appearance changes.
-
-**Future scenarios** can reuse existing variants (e.g., a "job interviewer" could use the `landlord` variant) or new variants can be added to the Rive file (EnumInput is additive).
+Each scenario maps to exactly **one** variant. Future scenarios can reuse variants.
 
 ---
 
-## 10. Authoring Workflow
+## 11. Authoring Workflow
 
-Step-by-step process for creating a production-ready scenario:
+### Step 1 — Write the scenario YAML
 
-### Step 1 — Write the scenario file
-
-Create a new file in `_bmad-output/planning-artifacts/scenarios/{character-name}.md` following this template. Fill in all metadata, write the system prompt, narrative arc, and exit lines. **Do not write briefing text yet** — that comes after calibration (Step 7).
+Create `_bmad-output/planning-artifacts/scenarios/{character-name}.yaml`. Fill in all metadata, write `base_prompt`, design checkpoints with `hint_text`, `prompt_segment`, and `success_criteria`. Write exit lines. **Do not write briefing yet** — that comes after calibration (Step 7).
 
 ### Step 2 — Configure on VPS
 
-SSH to the VPS and update the system prompt in the Pipecat configuration:
+SSH to VPS and load the scenario for testing. During Epic 3 (no CheckpointManager yet), combine `base_prompt` + all checkpoint `prompt_segment`s into a single monolithic prompt in `prompts.py`:
 
 ```bash
-ssh vps
-# Edit server/pipeline/prompts.py with the new system prompt
-# Restart the service
+ssh root@167.235.63.129
+# Edit server/pipeline/prompts.py with combined prompt
 systemctl restart pipecat.service
 ```
+
+**Note:** Checkpoint progression is NOT enforced during Epic 3 calibration testing — the VPS pipeline uses a single combined prompt. Checkpoint mechanics are implemented in Epic 6. Epic 3 tests validate the content and calibrate difficulty.
 
 ### Step 3 — Test the scenario (2 passes minimum)
 
@@ -352,14 +292,12 @@ Play the scenario using the Flutter app. Two required passes per [`scenario-test
 | Pass | Play as... | Purpose |
 |------|-----------|---------|
 | **A: "Good B1"** | User who tries hard, some errors | Verify survival % hits upper end of target |
-| **B: "Struggling B1"** | User who struggles, longer pauses | Verify survival % hits lower end and hang-up triggers |
+| **B: "Struggling B1"** | User who struggles, longer pauses | Verify survival % hits lower end, hang-up triggers |
 
 ### Step 4 — Score the transcripts
 
-Retrieve the transcript from the VPS and run the scoring tool (built in Story 3.0):
-
 ```bash
-scp vps:/tmp/transcript_*.json ./calibration-data/
+scp root@167.235.63.129:/tmp/transcript_*.json ./calibration-data/
 cd server
 python scripts/score_transcript.py \
   --transcript ../calibration-data/transcript_{id}.json \
@@ -369,63 +307,79 @@ python scripts/score_transcript.py \
   --language-focus "ordering food,polite requests,food adjectives"
 ```
 
+**Note:** During Epic 3, `--expected-exchanges` equals the number of checkpoints.
+
 ### Step 5 — Validate calibration
 
-Check the scoring report against the survival targets for each difficulty level in [`difficulty-calibration.md`](difficulty-calibration.md) §4.3.
-
-Fill out the calibration checklist from [`scenario-testing-process.md`](scenario-testing-process.md) §5.
+Check survival targets in [`difficulty-calibration.md`](difficulty-calibration.md) §4.3. Fill out the calibration checklist from [`scenario-testing-process.md`](scenario-testing-process.md) §5.
 
 ### Step 6 — Adjust if needed
 
-If survival % is outside the target range (±10%):
-
 | Problem | Adjustment |
 |---------|-----------|
-| Too easy (survival > 90%) | Reduce silence tolerance, speed up escalation, remove rephrasing |
-| Too hard (survival < target floor - 10%) | Increase patience_start, add rephrasing, slow escalation |
-| Debrief quality poor | Adjust language_focus, expected_exchanges, or system prompt vocabulary |
-| Character breaks personality | Rewrite personality rules section |
+| Too easy (survival > target + 10%) | Reduce silence tolerance, tighten success_criteria |
+| Too hard (survival < target - 10%) | Increase patience_start, broaden success_criteria |
+| Character breaks personality | Rewrite base_prompt personality rules |
+| Checkpoint too hard to pass | Broaden success_criteria, simplify hint_text |
 
 After adjusting, return to Step 2 and retest.
 
-### Step 7 — Write briefing text
+### Step 7 — Write briefing
 
-Now that calibration has confirmed the scenario's vocabulary and conversation flow, write the briefing text (§5.1). Base the key vocabulary and context hints on what actually happened in the test transcripts, not on assumptions made before testing.
+Now that calibration confirms the conversation flow, write `briefing` based on what actually happened in test transcripts.
 
 ### Step 8 — Record results
 
-Update the scenario file's "Calibration Results" section with:
-- Pass A and Pass B survival percentages
-- Scoring JSON file references
-- Verdict: PASS / ADJUST / REWORK
-- Any override fields set during calibration
+Update the YAML file's `calibration` section with pass results and verdicts.
 
 ### Step 9 — Push to production
 
-The scenario is production-ready when both passes produce a PASS verdict. The system prompt and metadata are already on the VPS from testing — verify and leave in place.
+Scenario is production-ready when both passes produce PASS verdict.
 
 ---
 
-## 11. Checklist Quick Reference
+## 12. Calibration Results
 
-Before marking a scenario as production-ready, confirm:
+Filled after testing. Part of the YAML file:
 
-- [ ] All metadata fields filled (§3)
-- [ ] System prompt has all 9 mandatory sections (§4)
-- [ ] Briefing text written (§5.1)
-- [ ] Content warning set or explicitly null (§5.2)
-- [ ] Hang-up and completion exit lines written (§6)
-- [ ] Narrative arc defined with exchange count matching expected_exchanges (§7)
-- [ ] Rive character assigned (§9)
+```yaml
+calibration:
+  pass_a:
+    date: "2026-04-15"
+    transcript_file: "calibration-tests/waiter_easy_2026-04-15T14-30.json"
+    survival_pct: 83
+    verdict: PASS    # PASS | ADJUST | REWORK
+  pass_b:
+    date: "2026-04-15"
+    transcript_file: "calibration-tests/waiter_easy_2026-04-15T15-00.json"
+    survival_pct: 66
+    verdict: PASS
+```
+
+---
+
+## 13. Checklist Quick Reference
+
+Before marking a scenario as production-ready:
+
+- [ ] YAML file has all metadata fields (§4)
+- [ ] `base_prompt` has character identity, personality rules, difficulty behavior, boundaries (§5)
+- [ ] `base_prompt` starts with `/no_think`
+- [ ] Checkpoints defined (4-6 for launch scenarios) with id, hint_text, prompt_segment, success_criteria (§6)
+- [ ] Checkpoint count matches expected progression (not too many, not too few)
+- [ ] hint_text is concise and actionable (max ~8 words each)
+- [ ] success_criteria is specific enough for LLM classification
+- [ ] Exit lines written — hang-up (theatrical) and completion (grudging) (§7)
+- [ ] Briefing written after calibration (§8)
+- [ ] Content warning set or explicitly null (§9)
+- [ ] Rive character assigned (§10)
 - [ ] Pass A tested — survival % in target range
-- [ ] Pass B tested — survival % in target range and hang-up triggers correctly
-- [ ] AI scoring produces valid JSON with all required fields
-- [ ] Debrief content is specific and actionable
+- [ ] Pass B tested — survival % in target range, hang-up triggers correctly
 - [ ] Character stays in personality throughout both passes
 - [ ] Escalation feels theatrical, not hostile
 
 ---
 
-## 12. Example
+## 14. Complete Example
 
-See [`scenarios/example-the-waiter.md`](scenarios/example-the-waiter.md) for a fully worked example using "The Waiter" (easy difficulty).
+See [`scenarios/the-waiter.yaml`](scenarios/the-waiter.yaml) for a fully worked example using "The Waiter" (easy difficulty).

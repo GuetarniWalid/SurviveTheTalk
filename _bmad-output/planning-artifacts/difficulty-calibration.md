@@ -45,6 +45,8 @@ A **checkpoint** = a structured goal within the scenario that the user must achi
 
 Scenarios progress linearly: checkpoint 1 → 2 → ... → N. The user cannot skip ahead.
 
+> **Review note (Story 3.1 — D-5):** The ExchangeClassifier only evaluates the current checkpoint's success_criteria. If a user's response simultaneously satisfies a future checkpoint but not the current one (e.g., ordering food at the greet checkpoint), the current checkpoint passes anyway (broad criteria) but the user may need to re-state their order at the next checkpoint. Epic 6 ExchangeClassifier design should consider whether to cache or forward early intent.
+
 ### 3.2 What Is an "Exchange"?
 
 An **exchange** = one complete turn pair:
@@ -77,6 +79,8 @@ survival_pct = min(100, floor(checkpoints_passed / total_checkpoints × 100))
 - Uses `floor()` to prevent false 100%
 - Only exact 100% displays green (#2ECC40); all others display red (#E74C3C)
 - Backend-calculated, deterministic, reproducible
+
+> **Review note (Story 3.1 — D-1):** During Epic 3 calibration, the scoring script (`score_transcript.py`) counts "successful exchanges" (any non-silence user turn), not checkpoint completions. With `--expected-exchanges` set to the checkpoint count, survival % may be inflated if the user speaks more turns than there are checkpoints. Epic 6 should update the scoring to use actual checkpoint pass/fail data from the CheckpointManager.
 - A checkpoint is "passed" only when the classifier confirms success_criteria met
 
 ### 3.5 Character Hang-Up Trigger
@@ -113,6 +117,8 @@ Every lever available to tune scenario difficulty, organized by category. When a
 | **Silence penalty** | Patience cost when user freezes | -10 | -20 |
 | **Recovery per success** | Patience regained after a good response | +5 (forgiving, mistakes can be offset) | +0 (no recovery, every error is permanent) |
 | **First-error leniency** | Reduced penalty on the very first mistake | Yes (-10 instead of full) | No (full penalty from the start) |
+
+> **Review note (Story 3.1 — D-4):** The scenario YAML authoring format does not include a nullable override for `first_error_leniency` / `first_fail_penalty`. Currently handled automatically by difficulty presets in PatienceTracker. If a scenario ever needs to override this per-scenario, add a nullable field to the YAML format and DB schema.
 | **Silence tolerance (prompt)** | Seconds before character says "hello? you there?" | 6s | 3s |
 | **Silence tolerance (hang-up)** | Seconds of total silence before character hangs up | 10s | 5s |
 | **Escalation stages** | Warning steps before hang-up (eye-roll → sigh → verbal → hang-up) | 4 stages (gradual) | 2 stages (abrupt) |

@@ -24,7 +24,7 @@ So that scenarios can be created consistently and loaded by the Pipecat pipeline
 
 4. **Given** an example scenario is needed to validate the template
    **When** the template is complete
-   **Then** a fully worked example scenario file exists at `_bmad-output/planning-artifacts/scenarios/example-the-waiter.md` using "The Waiter" (easy difficulty) with all fields filled in, demonstrating every section of the template
+   **Then** a fully worked example scenario file exists at `_bmad-output/planning-artifacts/scenarios/the-waiter.yaml` using "The Waiter" (easy difficulty) with all fields filled in, demonstrating every section of the template
 
 5. **Given** system prompts must produce consistent character behavior
    **When** the system prompt format is designed
