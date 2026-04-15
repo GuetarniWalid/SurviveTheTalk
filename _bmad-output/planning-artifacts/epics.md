@@ -635,9 +635,9 @@ So that scenarios can be created consistently and loaded by the Pipecat pipeline
 
 **Acceptance Criteria:**
 
-**Given** the Architecture defines a `scenarios` table (id, title, system_prompt, difficulty, is_free, briefing_text, content_warning, rive_character)
+**Given** the Architecture defines a `scenarios` table (id, title, base_prompt, checkpoints, difficulty, is_free, briefing_text, content_warning, rive_character)
 **When** the scenario structure is finalized
-**Then** a documented template exists covering: system prompt format (personality, vocabulary challenges, escalation triggers, patience thresholds, fail conditions), debrief generation template, briefing text format, content warning criteria, difficulty calibration parameters, and rive_character assignment (which Rive character visual variant to display — one of: mugger, waiter, girlfriend, cop, landlord)
+**Then** a documented template exists covering: checkpoint-based format (base_prompt for character identity/personality/boundaries + ordered checkpoints array where each checkpoint defines id, hint_text, prompt_segment, and success_criteria), briefing text format, content warning criteria, difficulty calibration parameters, and rive_character assignment (which Rive character visual variant to display — one of: mugger, waiter, girlfriend, cop, landlord)
 
 **Given** the operator (Walid) authors scenarios manually
 **When** the authoring workflow is defined
@@ -657,11 +657,11 @@ So that I have enough content to experience the product and make a subscription 
 
 **Given** the PRD requires 5 scenarios at launch (3 free + 2 paid)
 **When** all scenarios are created
-**Then** each scenario has a complete system prompt, briefing text, difficulty rating, content warning (if applicable), and has been tested with the Pipecat pipeline
+**Then** each scenario has a base_prompt, ordered checkpoints (each with id, hint_text, prompt_segment, success_criteria), briefing text, difficulty rating, content warning (if applicable), and has been tested with the Pipecat pipeline
 
 **Given** the first scenario must be calibrated for near-guaranteed user success (60-80% survival)
 **When** the first free scenario is tested
-**Then** an intermediate English speaker achieves 60-80% survival on first attempt with the patience threshold tuned accordingly
+**Then** an intermediate English speaker passes 60-80% of checkpoints on first attempt with the patience threshold tuned accordingly
 
 **Given** scenarios are ordered from least to most challenging
 **When** reviewing the 5 scenarios
@@ -880,7 +880,7 @@ So that the app can display my available scenarios and track my progress.
 
 **Given** the Architecture defines a `scenarios` table
 **When** migration `001_init.sql` is extended (or already includes scenarios)
-**Then** the `scenarios` table exists with columns: id, title, system_prompt, difficulty, is_free, briefing_text, content_warning
+**Then** the `scenarios` table exists with columns: id, title, base_prompt, checkpoints (JSON), difficulty, is_free, briefing_text, content_warning
 **And** the `user_progress` table exists with columns: user_id, scenario_id, best_score, attempts
 
 **Given** a user requests `GET /scenarios` with a valid JWT
@@ -1002,9 +1002,9 @@ So that I can make an informed choice about whether to proceed.
 
 ## Epic 6: Animated Call Experience
 
-A user experiences a visually immersive voice call: an animated 2D character reacts emotionally in real-time to their English, synchronizes lip movements with speech, and hangs up dramatically when patience runs out. Character stays within behavioral boundaries and handles inappropriate content in-persona. Depends on Epic 2 (Rive character file) and Epic 3 (scenario content).
+A user experiences a visually immersive voice call: an animated 2D character reacts emotionally in real-time to their English, synchronizes lip movements with speech, progresses through checkpoint-based challenges with on-screen hints, and hangs up dramatically when patience runs out. Character stays within behavioral boundaries and handles inappropriate content in-persona. Depends on Epic 2 (Rive character file) and Epic 3 (scenario content in checkpoint format).
 
-**Key Reference:** [`difficulty-calibration.md`](difficulty-calibration.md) §8 — Defines `PatienceTracker` (patience state, silence timers, escalation, hang-up), `ExchangeClassifier` (async parallel LLM for exchange success/fail), and `TranscriptLogger` (timestamped transcript capture) pipeline components required by this epic.
+**Key Reference:** [`difficulty-calibration.md`](difficulty-calibration.md) §8 — Defines `PatienceTracker` (patience state, silence timers, escalation, hang-up), `ExchangeClassifier` (async parallel LLM evaluating user speech against checkpoint success_criteria), `CheckpointManager` (checkpoint progression, prompt segment swapping, client event pushing), and `TranscriptLogger` (timestamped transcript capture) pipeline components required by this epic.
 
 ### Story 6.1: Build Call Initiation from Scenario List with Connection Animation
 
@@ -1016,7 +1016,7 @@ So that the transition to the call feels instant and natural, like dialing a rea
 
 **Given** the user taps the phone icon on a scenario card
 **When** the call initiation begins
-**Then** `POST /calls/initiate {scenario_id}` is called with the user's JWT, the server verifies tier/daily limits, creates a `call_sessions` row, loads the scenario's system prompt, spawns a Pipecat bot in a LiveKit room, and returns a LiveKit room token (FR1 full)
+**Then** `POST /calls/initiate {scenario_id}` is called with the user's JWT, the server verifies tier/daily limits, creates a `call_sessions` row, loads the scenario's base_prompt and checkpoints, spawns a Pipecat bot in a LiveKit room with base_prompt + first checkpoint's prompt_segment as initial system prompt, and returns a LiveKit room token (FR1 full)
 
 **Given** the server returns the LiveKit token
 **When** the Flutter client connects
@@ -1058,9 +1058,9 @@ So that the experience feels like talking to a real person, not using an app.
 **When** the call screen is active
 **Then** the hang-up button (64x64 circle #E74C3C) is visible at the bottom of the Rive canvas and captures click events via Rive→Flutter event listener
 
-**Given** zero text on screen during calls (UX spec rule)
+**Given** zero system/technical text on screen during calls (UX spec rule)
 **When** the call is active
-**Then** no UI text, no toasts, no banners, no indicators are visible — only the character and hang-up button
+**Then** no toasts, no banners, no error indicators, no loading spinners are visible. The only text on screen is the CheckpointStepper overlay (stepper bar + hint text) which is gameplay content, not system UI. Visible elements: character, hang-up button, and CheckpointStepper overlay.
 
 ### Story 6.3: Implement Emotional Reactions and Lip Sync via Data Channels
 
@@ -1117,7 +1117,7 @@ So that the call feels like a real high-stakes conversation with consequences.
 
 **Given** FR6 defines the character hangs up when performance drops below thresholds
 **When** the internal patience meter (managed by pipeline) reaches zero
-**Then** the pipeline sends `{"type": "hang_up_warning", "data": {"seconds_remaining": 5}}` followed by `{"type": "call_end", "data": {"reason": "character_hung_up", "survival_pct": 42}}`
+**Then** the pipeline sends `{"type": "hang_up_warning", "data": {"seconds_remaining": 5}}` followed by `{"type": "call_end", "data": {"reason": "character_hung_up", "survival_pct": 40, "checkpoints_passed": 2, "total_checkpoints": 5}}`
 **And** the character delivers a dramatic exit line in-character before the call ends
 
 **Given** FR36 requires in-persona reaction to inappropriate content
@@ -1161,6 +1161,72 @@ So that I always have a graceful exit and the app behaves like a real phone even
 **When** `POST /calls/{id}/end` is called
 **Then** the server calculates cost_cents, updates the call_sessions row with duration and cost, and triggers debrief generation
 
+### Story 6.6: Build CheckpointManager and Checkpoint-Aware ExchangeClassifier
+
+As a user,
+I want the AI to progress through scenario phases based on what I actually say,
+So that the conversation has structured goals and my performance is evaluated on content, not just whether I spoke.
+
+**Acceptance Criteria:**
+
+**Given** a scenario defines an ordered list of checkpoints (base_prompt + checkpoints[])
+**When** the call starts
+**Then** the CheckpointManager initializes with checkpoint index 0 and constructs the active system prompt as base_prompt + checkpoints[0].prompt_segment
+
+**Given** the ExchangeClassifier evaluates each user turn in async parallel (AD-1)
+**When** a TranscriptionFrame arrives from STT
+**Then** the classifier receives the user text, last character line, and current checkpoint's success_criteria, and returns {"met": true/false}
+**And** the classifier runs in parallel with the main LLM — zero impact on conversation latency
+
+**Given** the classifier returns {"met": true}
+**When** the CheckpointManager receives the result
+**Then** it advances the checkpoint index, constructs a new system prompt (base_prompt + checkpoints[next].prompt_segment), injects it into the LLM context for the next turn, and sends a checkpoint_advanced event via LiveKit data channel: {"type": "checkpoint_advanced", "data": {"checkpoint_id": "refuse", "index": 1, "total": 5, "next_hint": "Ask him what he'll actually do."}}
+
+**Given** the classifier returns {"met": false}
+**When** the CheckpointManager receives the result
+**Then** no checkpoint advancement occurs, the PatienceTracker applies its normal failed exchange penalty, and the current prompt_segment remains active
+
+**Given** all checkpoints are passed (index reaches total_checkpoints)
+**When** the last checkpoint is validated
+**Then** the character delivers its completion exit line and the pipeline sends a call_end event with reason "completed" and survival_pct 100
+
+**Given** the classifier fails or times out (>2s)
+**When** the fallback triggers
+**Then** the checkpoint is NOT advanced (conservative — no free progression) and the exchange is treated as a normal failed exchange by the PatienceTracker
+
+**Given** difficulty-calibration.md §8 defines the pipeline architecture
+**When** the CheckpointManager is implemented
+**Then** it is a Pipecat FrameProcessor inserted alongside the PatienceTracker in the pipeline: STT → Context Aggregator → [CheckpointManager + PatienceTracker] → LLM → TTS → Transport
+
+### Story 6.7: Build CheckpointStepper Overlay for Call Screen
+
+As a user,
+I want to see my progress through scenario checkpoints and a hint about what to do next during the call,
+So that I understand what's expected of me and feel a sense of progression.
+
+**Acceptance Criteria:**
+
+**Given** the call screen is active and a scenario has checkpoints
+**When** the CheckpointStepper renders
+**Then** a horizontal stepper bar appears at the top of the call screen showing one circle per checkpoint connected by lines: completed checkpoints show a green (#00E5A0) circle with white checkmark, the current checkpoint shows an outlined circle, future checkpoints show grey (#8A8A95) circles
+**And** circle sizing is adaptive: ≤6 checkpoints use 20x20 circles with 16px gap, 7-12 checkpoints use 14x14 circles with 8px gap (max 12 supported)
+
+**Given** the current checkpoint has a hint_text
+**When** the stepper renders
+**Then** a speech-bubble style container appears below the stepper bar displaying the current checkpoint's hint_text in body text style (#F0F0F0 on semi-transparent dark background at 80% opacity, rounded 12px, max-width 280px)
+
+**Given** a checkpoint_advanced event is received via LiveKit data channel
+**When** the Flutter client processes the event
+**Then** the stepper animates: the current circle transitions to green with checkmark (300ms ease-out), the next circle becomes outlined (active), and the hint text updates to the new checkpoint's hint_text with a smooth crossfade (200ms)
+
+**Given** the stepper is a gameplay overlay, not system UI
+**When** the call screen renders
+**Then** the CheckpointStepper is positioned as an overlay at the top of the CallScreenCanvas, above the Rive character, and does not interfere with the hang-up button at the bottom
+
+**Given** accessibility requirements (UX-DR12)
+**When** VoiceOver/TalkBack is active
+**Then** the stepper announces checkpoint progress ("Checkpoint 2 of 5 completed") and the hint text is readable by screen readers
+
 ---
 
 ## Epic 7: Post-Call Debrief & Learning
@@ -1183,11 +1249,11 @@ So that I receive specific, actionable feedback on my English performance.
 
 **Given** the debrief analysis is performed
 **When** the LLM processes the transcript
-**Then** it produces: survival/completion percentage (FR11), a list of specific language errors with correct alternatives (FR10), longest hesitation moments with context (FR12), idioms/slang the user encountered with explanations (FR13), and a failure context with encouraging framing if completion >40% (FR15b)
+**Then** it produces: survival/completion percentage calculated as floor(checkpoints_passed / total_checkpoints × 100) (FR11), a list of specific language errors with correct alternatives (FR10), longest hesitation moments with context (FR12), idioms/slang the user encountered with explanations (FR13), and a failure context with encouraging framing if completion >40% (FR15b)
 
 **Given** the debrief is generated
 **When** the result is stored
-**Then** a row is created in the `debriefs` table (requires `003_debriefs.sql` migration) with call_session_id, survival_pct (backend-calculated), and debrief_json (complete LLM output merged with backend-measured hesitation durations and encouraging_framing). Schema defined in `debrief-content-strategy.md`
+**Then** a row is created in the `debriefs` table (requires `003_debriefs.sql` migration) with call_session_id, survival_pct (backend-calculated from checkpoints_passed / total_checkpoints), checkpoints_passed, total_checkpoints, and debrief_json (complete LLM output merged with backend-measured hesitation durations and encouraging_framing). Schema defined in `debrief-content-strategy.md`
 **And** the `user_progress` table is updated with the new best_score (if higher) and incremented attempts count
 
 **Given** FR37 requires explanation when a call ends due to inappropriate behavior

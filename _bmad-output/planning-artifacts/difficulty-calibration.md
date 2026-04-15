@@ -35,57 +35,66 @@ All calibration targets assume a **first-attempt B1 user** — someone who has n
 
 ## 3. Core Scoring Definitions
 
-### 3.1 What Is an "Exchange"?
+### 3.1 What Is a "Checkpoint"?
+
+A **checkpoint** = a structured goal within the scenario that the user must achieve to progress. Each checkpoint defines:
+- **id**: unique identifier (e.g., "react", "refuse", "challenge")
+- **hint_text**: short phrase shown to the user during the call
+- **prompt_segment**: system prompt fragment active while waiting for this checkpoint to be met — defines character behavior for this phase
+- **success_criteria**: what the user must do/say to pass (used by the ExchangeClassifier)
+
+Scenarios progress linearly: checkpoint 1 → 2 → ... → N. The user cannot skip ahead.
+
+### 3.2 What Is an "Exchange"?
 
 An **exchange** = one complete turn pair:
 1. Character says something (prompt, question, reaction)
 2. User responds
 
-The character's opening line does NOT count as an exchange (it's the setup).
+The character's opening line does NOT count as an exchange (it's the setup). Exchanges still occur within each checkpoint — a single checkpoint may span multiple exchanges before the user meets its success_criteria.
 
-### 3.2 When Is an Exchange "Successful"?
+### 3.3 When Is a Checkpoint "Passed"?
 
-An exchange is **successful** if the user's response is **comprehensible and contextually relevant**, regardless of grammatical accuracy.
+A checkpoint is **passed** when the ExchangeClassifier (async parallel LLM) confirms the user's response meets the current checkpoint's success_criteria. The classifier evaluates after each user turn.
 
-| User Response Quality | Exchange Result | Example |
-|-----------------------|-----------------|---------|
-| Grammatically perfect, on-topic | Successful | "I would like the chicken, please." |
-| Grammar errors but comprehensible and on-topic | Successful | "I want the chicken please." |
-| Broken grammar but intent is clear | Successful | "Chicken. The chicken one." |
-| Off-topic but comprehensible English | **Failed** | "The weather is nice today." (when ordering food) |
-| Incomprehensible / garbled speech | **Failed** | STT returns nonsense or empty |
-| Silence (no response within tolerance window) | **Failed** | User freezes, character escalates |
-| Inappropriate / abusive content | **Failed** (+ instant hang-up) | Slurs, threats, harassment |
+| User Response Quality | Checkpoint Result | Example |
+|-----------------------|-------------------|---------|
+| Meets success_criteria (any grammar level) | **Passed** | "No, I'm not paying you." (criteria: explicit refusal) |
+| Comprehensible but doesn't meet criteria | Not passed (patience penalty) | "Who are you?" (criteria was: refuse to pay) |
+| Off-topic or incomprehensible | Not passed (patience penalty) | "The weather is nice today." |
+| Silence (no response within tolerance) | Not passed (silence penalty) | User freezes, character escalates |
+| Inappropriate / abusive content | Not passed (+ instant hang-up) | Slurs, threats, harassment |
 
-**Key principle:** Grammar errors are punished in the **debrief**, not in the survival score. Survival measures conversational resilience — can you keep the conversation going under pressure?
+**Key principle:** Grammar errors are punished in the **debrief**, not in the survival score. Survival measures the user's ability to navigate the scenario's challenges — can you figure out what to do and do it under pressure?
 
-### 3.3 Survival Percentage Formula
+### 3.4 Survival Percentage Formula
 
 ```
-survival_pct = min(100, floor(successful_exchanges / scenario_expected_exchanges × 100))
+survival_pct = min(100, floor(checkpoints_passed / total_checkpoints × 100))
 ```
 
 - Integer 0–100
 - Uses `floor()` to prevent false 100%
 - Only exact 100% displays green (#2ECC40); all others display red (#E74C3C)
 - Backend-calculated, deterministic, reproducible
+- A checkpoint is "passed" only when the classifier confirms success_criteria met
 
-### 3.4 Character Hang-Up Trigger
+### 3.5 Character Hang-Up Trigger
 
 The character hangs up when **any** of these conditions is met:
 
 1. **Patience meter** reaches 0 (accumulated failed exchanges + silence penalties)
 2. **Maximum silence** exceeded (level-dependent, see §4)
 3. **Inappropriate content** detected (instant hang-up, no tolerance)
-4. **All expected exchanges completed** (character ends call naturally — this is 100% survival)
+4. **All checkpoints passed** (character ends call naturally — this is 100% survival)
 
 ---
 
 ## 4. Difficulty Level Definitions
 
-### 4.1 Key Principle: Exchange Count Is Scenario-Defined, Not Difficulty-Defined
+### 4.1 Key Principle: Checkpoint Count Is Scenario-Defined, Not Difficulty-Defined
 
-Each scenario has a **fixed narrative arc** (e.g., ordering food, negotiating with a mugger). The number of exchanges required to complete that arc is determined by the **scenario script**, not by the difficulty level. A restaurant ordering scenario has ~6 exchanges whether it's easy or hard.
+Each scenario has a **fixed checkpoint sequence** (e.g., react → refuse → challenge → deflect → stand firm). The number of checkpoints is determined by the **scenario content**, not by the difficulty level. Difficulty controls the patience/penalty parameters, not the number of goals. Typical range: 4-6 checkpoints for short scenarios, up to 10-12 for complex ones.
 
 **Difficulty controls HOW the character behaves during those exchanges** — not how many there are. A hard scenario with 6 exchanges is harder because the character is less patient, speaks faster, and gives fewer second chances, not because it has more exchanges.
 
@@ -382,28 +391,29 @@ User speaks → STT text
                       (PatienceTracker updated before next turn)
 ```
 
-**Implementation:** When the STT produces a `TranscriptionFrame`, the `PatienceTracker` processor:
+**Implementation:** When the STT produces a `TranscriptionFrame`, the `CheckpointManager` processor:
 1. Forwards the frame to the main pipeline immediately (no blocking)
-2. Launches an `asyncio.create_task()` that calls a lightweight LLM with the user text + scenario context
-3. The classifier returns `{success: true/false, reason: "off-topic"}` in ~200-400ms
-4. The PatienceTracker receives the result and updates patience meter accordingly
-5. If the classifier is slow (>2s), fallback = success (conservative, favors the user)
+2. Launches an `asyncio.create_task()` that calls a lightweight LLM with the user text + scenario context + current checkpoint's success_criteria
+3. The classifier returns `{met: true/false}` in ~200-400ms
+4. The CheckpointManager receives the result: if met, advances checkpoint and swaps prompt segment; the PatienceTracker updates patience meter accordingly
+5. If the classifier is slow (>2s), fallback = checkpoint NOT advanced (conservative, no free progression). The PatienceTracker treats the exchange as a normal failure.
 
 **Classifier prompt (minimal):**
 ```
 Given this scenario context: "{scenario_description}"
 The character just said: "{last_character_line}"
 The user responded: "{user_text}"
+Current checkpoint success criteria: "{current_checkpoint.success_criteria}"
 
-Is the user's response comprehensible and contextually relevant to the conversation?
-Return ONLY: {"success": true} or {"success": false, "reason": "off-topic|incomprehensible"}
+Does the user's response meet the checkpoint success criteria?
+Return ONLY: {"met": true} or {"met": false}
 ```
 
 **Cost:** ~$0.0003/turn using a fast model (e.g., Qwen 3.5 Flash). For 6 turns/call × 1500 calls/day at scale = ~$2.70/day. Negligible vs TTS costs.
 
 **Latency impact on conversation:** Zero. The classifier runs in parallel — the user hears the character respond at full speed.
 
-**Fallback:** If the classifier fails or times out, the exchange defaults to successful. This is conservative — better to give the user an undeserved point than to punish them unfairly.
+**Fallback:** If the classifier fails or times out, the checkpoint is NOT advanced. This is conservative — better to make the user repeat a goal than to give them unearned progression. The PatienceTracker treats the exchange as a normal failure.
 
 **Alternatives considered:**
 - LLM implicit (character behavior parsing): Rejected — non-deterministic, fragile, "too sarcastic" character would unfairly penalize users
@@ -506,17 +516,26 @@ Each scenario in the database will need these fields to implement the calibratio
 ```python
 # Extends the existing `scenarios` table from architecture.md
 scenario_config = {
-    # Existing fields
+    # Core fields
     "id": "scenario_001",
     "title": "Order at the restaurant",
-    "system_prompt": "...",           # Character personality + behavior
+    "base_prompt": "...",             # Character identity, personality, boundaries
+    "checkpoints": [                  # Ordered progression
+        {
+            "id": "greet",
+            "hint_text": "Tell the waitress what you'd like to order.",
+            "prompt_segment": "...",  # Active system prompt for this phase
+            "success_criteria": "User states a food order clearly."
+        },
+        # ... more checkpoints
+    ],
     "difficulty": "easy",             # Determines preset values below
     "rive_character": "waiter",       # Rive EnumInput value
     "is_free": True,
     "content_warning": None,
 
-    # New fields from calibration framework
-    "expected_exchanges": 6,          # Narrative arc length (scenario-defined)
+    # Derived fields
+    "total_checkpoints": 6,           # len(checkpoints)
     "language_focus": ["ordering food", "polite requests"],
 
     # Difficulty preset overrides (nullable — defaults from §4.3 preset)
@@ -543,8 +562,9 @@ Fields set to `None` inherit from the difficulty preset defaults (§4.3). This a
 
 | Component | Type | Purpose | Epic |
 |-----------|------|---------|------|
-| `PatienceTracker` | Pipecat FrameProcessor | Patience state, silence timers, escalation, hang-up trigger. Launches async classifier per turn (AD-1) | Epic 6 (Call Experience) |
-| `ExchangeClassifier` | Async LLM service | Parallel lightweight LLM that evaluates each user turn (success/fail). Called by PatienceTracker, never blocks pipeline | Epic 6 (Call Experience) |
+| `CheckpointManager` | Pipecat FrameProcessor | Checkpoint progression, prompt segment swapping, data channel event pushing. Works alongside PatienceTracker | Epic 6 (Call Experience) |
+| `PatienceTracker` | Pipecat FrameProcessor | Patience state, silence timers, escalation, hang-up trigger | Epic 6 (Call Experience) |
+| `ExchangeClassifier` | Async LLM service | Parallel lightweight LLM that evaluates each user turn against current checkpoint's success_criteria. Called by CheckpointManager, never blocks pipeline | Epic 6 (Call Experience) |
 | `TranscriptLogger` | Pipecat FrameProcessor | Capture timestamped transcript for scoring + debrief | Epic 6 (Call Experience) |
 | `PostCallScorer` | FastAPI service | Runs AI scoring prompt on transcript, stores debrief | Epic 7 (Debrief) |
 | `ScenarioConfigLoader` | FastAPI service | Loads scenario config + difficulty presets, passes to pipeline | Epic 5 or 6 |

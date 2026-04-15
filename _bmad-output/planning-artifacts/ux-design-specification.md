@@ -264,7 +264,7 @@ Multi-screen onboarding flows that explain features before the user has any cont
 Streaks, badges, leaderboards, XP points, daily goals, animated celebrations. These mechanics create obligation ("I can't break my streak") rather than genuine motivation. SurviveTheTalk's motivation is intrinsic: "I want to survive longer next time." No extrinsic reward system needed — and any added would dilute the honest-mirror positioning.
 
 **4. The Chatbot UI (AI Conversation Apps)**
-Chat bubbles, typing indicators, text input fields. These patterns signal "AI assistant" and destroy the phone call illusion. SurviveTheTalk is NOT a chatbot. The call screen should have zero text UI elements — just the character's animated face and a hang-up button.
+Chat bubbles, typing indicators, text input fields. These patterns signal "AI assistant" and destroy the phone call illusion. SurviveTheTalk is NOT a chatbot. The call screen should have zero system/technical text UI elements — no toasts, no banners, no loading indicators. The only text permitted is the CheckpointStepper overlay (progress bar + gameplay hint), which functions as a game HUD, not app chrome.
 
 **5. The Retry Loop (Mobile Games)**
 Many games place a large "PLAY AGAIN" button immediately after failure. This encourages impulsive replays without reflection. SurviveTheTalk deliberately avoids this — the debrief is the destination after failure, and returning to the scenario list requires intentional navigation. Each call should be a considered decision, not a reflex.
@@ -436,6 +436,9 @@ The opening lines serve three UX purposes simultaneously:
 After the character's opening, there's a natural pause — the character looks at the user expectantly. This is the user's cue to speak. No "your turn" indicator, no microphone icon pulsing. The character's expectant expression IS the prompt, just like in a real conversation.
 
 #### Phase 3: Conversational Loop (15 seconds — 2-5 minutes)
+
+**Checkpoint progression:**
+The conversation progresses through 4-6 ordered checkpoints (up to 10-12 for complex scenarios). Each checkpoint defines a challenge the user must meet (e.g., "refuse to pay", "challenge his credibility"). The CheckpointStepper overlay at the top of the screen shows progress (green checkmarks for completed, outlined for current, grey for future) and displays a hint_text guiding the user's next objective. When the user meets a checkpoint's success_criteria (evaluated by the async ExchangeClassifier), the stepper advances and the character's behavior shifts to the next phase via prompt segment swapping.
 
 **Turn-taking mechanics:**
 The conversation follows a natural turn-taking rhythm, not rigid alternation. The character may speak multiple sentences before the user responds, or may interrupt the user mid-sentence if they're rambling. The AI pipeline manages this naturally — the STT detects speech end, the LLM generates a contextual response, the TTS delivers it in the character's voice.
@@ -962,7 +965,7 @@ Material Design 3 is Flutter's default design system. The following Material wid
 
 ### Custom Components
 
-Five custom components required. Each consumes theme tokens from a single `theme.dart` file — zero hardcoded values.
+Six custom components required. Each consumes theme tokens from a single `theme.dart` file — zero hardcoded values.
 
 #### 1. ScenarioCard
 
@@ -1022,13 +1025,16 @@ Five custom components required. Each consumes theme tokens from a single `theme
 ```
 [Background Image (Flutter asset, scenario-specific)]
   └─ [BackdropFilter: gaussian blur ~15-25px, no overlay]
-      └─ [Rive Canvas: full screen]
+      ├─ [CheckpointStepper overlay: top of screen, Flutter widget]
+      │    ├─ Stepper bar (circles + connecting lines, horizontal)
+      │    └─ Hint text bubble (speech-bubble style, semi-transparent bg)
+      └─ [Rive Canvas: full screen, behind stepper]
            ├─ Character puppet (emotional states, lip sync)
            └─ Hang-up button (64x64 circle #E74C3C)
 ```
 
-**Flutter responsibility:** Load background image asset + apply blur.
-**Rive responsibility:** Everything else — character, hang-up button, all interactions.
+**Flutter responsibility:** Load background image asset + apply blur + render CheckpointStepper overlay.
+**Rive responsibility:** Character animation, hang-up button, all character interactions.
 
 **States:** Active call (character animating) → Call ending (hang-up animation) → transition out.
 
@@ -1063,6 +1069,41 @@ Five custom components required. Each consumes theme tokens from a single `theme
 - Auto-transitions to debrief (no tap needed)
 
 **Implementation note:** Debrief loads in background during this screen — latency masking.
+
+#### 6. CheckpointStepper
+
+**Purpose:** Gameplay HUD overlay showing scenario progression and current hint during active calls.
+
+**Anatomy:**
+```
+[Stepper Bar: horizontal, centered, top 50px + safe area]
+  ├─ Completed checkpoint: circle #00E5A0, white checkmark icon
+  ├─ Current checkpoint: circle outlined #F0F0F0, no fill
+  ├─ Future checkpoint: circle #8A8A95, no fill
+  └─ Connecting lines: 2px between circles, color matches left circle state
+
+  Circle sizing (adaptive):
+    ├─ ≤6 checkpoints: 20x20 circles, 16px gap
+    └─ 7-12 checkpoints: 14x14 circles, 8px gap
+  Max supported: 12 checkpoints (fits 320px min width with padding)
+
+[Hint Bubble: below stepper, centered, max-width 280px]
+  ├─ Background: #1E1F23 at 80% opacity, rounded 12px
+  ├─ Text: Regular 14px #F0F0F0, centered
+  └─ Content: current checkpoint's hint_text
+```
+
+**States:**
+
+| Checkpoint State | Circle | Line to previous |
+|-----------------|--------|-----------------|
+| Completed | #00E5A0 fill + white checkmark | #00E5A0 |
+| Current (active) | #F0F0F0 outline | #8A8A95 |
+| Future | #8A8A95 outline | #8A8A95 |
+
+**Animation:** When checkpoint advances, current circle fills green with checkmark (300ms ease-out), next circle outline brightens, hint text crossfades to new text (200ms).
+
+**Accessibility:** Announces "Checkpoint 2 of 5 completed. Hint: Tell him you're not going to pay."
 
 ### Component Implementation Strategy
 
@@ -1111,7 +1152,7 @@ The character IS the feedback system. No toasts, no banners, no UI indicators.
 | Critical failure | Character angry expression → hang-up animation |
 | Successful completion | Character grudging acceptance (in-character exit line) |
 
-**Rule: Zero text-based feedback during calls.** The character's face is the only performance indicator.
+**Rule: Zero system text during calls.** The character's face is the primary performance indicator. The only text on screen is the CheckpointStepper overlay: a stepper bar showing checkpoint progression and a hint_text bubble guiding the user's next objective. This is gameplay content, not system feedback.
 
 #### Post-Action Feedback
 

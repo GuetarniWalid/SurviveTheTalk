@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-14 (story 3-1 done, review corrections applied)
+last_updated: 2026-04-15 (sprint change proposal: checkpoint-based scenario system)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -64,8 +64,8 @@ development_status:
   # Epic 3: Scenario Content Design & Authoring
   epic-3: in-progress
   3-0-build-scenario-calibration-testing-tools: done
-  3-1-define-scenario-structure-and-authoring-format: done
-  3-2-create-launch-scenarios: backlog
+  3-1-define-scenario-structure-and-authoring-format: in-progress  # reopened: rewrite for checkpoint-based format
+  3-2-create-launch-scenarios: in-progress
   epic-3-retrospective: optional
 
   # Epic 4: User Onboarding & Authentication
@@ -93,6 +93,8 @@ development_status:
   6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: backlog
   6-4-implement-silence-handling-and-character-hang-up-mechanic: backlog
   6-5-build-voluntary-call-end-and-no-network-screen: backlog
+  6-6-build-checkpointmanager-and-checkpoint-aware-exchangeclassifier: backlog
+  6-7-build-checkpointstepper-overlay-for-call-screen: backlog
   epic-6-retrospective: optional
 
   # Epic 7: Post-Call Debrief & Learning

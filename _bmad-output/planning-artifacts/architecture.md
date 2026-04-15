@@ -244,7 +244,7 @@ Critical lessons learned from a previous production project. These rules are **n
 |-------|-------------|-------|
 | `users` | email, jwt_hash, created_at, tier (free/paid) | ~500 rows max MVP |
 | `auth_codes` | email, code, expires_at, used | Temporary, cleaned by cron |
-| `scenarios` | id, title, system_prompt, difficulty, is_free, briefing_text, content_warning, rive_character, expected_exchanges, language_focus, patience_start, fail_penalty, silence_penalty, recovery_bonus, silence_prompt_seconds, silence_hangup_seconds, escalation_thresholds, tts_voice_id | Operator-managed content. briefing_text = pre-call vocabulary/context (FR14). content_warning = nullable, shown before threat/confrontation scenarios (FR38). rive_character = Rive EnumInput value selecting character visual variant (e.g., 'mugger', 'girlfriend', 'cop') — each scenario maps to one of the 5 character skins in the .riv file. Difficulty calibration fields (expected_exchanges through escalation_thresholds) nullable — defaults from difficulty preset. See [`difficulty-calibration.md`](difficulty-calibration.md) §8.3 for full schema |
+| `scenarios` | id, title, base_prompt, checkpoints (JSON), difficulty, is_free, briefing_text, content_warning, rive_character, language_focus, patience_start, fail_penalty, silence_penalty, recovery_bonus, silence_prompt_seconds, silence_hangup_seconds, escalation_thresholds, tts_voice_id | Operator-managed content. **Checkpoint-based format:** `base_prompt` = character identity, personality rules, behavioral boundaries (constant across all checkpoints). `checkpoints` = JSON array of ordered checkpoint objects, each with `{id, hint_text, prompt_segment, success_criteria}`. Pipeline constructs active system prompt as `base_prompt + checkpoints[current].prompt_segment`. **Authoring format:** scenarios authored as YAML files in `_bmad-output/planning-artifacts/scenarios/*.yaml`, loaded into SQLite as JSON at deployment. briefing_text = pre-call vocabulary/context (FR14). content_warning = nullable, shown before threat/confrontation scenarios (FR38). rive_character = Rive EnumInput value selecting character visual variant (e.g., 'mugger', 'girlfriend', 'cop') — each scenario maps to one of the 5 character skins in the .riv file. Difficulty calibration fields nullable — defaults from difficulty preset. See [`difficulty-calibration.md`](difficulty-calibration.md) §8.3 for full schema |
 | `call_sessions` | user_id, scenario_id, started_at, duration, cost_cents | Per-call cost tracking |
 | `debriefs` | call_session_id, survival_pct, debrief_json | LLM-generated post-call. `debrief_json` stores the complete LLM output (errors, hesitation_contexts, idioms, areas_to_work_on, inappropriate_behavior) plus backend-merged fields (hesitation durations, encouraging_framing). See `debrief-content-strategy.md` for full schema. |
 | `user_progress` | user_id, scenario_id, best_score, attempts | Progression tracking |
@@ -611,10 +611,11 @@ All messages are JSON with a mandatory `type` field for discrimination:
 {"type": "viseme", "data": {"viseme_id": 3, "timestamp_ms": 1450}}
 {"type": "emotion", "data": {"emotion": "annoyed", "intensity": 0.8}}
 {"type": "hang_up_warning", "data": {"seconds_remaining": 5}}
-{"type": "call_end", "data": {"reason": "character_hung_up", "survival_pct": 42}}
+{"type": "call_end", "data": {"reason": "character_hung_up", "survival_pct": 40, "checkpoints_passed": 2, "total_checkpoints": 5}}
+{"type": "checkpoint_advanced", "data": {"checkpoint_id": "refuse", "index": 1, "total": 5, "next_hint": "Ask him what he'll actually do."}}
 ```
 
-Defined message types: `viseme`, `emotion`, `hang_up_warning`, `call_end`
+Defined message types: `viseme`, `emotion`, `hang_up_warning`, `call_end`, `checkpoint_advanced`
 
 **BLoC Communication Pattern (MVP):**
 - UI dispatches Events to BLoC
@@ -865,10 +866,13 @@ Flutter (livekit_client) ──WebRTC──► LiveKit Cloud ◄── Pipecat (
 **Boundary 3 — Pipecat ↔ AI Services (Streaming APIs)**
 ```
 Pipecat pipeline (server/pipeline/bot.py)
-  ├──► Soniox v4       (STT: audio stream → text)
-  ├──► OpenRouter       (LLM: text → response text, streaming)
-  ├──► Cartesia Sonic 3 (TTS: text → audio stream + phoneme timestamps)
-  └──► LiveKit Cloud    (transport: audio + data channels to client)
+  ├──► Soniox v4          (STT: audio stream → text)
+  ├──► CheckpointManager  (checkpoint progression, prompt segment swapping)
+  ├──► PatienceTracker     (patience state, silence timers, escalation)
+  ├──► ExchangeClassifier  (async parallel: user speech vs checkpoint success_criteria)
+  ├──► OpenRouter          (LLM: text → response text, streaming)
+  ├──► Cartesia Sonic 3    (TTS: text → audio stream + phoneme timestamps)
+  └──► LiveKit Cloud       (transport: audio + data channels to client)
 ```
 - Pipecat is the ONLY component touching AI APIs
 - Service abstraction via Pipecat plugins — swap providers without touching other code
@@ -922,7 +926,7 @@ Flutter ──HTTPS──► Caddy ──► /static/rive/manifest.json
  3. FastAPI: verify JWT → check user tier/daily limits → create call_session row → generate LiveKit token
  4. FastAPI → Flutter: {livekit_token, room_name, call_id}
  5. Flutter: connect to LiveKit room with token
- 6. Pipecat: joins same LiveKit room server-side, loads scenario system prompt
+ 6. Pipecat: joins same LiveKit room server-side, loads scenario base_prompt + first checkpoint's prompt_segment
  7. CALL LOOP:
     a. User speaks → audio → LiveKit WebRTC → Pipecat
     b. Pipecat → Soniox STT → transcribed text
@@ -1055,6 +1059,7 @@ All technology choices work together without conflicts. Flutter 3.41.x + LiveKit
 |-----|----------|------------|
 | FR14 — pre-scenario briefing storage | Minor | Added `briefing_text` column to `scenarios` table |
 | FR38 — content warning field | Minor | Added `content_warning` nullable column to `scenarios` table |
+| Checkpoint-based scenarios | Major | Replaced monolithic `system_prompt` with `base_prompt` + `checkpoints` (JSON array). Scenarios authored as YAML files, loaded into DB as structured JSON. Pipeline swaps prompt segments per checkpoint via `CheckpointManager` (Epic 6) |
 | FR27 — push notifications | N/A | Removed from MVP scope entirely per user decision |
 | AES-256 encryption at rest | Clarification | VPS disk-level encryption (LUKS). SQLCipher deferred unless regulatory audit |
 
