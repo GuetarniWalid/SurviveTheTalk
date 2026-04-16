@@ -1,30 +1,29 @@
-"""FastAPI endpoint for spawning voice bot into a LiveKit room."""
+"""APIRouter for the legacy `/connect` endpoint that spawns a Pipecat bot.
+
+Originally a standalone FastAPI app — converted to an APIRouter in Story 4.2
+so it can be composed alongside `/auth/*` and `/health` in `api/app.py`.
+The request/response shape is intentionally NOT wrapped in the new
+`{data, meta}` envelope: the PoC Flutter client still in production expects
+the legacy flat shape. Story 6.1 will redesign this endpoint as
+`/calls/initiate` and re-plumb the contract.
+"""
 
 import subprocess
 import sys
 from uuid import uuid4
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter
 from loguru import logger
 from pipecat.runner.livekit import generate_token, generate_token_with_agent
 
 from config import Settings
 
-app = FastAPI(title="SurviveTheTalk API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+router = APIRouter(tags=["call"])
 
 settings = Settings()
 
 
-@app.post("/connect")
+@router.post("/connect")
 async def connect() -> dict:
     """Create a LiveKit room and spawn a voice bot into it.
 
