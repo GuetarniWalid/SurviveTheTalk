@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-14 (epic-2 done, retrospective done)
+# last_updated: 2026-04-16 (Story 4.1b done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-16 (Story 4.1 done)
+last_updated: 2026-04-16 (Story 4.1b done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -71,8 +71,8 @@ development_status:
   # Epic 4: User Onboarding & Authentication
   epic-4: in-progress
   4-1-restructure-flutter-project-to-mvp-architecture: done  # review corrections applied
-  4-1b-implement-design-system: backlog
-  4-2-build-fastapi-server-with-passwordless-auth-system: backlog
+  4-1b-implement-design-system: done  # review corrections applied 2026-04-16 (WCAG fixes + test hardening + naming + OFL)
+  4-2-build-fastapi-server-with-passwordless-auth-system: ready-for-dev
   4-3-build-email-authentication-flow-in-flutter: backlog
   4-4-build-consent-ai-disclosure-and-microphone-permission-flow: backlog
   4-5-build-first-call-incoming-call-experience: backlog
