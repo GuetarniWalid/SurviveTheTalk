@@ -71,7 +71,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
         params=VADParams(
             confidence=0.7,
             start_secs=0.2,
-            stop_secs=0.3,
+            stop_secs=0.8,
             min_volume=0.5,
         )
     )
@@ -89,7 +89,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     ),
                 ],
                 stop=[
-                    SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6),
+                    SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=1.8),
                 ],
             ),
         ),
@@ -126,7 +126,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     ) -> None:
         logger.info(f"First participant joined: {participant_id}")
         await task.queue_frames(
-            [TTSSpeakFrame("Oh great, another one. Let's get this over with.")]
+            [
+                TTSSpeakFrame(
+                    "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
+                )
+            ]
         )
 
     @transport.event_handler("on_participant_left")

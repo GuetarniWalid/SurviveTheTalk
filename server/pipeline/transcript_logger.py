@@ -80,9 +80,19 @@ class TranscriptLogger(FrameProcessor):
         self._role = role
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        """Observe relevant frames, record turns, then pass frame through."""
+        """Observe relevant frames, record turns, then pass frame through.
+
+        Transcript disk writes are guarded so an IO failure (e.g. disk full,
+        read-only /tmp, systemd PrivateTmp teardown) does not prevent the
+        EndFrame from propagating downstream and tearing down the pipeline.
+        """
+        await super().process_frame(frame, direction)
+
         if isinstance(frame, EndFrame):
-            self._collector.write_transcript()
+            try:
+                self._collector.write_transcript()
+            except OSError:
+                logger.exception("Failed to write transcript on EndFrame")
         elif self._role == "user" and isinstance(frame, TranscriptionFrame):
             if frame.finalized:
                 ts = self._collector.get_relative_timestamp_ms()

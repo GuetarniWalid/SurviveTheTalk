@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-15 (sprint change proposal: checkpoint-based scenario system)
+last_updated: 2026-04-16 (story 3-2 review corrections applied, marked done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -65,7 +65,7 @@ development_status:
   epic-3: in-progress
   3-0-build-scenario-calibration-testing-tools: done
   3-1-define-scenario-structure-and-authoring-format: done  # review corrections applied
-  3-2-create-launch-scenarios: in-progress
+  3-2-create-launch-scenarios: done  # review corrections applied, calibration deferred to post-Epic 6
   epic-3-retrospective: optional
 
   # Epic 4: User Onboarding & Authentication

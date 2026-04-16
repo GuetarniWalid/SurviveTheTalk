@@ -356,6 +356,37 @@ calibration:
     verdict: PASS
 ```
 
+### 12.1. Optional `pipeline_validation` sub-block
+
+During Epic 3 (before CheckpointManager ships in Epic 6), survival % cannot be measured against checkpoint progression. To document pre-checkpoint pipeline and feel validation without polluting the `pass_a` / `pass_b` slots, an optional `pipeline_validation` sub-block may be added under `calibration`:
+
+```yaml
+calibration:
+  pipeline_validation:
+    date: 2026-04-15
+    calls: 2
+    transcript_files:
+      - transcript_call_1776260510.json
+      - transcript_call_1776261974.json
+    findings:
+      - "Prompt v1 too aggressive — character escalated without provocation. Fixed: tired-by-default..."
+      - "Turn-taking cascade — VAD stop_secs 0.3→0.8 fixed interruption loops."
+    verdict: pipeline-validated  # pipeline-validated | pipeline-blocked
+  pass_a:
+    ...
+  pass_b:
+    ...
+```
+
+**When to use:** Only when full survival-% calibration is deferred (e.g., scenarios shipped before Epic 6). Once the CheckpointManager is available, `pass_a` / `pass_b` become the primary source of calibration truth; `pipeline_validation` remains as historical context.
+
+**Fields:**
+- `date` — ISO date of the validation session
+- `calls` — number of end-to-end calls executed
+- `transcript_files` — list of transcript JSON filenames captured during validation
+- `findings` — bulleted observations (prompt issues, VAD tuning, feel notes, applied fixes)
+- `verdict` — `pipeline-validated` (pipeline works end-to-end, feel acceptable) or `pipeline-blocked` (issue not yet resolved)
+
 ---
 
 ## 13. Checklist Quick Reference

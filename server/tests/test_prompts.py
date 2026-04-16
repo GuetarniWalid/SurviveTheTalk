@@ -16,7 +16,7 @@ def test_sarcastic_prompt_contains_persona_instructions() -> None:
 
 
 def test_sarcastic_prompt_mentions_character_name() -> None:
-    assert "Marcus" in SARCASTIC_CHARACTER_PROMPT
+    assert "Tina" in SARCASTIC_CHARACTER_PROMPT
 
 
 def test_cartesia_voice_id_is_valid_uuid() -> None:

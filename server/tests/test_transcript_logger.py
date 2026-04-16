@@ -5,7 +5,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pipecat.frames.frames import EndFrame, TextFrame, TranscriptionFrame
+from pipecat.frames.frames import EndFrame, StartFrame, TextFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
@@ -205,3 +205,23 @@ class TestTranscriptLogger:
         user_logger.push_frame = AsyncMock()
         _run(user_logger.process_frame(frame, FrameDirection.DOWNSTREAM))
         assert len(collector.transcript) == 0
+
+    def test_process_frame_delegates_to_base_class(self, user_logger):
+        """Regression guard for the super().process_frame() call.
+
+        The base FrameProcessor.process_frame drives lifecycle state
+        (StartFrame, InterruptionFrame, CancelFrame, etc.). If the
+        override in TranscriptLogger stops calling super().process_frame,
+        downstream processors that depend on that state will silently
+        break. This test verifies that every call to process_frame
+        delegates to the parent class exactly once.
+        """
+        frame = StartFrame()
+        user_logger.push_frame = AsyncMock()
+        with patch(
+            "pipecat.processors.frame_processor.FrameProcessor.process_frame",
+            new_callable=AsyncMock,
+        ) as mock_super:
+            _run(user_logger.process_frame(frame, FrameDirection.DOWNSTREAM))
+            mock_super.assert_awaited_once_with(frame, FrameDirection.DOWNSTREAM)
+        user_logger.push_frame.assert_called_once_with(frame, FrameDirection.DOWNSTREAM)
