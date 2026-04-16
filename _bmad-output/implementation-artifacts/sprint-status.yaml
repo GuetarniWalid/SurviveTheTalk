@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-16 (story 3-2 review corrections applied, marked done)
+last_updated: 2026-04-16 (epic-3 done, retrospective done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -62,11 +62,11 @@ development_status:
   epic-2-retrospective: done
 
   # Epic 3: Scenario Content Design & Authoring
-  epic-3: in-progress
+  epic-3: done
   3-0-build-scenario-calibration-testing-tools: done
   3-1-define-scenario-structure-and-authoring-format: done  # review corrections applied
   3-2-create-launch-scenarios: done  # review corrections applied, calibration deferred to post-Epic 6
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   # Epic 4: User Onboarding & Authentication
   epic-4: backlog
@@ -95,6 +95,7 @@ development_status:
   6-5-build-voluntary-call-end-and-no-network-screen: backlog
   6-6-build-checkpointmanager-and-checkpoint-aware-exchangeclassifier: backlog
   6-7-build-checkpointstepper-overlay-for-call-screen: backlog
+  6-8-post-checkpointmanager-scenario-calibration: backlog  # carry-forward from Epic 3 Story 3.2 deferred calibration
   epic-6-retrospective: optional
 
   # Epic 7: Post-Call Debrief & Learning

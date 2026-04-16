@@ -1227,6 +1227,36 @@ So that I understand what's expected of me and feel a sense of progression.
 **When** VoiceOver/TalkBack is active
 **Then** the stepper announces checkpoint progress ("Checkpoint 2 of 5 completed") and the hint text is readable by screen readers
 
+### Story 6.8: Post-CheckpointManager Scenario Calibration (Carry-Forward from Epic 3)
+
+As an operator,
+I want the 4 remaining launch scenarios (Mugger, Girlfriend, Cop, Landlord) calibrated end-to-end using the CheckpointManager from Story 6.6,
+So that all 5 launch scenarios have validated survival % ranges and final tts_voice_id selections before Epic 10 launch.
+
+**Context:** Epic 3 Story 3.2 shipped 5 scenario YAMLs, but only The Waiter was validated end-to-end on the live VPS pipeline. The remaining 4 scenarios have complete YAML structure but their `calibration.pass_a` / `calibration.pass_b` blocks are placeholders and `tts_voice_id` is `null`. Meaningful survival % measurement requires the CheckpointManager built in Story 6.6 to track checkpoint progression — without it, the LLM improvises and survival % is just utterance count. This story closes the loop on Epic 3's deferred acceptance criteria.
+
+**Acceptance Criteria:**
+
+**Given** the CheckpointManager (Story 6.6) is functional and deployed on the VPS
+**When** each of the 4 uncalibrated scenarios (Mugger, Girlfriend, Cop, Landlord) is loaded via `server/pipeline/prompts.py`
+**Then** CheckpointManager advances through checkpoints based on ExchangeClassifier verdicts and emits `checkpoint_advanced` data channel events as specified in Story 6.6
+
+**Given** per-scenario calibration is executed by the operator (Walid)
+**When** each scenario is tested in 2 passes (Pass A = Good B1 learner, Pass B = Struggling B1 learner)
+**Then** transcript + `score_transcript.py` results are captured and the scenario YAML's `calibration.pass_a` and `calibration.pass_b` blocks are populated with actual survival %, checkpoint progression, and PASS/FAIL verdict against target ranges (Mugger/Girlfriend medium: 35-55%, Cop/Landlord hard: 15-35%)
+
+**Given** each character requires a distinct Cartesia voice matching their personality
+**When** voice selection is performed
+**Then** `tts_voice_id` is set in each of the 4 scenario YAMLs to a Cartesia voice ID audition-validated to match character age, tone, energy (Mugger: gruff male; Girlfriend: emotional female; Cop: authoritative male; Landlord: stern male or female)
+
+**Given** calibration may reveal scenarios out of target range
+**When** a scenario falls outside its survival % band by more than ±10%
+**Then** nullable difficulty overrides (patience_start, fail_penalty, silence_penalty, etc.) are tuned and the scenario is retested until in range, with all changes documented in the scenario YAML
+
+**Given** all 5 scenarios must be launch-ready
+**When** Story 6.8 completes
+**Then** all 5 scenario YAMLs have non-null `tts_voice_id`, populated calibration blocks with PASS verdicts, and are ready for database ingestion in Epic 5 (or re-confirmed if Epic 5 already completed)
+
 ---
 
 ## Epic 7: Post-Call Debrief & Learning
