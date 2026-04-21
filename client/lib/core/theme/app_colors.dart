@@ -33,8 +33,9 @@ class AppColors {
   static const Color statusCompleted = Color(0xFF2ECC40);
   static const Color statusInProgress = Color(0xFFFF6B6B);
   static const Color destructive = Color(0xFFE74C3C);
+  static const Color warning = Color(0xFFF59E0B);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 8.
+  /// Ordered list used by theme_tokens_test.dart to assert count == 9.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -44,5 +45,6 @@ class AppColors {
     statusCompleted,
     statusInProgress,
     destructive,
+    warning,
   ];
 }
