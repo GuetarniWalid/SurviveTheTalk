@@ -497,13 +497,14 @@ Same styling as the email screen "Continue" button for visual consistency:
 ```mermaid
 flowchart TD
     A["App Opens (new user)"] --> B["Email Entry Screen"]
-    B -->|"Submit valid email"| C["Consent & AI Disclosure Screen"]
+    B -->|"Submit valid email"| C["Consent & AI Disclosure Screen (/consent)"]
     B -->|"Invalid email"| B1["Error state on email field"]
     B1 --> B
 
-    C -->|"Got it. Bring it on."| D["System Mic Permission Dialog"]
+    C -->|"Got it. Bring it on."| M["Mic Permission Screen (/mic-permission)"]
     C -->|"Back gesture"| B
 
+    M -->|"Auto-requests mic permission"| D["System Mic Permission Dialog"]
     D -->|"Permission Granted"| E["Incoming Call Animation (Story 2.2)"]
     D -->|"Permission Denied"| F["Mic Denied Error Bottom Sheet"]
     D -->|"Already permanently denied (iOS)"| F
@@ -511,6 +512,8 @@ flowchart TD
     D2 -->|"Returns with mic granted"| E
     D2 -->|"Returns with mic still denied"| F
 ```
+
+**Architecture note (updated 2026-04-21):** Consent and mic permission are split into 2 separate screens with distinct routes (`/consent` and `/mic-permission`). The ConsentScreen handles AI disclosure + GDPR consent only. The MicPermissionScreen handles all mic permission logic (request, denial bottom sheet, return-from-settings recheck, fade-to-black transition). Router redirect logic gates the 3-step flow: no consent → `/consent`, consent + no mic → `/mic-permission`, all good → `/`.
 
 ### Transition 1: Email → Consent (Subtask 3.1)
 
@@ -527,15 +530,16 @@ flowchart TD
 
 **Note:** The login code verification happens AFTER the onboarding flow (on return visit). First-time flow is: email → consent → mic → call. Code verification is a separate flow for returning users (Story 4.3 scope).
 
-### Transition 2: Consent Accept → Mic Permission (Subtask 3.2)
+### Transition 2: Consent Accept → Mic Permission Screen (Subtask 3.2)
 
 | Property | Value |
 |----------|-------|
 | Trigger | User taps "Got it. Bring it on." |
-| Timing | Immediate — mic permission dialog appears as soon as consent is recorded |
-| Pre-request action | Record consent timestamp (API call, **blocking** — must succeed before proceeding). On failure: show inline error on consent screen "Connection failed. Try again." and re-enable button. Retry up to 3 times with exponential backoff before showing error. |
-| System dialog | Native iOS/Android microphone permission dialog — no custom UI |
-| Background | Consent screen remains visible behind the system dialog (dimmed by OS) |
+| Timing | Consent recorded locally → navigate to `/mic-permission` route → mic permission auto-requested on screen load |
+| Pre-request action | Record consent timestamp locally via `ConsentStorage` (**blocking** — must succeed before proceeding). On failure: show inline error on consent screen "Could not save consent. Please try again." and re-enable button. |
+| Navigation | ConsentScreen BlocListener navigates to `/mic-permission` on `ConsentAccepted` state. Slide transition (same as other routes). |
+| System dialog | Native iOS/Android microphone permission dialog — auto-triggered by MicPermissionScreen on load via `addPostFrameCallback` |
+| Background | MicPermissionScreen (centered spinner) remains visible behind the system dialog (dimmed by OS) |
 
 **iOS permission dialog text (system-provided):**
 > "SurviveTheTalk" Would like to Access the Microphone
@@ -553,17 +557,19 @@ flowchart TD
 
 | Property | Value |
 |----------|-------|
-| Trigger | User grants microphone permission |
+| Trigger | User grants microphone permission (on MicPermissionScreen) |
 | Transition type | Fade to black (300ms) → Incoming call animation fades in (500ms) |
 | Total duration | 800ms |
 | Easing | Fade out: `Curves.easeIn` / Fade in: `Curves.easeOut` |
 | Haptic feedback | Medium impact on transition start (simulates phone about to ring) |
 
 **Sequence:**
-1. Permission granted (system dialog dismisses)
-2. Screen fades to `#1E1F23` (300ms)
-3. Incoming call animation fades in — character face, name, ringing animation, "Answer" button (500ms)
-4. Device vibration begins (incoming call pattern — short pulses)
+1. Permission granted (system dialog dismisses, or bottom sheet auto-dismissed on return from settings)
+2. Any open bottom sheets dismissed via `Navigator.of(context).popUntil((route) => route.isFirst)`
+3. `HapticFeedback.mediumImpact()` fires
+4. MicPermissionScreen fades to `#1E1F23` (300ms via `AnimationController` + `Opacity` widget)
+5. On animation completion, `context.go(AppRoutes.incomingCall)` navigates to incoming call route
+6. Incoming call screen fades in (500ms, `Curves.easeOut` via `_fadePage()` GoRouter helper)
 
 **Visual continuity:** The fade-through-black creates a clear scene break — the user is leaving the "setup" phase and entering the "experience" phase. This is intentional: the incoming call should feel like a separate event, not a continuation of forms.
 
@@ -574,8 +580,8 @@ flowchart TD
 | Property | Value |
 |----------|-------|
 | Trigger | User denies microphone permission, OR permission is already permanently denied (iOS) |
-| Transition type | System dialog dismisses (or is skipped if permanently denied), consent screen remains visible with error overlay |
-| Error display | Modal bottom sheet on consent screen |
+| Transition type | System dialog dismisses (or is skipped if permanently denied), mic permission screen shows error bottom sheet |
+| Error display | Modal bottom sheet on MicPermissionScreen (centered spinner visible behind dimmed overlay) |
 | Dismiss behavior | Bottom sheet cannot be dismissed by drag or tap outside — user must tap "Open Settings". This prevents an undefined state. |
 
 **iOS permanently denied handling:** On iOS, after a first denial, subsequent `requestPermission()` calls return `denied` without showing a dialog. Before requesting permission, check current status. If `permanentlyDenied`, skip the system dialog and show the error bottom sheet directly.
@@ -585,11 +591,12 @@ flowchart TD
 ```
 ┌──────────────────────────────────┐
 │                                  │
-│  [Consent screen content         │
+│  [MicPermissionScreen:           │
+│   centered CircularProgress      │
 │   remains visible but dimmed]    │
 │                                  │
 │  ┌──────────────────────────┐    │
-│  │  ⚠️ Microphone Required  │    │  ← headline style
+│  │  Microphone Required     │    │  ← headline style
 │  │                          │    │
 │  │  "I can't hear you.      │    │  ← body style, in-persona
 │  │   Check your mic."       │    │    from character
@@ -628,7 +635,7 @@ flowchart TD
 
 **In-persona messaging:** Per UX spec, the error message uses the character's voice — "I can't hear you" — maintaining the phone call metaphor even in error states. The message is NOT generic system copy.
 
-**Recovery flow:** When user returns to app after granting mic in settings, the app detects the permission change and auto-triggers the incoming call transition (Transition 3). If the user returns without granting mic, the error bottom sheet re-appears immediately.
+**Recovery flow:** When user returns to app after granting mic in settings, the MicPermissionScreen detects the permission change via `WidgetsBindingObserver.didChangeAppLifecycleState(resumed)` → dispatches `RecheckMicPermissionEvent` → if granted, auto-dismisses bottom sheet and triggers fade-to-black transition (Transition 3). If the user returns without granting mic, the error bottom sheet re-appears immediately. Note: `_onRecheckMicPermission` emits an intermediate `MicPermissionRequested` state before re-checking to ensure BlocListener fires even when the previous state was already `MicDenied` (same const object would be silently skipped otherwise).
 
 ---
 
@@ -711,9 +718,11 @@ flowchart TD
 
 | File | Path |
 |------|------|
-| Email entry screen | `client/lib/features/auth/views/email_entry_screen.dart` |
-| Consent screen | `client/lib/features/auth/views/consent_screen.dart` |
+| Email entry screen | `client/lib/features/auth/presentation/email_entry_screen.dart` |
+| Consent screen | `client/lib/features/onboarding/presentation/consent_screen.dart` |
+| Mic permission screen | `client/lib/features/onboarding/presentation/mic_permission_screen.dart` |
+| OnboardingBloc | `client/lib/features/onboarding/bloc/onboarding_bloc.dart` |
 | Color tokens | `client/lib/core/theme/app_colors.dart` |
 | Typography tokens | `client/lib/core/theme/app_typography.dart` |
 | Theme configuration | `client/lib/core/theme/app_theme.dart` |
-| Navigation (GoRouter) | `client/lib/core/navigation/app_router.dart` |
+| Navigation (GoRouter) | `client/lib/app/router.dart` |

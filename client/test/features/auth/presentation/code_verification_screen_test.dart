@@ -23,6 +23,10 @@ void main() {
     when(() => mockAuthBloc.state).thenReturn(AuthCodeSent('test@example.com'));
   });
 
+  Future<void> setDefaultSurface(WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 600));
+  }
+
   Widget buildSubject() {
     return MaterialApp(
       home: BlocProvider<AuthBloc>.value(
@@ -43,6 +47,8 @@ void main() {
   group('CodeVerificationScreen', () {
     testWidgets('renders code field, verify button, and resend button',
         (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(buildSubject());
 
       expect(find.byType(TextField), findsOneWidget);
@@ -53,6 +59,8 @@ void main() {
     });
 
     testWidgets('shows email confirmation text', (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(buildSubject());
 
       expect(find.text('Code sent to test@example.com'), findsOneWidget);
@@ -61,6 +69,8 @@ void main() {
     });
 
     testWidgets('auto-submits when 6 digits entered', (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(buildSubject());
 
       await tester.enterText(find.byType(TextField), '123456');
@@ -77,6 +87,8 @@ void main() {
 
     testWidgets('resend dispatches SubmitEmailEvent after cooldown',
         (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(buildSubject());
 
       // Cooldown message visible
@@ -98,6 +110,8 @@ void main() {
     });
 
     testWidgets('does not dispatch when code is too short', (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(buildSubject());
 
       await tester.enterText(find.byType(TextField), '123');
@@ -112,6 +126,8 @@ void main() {
     });
 
     testWidgets('shows error text when AuthError state', (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       when(() => mockAuthBloc.state).thenReturn(
         AuthError(
           'Invalid code. Please check and try again.',
@@ -145,6 +161,8 @@ void main() {
 
     testWidgets('shows loading indicator when AuthLoading state',
         (tester) async {
+      await setDefaultSurface(tester);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       when(() => mockAuthBloc.state).thenReturn(AuthLoading());
       whenListen(
         mockAuthBloc,

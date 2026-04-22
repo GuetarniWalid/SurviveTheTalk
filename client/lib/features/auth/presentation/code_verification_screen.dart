@@ -79,6 +79,9 @@ class _CodeVerificationScreenState extends State<CodeVerificationScreen> {
     if (context.read<AuthBloc>().state is AuthLoading) return;
     final code = _codeController.text.trim();
     if (code.length != 6 || int.tryParse(code) == null) return;
+    // Dismiss keyboard before auth flow to prevent keyboard close animation
+    // from interfering with page transition.
+    FocusScope.of(context).unfocus();
     context.read<AuthBloc>().add(
       SubmitCodeEvent(email: widget.email, code: code),
     );

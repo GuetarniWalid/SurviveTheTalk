@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/onboarding/consent_storage.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
 import '../features/auth/presentation/code_verification_screen.dart';
 import '../features/auth/presentation/email_entry_screen.dart';
+import '../features/onboarding/presentation/consent_screen.dart';
+import '../features/onboarding/presentation/mic_permission_screen.dart';
 
 /// Central registry of all route paths used by [AppRouter].
 class AppRoutes {
@@ -16,12 +19,17 @@ class AppRoutes {
   static const String login = '/login';
   static const String verify = '/verify';
   static const String consent = '/consent';
+  static const String micPermission = '/mic-permission';
+  static const String incomingCall = '/incoming-call';
 }
 
 class AppRouter {
   const AppRouter._();
 
-  static GoRouter createRouter(AuthBloc authBloc) {
+  static GoRouter createRouter(
+    AuthBloc authBloc, {
+    required ConsentStorage consentStorage,
+  }) {
     return GoRouter(
       initialLocation: AppRoutes.root,
       refreshListenable: _GoRouterRefreshStream(authBloc.stream),
@@ -37,10 +45,6 @@ class AppRouter {
           return AppRoutes.login;
         }
 
-        if (isAuthenticated && isAuthRoute) {
-          return AppRoutes.consent;
-        }
-
         // Navigate to verify screen when code has been sent
         if (authState is AuthCodeSent && currentPath == AppRoutes.login) {
           return AppRoutes.verify;
@@ -51,12 +55,31 @@ class AppRouter {
           return AppRoutes.login;
         }
 
+        if (isAuthenticated) {
+          final hasConsent = consentStorage.hasConsentSync;
+          final hasMic = consentStorage.hasMicPermissionSync;
+
+          if (!hasConsent) {
+            if (currentPath != AppRoutes.consent) {
+              return AppRoutes.consent;
+            }
+          } else if (!hasMic) {
+            if (currentPath != AppRoutes.micPermission) {
+              return AppRoutes.micPermission;
+            }
+          } else if (isAuthRoute ||
+              currentPath == AppRoutes.consent ||
+              currentPath == AppRoutes.micPermission) {
+            return AppRoutes.root;
+          }
+        }
+
         return null;
       },
       routes: <RouteBase>[
         GoRoute(
           path: AppRoutes.root,
-          pageBuilder: (context, state) => _slidePage(
+          pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
             child: const Scaffold(
               body: Center(
@@ -67,7 +90,7 @@ class AppRouter {
         ),
         GoRoute(
           path: AppRoutes.login,
-          pageBuilder: (context, state) => _slidePage(
+          pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
             child: const EmailEntryScreen(),
           ),
@@ -83,7 +106,7 @@ class AppRouter {
                         authState.previousState is AuthCodeSent
                     ? (authState.previousState as AuthCodeSent).email
                     : '';
-            return _slidePage(
+            return _fadePage(
               key: state.pageKey,
               child: CodeVerificationScreen(email: email),
             );
@@ -91,11 +114,25 @@ class AppRouter {
         ),
         GoRoute(
           path: AppRoutes.consent,
-          pageBuilder: (context, state) => _slidePage(
+          pageBuilder: (context, state) => _fadePage(
+            key: state.pageKey,
+            child: const ConsentScreen(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.micPermission,
+          pageBuilder: (context, state) => _fadePage(
+            key: state.pageKey,
+            child: const MicPermissionScreen(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.incomingCall,
+          pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
             child: const Scaffold(
               body: Center(
-                child: Text('Consent — Story 4.4'),
+                child: Text('Incoming Call — Story 4.5'),
               ),
             ),
           ),
@@ -105,22 +142,17 @@ class AppRouter {
   }
 }
 
-CustomTransitionPage<void> _slidePage({
+CustomTransitionPage<void> _fadePage({
   required LocalKey key,
   required Widget child,
 }) {
   return CustomTransitionPage<void>(
     key: key,
     child: child,
+    transitionDuration: const Duration(milliseconds: 500),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      return SlideTransition(
-        position: Tween<Offset>(
-          begin: const Offset(1, 0),
-          end: Offset.zero,
-        ).animate(CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeInOut,
-        )),
+      return FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
         child: child,
       );
     },

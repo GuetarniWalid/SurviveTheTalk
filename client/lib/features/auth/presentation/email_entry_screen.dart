@@ -267,19 +267,19 @@ class _EmailEntryScreenState extends State<EmailEntryScreen> {
                                       fillColor: AppColors.avatarBg,
                                       contentPadding:
                                           const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 18,
+                                        horizontal: 24,
+                                        vertical: 20,
                                       ),
                                       enabledBorder: OutlineInputBorder(
                                         borderRadius:
-                                            BorderRadius.circular(12),
+                                            BorderRadius.circular(32),
                                         borderSide: BorderSide(
                                           color: borderColor,
                                         ),
                                       ),
                                       focusedBorder: OutlineInputBorder(
                                         borderRadius:
-                                            BorderRadius.circular(12),
+                                            BorderRadius.circular(32),
                                         borderSide: BorderSide(
                                           color: borderColor,
                                         ),
@@ -292,7 +292,7 @@ class _EmailEntryScreenState extends State<EmailEntryScreen> {
                                   // Continue button
                                   SizedBox(
                                     width: double.infinity,
-                                    height: 60,
+                                    height: 64,
                                     child: FilledButton(
                                       onPressed:
                                           isLoading ? null : _onSubmit,
@@ -302,13 +302,13 @@ class _EmailEntryScreenState extends State<EmailEntryScreen> {
                                             AppColors.accent,
                                         shape: RoundedRectangleBorder(
                                           borderRadius:
-                                              BorderRadius.circular(12),
+                                              BorderRadius.circular(32),
                                         ),
                                       ),
                                       child: isLoading
                                           ? const SizedBox(
-                                              width: 24,
-                                              height: 24,
+                                              width: 20,
+                                              height: 20,
                                               child:
                                                   CircularProgressIndicator(
                                                 strokeWidth: 2,
@@ -316,14 +316,13 @@ class _EmailEntryScreenState extends State<EmailEntryScreen> {
                                                     AppColors.background,
                                               ),
                                             )
-                                          : Text(
+                                          : const Text(
                                               'Continue',
-                                              style: AppTypography
-                                                  .sectionTitle
-                                                  .copyWith(
-                                                color:
-                                                    AppColors.background,
-                                                height: 17 / 14,
+                                              style: TextStyle(
+                                                fontFamily: 'Inter',
+                                                fontSize: 17,
+                                                fontWeight: FontWeight.w700,
+                                                color: AppColors.background,
                                               ),
                                             ),
                                     ),

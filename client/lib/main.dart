@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:rive/rive.dart';
 
 import 'app/app.dart';
+import 'core/onboarding/consent_storage.dart';
 
 /// Bootstrap sequence required by Rive 0.14.x:
 ///   1. WidgetsFlutterBinding.ensureInitialized() — enables async plugins
@@ -51,7 +52,10 @@ Future<void> bootstrap() async {
     );
   }
 
-  runApp(const App());
+  final consentStorage = ConsentStorage();
+  await consentStorage.preload();
+
+  runApp(App(consentStorage: consentStorage));
 }
 
 Future<void> main() async {
