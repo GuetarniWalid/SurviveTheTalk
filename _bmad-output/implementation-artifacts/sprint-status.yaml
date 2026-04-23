@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-23 (Story 4.5 → done, code review applied)
+# last_updated: 2026-04-23 (Epic 4 retro completed → epic-4: done, epic-4-retrospective: done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-23 (Story 4.5 → done, code review applied)
+last_updated: 2026-04-23 (Epic 4 retro completed → epic-4: done, epic-4-retrospective: done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -69,14 +69,14 @@ development_status:
   epic-3-retrospective: done
 
   # Epic 4: User Onboarding & Authentication
-  epic-4: in-progress
+  epic-4: done
   4-1-restructure-flutter-project-to-mvp-architecture: done  # review corrections applied
   4-1b-implement-design-system: done  # review corrections applied 2026-04-16 (WCAG fixes + test hardening + naming + OFL)
   4-2-build-fastapi-server-with-passwordless-auth-system: done  # review corrections applied 2026-04-16
   4-3-build-email-authentication-flow-in-flutter: done  # review corrections applied 2026-04-21
   4-4-build-consent-ai-disclosure-and-microphone-permission-flow: done  # review corrections applied 2026-04-22
   4-5-build-first-call-incoming-call-experience: done  # review corrections applied 2026-04-23
-  epic-4-retrospective: optional
+  epic-4-retrospective: done  # 2026-04-23 retro completed, doc: epic-4-retro-2026-04-23.md
 
   # Epic 5: Scenario Browsing & Progression
   epic-5: backlog
