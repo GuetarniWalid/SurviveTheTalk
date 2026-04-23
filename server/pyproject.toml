@@ -12,6 +12,7 @@ dependencies = [
     "pipecat-ai[cartesia,livekit,openai,soniox]>=0.0.108",
     "pyjwt[crypto]>=2.10.0,<3.0.0",
     "pydantic-settings>=2.13.1",
+    "pyyaml>=6.0,<7.0.0",
     "uvicorn>=0.42.0",
 ]
 

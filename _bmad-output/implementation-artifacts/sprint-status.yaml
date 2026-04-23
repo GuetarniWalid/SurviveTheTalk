@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-21 (Story 4.3 → done, review corrections applied)
+# last_updated: 2026-04-23 (Story 4.5 → done, code review applied)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-22 (Story 4.4 → done, review corrections applied)
+last_updated: 2026-04-23 (Story 4.5 → done, code review applied)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -75,7 +75,7 @@ development_status:
   4-2-build-fastapi-server-with-passwordless-auth-system: done  # review corrections applied 2026-04-16
   4-3-build-email-authentication-flow-in-flutter: done  # review corrections applied 2026-04-21
   4-4-build-consent-ai-disclosure-and-microphone-permission-flow: done  # review corrections applied 2026-04-22
-  4-5-build-first-call-incoming-call-experience: backlog
+  4-5-build-first-call-incoming-call-experience: done  # review corrections applied 2026-04-23
   epic-4-retrospective: optional
 
   # Epic 5: Scenario Browsing & Progression

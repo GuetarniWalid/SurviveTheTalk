@@ -57,5 +57,35 @@ void main() {
     test('hasMicPermission returns false when nothing stored', () async {
       expect(await consentStorage.hasMicPermission(), isFalse);
     });
+
+    test('hasSeenFirstCall returns false when nothing stored', () async {
+      expect(await consentStorage.hasSeenFirstCall(), isFalse);
+    });
+
+    test('saveFirstCallShown + hasSeenFirstCall round-trip returns true',
+        () async {
+      await consentStorage.saveFirstCallShown();
+      expect(await consentStorage.hasSeenFirstCall(), isTrue);
+    });
+
+    test('preload seeds hasSeenFirstCallSync from persistent storage',
+        () async {
+      await consentStorage.saveFirstCallShown();
+      final fresh = ConsentStorage();
+      expect(fresh.hasSeenFirstCallSync, isFalse, reason: 'before preload');
+      await fresh.preload();
+      expect(fresh.hasSeenFirstCallSync, isTrue, reason: 'after preload');
+    });
+
+    test('deleteConsent also clears the first-call-shown flag', () async {
+      await consentStorage.saveConsent();
+      await consentStorage.saveMicPermission(true);
+      await consentStorage.saveFirstCallShown();
+      expect(await consentStorage.hasSeenFirstCall(), isTrue);
+
+      await consentStorage.deleteConsent();
+      expect(await consentStorage.hasSeenFirstCall(), isFalse);
+      expect(consentStorage.hasSeenFirstCallSync, isFalse);
+    });
   });
 }

@@ -1,13 +1,21 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/api/api_client.dart';
 import '../core/onboarding/consent_storage.dart';
+import '../core/onboarding/vibration_service.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
 import '../features/auth/presentation/code_verification_screen.dart';
 import '../features/auth/presentation/email_entry_screen.dart';
+import '../features/call/bloc/incoming_call_bloc.dart';
+import '../features/call/models/call_session.dart';
+import '../features/call/repositories/call_repository.dart';
+import '../features/call/views/call_placeholder_screen.dart';
+import '../features/call/views/incoming_call_screen.dart';
 import '../features/onboarding/presentation/consent_screen.dart';
 import '../features/onboarding/presentation/mic_permission_screen.dart';
 
@@ -21,6 +29,7 @@ class AppRoutes {
   static const String consent = '/consent';
   static const String micPermission = '/mic-permission';
   static const String incomingCall = '/incoming-call';
+  static const String call = '/call';
 }
 
 class AppRouter {
@@ -58,6 +67,7 @@ class AppRouter {
         if (isAuthenticated) {
           final hasConsent = consentStorage.hasConsentSync;
           final hasMic = consentStorage.hasMicPermissionSync;
+          final seenFirstCall = consentStorage.hasSeenFirstCallSync;
 
           if (!hasConsent) {
             if (currentPath != AppRoutes.consent) {
@@ -67,9 +77,15 @@ class AppRouter {
             if (currentPath != AppRoutes.micPermission) {
               return AppRoutes.micPermission;
             }
+          } else if (!seenFirstCall) {
+            if (currentPath != AppRoutes.incomingCall &&
+                currentPath != AppRoutes.call) {
+              return AppRoutes.incomingCall;
+            }
           } else if (isAuthRoute ||
               currentPath == AppRoutes.consent ||
-              currentPath == AppRoutes.micPermission) {
+              currentPath == AppRoutes.micPermission ||
+              currentPath == AppRoutes.incomingCall) {
             return AppRoutes.root;
           }
         }
@@ -130,12 +146,43 @@ class AppRouter {
           path: AppRoutes.incomingCall,
           pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
-            child: const Scaffold(
-              body: Center(
-                child: Text('Incoming Call — Story 4.5'),
+            // The bloc is route-scoped (not promoted to MultiBlocProvider in
+            // app.dart) because its lifecycle is tied to this screen: it
+            // stops the vibration in close() and saves the first-call-shown
+            // flag. A global instance would keep vibrating after navigation.
+            child: BlocProvider<IncomingCallBloc>(
+              create: (_) => IncomingCallBloc(
+                callRepository: CallRepository(ApiClient()),
+                consentStorage: consentStorage,
+                vibrationService: VibrationService(),
               ),
+              child: const IncomingCallScreen(),
             ),
           ),
+        ),
+        GoRoute(
+          path: AppRoutes.call,
+          pageBuilder: (context, state) {
+            final session = state.extra;
+            if (session is! CallSession) {
+              // Defensive fallback — if someone deep-links /call with no
+              // CallSession, send them to the scenario list placeholder
+              // rather than crashing. This shouldn't happen under normal
+              // navigation because Accept always passes extra.
+              return _fadePage(
+                key: state.pageKey,
+                child: const Scaffold(
+                  body: Center(
+                    child: Text('No active call'),
+                  ),
+                ),
+              );
+            }
+            return _fadePage(
+              key: state.pageKey,
+              child: CallPlaceholderScreen(session: session),
+            );
+          },
         ),
       ],
     );

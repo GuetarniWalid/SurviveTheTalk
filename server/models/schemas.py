@@ -34,6 +34,22 @@ class VerifyCodeOut(BaseModel):
     email: EmailStr = Field(max_length=_MAX_EMAIL_LEN)
 
 
+class InitiateCallIn(BaseModel):
+    """Request body for POST /calls/initiate.
+
+    Empty in Story 4.5 — the tutorial scenario is hardcoded server-side.
+    Full scenario selection (a `scenario_id` field) lands with Story 6.1
+    once the scenarios table exists (Story 5.1).
+    """
+
+
+class InitiateCallOut(BaseModel):
+    call_id: int
+    room_name: str
+    token: str
+    livekit_url: str
+
+
 class HealthOut(BaseModel):
     status: str
     db: str

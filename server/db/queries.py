@@ -147,3 +147,35 @@ async def mark_code_used(db: aiosqlite.Connection, code_id: int) -> None:
     """Mark a single auth_codes row as used."""
     await db.execute("UPDATE auth_codes SET used = 1 WHERE id = ?", (code_id,))
     await db.commit()
+
+
+async def insert_call_session(
+    db: aiosqlite.Connection,
+    user_id: int,
+    scenario_id: str,
+    started_at: str,
+) -> int:
+    """Insert a new call_sessions row, returning the new id.
+
+    `duration_sec` and `cost_cents` are left NULL here — they are filled in
+    later by `POST /calls/{id}/end` (Story 6.4 / 7.1).
+    """
+    cursor = await db.execute(
+        "INSERT INTO call_sessions(user_id, scenario_id, started_at) VALUES (?, ?, ?)",
+        (user_id, scenario_id, started_at),
+    )
+    await db.commit()
+    call_id = cursor.lastrowid
+    if call_id is None:
+        raise RuntimeError("insert_call_session: sqlite returned no lastrowid")
+    return call_id
+
+
+async def get_call_session(
+    db: aiosqlite.Connection, call_id: int
+) -> aiosqlite.Row | None:
+    """Return the call_sessions row for `call_id`, or None."""
+    async with db.execute(
+        "SELECT * FROM call_sessions WHERE id = ?", (call_id,)
+    ) as cursor:
+        return await cursor.fetchone()

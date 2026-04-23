@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import time
 
 from loguru import logger
@@ -30,8 +31,16 @@ from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
 
 
 async def run_bot(url: str, room: str, token: str) -> None:
-    """Configure and run the Pipecat voice pipeline in a LiveKit room."""
+    """Configure and run the Pipecat voice pipeline in a LiveKit room.
+
+    The system prompt is taken from the `SYSTEM_PROMPT` env var when set
+    (populated by `/calls/initiate` with the scenario-specific prompt);
+    otherwise it falls back to the hardcoded waiter prompt used by the
+    legacy `/connect` endpoint. Env var is used instead of a CLI flag to
+    sidestep platform-specific argv length limits on long prompts.
+    """
     settings = Settings()
+    system_prompt = os.environ.get("SYSTEM_PROMPT") or SARCASTIC_CHARACTER_PROMPT
 
     transport = LiveKitTransport(
         url=url,
@@ -53,7 +62,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
         settings=OpenRouterLLMService.Settings(
             model="qwen/qwen3.5-flash-02-23",
             extra={"extra_body": {"reasoning": {"enabled": False}}},
-            system_instruction=SARCASTIC_CHARACTER_PROMPT,
+            system_instruction=system_prompt,
             temperature=0.7,
             max_tokens=256,
         ),

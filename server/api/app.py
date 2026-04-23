@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from api.call_endpoint import router as call_router
 from api.responses import err
 from api.routes_auth import router as auth_router
+from api.routes_calls import router as calls_router
 from api.routes_health import router as health_router
 from db.database import run_migrations
 
@@ -42,6 +43,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(call_router)
+app.include_router(calls_router)
 
 
 _GENERIC_HTTP_MESSAGES = {
