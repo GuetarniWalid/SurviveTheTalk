@@ -20,10 +20,35 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def ok(data: BaseModel | dict) -> dict:
-    """Wrap `data` in the success envelope."""
+def ok(data: BaseModel | dict, *, extra_meta: dict | None = None) -> dict:
+    """Wrap `data` in the success envelope.
+
+    `extra_meta` lets list-style endpoints fold pagination/count keys into
+    `meta` without breaking the historic `ok(data)` call sites.
+    """
     payload = data.model_dump() if isinstance(data, BaseModel) else data
-    return {"data": payload, "meta": {"timestamp": now_iso()}}
+    meta: dict = {"timestamp": now_iso()}
+    if extra_meta:
+        meta.update(extra_meta)
+    return {"data": payload, "meta": meta}
+
+
+def ok_list(items: list) -> dict:
+    """Envelope helper for list endpoints — sets `meta.count` for the caller.
+
+    Accepts a list of Pydantic models OR raw dicts. Models are dumped via
+    `model_dump()`; dicts pass through unchanged. The convention going forward
+    is: every list endpoint returns `ok_list(items)` so clients can read
+    `meta.count` without recomputing `len(data)`.
+
+    Implementation note: delegates to `ok()` so there is one canonical place
+    that builds the `{data, meta}` envelope. Future `meta` keys (pagination,
+    cursors) stay in a single codepath.
+    """
+    payload = [
+        item.model_dump() if isinstance(item, BaseModel) else item for item in items
+    ]
+    return ok(payload, extra_meta={"count": len(payload)})
 
 
 def err(code: str, message: str, detail: dict | None = None) -> dict:

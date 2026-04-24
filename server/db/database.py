@@ -6,6 +6,12 @@ The DB is the single source of truth for the auth and (later) scenarios state.
 - `run_migrations()` is called once at app startup (FastAPI lifespan) and is
   idempotent: each .sql file in `db/migrations/` is executed at most once,
   tracked via the `schema_migrations` table.
+
+BEFORE EDITING THIS FILE: read the Story 5.1 deferred-work section in
+`_bmad-output/implementation-artifacts/deferred-work.md`. Two known design
+issues live here (outer-BEGIN atomicity broken by `executescript`, and the
+missing `PRAGMA busy_timeout`) — fix them as a deliberate piece of work, not
+accidentally alongside an unrelated change.
 """
 
 from __future__ import annotations

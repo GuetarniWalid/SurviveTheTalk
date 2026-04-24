@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-24 (Story 5.1 created → epic-5: in-progress, 5-1: ready-for-dev)
+# last_updated: 2026-04-24 (Story 5.1 code review completed + 15 patches applied + 5.1-CI-deploy sub-tag → 5-1: done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-24 (Story 5.1 created → epic-5: in-progress, 5-1: ready-for-dev)
+last_updated: 2026-04-24 (Story 5.1 code review completed + 15 patches applied + 5.1-CI-deploy sub-tag → 5-1: done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -80,8 +80,8 @@ development_status:
 
   # Epic 5: Scenario Browsing & Progression
   epic-5: in-progress
-  5-1-build-scenarios-api-and-database: ready-for-dev
-  5-2-build-scenario-list-screen-with-scenariocard-component: backlog
+  5-1-build-scenarios-api-and-database: done  # code review completed 2026-04-24: 15 patches applied (seeder hardening, route ValidationError→SCENARIO_CORRUPT, stricter ordering tests, parametrised corruption coverage, ok_list delegates to ok, ScenariosListOut meta), 126 pytest green, pipecat.service reverted to www-data (5.1-CI-deploy sub-tag), 2 infra issues deferred to deferred-work.md
+  5-2-build-scenario-list-screen-with-scenariocard-component: ready-for-dev
   5-3-build-bottomoverlaycard-and-daily-call-limit-enforcement: backlog
   5-4-build-content-warning-display-for-intense-scenarios: backlog
   epic-5-retrospective: optional

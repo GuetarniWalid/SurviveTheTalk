@@ -1,6 +1,6 @@
 # Story 5.1: Build Scenarios API and Database
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -93,105 +93,105 @@ And `cd client && flutter analyze` + `cd client && flutter test` pass unchanged 
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Copy the 4 missing scenario YAMLs into `server/pipeline/scenarios/` (AC: 3)
-  - [ ] 1.1 Copy `_bmad-output/planning-artifacts/scenarios/the-mugger.yaml` → `server/pipeline/scenarios/the-mugger.yaml`
-  - [ ] 1.2 Copy `_bmad-output/planning-artifacts/scenarios/the-girlfriend.yaml` → `server/pipeline/scenarios/the-girlfriend.yaml`
-  - [ ] 1.3 Copy `_bmad-output/planning-artifacts/scenarios/the-cop.yaml` → `server/pipeline/scenarios/the-cop.yaml`
-  - [ ] 1.4 Copy `_bmad-output/planning-artifacts/scenarios/the-landlord.yaml` → `server/pipeline/scenarios/the-landlord.yaml`
-  - [ ] 1.5 Do NOT modify `server/pipeline/scenarios/the-waiter.yaml` (already present since Story 4.5)
-  - [ ] 1.6 Add a short note at the top of `server/pipeline/scenarios/README.md` (new file, one paragraph) saying: "Canonical source lives in `_bmad-output/planning-artifacts/scenarios/`. Copies here keep production deploys self-contained. On authoring change, copy the updated YAML into this folder and redeploy."
+- [x] Task 1: Copy the 4 missing scenario YAMLs into `server/pipeline/scenarios/` (AC: 3)
+  - [x] 1.1 Copy `_bmad-output/planning-artifacts/scenarios/the-mugger.yaml` → `server/pipeline/scenarios/the-mugger.yaml`
+  - [x] 1.2 Copy `_bmad-output/planning-artifacts/scenarios/the-girlfriend.yaml` → `server/pipeline/scenarios/the-girlfriend.yaml`
+  - [x] 1.3 Copy `_bmad-output/planning-artifacts/scenarios/the-cop.yaml` → `server/pipeline/scenarios/the-cop.yaml`
+  - [x] 1.4 Copy `_bmad-output/planning-artifacts/scenarios/the-landlord.yaml` → `server/pipeline/scenarios/the-landlord.yaml`
+  - [x] 1.5 Do NOT modify `server/pipeline/scenarios/the-waiter.yaml` (already present since Story 4.5)
+  - [x] 1.6 Add a short note at the top of `server/pipeline/scenarios/README.md` (new file, one paragraph) saying: "Canonical source lives in `_bmad-output/planning-artifacts/scenarios/`. Copies here keep production deploys self-contained. On authoring change, copy the updated YAML into this folder and redeploy."
 
-- [ ] Task 2: Add migration `003_tier_rename_full_to_paid.sql` (AC: 2)
-  - [ ] 2.1 Create `server/db/migrations/003_tier_rename_full_to_paid.sql` using the exact SQL from ADR 002 §Files to change (see Dev Notes → Migration SQL)
-  - [ ] 2.2 Do NOT modify `001_init.sql` (immutable)
-  - [ ] 2.3 Verify `run_migrations()` applies 003 in lexical order between 002 and 004 (no code change needed — the sorted-glob logic already handles this)
+- [x] Task 2: Add migration `003_tier_rename_full_to_paid.sql` (AC: 2)
+  - [x] 2.1 Create `server/db/migrations/003_tier_rename_full_to_paid.sql` using the exact SQL from ADR 002 §Files to change (see Dev Notes → Migration SQL)
+  - [x] 2.2 Do NOT modify `001_init.sql` (immutable)
+  - [x] 2.3 Verify `run_migrations()` applies 003 in lexical order between 002 and 004 (no code change needed — the sorted-glob logic already handles this)
 
-- [ ] Task 3: Add migration `004_scenarios_and_user_progress.sql` (AC: 1)
-  - [ ] 3.1 Create `server/db/migrations/004_scenarios_and_user_progress.sql` with the full SQL block from Dev Notes → Migration SQL
-  - [ ] 3.2 Include the `scenarios` table (21 columns per ADR 001) and the `user_progress` table (5 columns + composite PK)
-  - [ ] 3.3 Add indexes: `CREATE INDEX IF NOT EXISTS idx_user_progress_user_id ON user_progress(user_id)` (per-user list JOIN)
-  - [ ] 3.4 The migration must be idempotent — every `CREATE TABLE` / `CREATE INDEX` uses `IF NOT EXISTS`
-  - [ ] 3.5 No seed data in the SQL file — seeding is Python-driven (Task 4)
+- [x] Task 3: Add migration `004_scenarios_and_user_progress.sql` (AC: 1)
+  - [x] 3.1 Create `server/db/migrations/004_scenarios_and_user_progress.sql` with the full SQL block from Dev Notes → Migration SQL
+  - [x] 3.2 Include the `scenarios` table (21 columns per ADR 001) and the `user_progress` table (5 columns + composite PK)
+  - [x] 3.3 Add indexes: `CREATE INDEX IF NOT EXISTS idx_user_progress_user_id ON user_progress(user_id)` (per-user list JOIN)
+  - [x] 3.4 The migration must be idempotent — every `CREATE TABLE` / `CREATE INDEX` uses `IF NOT EXISTS`
+  - [x] 3.5 No seed data in the SQL file — seeding is Python-driven (Task 4)
 
-- [ ] Task 4: Build scenarios seeder `server/db/seed_scenarios.py` (AC: 3)
-  - [ ] 4.1 Create `server/db/seed_scenarios.py` with `async def seed_scenarios() -> None`
-  - [ ] 4.2 Glob `server/pipeline/scenarios/*.yaml` via `Path(__file__).resolve().parent.parent / "pipeline" / "scenarios"` (resolve to survive VPS working-dir differences — Story 4.5 `pipeline/scenarios.py` uses the same pattern)
-  - [ ] 4.3 For each YAML, parse via `yaml.safe_load`, extract `metadata` + `base_prompt` + `checkpoints` + `briefing` + `exit_lines`, build the INSERT parameter tuple per ADR 001 mapping (see Dev Notes → YAML → DB column mapping)
-  - [ ] 4.4 Serialize `briefing`, `exit_lines`, `checkpoints`, `escalation_thresholds` with `json.dumps(..., ensure_ascii=False)` — keeps multibyte characters readable in the DB file for debugging
-  - [ ] 4.5 Parse `language_focus` (YAML comma-string) into a trimmed list and `json.dumps` it
-  - [ ] 4.6 Coerce `is_free: true/false` → `1/0`
-  - [ ] 4.7 Use `INSERT INTO scenarios (...) VALUES (...) ON CONFLICT(id) DO UPDATE SET col=excluded.col, ...` — one statement per row (SQLite ≥ 3.24 supports `ON CONFLICT ... DO UPDATE`; `aiosqlite` bundles 3.42+)
-  - [ ] 4.8 Log one info line per scenario upserted (`logger.info(f"Seeded scenario {scenario_id!r}")`) so deploys are observable
-  - [ ] 4.9 Wrap the whole batch in a single `BEGIN IMMEDIATE … COMMIT` so a mid-file crash rolls back cleanly
-  - [ ] 4.10 On any parse/serialization error, log the offending file + field and `raise` — startup MUST fail loudly rather than boot with a half-seeded catalog
+- [x] Task 4: Build scenarios seeder `server/db/seed_scenarios.py` (AC: 3)
+  - [x] 4.1 Create `server/db/seed_scenarios.py` with `async def seed_scenarios() -> None`
+  - [x] 4.2 Glob `server/pipeline/scenarios/*.yaml` via `Path(__file__).resolve().parent.parent / "pipeline" / "scenarios"` (resolve to survive VPS working-dir differences — Story 4.5 `pipeline/scenarios.py` uses the same pattern)
+  - [x] 4.3 For each YAML, parse via `yaml.safe_load`, extract `metadata` + `base_prompt` + `checkpoints` + `briefing` + `exit_lines`, build the INSERT parameter tuple per ADR 001 mapping (see Dev Notes → YAML → DB column mapping)
+  - [x] 4.4 Serialize `briefing`, `exit_lines`, `checkpoints`, `escalation_thresholds` with `json.dumps(..., ensure_ascii=False)` — keeps multibyte characters readable in the DB file for debugging
+  - [x] 4.5 Parse `language_focus` (YAML comma-string) into a trimmed list and `json.dumps` it
+  - [x] 4.6 Coerce `is_free: true/false` → `1/0`
+  - [x] 4.7 Use `INSERT INTO scenarios (...) VALUES (...) ON CONFLICT(id) DO UPDATE SET col=excluded.col, ...` — one statement per row (SQLite ≥ 3.24 supports `ON CONFLICT ... DO UPDATE`; `aiosqlite` bundles 3.42+)
+  - [x] 4.8 Log one info line per scenario upserted (`logger.info(f"Seeded scenario {scenario_id!r}")`) so deploys are observable
+  - [x] 4.9 Wrap the whole batch in a single `BEGIN IMMEDIATE … COMMIT` so a mid-file crash rolls back cleanly
+  - [x] 4.10 On any parse/serialization error, log the offending file + field and `raise` — startup MUST fail loudly rather than boot with a half-seeded catalog
 
-- [ ] Task 5: Wire `seed_scenarios()` into the FastAPI lifespan (AC: 3)
-  - [ ] 5.1 In `server/api/app.py`, extend the `lifespan` context manager to call `await seed_scenarios()` AFTER `await run_migrations()` and before `yield`
-  - [ ] 5.2 Do NOT call `seed_scenarios()` from `run_migrations()` — migrations are pure SQL; seeding is app-layer logic. Keep them adjacent but separate
-  - [ ] 5.3 Wrap the seed call in the lifespan's normal error flow: if it raises, FastAPI fails startup, `systemd` restarts, logs carry the traceback
+- [x] Task 5: Wire `seed_scenarios()` into the FastAPI lifespan (AC: 3)
+  - [x] 5.1 In `server/api/app.py`, extend the `lifespan` context manager to call `await seed_scenarios()` AFTER `await run_migrations()` and before `yield`
+  - [x] 5.2 Do NOT call `seed_scenarios()` from `run_migrations()` — migrations are pure SQL; seeding is app-layer logic. Keep them adjacent but separate
+  - [x] 5.3 Wrap the seed call in the lifespan's normal error flow: if it raises, FastAPI fails startup, `systemd` restarts, logs carry the traceback
 
-- [ ] Task 6: Add scenario queries to `server/db/queries.py` (AC: 4, 5)
-  - [ ] 6.1 Add `async def get_all_scenarios_with_progress(db, user_id: int) -> list[aiosqlite.Row]` — runs the LEFT JOIN SQL from Dev Notes → Queries, ordered easy→medium→hard then id
-  - [ ] 6.2 Add `async def get_scenario_by_id_with_progress(db, user_id: int, scenario_id: str) -> aiosqlite.Row | None` — single-row LEFT JOIN by PK
-  - [ ] 6.3 Add `async def upsert_scenario(db, row: dict) -> None` — used by the seeder; accepts a dict whose keys match the canonical column list
-  - [ ] 6.4 Keep these functions DB-layer only — NO JSON decoding inside `queries.py`. The route handler (Task 8) is responsible for `json.loads` the TEXT columns into native types for the response
+- [x] Task 6: Add scenario queries to `server/db/queries.py` (AC: 4, 5)
+  - [x] 6.1 Add `async def get_all_scenarios_with_progress(db, user_id: int) -> list[aiosqlite.Row]` — runs the LEFT JOIN SQL from Dev Notes → Queries, ordered easy→medium→hard then id
+  - [x] 6.2 Add `async def get_scenario_by_id_with_progress(db, user_id: int, scenario_id: str) -> aiosqlite.Row | None` — single-row LEFT JOIN by PK
+  - [x] 6.3 Add `async def upsert_scenario(db, row: dict) -> None` — used by the seeder; accepts a dict whose keys match the canonical column list
+  - [x] 6.4 Keep these functions DB-layer only — NO JSON decoding inside `queries.py`. The route handler (Task 8) is responsible for `json.loads` the TEXT columns into native types for the response
 
-- [ ] Task 7: Add Pydantic schemas to `server/models/schemas.py` (AC: 4, 5)
-  - [ ] 7.1 Add `ScenarioListItem(BaseModel)` with fields: `id: str`, `title: str`, `difficulty: str`, `is_free: bool`, `rive_character: str`, `language_focus: list[str]`, `content_warning: str | None`, `best_score: int | None`, `attempts: int`
-  - [ ] 7.2 Add `ScenarioDetail(BaseModel)` extending the list fields with: `base_prompt: str`, `checkpoints: list[dict]`, `briefing: dict`, `exit_lines: dict`, `patience_start: int | None`, `fail_penalty: int | None`, `silence_penalty: int | None`, `recovery_bonus: int | None`, `silence_prompt_seconds: int | None`, `silence_hangup_seconds: int | None`, `escalation_thresholds: list[int] | None`, `tts_voice_id: str | None`, `tts_speed: float | None`, `scoring_model: str | None`
-  - [ ] 7.3 Add `ScenariosListOut(BaseModel)` = `{data: list[ScenarioListItem]}` (only for documentation — the route returns the envelope dict directly via `ok_list`, see Task 9)
-  - [ ] 7.4 Do NOT add an `InitiateCallIn` / `InitiateCallOut` rewrite — those are Story 4.5's, untouched
+- [x] Task 7: Add Pydantic schemas to `server/models/schemas.py` (AC: 4, 5)
+  - [x] 7.1 Add `ScenarioListItem(BaseModel)` with fields: `id: str`, `title: str`, `difficulty: str`, `is_free: bool`, `rive_character: str`, `language_focus: list[str]`, `content_warning: str | None`, `best_score: int | None`, `attempts: int`
+  - [x] 7.2 Add `ScenarioDetail(BaseModel)` extending the list fields with: `base_prompt: str`, `checkpoints: list[dict]`, `briefing: dict`, `exit_lines: dict`, `patience_start: int | None`, `fail_penalty: int | None`, `silence_penalty: int | None`, `recovery_bonus: int | None`, `silence_prompt_seconds: int | None`, `silence_hangup_seconds: int | None`, `escalation_thresholds: list[int] | None`, `tts_voice_id: str | None`, `tts_speed: float | None`, `scoring_model: str | None`
+  - [x] 7.3 Add `ScenariosListOut(BaseModel)` = `{data: list[ScenarioListItem]}` (only for documentation — the route returns the envelope dict directly via `ok_list`, see Task 9)
+  - [x] 7.4 Do NOT add an `InitiateCallIn` / `InitiateCallOut` rewrite — those are Story 4.5's, untouched
 
-- [ ] Task 8: Extend the envelope helper with list-count meta (AC: 4)
-  - [ ] 8.1 In `server/api/responses.py`, extend `ok(data, *, extra_meta: dict | None = None)` so `meta` can carry `count` (and future keys) without breaking existing callers
-  - [ ] 8.2 Keep the current signature backwards-compatible — `ok(data)` still returns `{"data": …, "meta": {"timestamp": …}}` unchanged (the 5 existing call sites in `routes_auth.py` + `routes_calls.py` must not be edited)
-  - [ ] 8.3 Add a convenience wrapper `ok_list(items: list[BaseModel] | list[dict]) -> dict` that fills `meta.count = len(items)` and `meta.timestamp = now_iso()` — this is the canonical helper for every list endpoint going forward
+- [x] Task 8: Extend the envelope helper with list-count meta (AC: 4)
+  - [x] 8.1 In `server/api/responses.py`, extend `ok(data, *, extra_meta: dict | None = None)` so `meta` can carry `count` (and future keys) without breaking existing callers
+  - [x] 8.2 Keep the current signature backwards-compatible — `ok(data)` still returns `{"data": …, "meta": {"timestamp": …}}` unchanged (the 5 existing call sites in `routes_auth.py` + `routes_calls.py` must not be edited)
+  - [x] 8.3 Add a convenience wrapper `ok_list(items: list[BaseModel] | list[dict]) -> dict` that fills `meta.count = len(items)` and `meta.timestamp = now_iso()` — this is the canonical helper for every list endpoint going forward
 
-- [ ] Task 9: Build `routes_scenarios.py` with two endpoints (AC: 4, 5, 6)
-  - [ ] 9.1 Create `server/api/routes_scenarios.py`:
+- [x] Task 9: Build `routes_scenarios.py` with two endpoints (AC: 4, 5, 6)
+  - [x] 9.1 Create `server/api/routes_scenarios.py`:
     ```python
     router = APIRouter(prefix="/scenarios", tags=["scenarios"], dependencies=[AUTH_DEPENDENCY])
     ```
-  - [ ] 9.2 `GET /scenarios` handler: read `user_id = request.state.user_id`, call `get_all_scenarios_with_progress`, map each row → `ScenarioListItem` (decoding `language_focus` from JSON, coercing `is_free` to bool, normalising `attempts` with `row["attempts"] or 0` for the NULL case), return `ok_list(items)`
-  - [ ] 9.3 `GET /scenarios/{scenario_id}` handler: call `get_scenario_by_id_with_progress`; when None → `raise HTTPException(status_code=404, detail={"code": "SCENARIO_NOT_FOUND", "message": "Scenario not found."})` so the global handler produces the `{"error": {...}}` envelope
-  - [ ] 9.4 Decode JSON columns in the detail response: `briefing`, `exit_lines`, `checkpoints`, `language_focus`, `escalation_thresholds`
-  - [ ] 9.5 Return `ok(ScenarioDetail(...))` for the detail endpoint (single-object envelope, no `count`)
-  - [ ] 9.6 Register the router in `server/api/app.py`: `from api.routes_scenarios import router as scenarios_router` + `app.include_router(scenarios_router)` — place the `include_router` call alphabetically with the others
+  - [x] 9.2 `GET /scenarios` handler: read `user_id = request.state.user_id`, call `get_all_scenarios_with_progress`, map each row → `ScenarioListItem` (decoding `language_focus` from JSON, coercing `is_free` to bool, normalising `attempts` with `row["attempts"] or 0` for the NULL case), return `ok_list(items)`
+  - [x] 9.3 `GET /scenarios/{scenario_id}` handler: call `get_scenario_by_id_with_progress`; when None → `raise HTTPException(status_code=404, detail={"code": "SCENARIO_NOT_FOUND", "message": "Scenario not found."})` so the global handler produces the `{"error": {...}}` envelope
+  - [x] 9.4 Decode JSON columns in the detail response: `briefing`, `exit_lines`, `checkpoints`, `language_focus`, `escalation_thresholds`
+  - [x] 9.5 Return `ok(ScenarioDetail(...))` for the detail endpoint (single-object envelope, no `count`)
+  - [x] 9.6 Register the router in `server/api/app.py`: `from api.routes_scenarios import router as scenarios_router` + `app.include_router(scenarios_router)` — place the `include_router` call alphabetically with the others
 
-- [ ] Task 10: Extend `test_queries.py` with scenario-query coverage (AC: 1, 4, 5)
-  - [ ] 10.1 Add `test_migration_creates_scenarios_and_user_progress_tables(migrated_db)` — assert both tables + `idx_user_progress_user_id` exist
-  - [ ] 10.2 Add `test_migration_recorded_in_schema_migrations(...)` — update existing test to assert `003_tier_rename_full_to_paid` AND `004_scenarios_and_user_progress` are present alongside `001_init` + `002_calls`
-  - [ ] 10.3 Add `test_users_check_constraint_is_free_paid(migrated_db)` — read `sqlite_master.sql` for `users`, assert it contains `CHECK(tier IN ('free','paid'))` (NOT `'full'`)
-  - [ ] 10.4 Add `test_insert_user_then_paid_update_succeeds(migrated_db)` — insert user → `UPDATE users SET tier='paid' WHERE id=?` → confirm row, then try `UPDATE users SET tier='full'` and assert it raises `sqlite3.IntegrityError` (CHECK violation)
-  - [ ] 10.5 Add `test_seed_scenarios_populates_five_rows(migrated_db)` — run `await seed_scenarios()` → assert `SELECT COUNT(*) FROM scenarios == 5`
-  - [ ] 10.6 Add `test_seed_scenarios_is_idempotent(migrated_db)` — run seeder twice → row count still 5, no duplicate-PK error
-  - [ ] 10.7 Add `test_get_all_scenarios_with_progress_left_joins_correctly(migrated_db)` — seed + insert a user, insert a `user_progress` row for one scenario, call the query, assert that one row has `best_score/attempts` populated and the others have NULL/0
-  - [ ] 10.8 Add `test_scenarios_ordered_easy_medium_hard(migrated_db)` — assert the returned list starts with an `easy` row, then `medium`, then `hard` (relies on the seeded 1/2/2 split)
+- [x] Task 10: Extend `test_queries.py` with scenario-query coverage (AC: 1, 4, 5)
+  - [x] 10.1 Add `test_migration_creates_scenarios_and_user_progress_tables(migrated_db)` — assert both tables + `idx_user_progress_user_id` exist
+  - [x] 10.2 Add `test_migration_recorded_in_schema_migrations(...)` — update existing test to assert `003_tier_rename_full_to_paid` AND `004_scenarios_and_user_progress` are present alongside `001_init` + `002_calls`
+  - [x] 10.3 Add `test_users_check_constraint_is_free_paid(migrated_db)` — read `sqlite_master.sql` for `users`, assert it contains `CHECK(tier IN ('free','paid'))` (NOT `'full'`)
+  - [x] 10.4 Add `test_insert_user_then_paid_update_succeeds(migrated_db)` — insert user → `UPDATE users SET tier='paid' WHERE id=?` → confirm row, then try `UPDATE users SET tier='full'` and assert it raises `sqlite3.IntegrityError` (CHECK violation)
+  - [x] 10.5 Add `test_seed_scenarios_populates_five_rows(migrated_db)` — run `await seed_scenarios()` → assert `SELECT COUNT(*) FROM scenarios == 5`
+  - [x] 10.6 Add `test_seed_scenarios_is_idempotent(migrated_db)` — run seeder twice → row count still 5, no duplicate-PK error
+  - [x] 10.7 Add `test_get_all_scenarios_with_progress_left_joins_correctly(migrated_db)` — seed + insert a user, insert a `user_progress` row for one scenario, call the query, assert that one row has `best_score/attempts` populated and the others have NULL/0
+  - [x] 10.8 Add `test_scenarios_ordered_easy_medium_hard(migrated_db)` — assert the returned list starts with an `easy` row, then `medium`, then `hard` (relies on the seeded 1/2/2 split)
 
-- [ ] Task 11: Add `test_scenarios.py` for the HTTP endpoints (AC: 4, 5, 6)
-  - [ ] 11.1 Create `server/tests/test_scenarios.py` — structure mirrors `test_calls.py` (see Dev Notes → Test patterns)
-  - [ ] 11.2 `test_list_requires_jwt` — no Auth header → 401 `AUTH_UNAUTHORIZED`
-  - [ ] 11.3 `test_detail_requires_jwt` — no Auth header → 401 `AUTH_UNAUTHORIZED`
-  - [ ] 11.4 `test_list_returns_five_scenarios_ordered(client, mock_resend, test_db_path)` — register user, GET `/scenarios`, assert `meta.count == 5`, assert the `id` sequence starts with `waiter_easy_01` and ends with a `*_hard_*` id
-  - [ ] 11.5 `test_list_shape_includes_progression_fields(...)` — assert every item has `best_score` (None for fresh user) and `attempts == 0`, `is_free` is a bool, `language_focus` is a list
-  - [ ] 11.6 `test_list_includes_free_and_paid_mix(...)` — count `is_free=True` items == 3 (waiter, mugger, girlfriend), count `is_free=False` items == 2 (cop, landlord)
-  - [ ] 11.7 `test_detail_returns_full_shape(...)` — GET `/scenarios/waiter_easy_01`, assert `briefing` is an object with keys `vocabulary`/`context`/`expect`, `exit_lines` has `hangup`/`completion`, `checkpoints` is a non-empty list, `base_prompt` contains `"Tina"`, `content_warning` is null
-  - [ ] 11.8 `test_detail_returns_404_on_unknown_id(...)` — GET `/scenarios/nonexistent_id` → 401? NO — auth passes; expect 404 + `error.code == "SCENARIO_NOT_FOUND"`
-  - [ ] 11.9 `test_list_reflects_user_progress(...)` — insert a `user_progress` row (via raw SQL in the test) for `waiter_easy_01` with `best_score=75, attempts=2`, GET `/scenarios`, assert that one item carries `best_score=75, attempts=2` while the others stay at None/0
-  - [ ] 11.10 `test_envelope_shape(...)` — assert `"data"` + `"meta"` keys, `meta.count` is an int for the list endpoint, `meta.timestamp` ends with `"Z"` — DO NOT assert the exact timestamp value (time-dependent)
+- [x] Task 11: Add `test_scenarios.py` for the HTTP endpoints (AC: 4, 5, 6)
+  - [x] 11.1 Create `server/tests/test_scenarios.py` — structure mirrors `test_calls.py` (see Dev Notes → Test patterns)
+  - [x] 11.2 `test_list_requires_jwt` — no Auth header → 401 `AUTH_UNAUTHORIZED`
+  - [x] 11.3 `test_detail_requires_jwt` — no Auth header → 401 `AUTH_UNAUTHORIZED`
+  - [x] 11.4 `test_list_returns_five_scenarios_ordered(client, mock_resend, test_db_path)` — register user, GET `/scenarios`, assert `meta.count == 5`, assert the `id` sequence starts with `waiter_easy_01` and ends with a `*_hard_*` id
+  - [x] 11.5 `test_list_shape_includes_progression_fields(...)` — assert every item has `best_score` (None for fresh user) and `attempts == 0`, `is_free` is a bool, `language_focus` is a list
+  - [x] 11.6 `test_list_includes_free_and_paid_mix(...)` — count `is_free=True` items == 3 (waiter, mugger, girlfriend), count `is_free=False` items == 2 (cop, landlord)
+  - [x] 11.7 `test_detail_returns_full_shape(...)` — GET `/scenarios/waiter_easy_01`, assert `briefing` is an object with keys `vocabulary`/`context`/`expect`, `exit_lines` has `hangup`/`completion`, `checkpoints` is a non-empty list, `base_prompt` contains `"Tina"`, `content_warning` is null
+  - [x] 11.8 `test_detail_returns_404_on_unknown_id(...)` — GET `/scenarios/nonexistent_id` → 401? NO — auth passes; expect 404 + `error.code == "SCENARIO_NOT_FOUND"`
+  - [x] 11.9 `test_list_reflects_user_progress(...)` — insert a `user_progress` row (via raw SQL in the test) for `waiter_easy_01` with `best_score=75, attempts=2`, GET `/scenarios`, assert that one item carries `best_score=75, attempts=2` while the others stay at None/0
+  - [x] 11.10 `test_envelope_shape(...)` — assert `"data"` + `"meta"` keys, `meta.count` is an int for the list endpoint, `meta.timestamp` ends with `"Z"` — DO NOT assert the exact timestamp value (time-dependent)
 
-- [ ] Task 12: Regression check — `/calls/initiate` and `/connect` still work (AC: 7)
-  - [ ] 12.1 Re-run the full `pytest` suite — the new `seed_scenarios()` call in the lifespan MUST NOT break `test_calls.py` or `test_call_endpoint.py`
-  - [ ] 12.2 If the seeder raises during a test that did NOT expect it (e.g. a YAML is missing), the `TestClient` context manager will fail at `__enter__` and every test using `client` will error out — debug the seeder path before blaming individual tests
-  - [ ] 12.3 If `run_migrations()` now loops over 4 files instead of 2, `test_migration_recorded_in_schema_migrations` in `test_queries.py` needs its expected-set updated — already covered by Task 10.2
+- [x] Task 12: Regression check — `/calls/initiate` and `/connect` still work (AC: 7)
+  - [x] 12.1 Re-run the full `pytest` suite — the new `seed_scenarios()` call in the lifespan MUST NOT break `test_calls.py` or `test_call_endpoint.py`
+  - [x] 12.2 If the seeder raises during a test that did NOT expect it (e.g. a YAML is missing), the `TestClient` context manager will fail at `__enter__` and every test using `client` will error out — debug the seeder path before blaming individual tests
+  - [x] 12.3 If `run_migrations()` now loops over 4 files instead of 2, `test_migration_recorded_in_schema_migrations` in `test_queries.py` needs its expected-set updated — already covered by Task 10.2
 
-- [ ] Task 13: Pre-commit validation gates (AC: 7)
-  - [ ] 13.1 `cd server && python -m ruff check .` → zero issues (use `python -m ruff` on Windows per memory — `bare ruff` path-resolves wrong)
-  - [ ] 13.2 `cd server && python -m ruff format --check .` → zero diffs
-  - [ ] 13.3 `cd server && pytest` → all green (including the new scenario tests AND every existing test)
-  - [ ] 13.4 `cd client && flutter analyze` → "No issues found!" (no Flutter code changed, but CI gates the full matrix)
-  - [ ] 13.5 `cd client && flutter test` → "All tests passed!"
-  - [ ] 13.6 Only after 13.1–13.5 are all green, flip status in `sprint-status.yaml` and execute the Smoke Test Gate below (per CLAUDE.md + memory: NEVER commit autonomously — wait for Walid to say "commit ça")
+- [x] Task 13: Pre-commit validation gates (AC: 7)
+  - [x] 13.1 `cd server && python -m ruff check .` → zero issues (use `python -m ruff` on Windows per memory — `bare ruff` path-resolves wrong)
+  - [x] 13.2 `cd server && python -m ruff format --check .` → zero diffs
+  - [x] 13.3 `cd server && pytest` → all green (including the new scenario tests AND every existing test) → 110 passed
+  - [x] 13.4 `cd client && flutter analyze` → "No issues found!" (no Flutter code changed, but CI gates the full matrix)
+  - [x] 13.5 `cd client && flutter test` → "All tests passed!" → 114 tests passed
+  - [x] 13.6 Sprint-status flipped to `in-progress` (full review transition pending VPS Smoke Test Gate). NEVER commit autonomously — waiting for Walid to invoke `/commit`.
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -199,31 +199,98 @@ And `cd client && flutter analyze` + `cd client && flutter test` pass unchanged 
 >
 > **Transition rule:** Every unchecked box below is a stop-ship for the `in-progress → review` transition. Paste the actual command run and its output as proof — a checked box without evidence does not count.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_ <!-- paste the Active/Main PID line -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_
+    ```
+    Active: active (running) since Fri 2026-04-24 08:30:17 UTC
+    Main PID: 392050 (python)
+    ```
+    Files deployed via `scp` to `/opt/survive-the-talk/repo/server/` (pre-commit; the VPS runs hand-edited working tree per project workflow). DB backup taken before migration: `/opt/survive-the-talk/data/db.sqlite.bak-pre-story-5.1-20260424-082656`.
 
-- [ ] **Happy-path list endpoint.** Authenticated `GET /scenarios` returns the 5-scenario envelope in the expected order.
-  - _Command:_ `curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios | jq '.data[].id, .meta.count'`
+- [x] **Happy-path list endpoint.** Authenticated `GET /scenarios` returns the 5-scenario envelope in the expected order.
+  - _Command:_ `curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios`
   - _Expected:_ `200`; `data[0].id == "waiter_easy_01"`; `meta.count == 5`; response contains both `is_free: true` and `is_free: false` entries
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_
+    ```
+    ids: ['waiter_easy_01', 'girlfriend_medium_01', 'mugger_medium_01', 'cop_hard_01', 'landlord_hard_01']
+    count: 5
+    is_free per id: {'waiter_easy_01': True, 'girlfriend_medium_01': True, 'mugger_medium_01': True, 'cop_hard_01': False, 'landlord_hard_01': False}
+    HTTP 200
+    ```
+    Order is correct (easy → medium → hard, then `id` ASC inside each bucket). 3 free + 2 paid as expected.
 
-- [ ] **Happy-path detail endpoint.** Authenticated `GET /scenarios/waiter_easy_01` returns the full scenario body with decoded JSON fields.
-  - _Command:_ `curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios/waiter_easy_01 | jq '.data | {id, briefing, exit_lines, checkpoints: (.checkpoints | length)}'`
+- [x] **Happy-path detail endpoint.** Authenticated `GET /scenarios/waiter_easy_01` returns the full scenario body with decoded JSON fields.
+  - _Command:_ `curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios/waiter_easy_01`
   - _Expected:_ `briefing` is an object with `vocabulary`/`context`/`expect`; `exit_lines` has `hangup`/`completion`; `checkpoints.length >= 5`
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_
+    ```
+    id: waiter_easy_01
+    briefing keys: ['context', 'expect', 'vocabulary']
+    exit_lines keys: ['completion', 'hangup']
+    checkpoints len: 6
+    base_prompt[:60]: /no_think\nYou are Tina, a waitress at a small downtown resta
+    HTTP 200
+    ```
+    All JSON columns decoded as native types (objects + lists, not strings). 6 checkpoints ≥ 5 threshold.
 
-- [ ] **Error / unauth path produces the `{error}` envelope.**
+- [x] **Error / unauth path produces the `{error}` envelope.**
   - _Command:_ `curl -sS -i http://167.235.63.129/scenarios` (no Auth header) AND `curl -sS -i -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios/does_not_exist`
   - _Expected:_ first request → `401` + `{"error": {"code": "AUTH_UNAUTHORIZED", ...}}`; second → `404` + `{"error": {"code": "SCENARIO_NOT_FOUND", ...}}`
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_
+    ```
+    HTTP/1.1 401 Unauthorized
+    {"error":{"code":"AUTH_UNAUTHORIZED","message":"Missing or invalid token."}}
 
-- [ ] **DB side-effect verified.** Both migrations applied and 5 scenarios seeded.
-  - _Command:_ `sqlite3 /opt/surviveTheTalk/app.db "SELECT version FROM schema_migrations ORDER BY version;"` AND `sqlite3 /opt/surviveTheTalk/app.db "SELECT sql FROM sqlite_master WHERE name='users';"` AND `sqlite3 /opt/surviveTheTalk/app.db "SELECT COUNT(*) FROM scenarios;"`
-  - _Expected:_ migrations list includes `001_init`, `002_calls`, `003_tier_rename_full_to_paid`, `004_scenarios_and_user_progress`; users DDL contains `CHECK(tier IN ('free','paid'))`; scenarios count = 5
-  - _Actual:_ <!-- paste output -->
+    HTTP/1.1 404 Not Found
+    {"error":{"code":"SCENARIO_NOT_FOUND","message":"Scenario not found."}}
+    ```
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 100 --since "5 min ago"` shows no ERROR / Traceback on the curl round-trips above, plus one `Seeded scenario 'waiter_easy_01'` (etc.) log line per scenario at startup.
-  - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
+- [x] **DB side-effect verified.** Both migrations applied and 5 scenarios seeded.
+  - _Command:_ Real VPS DB path is `/opt/survive-the-talk/data/db.sqlite` (not `/opt/surviveTheTalk/app.db` — story spec used a placeholder). `sqlite3` CLI not installed on VPS, so queries ran via the venv's bundled sqlite3 module.
+  - _Expected:_ migrations list includes all 4 versions; users DDL contains `CHECK(tier IN ('free','paid'))`; scenarios count = 5
+  - _Actual:_
+    ```
+    Migrations:
+      001_init
+      002_calls
+      003_tier_rename_full_to_paid
+      004_scenarios_and_user_progress
+
+    users DDL:
+      CREATE TABLE "users" (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        jwt_hash TEXT,
+        tier TEXT NOT NULL DEFAULT 'free' CHECK(tier IN ('free','paid')),
+        created_at TEXT NOT NULL
+      )
+
+    scenarios COUNT: 5
+    users COUNT: 1                   (preserved from pre-migration state)
+    call_sessions COUNT: 3           (FK rebuild preserved referencing rows)
+
+    scenarios ids:
+      ('cop_hard_01',        'hard',   0)
+      ('girlfriend_medium_01','medium', 1)
+      ('landlord_hard_01',   'hard',   0)
+      ('mugger_medium_01',   'medium', 1)
+      ('waiter_easy_01',     'easy',   1)
+    ```
+
+- [x] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 100 --since "5 min ago"` shows no ERROR / Traceback on the curl round-trips above, plus one `Seeded scenario 'waiter_easy_01'` (etc.) log line per scenario at startup.
+  - _Proof:_
+    ```
+    journalctl -u pipecat.service --since '08:30:17' | grep -E 'ERROR|Traceback|Exception'
+    → CLEAN — no errors after successful start at 08:30:17
+
+    Apr 24 08:30:18  Seeded scenario 'cop_hard_01' from the-cop.yaml
+    Apr 24 08:30:18  Seeded scenario 'girlfriend_medium_01' from the-girlfriend.yaml
+    Apr 24 08:30:18  Seeded scenario 'landlord_hard_01' from the-landlord.yaml
+    Apr 24 08:30:18  Seeded scenario 'mugger_medium_01' from the-mugger.yaml
+    Apr 24 08:30:18  Seeded scenario 'waiter_easy_01' from the-waiter.yaml
+    Apr 24 08:30:18  INFO: Application startup complete.
+    ```
+    **Note on the regression caught in production:** the first deploy attempt (08:27:50) crashed because migration 003's table-rebuild triggered `FOREIGN KEY constraint failed` — local tests passed because `test_db` had no `call_sessions` rows referencing `users`. **Fix:** added `PRAGMA foreign_keys = OFF;` ... `PRAGMA foreign_keys = ON;` around the rebuild (standard SQLite idiom — see https://www.sqlite.org/lang_altertable.html). Added `test_tier_rename_migration_succeeds_with_referencing_call_sessions` regression test that pre-seeds 3 `call_sessions` rows before applying 003. After the fix, the second restart (08:30:17) succeeded cleanly. DB backup pre-deploy: `/opt/survive-the-talk/data/db.sqlite.bak-pre-story-5.1-20260424-082656` (intact, can roll back if needed).
 
 ## Dev Notes
 
@@ -740,10 +807,96 @@ matches the architecture plan line-for-line — no deviation, no new folders.
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-7 (Claude Code)
 
 ### Debug Log References
 
+- `cd server && .venv/Scripts/python -m pytest` → 126 passed (1 deprecation warning unrelated to this story — `pipecat.audio.utils` `audioop` import). Post-review: +5 tests from the code-review patch batch (P7 parametrisation of corrupt-column coverage 1→5 cases + new `test_detail_returns_500_on_shape_mismatch_json_column` for the Pydantic-ValidationError→SCENARIO_CORRUPT path).
+- `cd server && .venv/Scripts/python -m ruff check .` → All checks passed!
+- `cd server && .venv/Scripts/python -m ruff format --check .` → 41 files already formatted (after one-time format pass on the three new/modified files).
+- `cd client && flutter analyze` → No issues found! (217.6s)
+- `cd client && flutter test` → 114 tests passed (no Flutter code touched by this story).
+
 ### Completion Notes List
 
+- ADR 001 + ADR 002 followed verbatim — `'paid'` is the canonical tier value, `'full'` literal does not appear anywhere in new code (`grep` clean). Migration 003 uses the SQLite table-rebuild idiom; migration 004 is fully idempotent (`IF NOT EXISTS` on every CREATE).
+- Seeder runs in the FastAPI lifespan AFTER `run_migrations()`; wrapped in `BEGIN IMMEDIATE … COMMIT` with rollback on any exception. Test `test_seed_scenarios_is_idempotent` confirms re-running keeps row count at 5.
+- `ok_list(items)` is the new envelope helper for list endpoints — sets `meta.count` automatically. Backwards-compat with `ok(data)` preserved (existing 5 call sites in `routes_auth.py` + `routes_calls.py` untouched).
+- JSON decoding lives ONLY in `routes_scenarios.py` (per Architecture Boundary 4). `db/queries.py` returns raw `aiosqlite.Row` objects — `briefing`, `exit_lines`, `checkpoints`, `language_focus`, `escalation_thresholds` are strings until the route layer.
+- The `_register_user` helper is duplicated between `test_calls.py` and `test_scenarios.py` (NOT extracted into `conftest.py`) — Epic 1 retro flagged "tests changing under your feet" as a velocity drag, so the safer move is to keep them independent until a third caller appears.
+- Local pre-commit gates ALL green (ruff check + ruff format + 110 pytest + flutter analyze + 114 flutter test). The remaining gate is the **VPS Smoke Test Gate** (Story §Smoke Test Gate). Status stays at `in-progress` until Walid deploys to 167.235.63.129 and pastes the curl/sqlite3 outputs into the gate section. Per memory + CLAUDE.md, dev never commits autonomously — Walid invokes `/commit` when ready.
+
 ### File List
+
+**New:**
+- `server/db/migrations/003_tier_rename_full_to_paid.sql` — SQLite table-rebuild for `users.tier` CHECK constraint (`'full'` → `'paid'`)
+- `server/db/migrations/004_scenarios_and_user_progress.sql` — `scenarios` (21 columns per ADR 001) + `user_progress` + `idx_user_progress_user_id`
+- `server/db/migrations/005_call_sessions_scenario_fk.sql` — adds the FK `call_sessions.scenario_id → scenarios.id` (cleanup batch)
+- `server/db/migrations/006_user_progress_created_at_and_cascade.sql` — adds `created_at` column + `ON DELETE CASCADE` on both FKs (cleanup batch)
+- `server/db/seed_scenarios.py` — idempotent YAML → DB seeder, invoked from lifespan
+- `server/api/routes_scenarios.py` — `GET /scenarios` + `GET /scenarios/{scenario_id}`, JWT-gated
+- `server/pipeline/scenarios/the-mugger.yaml` — copy of authoring source
+- `server/pipeline/scenarios/the-girlfriend.yaml` — copy of authoring source
+- `server/pipeline/scenarios/the-cop.yaml` — copy of authoring source
+- `server/pipeline/scenarios/the-landlord.yaml` — copy of authoring source
+- `server/pipeline/scenarios/README.md` — explains canonical-source location
+- `server/tests/test_scenarios.py` — 9 HTTP endpoint tests
+
+**Modified:**
+- `server/api/app.py` — call `seed_scenarios()` after `run_migrations()` in lifespan; register `scenarios_router`
+- `server/api/responses.py` — `ok(extra_meta=None)` (backwards-compat) + new `ok_list(items)` helper with `meta.count`
+- `server/api/routes_scenarios.py` — JSON decoding via `_safe_json_load()` so corrupt rows raise `500 SCENARIO_CORRUPT` instead of FastAPI default
+- `server/db/queries.py` — `get_all_scenarios_with_progress`, `get_scenario_by_id_with_progress`, `upsert_scenario` (raw SQL only — no JSON decode)
+- `server/db/seed_scenarios.py` — pre-flight pass detects duplicate `metadata.id` across YAMLs and fails loudly
+- `server/models/schemas.py` — `ScenarioListItem`, `ScenarioDetail` (extends ListItem), `ScenariosListOut` (doc-only)
+- `server/tests/conftest.py` — extracted `register_user(client, test_db_path, email)` helper (was duplicated in test_calls + test_scenarios)
+- `server/tests/test_calls.py` — uses the conftest helper
+- `server/tests/test_queries.py` — 13 new tests (migration assertions, CHECK constraint, seeder, LEFT JOIN, ordering, FK+CASCADE for 005/006, dup-id detection, FK regression for 003)
+- `server/tests/test_scenarios.py` — uses the conftest helper; new `test_detail_returns_500_on_corrupt_json_column`; updated user_progress INSERTs for the new `created_at` column
+- `.claude/skills/bmad-create-story/template.md` — Smoke Test Gate template fixed (real DB path, venv-python sqlite3 access, dedicated DB-backup gate)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — story 5-1 → `review` (5-2 line untouched, was set by Walid in another session)
+
+## Change Log
+
+| Date | Change |
+|---|---|
+| 2026-04-24 | Story 5.1 implementation complete (Walid + Claude Opus 4.7). Migrations 003 + 004 added, scenarios seeder + 2 endpoints + 18 tests. All local pre-commit gates green (ruff + 111 pytest + flutter analyze + 114 flutter test). |
+| 2026-04-24 | First VPS deploy crashed on migration 003: `FOREIGN KEY constraint failed` because `call_sessions(user_id)` referenced existing rows in `users`. Local tests passed (empty test DB, no FK refs). **Fix:** wrapped 003's table-rebuild with `PRAGMA foreign_keys = OFF/ON` (standard SQLite idiom). Added regression test `test_tier_rename_migration_succeeds_with_referencing_call_sessions` that pre-seeds 3 call_sessions rows. Re-deployed + restart succeeded; all 6 Smoke Test Gate boxes filled with curl/sqlite proof. Status flipped to `review`. |
+| 2026-04-24 | **Post-review cleanup batch** (Walid's go-ahead on dev's self-critique): added migrations **005** (`call_sessions.scenario_id` FK to `scenarios.id` — closing the comment in 002 that said "future migration") and **006** (`user_progress.created_at` column + `ON DELETE CASCADE` on both `user_id` and `scenario_id` FKs — for RGPD-friendly user deletion + cleaner ops). Also: try/except wrap on JSON decoding in route handler (`SCENARIO_CORRUPT` 500 error code), seeder duplicate-id detection, extracted `_register_user` helper into `tests/conftest.py`, fixed `test_scenarios_ordered_easy_medium_hard` to use a real user_id, fixed Smoke Test Gate template paths in `.claude/skills/bmad-create-story/template.md`. **+8 tests** (118 total). Re-deployed; both new migrations applied cleanly on VPS; FK + CASCADE verified via `PRAGMA foreign_key_list`. DB pre-deploy backup: `db.sqlite.bak-pre-005-006-20260424-091306`. |
+| 2026-04-24 | **Migration-safety guardrail (Walid's #1 retro request)**: added active enforcement so the Story 5.1 FK regression class can never ship again. Approach validated by Plan agent (rejected Walid's draft of 5 passive doc layers in favour of 1 active test layer). New file `server/scripts/refresh_prod_snapshot.py` SSHs to VPS, sanitises PII (emails → `user-{id}@example.invalid`, jwt_hash → NULL, auth_codes → deleted), commits result to `server/tests/fixtures/prod_snapshot.sqlite` (~100 KB, tracked via `.gitignore` exception). New `prod_db` fixture in `tests/conftest.py` copies the snapshot to tmp_path. New `tests/test_migrations.py` (3 tests) replays migrations + full FastAPI lifespan against the snapshot, asserts `PRAGMA foreign_key_check` + `integrity_check` clean + no row-count drift. Demonstration confirmed: a buggy 003 (no PRAGMA wrap) raises `IntegrityError` against the snapshot — would have failed pytest locally. CLAUDE.md updated with the rule under a new "Database Migrations — Test Against Production Shape" section. **+3 tests** (121 total). |
+
+### Review Findings
+
+_Adversarial code review 2026-04-24 (Blind Hunter + Edge Case Hunter + Acceptance Auditor). 3 layers, 73 raw findings, 18 surviving after triage._
+
+**Decision resolved** (D1, 2026-04-24):
+
+- [x] [Review][Decision][5.1-CI-deploy] `deploy/pipecat.service` — kept in Story 5.1 scope but tagged **5.1-CI-deploy** to denote a distinct CI/release-pipeline sub-component built alongside the scenarios API. Resolution:
+  - **(a) `User=root` → `User=www-data`**: reverted (most-secure default). Added comment block in the unit file telling future-us to fix file perms in `deploy/setup-vps.sh` rather than falling back to root if www-data hits a "Permission denied" at startup.
+  - **(b) `/opt/survive-the-talk/current` symlink**: verified present in `.github/workflows/deploy-server.yml` — atomic swap via `ln -sfn $REL $VPS_CURRENT.new && mv -Tf $VPS_CURRENT.new $VPS_CURRENT` (workflow lines 140-148). Each release dir also carries its own `.venv` created by `uv sync --frozen --no-dev` during deploy (line 138), so `ExecStart=/opt/survive-the-talk/current/server/.venv/bin/python main.py` resolves correctly post-swap. The CI healthcheck (5 attempts × 3s) will fail-loud if the symlink / perms break — safer than silent root escalation.
+  - **(c) Scope**: kept in Story 5.1 commit but marked with the **5.1-CI-deploy** sub-tag so the commit message and Change Log can flag it as a separate concern bundled for convenience. Future review of the whole CI batch (remaining `.github/`, `deploy/README.md`, `deploy/setup-vps.sh`, `deploy/migrate-to-releases.sh`) happens separately per Walid's scope note.
+
+**Patch** (unambiguous fixes):
+
+- [x] [Review][Patch] Seeder raises `KeyError` / `AttributeError` without logging which YAML file triggered it — violates AC3 "logs the offender and raises". Wrap the Pass-1 `for path in files:` body in a try/except that logs `path.name` + failing field before re-raising. [server/db/seed_scenarios.py:77-87]
+- [x] [Review][Patch] Seeder silently coerces YAML `null` / missing `is_free` to `0` (=paid). `1 if meta["is_free"] else 0` swallows `None`, empty string, and numeric 0. A scenario authored with `is_free:` (no value) would ship as paid with no warning. Require `isinstance(meta["is_free"], bool)` and raise on violation. [server/db/seed_scenarios.py:33]
+- [x] [Review][Patch] Seeder assumes `language_focus` is a string; a YAML-list form (`language_focus: [a, b, c]`) would crash with `AttributeError: 'list' object has no attribute 'split'`. Type-check before `.split(",")` and accept both forms or raise a clear error. [server/db/seed_scenarios.py:26]
+- [x] [Review][Patch] Seeder silently accepts dict or scalar for `checkpoints` — `json.dumps` succeeds on any JSON-serialisable value, but ADR 001 requires a JSON array of objects. Bad shape surfaces only at response-serialise time as a generic 500 `HTTP_ERROR`. Validate `isinstance(checkpoints, list)` and `all(isinstance(cp, dict) for cp in checkpoints)` in `_row_from_yaml`. [server/db/seed_scenarios.py:36]
+- [x] [Review][Patch] Pydantic `ValidationError` in the detail route bypasses the `SCENARIO_CORRUPT` code path — `_safe_json_load` only catches `JSONDecodeError` / `TypeError`. If a column holds valid JSON of the wrong shape (e.g. `briefing` is a JSON list), `ScenarioDetail(...)` raises `ValidationError` → FastAPI default 500 → client sees `HTTP_ERROR` "An error occurred." Wrap the `ScenarioDetail(...)` construction in a try/except that maps `ValidationError` to `SCENARIO_CORRUPT`. The `test_detail_returns_500_on_corrupt_json_column` test only corrupts with invalid JSON, so this branch is untested. [server/api/routes_scenarios.py:102-136]
+- [x] [Review][Patch] `test_list_returns_five_scenarios_ordered` — `ids[-1].endswith("_hard_01")` passes for either hard scenario. If the SQL `ORDER BY` degraded to alphabetical, the test still passes. Assert the full ordered list OR at minimum `ids[-1] == "landlord_hard_01"` + `ids[1] == "girlfriend_medium_01"`. [server/tests/test_scenarios.py:46-47]
+- [x] [Review][Patch] `test_scenarios_ordered_easy_medium_hard` only checks bucket boundary — the `s.id ASC` secondary key is never verified. Assert `cop_hard_01` before `landlord_hard_01` (hard bucket) and `girlfriend_medium_01` before `mugger_medium_01` (medium bucket). [server/tests/test_queries.py:268-272]
+- [x] [Review][Patch] `test_detail_returns_500_on_corrupt_json_column` covers only `briefing`. The other 4 JSON-in-TEXT columns (`language_focus`, `checkpoints`, `exit_lines`, `escalation_thresholds`) are never exercised for corruption. Parametrize or add one case per column. [server/tests/test_scenarios.py:159-183]
+- [x] [Review][Patch] `escalation_thresholds` `json.dumps` missing `ensure_ascii=False` — Task 4.4 prescribes the kwarg for all structural JSON columns; `briefing` / `exit_lines` / `checkpoints` / `language_focus` all have it, `escalation_thresholds` doesn't. Pure consistency fix. [server/db/seed_scenarios.py:48]
+- [x] [Review][Patch] `ScenariosListOut` documentation-only model omits `meta` field — OpenAPI consumers won't see `meta.count` / `meta.timestamp`. Either add `meta: dict` or drop the model (the response helper already produces the full envelope at runtime). [server/models/schemas.py:106-113]
+- [x] [Review][Patch] `ok_list` re-implements the envelope instead of delegating to `ok(..., extra_meta={"count": len(payload)})` — two drift-prone codepaths for list responses. Refactor `ok_list` to call `ok(payload, extra_meta={"count": len(payload)})`. [server/api/responses.py:36-50]
+- [x] [Review][Patch] Seeder `logger.exception(...)` fires AFTER `await db.rollback()` — if `rollback()` raises (e.g. connection already closed), the rollback traceback masks the original seed error. Log first, rollback second. [server/db/seed_scenarios.py:97-99]
+- [x] [Review][Patch] Redundant `row["attempts"] or 0` — both SQL queries already use `COALESCE(up.attempts, 0)` so `attempts` is guaranteed non-NULL int. Dead defensive code; drop for clarity. [server/api/routes_scenarios.py:78, 113]
+- [x] [Review][Patch] Content-warning fields authored with YAML `>` folded block scalars carry a trailing `\n`. The seeder persists it verbatim, which will render as stray whitespace on the client. Either `.strip()` in the seeder or rewrite YAMLs to use quoted strings. [server/pipeline/scenarios/the-mugger.yaml:13-16 + sibling YAMLs + seed_scenarios.py:40]
+- [x] [Review][Patch] Debug Log reports "118 passed" and "25 new tests after the cleanup batch" but Change Log entry 4 adds `+3 tests` (121 total). Debug Log not updated. Reconcile the count. [_bmad-output/implementation-artifacts/5-1-build-scenarios-api-and-database.md:814]
+
+**Deferred** (pre-existing infrastructure issues, not introduced by this story):
+
+- [x] [Review][Defer] `run_migrations()` + Python `executescript` silently COMMITs the outer `BEGIN IMMEDIATE` before running the script — the atomicity guarantee between the migration DDL and the `INSERT INTO schema_migrations` is effectively lost, and the multi-worker serialisation claim in the docstring is weakened. Pre-existing in 001/002; amplified by 003-006 which each carry their own `BEGIN;/COMMIT;`. Root fix requires reworking `run_migrations` to split statements instead of using `executescript`. [server/db/database.py:82-104] — deferred, pre-existing
+- [x] [Review][Defer] No `PRAGMA busy_timeout` set on `get_connection()` — under multi-worker uvicorn, two lifespans racing to `BEGIN IMMEDIATE` (now both `run_migrations` and `seed_scenarios`) can raise `SQLITE_BUSY` immediately instead of queueing. Pre-existing; aggravated by this story adding a second write-lock consumer. [server/db/database.py:28-41] — deferred, pre-existing
+
+**Dismissed as noise** (14): false "005 drops CHECK constraints" (002_calls.sql has none), false "003 loses indexes" (only `idx_users_email` existed), false "test corruption cross-test pollution" (`test_db_path` is function-scoped), "seed clobbers manual edits" (BY DESIGN per Dev Notes #9), "006 silent backfill" (documented in migration header), "CREATE TABLE users_new unrecoverable" (atomic rollback guarantees cleanup), `.gitignore` / `deploy/README.md` / `setup-vps.sh` / `.github/` / `5-2-*.md` (all explicitly excluded from review scope), hardcoded test counts (IS the AC contract), BOM speculation, test conn-leak (test-only), scenario_id length attack (no vector, JWT-gated + parameterised).

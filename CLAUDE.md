@@ -65,3 +65,17 @@ All three must pass with zero issues.
 ### Commit only if ALL checks pass
 
 **The rule**: Only commit if all applicable checks pass completely.
+
+## Database Migrations — Test Against Production Shape
+
+**CRITICAL RULE**: A test that passes on an empty DB says nothing about production. Any new file under `server/db/migrations/` must keep `tests/test_migrations.py` green — that test replays migrations against `tests/fixtures/prod_snapshot.sqlite` (a sanitised copy of the live VPS DB) and asserts no FK / CHECK / integrity violations. This is the active enforcement layer; `pytest` will fail if you ship a migration that crashes against the real prod shape.
+
+If your migration introduces a new table, new constraint, or a structural change you want represented in the snapshot:
+
+```bash
+cd server && python scripts/refresh_prod_snapshot.py
+```
+
+Then commit the refreshed `tests/fixtures/prod_snapshot.sqlite` alongside your migration. The script SSHs to the VPS, pulls the live DB, scrubs PII (emails → `user-{id}@example.invalid`, jwt_hash → NULL, auth_codes → deleted), and writes the result.
+
+Why this matters: Story 5.1 shipped a tier-rename migration that crashed on first deploy because the local test DB was empty (no FK-referencing rows to violate). Snapshot-based testing makes that class of bug impossible to ship — local pytest replays the migration against the real prod shape on every run.

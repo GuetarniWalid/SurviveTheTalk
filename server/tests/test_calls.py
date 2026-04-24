@@ -9,27 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from auth.jwt_service import issue_token
+from tests.conftest import register_user as _register_user
 
 
 def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
-
-
-def _register_user(
-    client: TestClient, test_db_path: str, email: str = "walid@example.com"
-) -> int:
-    """Register a user via the auth flow; return the user's id."""
-    client.post("/auth/request-code", json={"email": email})
-    conn = sqlite3.connect(test_db_path)
-    code = conn.execute(
-        "SELECT code FROM auth_codes WHERE email = ? AND used = 0",
-        (email,),
-    ).fetchone()[0]
-    conn.close()
-
-    resp = client.post("/auth/verify-code", json={"email": email, "code": code})
-    assert resp.status_code == 200
-    return resp.json()["data"]["user_id"]
 
 
 def test_initiate_requires_jwt(client):

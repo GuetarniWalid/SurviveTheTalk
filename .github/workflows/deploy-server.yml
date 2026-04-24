@@ -1,0 +1,270 @@
+name: Deploy server to VPS
+
+# Triggers:
+#   - push to main with server-relevant changes → test + deploy
+#   - manual `gh workflow run` → test + deploy (used for first-time setup,
+#     emergency redeploys, and snapshot refreshes)
+#   - PRs against main → test only (no deploy)
+on:
+  push:
+    branches: [main]
+    # Narrow: only files the pipeline actually applies on the VPS.
+    # Changes to setup-vps.sh / migrate-to-releases.sh / README / Caddy
+    # are manual one-shots — a deploy here would be a no-op that falsely
+    # reports green.
+    paths:
+      - 'server/**'
+      - 'deploy/pipecat.service'
+      - '.github/workflows/deploy-server.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'deploy/pipecat.service'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+# Never let two deploys run in parallel — they'd race on the symlink swap.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  # ----------------------------------------------------------------------
+  # TEST — runs the full server pre-commit gate against the committed
+  # prod_snapshot. Mirrors what CLAUDE.md requires locally before commit.
+  # Catches Story 5.1-style migration regressions BEFORE deploy.
+  # ----------------------------------------------------------------------
+  test:
+    name: Test (ruff + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg (pipecat audio deps need it at import time)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libsndfile1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'server/uv.lock'
+
+      - name: Install Python deps (frozen against uv.lock)
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: ruff check
+        working-directory: server
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        working-directory: server
+        run: uv run ruff format --check .
+
+      - name: pytest (incl. test_migrations against prod_snapshot)
+        working-directory: server
+        run: uv run pytest
+
+  # ----------------------------------------------------------------------
+  # DEPLOY — only on push to main, after test green. Uses the deploy user
+  # (created by deploy/setup-vps.sh) with narrow sudo on systemctl.
+  # ----------------------------------------------------------------------
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      VPS_USER: deploy
+      VPS_RELEASES: /opt/survive-the-talk/releases
+      VPS_CURRENT: /opt/survive-the-talk/current
+      VPS_DATA: /opt/survive-the-talk/data
+      VPS_BACKUPS: /opt/survive-the-talk/backups
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Trust VPS host key
+        # Prefer a pinned host key (stored as VPS_SSH_HOST_KEY secret) over
+        # ssh-keyscan. TOFU on every fresh runner is a permanent MITM window.
+        # See deploy/README.md §4 for how to capture + store the pinned key.
+        env:
+          VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          if [[ -n "$VPS_SSH_HOST_KEY" ]]; then
+            echo "$VPS_SSH_HOST_KEY" >> ~/.ssh/known_hosts
+            echo "Host key pinned from VPS_SSH_HOST_KEY secret."
+          else
+            echo "::warning::VPS_SSH_HOST_KEY not set — falling back to TOFU ssh-keyscan. See deploy/README.md §4 to pin it."
+            ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          fi
+
+      - name: Define release id
+        id: release
+        run: echo "id=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VPS has been migrated to the releases/<sha> layout
+        # Guard against silent-ghost deploys: if setup-vps.sh ran but
+        # migrate-to-releases.sh did NOT, the systemd unit still points at
+        # /opt/.../repo/server and a `restart` would run the OLD code while
+        # the workflow reports success (healthcheck would pass on old code).
+        # Fail loudly instead.
+        run: |
+          set -euo pipefail
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" bash -s <<'EOF'
+          set -euo pipefail
+          if ! [[ -L /opt/survive-the-talk/current ]]; then
+            echo "::error::/opt/survive-the-talk/current is not a symlink — run deploy/migrate-to-releases.sh first (see deploy/README.md step 3)."
+            exit 1
+          fi
+          if ! grep -qF 'WorkingDirectory=/opt/survive-the-talk/current/server' /etc/systemd/system/pipecat.service; then
+            echo "::error::pipecat.service still points at the pre-CI layout. Run deploy/migrate-to-releases.sh."
+            exit 1
+          fi
+          EOF
+
+      - name: Backup prod DB before any change
+        run: |
+          set -euo pipefail
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "test -f $VPS_DATA/db.sqlite \
+              && sqlite3 $VPS_DATA/db.sqlite \".backup '$VPS_BACKUPS/db.pre-${{ steps.release.outputs.id }}.sqlite'\" \
+              && find $VPS_BACKUPS -name 'db.pre-*.sqlite' -mtime +14 -delete \
+              || echo 'WARN: no prod DB to back up (first deploy?)'"
+
+      - name: Sync server/ → releases/<sha>/server/
+        run: |
+          set -euo pipefail
+          REL=$VPS_RELEASES/${{ steps.release.outputs.id }}
+          # Ensure the target dir exists; do not nuke prior releases.
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" "mkdir -p $REL"
+          # Sync server/ in. `--delete-after` removes files no longer in source
+          # (only AFTER successful transfer, never mid-flight). Excludes are
+          # paranoid: never overwrite the production .venv during code sync;
+          # tests + caches don't belong in prod at all.
+          rsync -az --delete-after \
+            --exclude='.venv/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.pytest_cache/' \
+            --exclude='tests/' \
+            --exclude='scripts/refresh_prod_snapshot.py' \
+            ./server/ "$VPS_USER@${{ secrets.VPS_HOST }}:$REL/server/"
+
+      - name: Sync uv.lock & pyproject for dep install
+        run: |
+          # Keep the lockfile + pyproject AT the release dir for `uv sync` below.
+          # (Already covered by the rsync above, but explicit beats implicit.)
+          rsync -az server/pyproject.toml server/uv.lock \
+            "$VPS_USER@${{ secrets.VPS_HOST }}:$VPS_RELEASES/${{ steps.release.outputs.id }}/server/"
+
+      - name: Stamp release with GITHUB_SHA
+        # `/health` reads `server/.git_sha` at import time and exposes it in
+        # the response. The healthcheck step below asserts this matches
+        # $GITHUB_SHA — proving the running process IS the release we just
+        # rsync'd (closes the silent-ghost deploy failure mode).
+        # Written AFTER rsync so `--delete-after` cannot wipe it.
+        run: |
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "echo '${{ github.sha }}' > $VPS_RELEASES/${{ steps.release.outputs.id }}/server/.git_sha"
+
+      - name: Install Python deps in the new release (frozen against uv.lock)
+        run: |
+          set -euo pipefail
+          REL=$VPS_RELEASES/${{ steps.release.outputs.id }}/server
+          # uv installed by deploy/setup-vps.sh under ~deploy/.local/bin/uv.
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "cd $REL && \$HOME/.local/bin/uv sync --frozen --no-dev"
+
+      - name: Sync pipecat.service unit if changed
+        # The unit file isn't inside server/, so the rsync above doesn't move
+        # it. Without this step, any future edit to deploy/pipecat.service
+        # (new EnvironmentFile, ExecStart tweak, hardening opts) would be
+        # silently ignored in prod. Hash-compare against the live unit; only
+        # install + daemon-reload on a real diff to keep the hot path quiet.
+        run: |
+          set -euo pipefail
+          LOCAL_HASH=$(sha256sum deploy/pipecat.service | awk '{print $1}')
+          REMOTE_HASH=$(ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            'sha256sum /etc/systemd/system/pipecat.service 2>/dev/null | awk "{print \$1}"' \
+            || echo "")
+          if [[ "$LOCAL_HASH" == "$REMOTE_HASH" ]]; then
+            echo "pipecat.service unchanged — skipping install."
+            exit 0
+          fi
+          echo "pipecat.service changed ($LOCAL_HASH vs ${REMOTE_HASH:-<missing>}) — installing."
+          scp deploy/pipecat.service "$VPS_USER@${{ secrets.VPS_HOST }}:/tmp/pipecat.service.new"
+          # `install -m 0644` + daemon-reload are both in deploy's sudoers
+          # (see deploy/setup-vps.sh). `rm` of a deploy-owned file in /tmp
+          # doesn't need sudo.
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "sudo -n /usr/bin/install -m 0644 /tmp/pipecat.service.new /etc/systemd/system/pipecat.service \
+             && sudo -n /bin/systemctl daemon-reload \
+             && rm -f /tmp/pipecat.service.new"
+
+      - name: Atomic symlink swap (current → new release)
+        run: |
+          set -euo pipefail
+          REL=$VPS_RELEASES/${{ steps.release.outputs.id }}
+          # `ln -sfn` writes a temp symlink, `mv -Tf` atomically renames it
+          # over `current`. Kernel guarantees `current` always points
+          # somewhere valid — no broken-link window.
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "ln -sfn $REL $VPS_CURRENT.new && mv -Tf $VPS_CURRENT.new $VPS_CURRENT"
+
+      - name: Restart pipecat.service
+        run: |
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "sudo -n /bin/systemctl restart pipecat.service"
+
+      - name: Healthcheck (/health, 5 attempts, 3s gap)
+        # Two assertions:
+        #   (1) HTTP 200 with the standard envelope (DB reachable) — proves
+        #       A process is alive.
+        #   (2) `data.git_sha == $GITHUB_SHA` — proves the alive process is
+        #       THIS release (not an old one that survived a botched swap or
+        #       a crash-looping service that coincidentally hit a "starting"
+        #       window on curl).
+        # `jq` is pre-installed on ubuntu-latest runners.
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if curl -sS -f --max-time 5 http://${{ secrets.VPS_HOST }}/health > /tmp/health.json; then
+              REPORTED_SHA=$(jq -r '.data.git_sha // "missing"' /tmp/health.json)
+              if [[ "$REPORTED_SHA" == "${{ github.sha }}" ]]; then
+                echo "Service healthy on attempt $i, git_sha matches:"
+                cat /tmp/health.json
+                exit 0
+              fi
+              echo "Attempt $i: /health returned 200 but git_sha=$REPORTED_SHA (expected ${{ github.sha }}) — possibly a stale process. Retrying..."
+            else
+              echo "Attempt $i failed (curl), retrying in 3s..."
+            fi
+            sleep 3
+          done
+          echo "::error::Healthcheck failed after 5 attempts (either unreachable, or git_sha mismatch — likely a ghost deploy)."
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "sudo -n /usr/bin/journalctl -u pipecat.service -n 80 --no-pager"
+          exit 1
+
+      - name: Prune old releases (keep last 3)
+        if: success()
+        run: |
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" "
+            cd $VPS_RELEASES &&
+            ls -1t | tail -n +4 | xargs -I{} rm -rf {}
+          "
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          echo "Release: ${{ steps.release.outputs.id }}"
+          echo "Commit:  ${{ github.sha }}"
+          echo "Trigger: ${{ github.event_name }} by ${{ github.actor }}"

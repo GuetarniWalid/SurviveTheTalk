@@ -20,13 +20,21 @@ from api.responses import err
 from api.routes_auth import router as auth_router
 from api.routes_calls import router as calls_router
 from api.routes_health import router as health_router
+from api.routes_scenarios import router as scenarios_router
 from db.database import run_migrations
+from db.seed_scenarios import seed_scenarios
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run DB migrations once at startup; clean shutdown is a no-op."""
+    """Run DB migrations + seed scenarios at startup; clean shutdown is a no-op.
+
+    `seed_scenarios()` runs AFTER `run_migrations()` because it depends on the
+    `scenarios` table existing. A seed failure raises and aborts startup —
+    `systemd` will restart and the traceback lands in `journalctl`.
+    """
     await run_migrations()
+    await seed_scenarios()
     yield
 
 
@@ -40,10 +48,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(call_router)
 app.include_router(calls_router)
+app.include_router(health_router)
+app.include_router(scenarios_router)
 
 
 _GENERIC_HTTP_MESSAGES = {

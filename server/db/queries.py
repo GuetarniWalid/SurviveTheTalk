@@ -179,3 +179,119 @@ async def get_call_session(
         "SELECT * FROM call_sessions WHERE id = ?", (call_id,)
     ) as cursor:
         return await cursor.fetchone()
+
+
+# Scenario rows are stored as JSON-in-TEXT (`briefing`, `exit_lines`,
+# `checkpoints`, `language_focus`, `escalation_thresholds`). This layer returns
+# the raw `aiosqlite.Row` objects untouched — the route handler in
+# `api/routes_scenarios.py` owns the `json.loads` step. Keeping decoding out of
+# `queries.py` preserves Architecture Boundary 4 (raw-SQL only here).
+
+# `CASE s.difficulty WHEN 'easy' THEN 1 ...` keeps ordering inside SQLite.
+# A plain `ORDER BY difficulty` would sort the TEXT column alphabetically,
+# producing easy/hard/medium — the wrong UX bucket order.
+_SELECT_LIST_WITH_PROGRESS = """
+SELECT
+    s.*,
+    up.best_score,
+    COALESCE(up.attempts, 0) AS attempts
+FROM scenarios s
+LEFT JOIN user_progress up
+    ON up.scenario_id = s.id
+    AND up.user_id = :user_id
+ORDER BY
+    CASE s.difficulty
+        WHEN 'easy' THEN 1
+        WHEN 'medium' THEN 2
+        WHEN 'hard' THEN 3
+    END ASC,
+    s.id ASC
+"""
+
+_SELECT_DETAIL_WITH_PROGRESS = """
+SELECT
+    s.*,
+    up.best_score,
+    COALESCE(up.attempts, 0) AS attempts
+FROM scenarios s
+LEFT JOIN user_progress up
+    ON up.scenario_id = s.id
+    AND up.user_id = :user_id
+WHERE s.id = :scenario_id
+"""
+
+
+async def get_all_scenarios_with_progress(
+    db: aiosqlite.Connection, user_id: int
+) -> list[aiosqlite.Row]:
+    """Return every scenario row LEFT-JOINed with the caller's progression.
+
+    Ordering: difficulty bucket (easy < medium < hard), then `id` ASC as the
+    stable secondary key. `best_score` is NULL and `attempts` is 0 for
+    scenarios the user has never attempted.
+    """
+    async with db.execute(_SELECT_LIST_WITH_PROGRESS, {"user_id": user_id}) as cursor:
+        return list(await cursor.fetchall())
+
+
+async def get_scenario_by_id_with_progress(
+    db: aiosqlite.Connection, user_id: int, scenario_id: str
+) -> aiosqlite.Row | None:
+    """Return a single scenario row + the caller's progression, or None."""
+    async with db.execute(
+        _SELECT_DETAIL_WITH_PROGRESS,
+        {"user_id": user_id, "scenario_id": scenario_id},
+    ) as cursor:
+        return await cursor.fetchone()
+
+
+_UPSERT_SCENARIO_SQL = """
+INSERT INTO scenarios (
+    id, title, difficulty, is_free, rive_character,
+    base_prompt, checkpoints, briefing, exit_lines, language_focus,
+    content_warning,
+    patience_start, fail_penalty, silence_penalty, recovery_bonus,
+    silence_prompt_seconds, silence_hangup_seconds,
+    escalation_thresholds,
+    tts_voice_id, tts_speed, scoring_model
+) VALUES (
+    :id, :title, :difficulty, :is_free, :rive_character,
+    :base_prompt, :checkpoints, :briefing, :exit_lines, :language_focus,
+    :content_warning,
+    :patience_start, :fail_penalty, :silence_penalty, :recovery_bonus,
+    :silence_prompt_seconds, :silence_hangup_seconds,
+    :escalation_thresholds,
+    :tts_voice_id, :tts_speed, :scoring_model
+)
+ON CONFLICT(id) DO UPDATE SET
+    title=excluded.title,
+    difficulty=excluded.difficulty,
+    is_free=excluded.is_free,
+    rive_character=excluded.rive_character,
+    base_prompt=excluded.base_prompt,
+    checkpoints=excluded.checkpoints,
+    briefing=excluded.briefing,
+    exit_lines=excluded.exit_lines,
+    language_focus=excluded.language_focus,
+    content_warning=excluded.content_warning,
+    patience_start=excluded.patience_start,
+    fail_penalty=excluded.fail_penalty,
+    silence_penalty=excluded.silence_penalty,
+    recovery_bonus=excluded.recovery_bonus,
+    silence_prompt_seconds=excluded.silence_prompt_seconds,
+    silence_hangup_seconds=excluded.silence_hangup_seconds,
+    escalation_thresholds=excluded.escalation_thresholds,
+    tts_voice_id=excluded.tts_voice_id,
+    tts_speed=excluded.tts_speed,
+    scoring_model=excluded.scoring_model
+"""
+
+
+async def upsert_scenario(db: aiosqlite.Connection, row: dict) -> None:
+    """Insert or update a scenario row by primary key.
+
+    Used by the YAML seeder (`db/seed_scenarios.py`). Does NOT commit — the
+    seeder owns the transaction so a mid-batch failure rolls the whole catalog
+    back instead of leaving half-seeded rows.
+    """
+    await db.execute(_UPSERT_SCENARIO_SQL, row)

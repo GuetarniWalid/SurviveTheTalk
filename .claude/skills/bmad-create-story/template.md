@@ -40,9 +40,13 @@ so that {{benefit}}.
   - _Expected:_ <!-- e.g. 401 + {"error": "UNAUTHENTICATED", ...} -->
   - _Actual:_ <!-- paste output -->
 
-- [ ] **DB side-effect verified (if the story writes rows or adds a migration).** Read back via `sqlite3` confirms the expected state. Mark N/A with one-line rationale if the story has zero DB impact.
-  - _Command:_ <!-- e.g. sqlite3 app.db "SELECT version FROM schema_migrations;" -->
+- [ ] **DB side-effect verified (if the story writes rows or adds a migration).** Read back the prod DB at `/opt/survive-the-talk/data/db.sqlite` confirms the expected state. **Note:** the VPS does NOT have the `sqlite3` CLI installed — query via the venv's stdlib instead. Mark N/A with one-line rationale if the story has zero DB impact.
+  - _Command:_ <!-- e.g. /opt/survive-the-talk/repo/server/.venv/bin/python -c 'import sqlite3; c=sqlite3.connect("/opt/survive-the-talk/data/db.sqlite"); [print(r) for r in c.execute("SELECT version FROM schema_migrations")]' -->
   - _Actual:_ <!-- paste rows -->
+
+- [ ] **DB backup taken BEFORE deploy (migration stories only).** Snapshot the prod DB so the migration is reversible. Skip with N/A for stories that don't touch the DB schema.
+  - _Command:_ `ssh root@167.235.63.129 "cp /opt/survive-the-talk/data/db.sqlite /opt/survive-the-talk/data/db.sqlite.bak-pre-<story-id>-$(date +%Y%m%d-%H%M%S)"`
+  - _Proof:_ <!-- paste the resulting filename -->
 
 - [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` shows no ERROR or Traceback for the request(s) fired above.
   - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
