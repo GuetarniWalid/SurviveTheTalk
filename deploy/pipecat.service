@@ -6,9 +6,19 @@ After=network.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/survive-the-talk/repo/server
+# `current` is a symlink atomically swapped by the CI deploy
+# (.github/workflows/deploy-server.yml) → /opt/survive-the-talk/releases/<git-sha>/.
+# Restarting the service after the swap re-resolves the symlink, so this unit
+# never needs editing on a normal deploy.
+#
+# Setup requirement: the `deploy` SSH user (used by the workflow) must place
+# the release tree with group-readable perms so `www-data` can read + execute.
+# If the healthcheck at the end of the workflow fails post-restart with a
+# "Permission denied" log line, fix the perms in `deploy/setup-vps.sh` —
+# DO NOT fall back to `User=root` (security downgrade).
+WorkingDirectory=/opt/survive-the-talk/current/server
 EnvironmentFile=/opt/survive-the-talk/.env
-ExecStart=/opt/survive-the-talk/repo/server/.venv/bin/python main.py
+ExecStart=/opt/survive-the-talk/current/server/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5s
 PrivateTmp=true
