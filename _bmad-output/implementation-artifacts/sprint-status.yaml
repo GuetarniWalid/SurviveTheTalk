@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-23 (Epic 4 retro completed → epic-4: done, epic-4-retrospective: done)
+# last_updated: 2026-04-24 (Story 5.1 created → epic-5: in-progress, 5-1: ready-for-dev)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-23 (Epic 4 retro completed → epic-4: done, epic-4-retrospective: done)
+last_updated: 2026-04-24 (Story 5.1 created → epic-5: in-progress, 5-1: ready-for-dev)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -79,8 +79,8 @@ development_status:
   epic-4-retrospective: done  # 2026-04-23 retro completed, doc: epic-4-retro-2026-04-23.md
 
   # Epic 5: Scenario Browsing & Progression
-  epic-5: backlog
-  5-1-build-scenarios-api-and-database: backlog
+  epic-5: in-progress
+  5-1-build-scenarios-api-and-database: ready-for-dev
   5-2-build-scenario-list-screen-with-scenariocard-component: backlog
   5-3-build-bottomoverlaycard-and-daily-call-limit-enforcement: backlog
   5-4-build-content-warning-display-for-intense-scenarios: backlog
