@@ -57,6 +57,15 @@ mkdir -p "$RELEASE_DIR"
 # `-a` preserves perms + symlinks (incl. the .venv contents). `--reflink=auto`
 # uses copy-on-write where the FS supports it (negligible disk).
 cp -a "$SOURCE_DIR" "$RELEASE_DIR/server"
+# Strip any hand-edited .env that may live in the VPS repo. pydantic_settings
+# opens `.env` relative to CWD at import time; after `chown -R deploy` below,
+# www-data (the service user) cannot read a 600-mode file it no longer owns
+# → service crashes with PermissionError at startup. Systemd already passes
+# the env via `EnvironmentFile=/opt/survive-the-talk/.env` (root-loaded then
+# forwarded to the child), so dropping this in-repo copy is safe. Future CI
+# deploys rsync from git where .env is gitignored — this only affects this
+# one-shot bridge.
+rm -f "$RELEASE_DIR/server/.env"
 chown -R deploy:deploy "$RELEASE_DIR"
 echo "    done — $(du -sh "$RELEASE_DIR" | cut -f1)"
 

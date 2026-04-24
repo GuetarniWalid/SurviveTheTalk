@@ -40,9 +40,19 @@ is what the VPS authorises.
 
 ## 2. Provision the VPS (creates `deploy` user, sudoers, dirs, installs uv)
 
+Two commands — the pubkey gets scp'd first, then the provisioning script
+reads it from a known VPS path. The older single-line form that passed the
+key via `bash -s "$(cat pubkey)"` was fragile: shell word-splitting
+collapsed the key to just `"ssh-ed25519"` and `authorized_keys` ended up
+useless (21 bytes instead of 127). The two-step pattern is robust.
+
 ```bash
-ssh root@167.235.63.129 'bash -s' < deploy/setup-vps.sh "$(cat ~/.ssh/github_deploy.pub)"
+scp ~/.ssh/github_deploy.pub root@167.235.63.129:/tmp/gh_pubkey.pub
+ssh root@167.235.63.129 'bash -s' < deploy/setup-vps.sh
 ```
+
+The script deletes `/tmp/gh_pubkey.pub` once it has been installed into
+`authorized_keys`, so no secret stays in a world-readable directory.
 
 Verify it worked:
 

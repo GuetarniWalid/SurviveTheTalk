@@ -4,7 +4,13 @@
 # Run ONCE on the VPS as root, after generating an SSH keypair locally for
 # GitHub Actions:
 #
-#   ssh root@167.235.63.129 'bash -s' < deploy/setup-vps.sh "$(cat ~/.ssh/github_deploy.pub)"
+#   scp ~/.ssh/github_deploy.pub root@167.235.63.129:/tmp/gh_pubkey.pub
+#   ssh root@167.235.63.129 'bash -s' < deploy/setup-vps.sh
+#
+# (The two-step pattern — scp first, then bash -s — is robust against shell
+#  word-splitting of the pubkey. An earlier single-line form passed the key
+#  via `bash -s "$(cat pubkey)"` which split the key on whitespace and wrote
+#  only "restrict ssh-ed25519" to authorized_keys. Don't go back to that.)
 #
 # What it does (idempotent — safe to re-run):
 #   1. Creates the `deploy` user with a locked password (SSH-key-only) and
@@ -30,15 +36,26 @@
 
 set -euo pipefail
 
-GH_PUBKEY="${1:-}"
-if [[ -z "$GH_PUBKEY" ]]; then
-    echo "ERROR: pass the GitHub Actions deploy public key as the first arg." >&2
-    echo "Usage: ssh root@VPS 'bash -s' < setup-vps.sh \"\$(cat ~/.ssh/github_deploy.pub)\"" >&2
+if [[ "$EUID" -ne 0 ]]; then
+    echo "ERROR: must run as root (use 'ssh root@VPS')." >&2
     exit 1
 fi
 
-if [[ "$EUID" -ne 0 ]]; then
-    echo "ERROR: must run as root (use 'ssh root@VPS')." >&2
+# Read the GitHub Actions deploy pubkey from a known VPS path. The caller
+# scp's it there first — see the docstring at the top of this file. This
+# two-step pattern avoids the shell-word-splitting trap of passing the key
+# via argv (the space between "ssh-ed25519" and the base64 body becomes a
+# word boundary, and $1 collapses to just "ssh-ed25519").
+PUBKEY_PATH=/tmp/gh_pubkey.pub
+if [[ ! -f "$PUBKEY_PATH" ]]; then
+    echo "ERROR: $PUBKEY_PATH not found. Copy the public key to the VPS first:" >&2
+    echo "  scp ~/.ssh/github_deploy.pub root@VPS:$PUBKEY_PATH" >&2
+    echo "  ssh root@VPS 'bash -s' < deploy/setup-vps.sh" >&2
+    exit 1
+fi
+GH_PUBKEY=$(cat "$PUBKEY_PATH")
+if [[ -z "${GH_PUBKEY// }" ]]; then
+    echo "ERROR: $PUBKEY_PATH is empty." >&2
     exit 1
 fi
 
@@ -146,6 +163,10 @@ if ! sudo -u deploy bash -c 'command -v uv' >/dev/null 2>&1; then
 else
     echo "    uv already installed for deploy user, skipping"
 fi
+
+# Clean up the staged pubkey — authorized_keys already holds the canonical
+# copy, and /tmp is world-readable so the uploaded file is a weak info leak.
+rm -f "$PUBKEY_PATH"
 
 echo
 echo "==> Done. Verify:"
