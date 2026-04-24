@@ -312,6 +312,15 @@ Load config from `{project-root}/_bmad/bmm/config.yaml` and resolve:
   file_structure_requirements</template-output>
   <template-output file="{default_output_file}">testing_requirements</template-output>
 
+  <!-- Smoke Test Gate — conditional inclusion for server/deploy stories (AI-B, Epic 4 retro) -->
+  <check if="story touches a server endpoint, DB migration, or VPS deployment">
+    <action>Include the "Smoke Test Gate (Server / Deploy Stories Only)" section from template.md verbatim</action>
+    <action>Customize the _Command:_ placeholders with the endpoint paths, curl verbs, and DB queries specific to this story</action>
+  </check>
+  <check if="story is Flutter-client-only (no server/DB/deploy impact)">
+    <action>Omit the Smoke Test Gate section entirely</action>
+  </check>
+
   <!-- Previous story intelligence -->
   <check
     if="previous story learnings available">
