@@ -7,6 +7,11 @@ import 'package:client/features/auth/bloc/auth_state.dart';
 import 'package:client/features/onboarding/bloc/onboarding_bloc.dart';
 import 'package:client/features/onboarding/bloc/onboarding_event.dart';
 import 'package:client/features/onboarding/bloc/onboarding_state.dart';
+import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
+import 'package:client/features/scenarios/bloc/scenarios_event.dart';
+import 'package:client/features/scenarios/bloc/scenarios_state.dart';
+import 'package:client/features/scenarios/models/scenario.dart';
+import 'package:client/features/scenarios/views/scenario_list_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -17,21 +22,27 @@ class MockAuthBloc extends MockBloc<AuthEvent, AuthState>
 class MockOnboardingBloc extends MockBloc<OnboardingEvent, OnboardingState>
     implements OnboardingBloc {}
 
+class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
+    implements ScenariosBloc {}
+
 class MockConsentStorage extends Mock implements ConsentStorage {}
 
 void main() {
   late MockAuthBloc mockAuthBloc;
   late MockOnboardingBloc mockOnboardingBloc;
+  late MockScenariosBloc mockScenariosBloc;
   late MockConsentStorage mockConsentStorage;
 
   setUpAll(() {
     registerFallbackValue(CheckAuthStatusEvent());
     registerFallbackValue(const CheckOnboardingStatusEvent());
+    registerFallbackValue(const LoadScenariosEvent());
   });
 
   setUp(() {
     mockAuthBloc = MockAuthBloc();
     mockOnboardingBloc = MockOnboardingBloc();
+    mockScenariosBloc = MockScenariosBloc();
     mockConsentStorage = MockConsentStorage();
     when(() => mockConsentStorage.preload()).thenAnswer((_) async {});
     // Default: all onboarding gates satisfied unless a test overrides them.
@@ -40,6 +51,15 @@ void main() {
     when(() => mockConsentStorage.hasConsentSync).thenReturn(true);
     when(() => mockConsentStorage.hasMicPermissionSync).thenReturn(true);
     when(() => mockConsentStorage.hasSeenFirstCallSync).thenReturn(true);
+    // Empty list keeps the screen content trivial — these tests assert that
+    // the right route renders, not the card contents.
+    const emptyLoaded = ScenariosLoaded(<Scenario>[]);
+    when(() => mockScenariosBloc.state).thenReturn(emptyLoaded);
+    whenListen(
+      mockScenariosBloc,
+      const Stream<ScenariosState>.empty(),
+      initialState: emptyLoaded,
+    );
   });
 
   testWidgets('App renders email entry screen when not authenticated',
@@ -93,12 +113,13 @@ void main() {
       authBloc: mockAuthBloc,
       onboardingBloc: mockOnboardingBloc,
       consentStorage: mockConsentStorage,
+      scenariosBloc: mockScenariosBloc,
     ));
     await tester.pumpAndSettle();
 
     expect(find.byType(MaterialApp), findsOneWidget);
     // AC6: returning user skips auth and consent, lands on root
-    expect(find.text('Scenario List — Story 5.2'), findsOneWidget);
+    expect(find.byType(ScenarioListScreen), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -204,7 +225,7 @@ void main() {
 
     // AC5: should land on the incoming call screen (Tina's name is visible).
     expect(find.text('Tina'), findsOneWidget);
-    expect(find.text('Scenario List — Story 5.2'), findsNothing);
+    expect(find.byType(ScenarioListScreen), findsNothing);
   });
 
   testWidgets(
@@ -230,10 +251,11 @@ void main() {
       authBloc: mockAuthBloc,
       onboardingBloc: mockOnboardingBloc,
       consentStorage: mockConsentStorage,
+      scenariosBloc: mockScenariosBloc,
     ));
     await tester.pumpAndSettle();
 
-    expect(find.text('Scenario List — Story 5.2'), findsOneWidget);
+    expect(find.byType(ScenarioListScreen), findsOneWidget);
     expect(find.text('Tina'), findsNothing);
   });
 

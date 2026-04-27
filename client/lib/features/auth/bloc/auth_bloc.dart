@@ -13,9 +13,15 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   AuthBloc({
     required AuthRepository authRepository,
     required TokenStorage tokenStorage,
+    AuthState? initialState,
   }) : _authRepository = authRepository,
        _tokenStorage = tokenStorage,
-       super(AuthInitial()) {
+       // Seeded by App with `AuthAuthenticated()` when TokenStorage.preload()
+       // found a valid JWT — avoids the flash-of-login-screen on cold start
+       // for already-authenticated returning users (client/CLAUDE.md
+       // gotcha #5). Defaults to AuthInitial() when no seed is provided
+       // (fresh installs, tests, etc.).
+       super(initialState ?? AuthInitial()) {
     on<CheckAuthStatusEvent>(_onCheckAuthStatus);
     on<ResetAuthEvent>(_onReset);
     on<SubmitEmailEvent>(_onSubmitEmail);

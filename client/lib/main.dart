@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:rive/rive.dart';
 
 import 'app/app.dart';
+import 'core/auth/token_storage.dart';
 import 'core/onboarding/consent_storage.dart';
 
 /// Bootstrap sequence required by Rive 0.14.x:
@@ -52,10 +53,19 @@ Future<void> bootstrap() async {
     );
   }
 
+  // Preload sync caches in parallel — both reads hit FlutterSecureStorage
+  // and the router needs both answers synchronously on the first frame
+  // (client/CLAUDE.md gotcha #5: async router redirect = flash of wrong
+  // content). TokenStorage tells the auth gate whether to seed the bloc as
+  // already-authenticated; ConsentStorage covers the onboarding gates.
   final consentStorage = ConsentStorage();
-  await consentStorage.preload();
+  final tokenStorage = TokenStorage();
+  await Future.wait<void>([
+    consentStorage.preload(),
+    tokenStorage.preload(),
+  ]);
 
-  runApp(App(consentStorage: consentStorage));
+  runApp(App(consentStorage: consentStorage, tokenStorage: tokenStorage));
 }
 
 Future<void> main() async {

@@ -16,14 +16,42 @@ class AppSpacing {
 
   // Screen-level padding
   static const double screenHorizontal = 20.0;
+
+  /// Horizontal padding on the scenario list screen (UX-DR3 + Figma spec
+  /// `iPhone 16 - 5`: padding `30 18 0 18`). Slightly tighter than
+  /// `screenHorizontal` so the 357-px-wide cards breathe inside a 393-px
+  /// device.
+  static const double screenHorizontalScenarioList = 18.0;
+
   static const double screenVerticalList = 30.0;
   static const double screenVerticalTopSafe = 60.0;
 
   // Scenario card internals
   static const double cardGap = 12.0;
   static const double cardInternalPaddingVertical = 10.0;
+
+  /// Vertical / horizontal padding inside a scenario card row (Figma
+  /// `iPhone 16 - 5`: padding 5 20). Distinct from [cardTextGap] /
+  /// [cardIconGap] which describe inter-child gaps, not the row's own
+  /// padding — they happen to share the same numeric values today but
+  /// shouldn't be conflated semantically.
+  static const double cardPaddingVertical = 5.0;
+  static const double cardPaddingHorizontal = 20.0;
+
   static const double cardTextGap = 5.0;
   static const double cardIconGap = 20.0;
+
+  /// Horizontal gap between the avatar and the text column inside a
+  /// ScenarioCard (UX-DR4). Same numeric value as [overlayIconTextGap]
+  /// today but kept distinct so a Story 5.3 retune of the bottom-overlay
+  /// token cannot silently shift this card's layout.
+  static const double cardAvatarTextGap = 10.0;
+
+  /// Horizontal gap between the text column and the action-icons row
+  /// inside a ScenarioCard. Same value as [cardAvatarTextGap]; named for
+  /// the same reason — keep ScenarioCard's spacing decoupled from the
+  /// BottomOverlayCard tokens.
+  static const double cardTextActionsGap = 10.0;
 
   // Component sizes
   static const double avatarSmall = 50.0;

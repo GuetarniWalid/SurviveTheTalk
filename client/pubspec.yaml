@@ -78,6 +78,7 @@ flutter:
     - assets/images/icon/
     - assets/images/splash/
     - assets/images/scenario_backgrounds/
+    - assets/images/characters/
     # Ship the SIL Open Font License text alongside the Inter TTFs so the
     # app bundle complies with OFL §2 (license must accompany each copy).
     - assets/fonts/inter/OFL.txt

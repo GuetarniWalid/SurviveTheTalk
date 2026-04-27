@@ -8,8 +8,30 @@ class TokenStorage {
 
   final FlutterSecureStorage _storage;
 
+  /// Sync cache of "do we hold a non-expired JWT?". Populated by [preload]
+  /// during bootstrap so `GoRouter.redirect` can decide auth status without
+  /// awaiting `FlutterSecureStorage.read` on the first frame (which would
+  /// otherwise cause a flash-of-login-screen for already-authenticated
+  /// returning users — see client/CLAUDE.md gotcha #5).
+  bool? _cachedHasValidToken;
+
   TokenStorage([FlutterSecureStorage? storage])
     : _storage = storage ?? const FlutterSecureStorage();
+
+  /// Read the stored token once at bootstrap and cache whether it's a valid
+  /// (non-expired) JWT. Subsequent [hasValidTokenSync] calls return the
+  /// cached answer with no I/O. The async [readToken] still works the same
+  /// for code paths that need the actual token string.
+  Future<void> preload() async {
+    final token = await readToken();
+    _cachedHasValidToken = token != null && !isTokenExpired(token);
+  }
+
+  /// True iff [preload] found a stored, non-expired JWT. Returns false when
+  /// [preload] was never called (so unit tests with a fresh TokenStorage
+  /// behave as "not authenticated" by default — matches the production
+  /// pre-preload state).
+  bool get hasValidTokenSync => _cachedHasValidToken ?? false;
 
   Future<void> saveToken(String token) => _storage.write(key: _tokenKey, value: token);
 

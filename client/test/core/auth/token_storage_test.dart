@@ -78,4 +78,56 @@ void main() {
       expect(TokenStorage.isTokenExpired(token), isTrue);
     });
   });
+
+  group('preload + hasValidTokenSync (anti flash-of-login)', () {
+    String buildJwt(int exp) {
+      final header = base64Url.encode(utf8.encode('{"alg":"HS256"}'));
+      final payload = base64Url.encode(utf8.encode('{"exp":$exp}'));
+      const signature = 'signature';
+      return '$header.$payload.$signature';
+    }
+
+    test(
+      'hasValidTokenSync returns false when preload was never called',
+      () {
+        // A fresh TokenStorage that was never preloaded MUST behave as
+        // "not authenticated" — production bootstrap forgets to preload?
+        // The user sees /login (correct fallback), not a phantom
+        // /scenarios screen.
+        expect(tokenStorage.hasValidTokenSync, isFalse);
+      },
+    );
+
+    test(
+      'preload caches true when a non-expired token is stored',
+      () async {
+        final futureExp =
+            DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600;
+        await tokenStorage.saveToken(buildJwt(futureExp));
+
+        await tokenStorage.preload();
+
+        expect(tokenStorage.hasValidTokenSync, isTrue);
+      },
+    );
+
+    test(
+      'preload caches false when token is expired',
+      () async {
+        final pastExp =
+            DateTime.now().millisecondsSinceEpoch ~/ 1000 - 3600;
+        await tokenStorage.saveToken(buildJwt(pastExp));
+
+        await tokenStorage.preload();
+
+        expect(tokenStorage.hasValidTokenSync, isFalse);
+      },
+    );
+
+    test('preload caches false when no token is stored', () async {
+      await tokenStorage.preload();
+
+      expect(tokenStorage.hasValidTokenSync, isFalse);
+    });
+  });
 }

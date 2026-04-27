@@ -77,46 +77,58 @@ class _CallPlaceholderScreenState extends State<CallPlaceholderScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            const Spacer(),
-            const Text(
-              'Connecting to Tina…',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 24,
-                fontWeight: FontWeight.w400,
-                color: CallColors.secondary,
-              ),
-            ),
-            const SizedBox(height: 24),
-            if (_errorMessage != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  _errorMessage!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontFamily: 'Inter',
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.destructive,
-                  ),
+    // Best-effort intent: signal that this surface should not pop. In
+    // practice (verified 2026-04-27 on Android 14 / Pixel 9 Pro XL) Flutter's
+    // PopScope still lets the system back-swipe background the app — see
+    // deferred-work.md "Back-press blocking on /call" for the full
+    // investigation log. The proper fix (CallKit on iOS + ConnectionService
+    // on Android keeping the audio session alive in background, plus a
+    // reliable back-press interceptor) belongs to Story 6.1 alongside the
+    // real WebRTC call screen.
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: SafeArea(
+          child: Column(
+            children: [
+              const Spacer(),
+              const Text(
+                'Connecting to Tina…',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 24,
+                  fontWeight: FontWeight.w400,
+                  color: CallColors.secondary,
                 ),
-              )
-            else
-              AnimatedBuilder(
-                animation: _dotsController,
-                builder: (context, _) => _buildPulsingDots(_dotsController.value),
               ),
-            const Spacer(),
-            _buildHangUpButton(),
-            const SizedBox(height: 40),
-          ],
+              const SizedBox(height: 24),
+              if (_errorMessage != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: Text(
+                    _errorMessage!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.destructive,
+                    ),
+                  ),
+                )
+              else
+                AnimatedBuilder(
+                  animation: _dotsController,
+                  builder: (context, _) =>
+                      _buildPulsingDots(_dotsController.value),
+                ),
+              const Spacer(),
+              _buildHangUpButton(),
+              const SizedBox(height: 40),
+            ],
+          ),
         ),
       ),
     );

@@ -11,13 +11,19 @@ import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
 import '../features/auth/presentation/code_verification_screen.dart';
 import '../features/auth/presentation/email_entry_screen.dart';
+import '../features/briefing/views/briefing_placeholder_screen.dart';
 import '../features/call/bloc/incoming_call_bloc.dart';
 import '../features/call/models/call_session.dart';
 import '../features/call/repositories/call_repository.dart';
 import '../features/call/views/call_placeholder_screen.dart';
 import '../features/call/views/incoming_call_screen.dart';
+import '../features/debrief/views/debrief_placeholder_screen.dart';
 import '../features/onboarding/presentation/consent_screen.dart';
 import '../features/onboarding/presentation/mic_permission_screen.dart';
+import '../features/scenarios/bloc/scenarios_bloc.dart';
+import '../features/scenarios/bloc/scenarios_event.dart';
+import '../features/scenarios/repositories/scenarios_repository.dart';
+import '../features/scenarios/views/scenario_list_screen.dart';
 
 /// Central registry of all route paths used by [AppRouter].
 class AppRoutes {
@@ -30,6 +36,8 @@ class AppRoutes {
   static const String micPermission = '/mic-permission';
   static const String incomingCall = '/incoming-call';
   static const String call = '/call';
+  static const String debrief = '/debrief';
+  static const String briefing = '/briefing';
 }
 
 class AppRouter {
@@ -38,6 +46,7 @@ class AppRouter {
   static GoRouter createRouter(
     AuthBloc authBloc, {
     required ConsentStorage consentStorage,
+    ScenariosBloc? scenariosBloc,
   }) {
     return GoRouter(
       initialLocation: AppRoutes.root,
@@ -97,11 +106,17 @@ class AppRouter {
           path: AppRoutes.root,
           pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
-            child: const Scaffold(
-              body: Center(
-                child: Text('Scenario List — Story 5.2'),
-              ),
-            ),
+            child: scenariosBloc != null
+                ? BlocProvider<ScenariosBloc>.value(
+                    value: scenariosBloc,
+                    child: const ScenarioListScreen(),
+                  )
+                : BlocProvider<ScenariosBloc>(
+                    create: (_) =>
+                        ScenariosBloc(ScenariosRepository(ApiClient()))
+                          ..add(const LoadScenariosEvent()),
+                    child: const ScenarioListScreen(),
+                  ),
           ),
         ),
         GoRoute(
@@ -183,6 +198,24 @@ class AppRouter {
               child: CallPlaceholderScreen(session: session),
             );
           },
+        ),
+        GoRoute(
+          path: '${AppRoutes.debrief}/:scenarioId',
+          pageBuilder: (context, state) => _fadePage(
+            key: state.pageKey,
+            child: DebriefPlaceholderScreen(
+              scenarioId: state.pathParameters['scenarioId'] ?? 'unknown',
+            ),
+          ),
+        ),
+        GoRoute(
+          path: '${AppRoutes.briefing}/:scenarioId',
+          pageBuilder: (context, state) => _fadePage(
+            key: state.pageKey,
+            child: BriefingPlaceholderScreen(
+              scenarioId: state.pathParameters['scenarioId'] ?? 'unknown',
+            ),
+          ),
         ),
       ],
     );

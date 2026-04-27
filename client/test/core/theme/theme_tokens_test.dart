@@ -78,10 +78,14 @@ void main() {
     test('8-px base + screen padding constants match UX-DR3', () {
       expect(AppSpacing.base, 8.0);
       expect(AppSpacing.screenHorizontal, 20.0);
+      expect(AppSpacing.screenHorizontalScenarioList, 18.0);
       expect(AppSpacing.screenVerticalList, 30.0);
       expect(AppSpacing.screenVerticalTopSafe, 60.0);
       expect(AppSpacing.minTouchTarget, 44.0);
       expect(AppSpacing.hangUpButtonSize, 64.0);
+      // Scenario card row padding (distinct from inter-child gaps below).
+      expect(AppSpacing.cardPaddingVertical, 5.0);
+      expect(AppSpacing.cardPaddingHorizontal, 20.0);
       // Context-named icon sizes (see AppSpacing doc comments for why
       // iconHangUp is smaller than iconOffline).
       expect(AppSpacing.iconHangUp, 28.0);
