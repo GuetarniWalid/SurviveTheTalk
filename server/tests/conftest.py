@@ -68,18 +68,38 @@ def register_user(
     return resp.json()["data"]["user_id"]
 
 
+def _patch_database_path(path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force every loaded module's `settings.database_path` to `path`.
+
+    Each module follows the `from config import Settings; settings = Settings()`
+    pattern, so a single monkeypatch on `db.database.settings` only catches
+    that one consumer. Sweeping `sys.modules` future-proofs the fixture: any
+    new module that adopts the same pattern is patched automatically. The
+    DATABASE_PATH env var covers any module that builds a *fresh* `Settings()`
+    instance after the fixture runs.
+    """
+    import sys
+
+    monkeypatch.setenv("DATABASE_PATH", path)
+    seen: set[int] = set()
+    for mod in list(sys.modules.values()):
+        s = getattr(mod, "settings", None)
+        if s is None or not hasattr(s, "database_path") or id(s) in seen:
+            continue
+        seen.add(id(s))
+        monkeypatch.setattr(s, "database_path", path)
+
+
 @pytest.fixture
 def test_db_path(tmp_path, monkeypatch):
-    """Point every module that reads `settings.database_path` at a temp file.
-
-    Patches each `settings` instance directly because each module instantiates
-    its own `Settings()` at import time.
-    """
+    """Point every module that reads `settings.database_path` at a temp file."""
     path = str(tmp_path / "test.sqlite")
 
-    import db.database
+    # Force-import the canonical consumer so the sweep catches it even if no
+    # other test module has imported it yet.
+    import db.database  # noqa: F401
 
-    monkeypatch.setattr(db.database.settings, "database_path", path)
+    _patch_database_path(path, monkeypatch)
     return path
 
 
@@ -101,6 +121,15 @@ def prod_db(tmp_path, monkeypatch):
     committed fixture.
     """
     if not _PROD_SNAPSHOT.exists():
+        # In CI the snapshot MUST be committed — silent skips would mask a
+        # missing fixture as "all green". Locally, skip is fine (a new
+        # contributor may not have run the refresh script yet).
+        if os.getenv("CI"):
+            pytest.fail(
+                f"prod snapshot missing in CI: {_PROD_SNAPSHOT}. "
+                "This file MUST be committed — see "
+                "scripts/refresh_prod_snapshot.py."
+            )
         pytest.skip(
             f"prod snapshot not found at {_PROD_SNAPSHOT}; run "
             "`python scripts/refresh_prod_snapshot.py` to generate it."
@@ -108,9 +137,9 @@ def prod_db(tmp_path, monkeypatch):
     path = tmp_path / "prod.sqlite"
     shutil.copy(_PROD_SNAPSHOT, path)
 
-    import db.database
+    import db.database  # noqa: F401  -- ensure consumer is loaded for the sweep
 
-    monkeypatch.setattr(db.database.settings, "database_path", str(path))
+    _patch_database_path(str(path), monkeypatch)
     return str(path)
 
 

@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from db.database import run_migrations
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 
 
 def _row_counts(db_path: str) -> dict[str, int]:
@@ -114,10 +118,15 @@ def test_full_lifespan_starts_against_prod_snapshot(prod_db):
 
 
 def test_prod_snapshot_self_consistency(prod_db):
-    """The committed snapshot itself must be valid — guards against a
-    refresh that accidentally checked in a corrupt file."""
+    """Every sanitisation rule in `scripts/refresh_prod_snapshot.py` MUST
+    have a matching assertion here — these are the gates that catch a
+    silently-regressed refresher BEFORE its output reaches git history.
+
+    Add a sanitisation rule to the refresher → add an assertion here.
+    """
     conn = sqlite3.connect(prod_db)
     try:
+        # --- structural integrity ---
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         assert violations == [], (
             f"Committed snapshot has FK violations — re-run "
@@ -126,11 +135,98 @@ def test_prod_snapshot_self_consistency(prod_db):
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         assert integrity == "ok", f"Snapshot integrity bad: {integrity}"
 
-        # PII sanity: the refresher MUST have anonymised emails. If a real
-        # email landed in the committed fixture, the refresh script regressed.
+        # --- PII gates (one assertion per refresher rule) ---
+
+        # users.email → user-{id}@example.invalid
         emails = [r[0] for r in conn.execute("SELECT email FROM users")]
         assert all(e.endswith("@example.invalid") for e in emails), (
             f"Real email leaked into snapshot: {emails!r}"
         )
+
+        # users.jwt_hash → NULL
+        bad_hashes = conn.execute(
+            "SELECT id FROM users WHERE jwt_hash IS NOT NULL"
+        ).fetchall()
+        assert bad_hashes == [], f"jwt_hash leaked on user rows: {bad_hashes!r}"
+
+        # auth_codes → DELETE all rows
+        auth_count = conn.execute("SELECT COUNT(*) FROM auth_codes").fetchone()[0]
+        assert auth_count == 0, f"auth_codes not wiped: {auth_count} rows still present"
+
+        # auth_codes AUTOINCREMENT counter → reset to 0 (otherwise the
+        # snapshot leaks total count of OTPs ever issued in production).
+        seq = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'auth_codes'"
+        ).fetchone()
+        assert seq is None or seq[0] == 0, (
+            f"auth_codes AUTOINCREMENT counter leaks usage volume: seq={seq}"
+        )
+
+        # _snapshot_meta.refreshed_at → ISO-8601 timestamp. Catches a refresher
+        # that silently dropped the stamping step (operators would lose the
+        # staleness signal and run blind against an arbitrarily old snapshot).
+        meta_row = conn.execute(
+            "SELECT value FROM _snapshot_meta WHERE key = 'refreshed_at'"
+        ).fetchone()
+        assert meta_row is not None, (
+            "_snapshot_meta.refreshed_at missing — refresher did not stamp this snapshot"
+        )
+        # Parses and is a real ISO timestamp (not e.g. an empty string).
+        from datetime import datetime as _dt
+
+        _dt.fromisoformat(meta_row[0])  # raises ValueError on garbage
+
+        # Sweep — any TEXT column anywhere whose value contains '@' but
+        # doesn't end in @example.invalid is an unsanitised email-like leak.
+        # Catches future columns we forgot to add to _sanitise().
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        for table in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+            for col in cols:
+                rows = conn.execute(
+                    f"SELECT {col} FROM {table} "
+                    f"WHERE typeof({col}) = 'text' "
+                    f"AND {col} LIKE '%@%' "
+                    f"AND {col} NOT LIKE '%@example.invalid'"
+                ).fetchall()
+                assert rows == [], (
+                    f"Unsanitised email-like value in {table}.{col}: {rows!r}"
+                )
     finally:
         conn.close()
+
+
+def test_snapshot_migrations_match_repo_migrations(prod_db):
+    """The snapshot MUST only carry migration versions that exist as .sql
+    files in the repo.
+
+    Drift detector: catches the case where someone applies SQL ad-hoc to
+    prod outside the migration system, then refreshes — the snapshot
+    advertises a phantom version, and `run_migrations()` skips it because
+    `schema_migrations` says it's already applied. The next migration that
+    depends on the phantom's effects then crashes in prod (Story 5.1
+    failure mode all over again).
+    """
+    repo_versions = {p.stem for p in MIGRATIONS_DIR.glob("*.sql")}
+    assert repo_versions, f"No migration .sql files found in {MIGRATIONS_DIR}"
+
+    conn = sqlite3.connect(prod_db)
+    try:
+        snap_versions = {
+            r[0] for r in conn.execute("SELECT version FROM schema_migrations")
+        }
+    finally:
+        conn.close()
+
+    extra = snap_versions - repo_versions
+    assert not extra, (
+        f"Snapshot advertises migrations missing from repo (drift): {extra}. "
+        "Either commit the missing .sql file(s) or refresh the snapshot from "
+        "a VPS whose schema_migrations matches the repo."
+    )
