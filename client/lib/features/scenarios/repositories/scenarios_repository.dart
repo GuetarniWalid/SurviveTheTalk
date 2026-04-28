@@ -1,16 +1,23 @@
 import '../../../core/api/api_client.dart';
+import '../models/call_usage.dart';
 import '../models/scenario.dart';
+import 'scenarios_fetch_result.dart';
 
 class ScenariosRepository {
   final ApiClient _apiClient;
 
   ScenariosRepository(this._apiClient);
 
-  Future<List<Scenario>> fetchScenarios() async {
+  Future<ScenariosFetchResult> fetchScenarios() async {
     final response = await _apiClient.get<Map<String, dynamic>>('/scenarios');
-    final data = response.data!['data'] as List<dynamic>;
-    return data
-        .map((e) => Scenario.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final body = response.data!;
+    final data = body['data'] as List<dynamic>;
+    final meta = body['meta'] as Map<String, dynamic>;
+    return ScenariosFetchResult(
+      scenarios: data
+          .map((e) => Scenario.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      usage: CallUsage.fromMeta(meta),
+    );
   }
 }

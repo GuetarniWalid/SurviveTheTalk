@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -232,7 +233,13 @@ def test_detail_returns_500_on_shape_mismatch_json_column(
 
 
 def test_envelope_shape(client: TestClient, mock_resend, test_db_path: str) -> None:
-    """The list envelope carries `data` + `meta.count` + ISO-Z `meta.timestamp`."""
+    """The list envelope carries `data` + `meta.count` + ISO-Z `meta.timestamp`.
+
+    Story 5.3 widened `meta` with the call-usage policy block — the four
+    `tier` / `calls_remaining` / `calls_per_period` / `period` keys are
+    asserted present here so a future regression that drops the fold-in
+    fails this test instead of slipping past the dedicated usage tests.
+    """
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
 
@@ -242,3 +249,75 @@ def test_envelope_shape(client: TestClient, mock_resend, test_db_path: str) -> N
     assert "meta" in body
     assert isinstance(body["meta"]["count"], int)
     assert body["meta"]["timestamp"].endswith("Z")
+    # Story 5.3 — call-usage policy folded into meta.
+    for key in ("tier", "calls_remaining", "calls_per_period", "period"):
+        assert key in body["meta"], f"missing meta.{key} (Story 5.3)"
+
+
+def test_meta_includes_usage_for_free_user(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Fresh free user → meta.tier='free', period='lifetime', remaining=3, cap=3."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    body = client.get("/scenarios", headers=_auth_header(token)).json()
+
+    assert body["meta"]["tier"] == "free"
+    assert body["meta"]["period"] == "lifetime"
+    assert body["meta"]["calls_remaining"] == 3
+    assert body["meta"]["calls_per_period"] == 3
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token")
+@patch("api.routes_calls.generate_token", return_value="user-token")
+def test_meta_calls_remaining_decrements_after_initiate(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """One successful /calls/initiate → meta.calls_remaining drops 3 → 2."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    init = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    assert init.status_code == 200
+
+    body = client.get("/scenarios", headers=_auth_header(token)).json()
+    assert body["meta"]["calls_remaining"] == 2
+
+
+def test_meta_period_is_day_for_paid_user(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Promoting tier to 'paid' flips period='day' and resets remaining=3 (no sessions today)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    conn = sqlite3.connect(test_db_path)
+    conn.execute("UPDATE users SET tier = 'paid' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    body = client.get("/scenarios", headers=_auth_header(token)).json()
+    assert body["meta"]["tier"] == "paid"
+    assert body["meta"]["period"] == "day"
+    # No call_sessions exist for this user today → cap untouched.
+    assert body["meta"]["calls_remaining"] == 3
+
+
+def test_meta_count_and_timestamp_still_present(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Regression guard: pre-5.3 keys (`count`, `timestamp`) survive the meta widening."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    meta = client.get("/scenarios", headers=_auth_header(token)).json()["meta"]
+
+    assert meta["count"] == 5
+    assert meta["timestamp"].endswith("Z")

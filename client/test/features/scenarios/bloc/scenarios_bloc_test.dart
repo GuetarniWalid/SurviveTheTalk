@@ -3,7 +3,9 @@ import 'package:client/core/api/api_exception.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
+import 'package:client/features/scenarios/models/call_usage.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
+import 'package:client/features/scenarios/repositories/scenarios_fetch_result.dart';
 import 'package:client/features/scenarios/repositories/scenarios_repository.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,6 +41,19 @@ const _mugger = Scenario(
 
 final _fiveScenarios = <Scenario>[_waiter, _mugger, _waiter, _mugger, _waiter];
 
+const _kFreshUsage = CallUsage(
+  tier: 'free',
+  callsRemaining: 3,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+);
+
+ScenariosFetchResult _result(
+  List<Scenario> scenarios, {
+  CallUsage usage = _kFreshUsage,
+}) =>
+    ScenariosFetchResult(scenarios: scenarios, usage: usage);
+
 void main() {
   late MockScenariosRepository mockRepo;
 
@@ -58,7 +73,7 @@ void main() {
       'happy path emits [Loading, Loaded] with the repo list',
       setUp: () {
         when(() => mockRepo.fetchScenarios())
-            .thenAnswer((_) async => _fiveScenarios);
+            .thenAnswer((_) async => _result(_fiveScenarios));
       },
       build: buildBloc,
       act: (bloc) => bloc.add(const LoadScenariosEvent()),
@@ -124,7 +139,7 @@ void main() {
         // is still in flight. The guard must short-circuit the second event.
         when(() => mockRepo.fetchScenarios()).thenAnswer((_) async {
           await Future<void>.delayed(const Duration(milliseconds: 50));
-          return _fiveScenarios;
+          return _result(_fiveScenarios);
         });
       },
       build: buildBloc,
@@ -186,7 +201,7 @@ void main() {
               message: 'No connection.',
             );
           }
-          return _fiveScenarios;
+          return _result(_fiveScenarios);
         });
       },
       build: buildBloc,

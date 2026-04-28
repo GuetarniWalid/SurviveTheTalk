@@ -10,6 +10,7 @@ import 'package:client/features/onboarding/bloc/onboarding_state.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
+import 'package:client/features/scenarios/models/call_usage.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:client/features/scenarios/views/scenario_list_screen.dart';
 import 'package:flutter/material.dart';
@@ -53,7 +54,15 @@ void main() {
     when(() => mockConsentStorage.hasSeenFirstCallSync).thenReturn(true);
     // Empty list keeps the screen content trivial — these tests assert that
     // the right route renders, not the card contents.
-    const emptyLoaded = ScenariosLoaded(<Scenario>[]);
+    const emptyLoaded = ScenariosLoaded(
+      scenarios: <Scenario>[],
+      usage: CallUsage(
+        tier: 'free',
+        callsRemaining: 3,
+        callsPerPeriod: 3,
+        period: 'lifetime',
+      ),
+    );
     when(() => mockScenariosBloc.state).thenReturn(emptyLoaded);
     whenListen(
       mockScenariosBloc,

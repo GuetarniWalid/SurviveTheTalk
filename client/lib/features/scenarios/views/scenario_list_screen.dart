@@ -6,10 +6,13 @@ import '../../../app/router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../paywall/views/paywall_sheet.dart';
 import '../bloc/scenarios_bloc.dart';
 import '../bloc/scenarios_event.dart';
 import '../bloc/scenarios_state.dart';
+import '../models/call_usage.dart';
 import '../models/scenario.dart';
+import 'widgets/bottom_overlay_card.dart';
 import 'widgets/scenario_card.dart';
 
 class ScenarioListScreen extends StatelessWidget {
@@ -19,46 +22,97 @@ class ScenarioListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
-        top: true,
-        bottom: false,
-        // Figma `iPhone 16 - 5` frame: padding 30 18 0 18, gap 12 between
-        // cards. Bottom padding stays 0 so Story 5.3's overlay card can
-        // extend into the bottom safe area without an awkward gutter.
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.screenHorizontalScenarioList,
-            AppSpacing.screenVerticalList,
-            AppSpacing.screenHorizontalScenarioList,
-            0,
+      body: Stack(
+        children: [
+          SafeArea(
+            top: true,
+            bottom: false,
+            // Figma `iPhone 16 - 5` frame: padding 30 18 0 18, gap 12 between
+            // cards. Bottom padding stays 0 so the BOC can extend into the
+            // bottom safe area without an awkward gutter.
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.screenHorizontalScenarioList,
+                AppSpacing.screenVerticalList,
+                AppSpacing.screenHorizontalScenarioList,
+                0,
+              ),
+              child: BlocBuilder<ScenariosBloc, ScenariosState>(
+                builder: (context, state) {
+                  switch (state) {
+                    case ScenariosInitial():
+                    case ScenariosLoading():
+                      return const SizedBox.shrink();
+                    case ScenariosLoaded(:final scenarios, :final usage):
+                      return _List(scenarios: scenarios, usage: usage);
+                    case ScenariosError(:final message):
+                      return _ErrorView(message: message);
+                  }
+                },
+              ),
+            ),
           ),
-          child: BlocBuilder<ScenariosBloc, ScenariosState>(
-            builder: (context, state) {
-              switch (state) {
-                case ScenariosInitial():
-                case ScenariosLoading():
-                  return const SizedBox.shrink();
-                case ScenariosLoaded(:final scenarios):
-                  return _List(scenarios: scenarios);
-                case ScenariosError(:final message):
-                  return _ErrorView(message: message);
-              }
-            },
+          const Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _OverlayHost(),
           ),
-        ),
+        ],
       ),
+    );
+  }
+}
+
+class _OverlayHost extends StatelessWidget {
+  const _OverlayHost();
+
+  @override
+  Widget build(BuildContext context) {
+    // No `buildWhen` — `ScenariosLoaded` has no value-equality (spec: NO
+    // Equatable) so any custom predicate based on identity would still
+    // rebuild on every emit. Letting BlocBuilder rebuild unconditionally
+    // is honest about the cost and avoids a misleading no-op predicate.
+    return BlocBuilder<ScenariosBloc, ScenariosState>(
+      builder: (context, state) {
+        if (state is! ScenariosLoaded) return const SizedBox.shrink();
+        return BottomOverlayCard(
+          usage: state.usage,
+          // `context.mounted` guards against the rare race where the
+          // BlocBuilder rebuilds (unmounting this BOC) between gesture
+          // recognition and the tap firing. Without the guard, the closure
+          // would call `showModalBottomSheet` with a deactivated context.
+          onPaywallTap: () {
+            if (!context.mounted) return;
+            PaywallSheet.show(context);
+          },
+        );
+      },
     );
   }
 }
 
 class _List extends StatelessWidget {
   final List<Scenario> scenarios;
+  final CallUsage usage;
 
-  const _List({required this.scenarios});
+  const _List({required this.scenarios, required this.usage});
 
   @override
   Widget build(BuildContext context) {
+    // Reserve exactly the BOC's rendered height (static content + the
+    // device's bottom safe-area inset) so the last ScenarioCard sits flush
+    // above the pinned overlay. The split avoids LayoutBuilder jitter
+    // (static portion is layout-known) while staying accurate per device
+    // (safe-area portion comes from MediaQuery). When the BOC is absent
+    // (paid-with-calls — `BottomOverlayCard.isVisibleFor` returns false),
+    // reserve nothing so paid users don't see a phantom bottom gutter.
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+    final reservedForOverlay = BottomOverlayCard.isVisibleFor(usage)
+        ? BottomOverlayCard.staticContentHeight + bottomInset
+        : 0.0;
     return ListView.separated(
+      padding: EdgeInsets.only(bottom: reservedForOverlay),
       itemCount: scenarios.length,
       separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.cardGap),
       itemBuilder: (context, i) {

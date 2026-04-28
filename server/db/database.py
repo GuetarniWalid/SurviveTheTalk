@@ -41,6 +41,12 @@ async def get_connection() -> AsyncIterator[aiosqlite.Connection]:
     db = await aiosqlite.connect(settings.database_path)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA foreign_keys = ON")
+    # 5-second busy timeout: when a write-locked connection (e.g. another
+    # /calls/initiate's BEGIN IMMEDIATE) holds the file lock, our SELECT/INSERT
+    # blocks instead of failing immediately with `database is locked`. Required
+    # by the cap-check + INSERT atomicity fix in `routes_calls.initiate_call`.
+    # Closes the deferred-work item from Story 5.1.
+    await db.execute("PRAGMA busy_timeout = 5000")
     try:
         yield db
     finally:

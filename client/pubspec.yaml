@@ -75,6 +75,7 @@ flutter:
     - assets/rive/ai_consent.riv
     - assets/rive/mic_consent.riv
     - assets/images/whirlwind.svg
+    - assets/images/diamond.png
     - assets/images/icon/
     - assets/images/splash/
     - assets/images/scenario_backgrounds/

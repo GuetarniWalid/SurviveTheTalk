@@ -17,10 +17,12 @@ from pydantic import ValidationError
 
 from api.middleware import AUTH_DEPENDENCY
 from api.responses import ok, ok_list
+from api.usage import compute_call_usage
 from db.database import get_connection
 from db.queries import (
     get_all_scenarios_with_progress,
     get_scenario_by_id_with_progress,
+    get_user_by_id,
 )
 from models.schemas import ScenarioDetail, ScenarioListItem
 
@@ -63,6 +65,19 @@ async def list_scenarios(request: Request) -> dict:
     user_id: int = request.state.user_id
     async with get_connection() as db:
         rows = await get_all_scenarios_with_progress(db, user_id)
+        user = await get_user_by_id(db, user_id)
+        if user is None:
+            # Cannot happen for a JWT-authenticated request (middleware would
+            # have 401'd already). Guard anyway — silent NoneType access on
+            # `user["tier"]` would be much worse than a clean 401.
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "AUTH_UNAUTHORIZED",
+                    "message": "Missing or invalid token.",
+                },
+            )
+        usage = await compute_call_usage(db, user_id, user["tier"])
 
     try:
         items = [
@@ -92,7 +107,7 @@ async def list_scenarios(request: Request) -> dict:
         # here. Surface the same SCENARIO_CORRUPT code so clients can branch.
         logger.error(f"Pydantic shape mismatch in scenarios list: {exc}")
         raise _CORRUPT_SCENARIO from exc
-    return ok_list(items)
+    return ok_list(items, extra_meta=usage)
 
 
 @router.get("/{scenario_id}")

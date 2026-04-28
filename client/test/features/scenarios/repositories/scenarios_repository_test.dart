@@ -81,17 +81,28 @@ void main() {
                 'attempts': 0,
               },
             ],
-            'meta': {'count': 5, 'timestamp': '2026-04-27T10:00:00Z'},
+            'meta': {
+              'count': 5,
+              'timestamp': '2026-04-27T10:00:00Z',
+              'tier': 'free',
+              'calls_remaining': 3,
+              'calls_per_period': 3,
+              'period': 'lifetime',
+            },
           },
         ),
       );
 
-      final scenarios = await repository.fetchScenarios();
+      final result = await repository.fetchScenarios();
 
-      expect(scenarios, hasLength(5));
-      expect(scenarios.first.id, 'waiter_easy_01');
-      expect(scenarios.last.id, 'landlord_hard_01');
-      expect(scenarios[2].isCompleted, isTrue);
+      expect(result.scenarios, hasLength(5));
+      expect(result.scenarios.first.id, 'waiter_easy_01');
+      expect(result.scenarios.last.id, 'landlord_hard_01');
+      expect(result.scenarios[2].isCompleted, isTrue);
+      expect(result.usage.tier, 'free');
+      expect(result.usage.callsRemaining, 3);
+      expect(result.usage.callsPerPeriod, 3);
+      expect(result.usage.period, 'lifetime');
     });
 
     test('propagates ApiException from ApiClient.get', () async {
@@ -121,5 +132,35 @@ void main() {
 
       expect(() => repository.fetchScenarios(), throwsA(isA<TypeError>()));
     });
+
+    test(
+      'throws TypeError when meta is missing the usage keys (AC4 contract)',
+      () async {
+        // Story 5.3 AC4: "missing/malformed meta keys throw TypeError (caller
+        // treats it as ApiException-equivalent — same blast radius as a
+        // malformed scenarios list)". This test locks the contract at the
+        // repository boundary, complementing call_usage_test.dart which
+        // covers the model-layer factory.
+        when(() => mockApiClient.get<Map<String, dynamic>>('/scenarios'))
+            .thenAnswer(
+          (_) async => Response<Map<String, dynamic>>(
+            requestOptions: RequestOptions(path: '/scenarios'),
+            statusCode: 200,
+            // `data` is well-formed but `meta` lacks tier / calls_remaining
+            // / calls_per_period / period — exactly the shape returned by
+            // a stale server (pre-5.3 deploy).
+            data: const <String, dynamic>{
+              'data': <Map<String, dynamic>>[],
+              'meta': {
+                'count': 0,
+                'timestamp': '2026-04-28T12:00:00Z',
+              },
+            },
+          ),
+        );
+
+        expect(() => repository.fetchScenarios(), throwsA(isA<TypeError>()));
+      },
+    );
   });
 }

@@ -17,10 +17,7 @@ Items flagged during code review but postponed — each entry records where the 
   - **Trigger check**: any future story that adds a migration performing data transformation (not just schema DDL) — grep the migration for `UPDATE` / `INSERT INTO` against existing tables. Also: the day `deploy/pipecat.service` or `gunicorn/uvicorn` invocation grows a `--workers N` flag with N>1.
   - **Owner/Route**: Architecture (Winston) — plan a `server/db/database.py` refactor, verify with the `prod_snapshot` test harness added in Story 5.1 (Change Log entry 4).
 
-- **No `PRAGMA busy_timeout` on `get_connection()`** — `server/db/database.py:28-41` opens aiosqlite connections without a busy-timeout PRAGMA. Under multi-worker uvicorn, two lifespans racing to `BEGIN IMMEDIATE` (now both `run_migrations` AND `seed_scenarios`) can raise `sqlite3.OperationalError: database is locked` immediately instead of blocking. Pre-existing; amplified by this story adding a second write-lock consumer in the lifespan. Fix = `await db.execute("PRAGMA busy_timeout = 5000")` alongside the existing `foreign_keys` pragma.
-  - **When to address**: same trigger as above (multi-worker deploy). Also: as soon as ANY user-facing write path (beyond lifespan startup) is introduced that could contend with the seeder, e.g. Story 6.4 `POST /calls/{id}/end` if it updates `user_progress`.
-  - **Trigger check**: any PR that (a) sets `--workers > 1` anywhere (scan `deploy/pipecat.service`, `deploy/setup-vps.sh`, README deploy docs), OR (b) adds a new lifespan-phase DB write alongside `seed_scenarios` / `run_migrations`.
-  - **Owner/Route**: one-line fix; can be rolled into the first story that trips the trigger. Very cheap — `await db.execute("PRAGMA busy_timeout = 5000")` in `get_connection()`.
+- ~~**No `PRAGMA busy_timeout` on `get_connection()`**~~ — **CLOSED 2026-04-28** by Story 5.3 code review. The TOCTOU race fix in `routes_calls.initiate_call` (`BEGIN IMMEDIATE` around cap-check + INSERT) introduced a contending writer on `/calls/initiate`, tripping the trigger. `await db.execute("PRAGMA busy_timeout = 5000")` was added to `get_connection()` alongside the `foreign_keys` pragma. The original deferred fix shape was applied verbatim — see `server/db/database.py:43-47`.
 
 ### How these items get surfaced
 Both items live in `server/db/database.py` — any future story that edits that file should re-read this section first. Consider adding a comment at the top of `database.py` pointing here ("See `deferred-work.md` §Story 5-1 before touching this file") so nobody rewrites the migration runner without picking them up.
@@ -127,3 +124,54 @@ Most of these live in `.github/workflows/deploy-server.yml`, `deploy/setup-vps.s
 
 ### How these items get surfaced
 Three of the original four items (test fixtures, spam-tap delay, i18n) are test/code hygiene that will resurface during the next story that edits `client/test/features/scenarios/` or adds new user-visible strings. The placeholder back-button entry is self-evicting — Story 7.x replaces the screen wholesale. The two new entries (empty-list state + avatar errorBuilder) trigger only on specific structural changes — see each item's "Trigger check" line.
+
+## Deferred from: code review of story 5-3-build-bottomoverlaycard-and-daily-call-limit-enforcement (2026-04-28)
+
+- **`meta.calls_remaining` goes stale after `/calls/initiate` succeeds** — `client/lib/features/scenarios/bloc/scenarios_bloc.dart`. The bloc loads once (guarded by `state is ScenariosLoading`); BOC reads cached `state.usage`. After a successful call, the user returns to the list with the pre-call counter, but the server has already decremented. User sees "calls remaining: 1", taps a scenario, gets 403.
+  - **Fix shape**: Story 6.x (call return handoff). When the call screen pops, dispatch a `RefreshUsageEvent` (or full `LoadScenariosEvent`) on the scenarios bloc — either via a route observer or a result-callback pattern.
+  - **When to address**: Story 6.1 (call initiation) — the call entry path will introduce the round-trip; the return path lands wherever Epic 6 wires call-end → list.
+  - **Trigger check**: any PR adding a real call screen behind the BOC tap (or replacing `PaywallSheet.show` with a true `/calls/initiate` invocation from the list).
+
+- **`started_at` lex comparison silently breaks if any row uses non-Z UTC ISO format** — `server/db/queries.py:310-324`, `server/api/usage.py:_utc_day_start_iso`. `WHERE started_at >= ?` is a string compare. `_utc_day_start_iso` produces `"...Z"`; if `now_iso()` (or any future writer / SQL admin tool / migration backfill) produces `"...+00:00"` or microsecond-precision, the order flips (`+` < `Z` lexicographically). A paid user with 3 calls today that all happen to be `+00:00` rows would read as 0 used → cap bypass.
+  - **Fix shape**: (a) add a CHECK constraint on `call_sessions.started_at` enforcing the `Z` suffix, OR (b) do the comparison via `datetime.fromisoformat(...)` Python-side, OR (c) add a server-startup integrity check that scans `call_sessions` for non-Z formats and refuses to boot.
+  - **When to address**: before any code path other than `now_iso()` writes `call_sessions.started_at` (admin tools, migration backfills, second persistence helper), OR before tier-transition logic that depends on per-row temporal ordering.
+  - **Trigger check**: any PR introducing a new `INSERT INTO call_sessions` statement (grep `call_sessions`); any migration that touches `call_sessions.started_at`.
+
+- **`count_user_call_sessions_total` ignores tier-transition history** — `server/api/usage.py:42-50`. Free path counts ALL lifetime sessions regardless of when they happened. A user upgraded to paid (3 lifetime calls already used) → unsubscribed → reverts to free → hard-capped at 0 forever. Conversely, a fresh paid upgrader carries their free history. FR21 doesn't currently address tier-transition boundaries.
+  - **Fix shape**: Story 8.x will introduce a `users.tier_changed_at` (or per-tier-period sessions buckets). The cap-policy must then count "calls since the current tier started", not lifetime.
+  - **When to address**: Epic 8 (StoreKit 2 / Google Play Billing) — the moment a user can leave free tier, this becomes user-visible.
+  - **Trigger check**: any PR adding a `tier` column transition (UPDATE users SET tier = ...) outside test fixtures, or any migration introducing tier metadata.
+
+- **`compute_call_usage` raises `ValueError` for tier ∉ {free, paid}, swallowed by broad 500 catch-all** — `server/api/usage.py:46-52`, `server/api/routes_calls.py:136`. A future migration introducing `tier='trial'` (without plumbing it into `compute_call_usage` simultaneously) would surface as `CALL_PERSIST_FAILED 500` — misleading code (the call wasn't capped, no DB INSERT was attempted). Only matters when a third tier is added.
+  - **Fix shape**: when adding a new tier value, audit `compute_call_usage` first; OR add a startup assertion that `users.tier` only contains values the policy module recognises; OR catch `ValueError` in the routes and emit a clearer error code.
+  - **When to address**: Story 8.x or any earlier story that introduces a new tier value (e.g. trial / employee / admin).
+  - **Trigger check**: any PR that changes the set of tier strings — grep for `"free"` / `"paid"` literals in `server/`.
+
+- **Semantics for `paidExhausted` BOC variant lacks explicit "no action" affordance** — `client/lib/features/scenarios/views/widgets/bottom_overlay_card.dart`. The non-actionable variant has `button: false` (correct), but the composed semantic label `"No more calls today. Come back tomorrow."` is shaped identically to actionable variants. A blind user navigating with VoiceOver may swipe expecting an action.
+  - **Fix shape**: add `Semantics(readOnly: true, ...)` for the non-actionable variant, or distinguish the announcement (`"Status: ..."` prefix). Polish, not a defect.
+  - **When to address**: any A11y pass touching scenario-list semantics, or post-launch user feedback from screen reader users.
+  - **Trigger check**: PR touching `BottomOverlayCard` Semantics or any A11y-focused work.
+
+- **401 `AUTH_UNAUTHORIZED` is misleading code for orphaned-user path** — `server/api/routes_scenarios.py`. If a JWT is valid but the `users` row was deleted, the route raises `AUTH_UNAUTHORIZED`. The token IS valid; the account is gone. User signs in again, gets the same token, hits the same 401 — login loop. Not currently exercisable (no user-deletion path exists yet).
+  - **Fix shape**: introduce `ACCOUNT_DELETED` (or `USER_NOT_FOUND`) error code; client clears the JWT cache on receiving it.
+  - **When to address**: Story 10.x (GDPR erasure / account-delete flow), or earlier if any admin-side tool can delete `users` rows.
+  - **Trigger check**: any PR that adds a `DELETE FROM users` path; any error-envelope change in `server/api/responses.py`.
+
+- **`subprocess.Popen` rollback leaves LiveKit room and tokens minted (billing / cap-counter mismatch)** — `server/api/routes_calls.py:101-131, 170-181`. Pre-existing from Story 4.5. If token mint succeeds, INSERT succeeds, then Popen raises `OSError`, the rollback `DELETE` removes the DB row but the LiveKit-side artifacts remain. With Story 5.3's user-visible cap counter, the discrepancy becomes more visible: server's free-tier count is now 1 less than LiveKit's billing count.
+  - **Fix shape**: Epic 6.4 (`POST /calls/{id}/end`) owns the LiveKit cleanup contract. Add explicit `livekit.delete_room(room_name)` to the Popen-failure rollback path.
+  - **When to address**: Epic 6.4 — folds into the existing Popen lifecycle work.
+  - **Trigger check**: any PR refactoring `routes_calls.initiate_call` rollback path or introducing real LiveKit room cleanup.
+
+- **`CallUsage.fromMeta` accepts negative `calls_remaining` / `calls_per_period` without clamping** — `client/lib/features/scenarios/models/call_usage.dart`. A server bug or middlebox tampering returning `-1` would not be caught at the parse boundary. `hasCallsRemaining = callsRemaining > 0` evaluates false for negatives so the BOC shows the exhausted variant — current accessor surface degrades gracefully — but any future display that shows the raw integer would render garbage.
+  - **Fix shape**: clamp `callsRemaining = max(0, json['calls_remaining'])` and assert `calls_per_period > 0` at parse time; throw `FormatException` to surface server-version skew rather than silently mask it.
+  - **When to address**: any story that adds a UI surface displaying `calls_remaining` directly (e.g. account / settings screen).
+  - **Trigger check**: any PR introducing a new widget that reads `CallUsage.callsRemaining` outside `BottomOverlayCard`.
+
+- **Count queries do not filter on `call_sessions` status — orphan rows permanently burn lifetime quota** — `server/db/queries.py:295-322` (`count_user_call_sessions_total/_since`), `server/api/usage.py:42-50`. Both helpers `SELECT COUNT(*)` without any status filter. If FastAPI worker crashes / Popen fails / network blip occurs between INSERT and bot spawn, the row remains and consumes 33 % of a free user's lifetime quota for a call that never happened. The window is short (Popen comes immediately after INSERT) and the rollback path in `routes_calls.py:170-181` deletes the row on Popen failure, so this only fires on hard crashes (worker SIGKILL / OOM / panic). Lifetime cap of 3 means each orphan row is a 33 % burn — meaningful blast radius for a real user.
+  - **Fix shape**: Epic 6.4 introduces `POST /calls/{id}/end`, which is the natural place to flip a status field. Add migration `008_call_sessions_status.sql` introducing `status TEXT NOT NULL DEFAULT 'pending'` with values `'pending' / 'completed' / 'failed'`. INSERT defaults to `'pending'`; `/calls/{id}/end` flips to `'completed'`; the cap-counter SELECT becomes `WHERE status IN ('pending', 'completed')`. Optionally add a janitor sweep that flips `'pending'` rows older than 1 hour to `'failed'` (covers the orphan-row case).
+  - **When to address**: Epic 6.4 (call lifecycle endpoint). Doing it earlier means shipping a column with no writer that sets it to `'completed'` — dead code.
+  - **Trigger check**: any PR that introduces `POST /calls/{id}/end` or any new write path on `call_sessions`. Also: if VPS worker crash logs show orphan-row cases in the wild before Epic 6.4 ships, escalate.
+  - **Owner/Route**: Story 6.4 (or earlier if a real orphan-row report comes in). Migration + queries update + 1 new helper.
+
+### How these items get surfaced
+Three items (`meta.calls_remaining` staleness, `Popen`/LiveKit cleanup, tier-transition history) are blocked on specific upcoming epics (6, 6.4, 8) and will resurface naturally when those epics begin. The format-consistency, third-tier, and account-deletion items are dormant until a specific code path is added — each entry's "Trigger check" line names the file/grep that catches it. The two polish items (Semantics readOnly, `CallUsage` negative clamp) are cheap one-liners that can be folded into any future PR touching those files.

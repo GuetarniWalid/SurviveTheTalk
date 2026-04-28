@@ -3,8 +3,10 @@ import 'package:client/core/theme/app_theme.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
+import 'package:client/features/scenarios/models/call_usage.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:client/features/scenarios/views/scenario_list_screen.dart';
+import 'package:client/features/scenarios/views/widgets/bottom_overlay_card.dart';
 import 'package:client/features/scenarios/views/widgets/scenario_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -12,6 +14,34 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
+
+const _kFreshUsage = CallUsage(
+  tier: 'free',
+  callsRemaining: 3,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+);
+
+const _kFreeExhausted = CallUsage(
+  tier: 'free',
+  callsRemaining: 0,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+);
+
+const _kPaidWithCalls = CallUsage(
+  tier: 'paid',
+  callsRemaining: 3,
+  callsPerPeriod: 3,
+  period: 'day',
+);
+
+const _kPaidExhausted = CallUsage(
+  tier: 'paid',
+  callsRemaining: 0,
+  callsPerPeriod: 3,
+  period: 'day',
+);
 
 class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
     implements ScenariosBloc {}
@@ -117,11 +147,12 @@ void main() {
       _build(id: 'a', title: 'Alpha'),
       _build(id: 'b', title: 'Beta'),
     ];
-    when(() => mockBloc.state).thenReturn(ScenariosLoaded(scenarios));
+    when(() => mockBloc.state)
+        .thenReturn(ScenariosLoaded(scenarios: scenarios, usage: _kFreshUsage));
     whenListen(
       mockBloc,
       const Stream<ScenariosState>.empty(),
-      initialState: ScenariosLoaded(scenarios),
+      initialState: ScenariosLoaded(scenarios: scenarios, usage: _kFreshUsage),
     );
 
     await tester.pumpWidget(_harness(mockBloc));
@@ -214,16 +245,77 @@ void main() {
         attempts: i.isEven ? 0 : 2,
       ),
     );
-    when(() => mockBloc.state).thenReturn(ScenariosLoaded(scenarios));
+    when(() => mockBloc.state)
+        .thenReturn(ScenariosLoaded(scenarios: scenarios, usage: _kFreshUsage));
     whenListen(
       mockBloc,
       const Stream<ScenariosState>.empty(),
-      initialState: ScenariosLoaded(scenarios),
+      initialState: ScenariosLoaded(scenarios: scenarios, usage: _kFreshUsage),
     );
 
     await tester.pumpWidget(_harness(mockBloc));
     await tester.pump();
 
     expect(tester.takeException(), isNull);
+  });
+
+  // ---------- Story 5.3 — BottomOverlayCard wiring per state ----------
+
+  Future<void> pumpWithUsage(WidgetTester tester, CallUsage usage) async {
+    final scenarios = [_build(id: 'a', title: 'Alpha')];
+    when(() => mockBloc.state).thenReturn(ScenariosLoaded(scenarios: scenarios, usage: usage));
+    whenListen(
+      mockBloc,
+      const Stream<ScenariosState>.empty(),
+      initialState: ScenariosLoaded(scenarios: scenarios, usage: usage),
+    );
+    await tester.pumpWidget(_harness(mockBloc));
+    await tester.pump();
+  }
+
+  testWidgets('BOC visible (free, with calls) — title is "Unlock all scenarios"',
+      (tester) async {
+    await pumpWithUsage(tester, _kFreshUsage);
+
+    expect(find.byType(BottomOverlayCard), findsOneWidget);
+    expect(find.text('Unlock all scenarios'), findsOneWidget);
+  });
+
+  testWidgets('BOC says "Subscribe to keep calling" when free + 0 calls',
+      (tester) async {
+    await pumpWithUsage(tester, _kFreeExhausted);
+
+    expect(find.byType(BottomOverlayCard), findsOneWidget);
+    expect(find.text('Subscribe to keep calling'), findsOneWidget);
+  });
+
+  testWidgets('BOC absent (no diamond / no copy) when paid + calls > 0',
+      (tester) async {
+    await pumpWithUsage(tester, _kPaidWithCalls);
+
+    // The widget is in the tree but renders SizedBox.shrink — none of the
+    // overlay copy is on-screen.
+    expect(find.text('Unlock all scenarios'), findsNothing);
+    expect(find.text('Subscribe to keep calling'), findsNothing);
+    expect(find.text('No more calls today'), findsNothing);
+    // No diamond image slot rendered inside the BOC (the BOC short-circuits
+    // to SizedBox.shrink for paid users with calls remaining). Scoped to
+    // the BOC subtree because ScenarioCard avatars are also `Image` widgets.
+    expect(
+      find.descendant(
+        of: find.byType(BottomOverlayCard),
+        matching: find.byType(Image),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('BOC says "No more calls today" when paid + 0 calls',
+      (tester) async {
+    await pumpWithUsage(tester, _kPaidExhausted);
+
+    expect(find.byType(BottomOverlayCard), findsOneWidget);
+    expect(find.text('No more calls today'), findsOneWidget);
+    expect(find.text('Come back tomorrow'), findsOneWidget);
   });
 }

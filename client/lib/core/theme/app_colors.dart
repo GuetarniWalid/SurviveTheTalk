@@ -35,7 +35,12 @@ class AppColors {
   static const Color destructive = Color(0xFFE74C3C);
   static const Color warning = Color(0xFFF59E0B);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 9.
+  // Overlay subtitle — 5.7 : 1 contrast on textPrimary (UX-DR5 line 700).
+  // Pre-validated in the contrast block at the top of this file. Promoted to
+  // a token so the BottomOverlayCard widget never inlines the hex.
+  static const Color overlaySubtitle = Color(0xFF4C4C4C);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 10.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -46,5 +51,6 @@ class AppColors {
     statusInProgress,
     destructive,
     warning,
+    overlaySubtitle,
   ];
 }

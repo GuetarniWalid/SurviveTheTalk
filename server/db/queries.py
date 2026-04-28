@@ -295,3 +295,30 @@ async def upsert_scenario(db: aiosqlite.Connection, row: dict) -> None:
     back instead of leaving half-seeded rows.
     """
     await db.execute(_UPSERT_SCENARIO_SQL, row)
+
+
+async def count_user_call_sessions_total(db: aiosqlite.Connection, user_id: int) -> int:
+    """Lifetime call_sessions count for a user (used by free-tier policy)."""
+    async with db.execute(
+        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ?",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def count_user_call_sessions_since(
+    db: aiosqlite.Connection, user_id: int, since_iso: str
+) -> int:
+    """call_sessions count for a user since `since_iso` (used by paid-tier policy).
+
+    `started_at` is stored as ISO 8601 UTC (per Architecture line 550), so a
+    lexicographic `>=` comparison against a same-format `since_iso` is
+    equivalent to a temporal comparison. Cheaper than parsing per-row.
+    """
+    async with db.execute(
+        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ? AND started_at >= ?",
+        (user_id, since_iso),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0

@@ -22,8 +22,8 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     if (state is ScenariosLoading) return;
     emit(ScenariosLoading());
     try {
-      final scenarios = await _repository.fetchScenarios();
-      emit(ScenariosLoaded(scenarios));
+      final result = await _repository.fetchScenarios();
+      emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
     } on ApiException catch (e) {
       emit(ScenariosError(e.message));
     } catch (_) {

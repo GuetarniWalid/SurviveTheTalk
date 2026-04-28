@@ -33,13 +33,17 @@ def ok(data: BaseModel | dict, *, extra_meta: dict | None = None) -> dict:
     return {"data": payload, "meta": meta}
 
 
-def ok_list(items: list) -> dict:
+def ok_list(items: list, *, extra_meta: dict | None = None) -> dict:
     """Envelope helper for list endpoints — sets `meta.count` for the caller.
 
     Accepts a list of Pydantic models OR raw dicts. Models are dumped via
     `model_dump()`; dicts pass through unchanged. The convention going forward
     is: every list endpoint returns `ok_list(items)` so clients can read
     `meta.count` without recomputing `len(data)`.
+
+    `extra_meta` lets list endpoints fold aggregate keys (e.g. usage policy
+    per Story 5.3) alongside `count`/`timestamp` without bypassing this
+    helper.
 
     Implementation note: delegates to `ok()` so there is one canonical place
     that builds the `{data, meta}` envelope. Future `meta` keys (pagination,
@@ -48,7 +52,8 @@ def ok_list(items: list) -> dict:
     payload = [
         item.model_dump() if isinstance(item, BaseModel) else item for item in items
     ]
-    return ok(payload, extra_meta={"count": len(payload)})
+    meta = {"count": len(payload), **(extra_meta or {})}
+    return ok(payload, extra_meta=meta)
 
 
 def err(code: str, message: str, detail: dict | None = None) -> dict:
