@@ -40,7 +40,14 @@ class AppColors {
   // a token so the BottomOverlayCard widget never inlines the hex.
   static const Color overlaySubtitle = Color(0xFF4C4C4C);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 10.
+  // Content-warning sheet "HEADS UP" pill (Story 5.4 Figma iphone-16-7).
+  // Pill background is a pale yellow, foreground (icon + label) is a dark
+  // olive. Used exclusively on the pill (NOT on the light sheet surface
+  // directly) — headsUpAccent on headsUpBg contrast ≈ 4.6 : 1 (AA, large).
+  static const Color headsUpBg = Color(0xFFF5FFAD);
+  static const Color headsUpAccent = Color(0xFF8F8621);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 12.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -52,5 +59,7 @@ class AppColors {
     destructive,
     warning,
     overlaySubtitle,
+    headsUpBg,
+    headsUpAccent,
   ];
 }

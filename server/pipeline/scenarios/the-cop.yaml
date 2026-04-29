@@ -11,9 +11,8 @@ metadata:
   language_focus: "answering authority questions, past tense narration, formal register"
   tts_voice_id: null  # Select a firm, authoritative male voice from Cartesia during calibration
   content_warning: >
-    This scenario involves a police traffic stop. The character speaks
-    with authority and may pressure you during questioning. No arrest
-    or detention occurs.
+    A firm officer questioning you about a traffic stop.
+    He'll lean on you hard. No arrest, no detention.
 
   # Nullable difficulty overrides (null = use hard preset)
   patience_start: null       # effective: 60

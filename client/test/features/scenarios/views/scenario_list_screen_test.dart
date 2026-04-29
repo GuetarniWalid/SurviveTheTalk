@@ -52,6 +52,7 @@ Scenario _build({
   String tagline = 'Tagline',
   int? bestScore,
   int attempts = 0,
+  String? contentWarning,
 }) {
   return Scenario(
     id: id,
@@ -60,7 +61,7 @@ Scenario _build({
     isFree: true,
     riveCharacter: 'waiter',
     languageFocus: const <String>[],
-    contentWarning: null,
+    contentWarning: contentWarning,
     bestScore: bestScore,
     attempts: attempts,
     tagline: tagline,
@@ -318,4 +319,132 @@ void main() {
     expect(find.text('No more calls today'), findsOneWidget);
     expect(find.text('Come back tomorrow'), findsOneWidget);
   });
+
+  // ---------- Story 5.4 — Content warning dialog gate ----------
+
+  Future<void> pumpListWithScenario(
+    WidgetTester tester,
+    Scenario scenario,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    when(() => mockBloc.state).thenReturn(
+      ScenariosLoaded(scenarios: [scenario], usage: _kFreshUsage),
+    );
+    whenListen(
+      mockBloc,
+      const Stream<ScenariosState>.empty(),
+      initialState:
+          ScenariosLoaded(scenarios: [scenario], usage: _kFreshUsage),
+    );
+    await tester.pumpWidget(_harness(mockBloc));
+    await tester.pump();
+  }
+
+  testWidgets(
+    'tapping phone icon on a scenario WITH content_warning shows the sheet',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Mugger',
+        contentWarning: 'CW body 12345',
+      );
+      await pumpListWithScenario(tester, scenario);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Buckle up'), findsOneWidget);
+      expect(find.text('CW body 12345'), findsOneWidget);
+      // Still on the list — navigation has NOT happened yet.
+      expect(find.text('CALL_STUB'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'tapping Pick up in the sheet navigates to /call with the scenario',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Mugger',
+        contentWarning: 'CW body 12345',
+      );
+      await pumpListWithScenario(tester, scenario);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Pick up'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CALL_STUB'), findsOneWidget);
+      expect(find.text('Buckle up'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'tapping Not now in the sheet returns to the list without navigating',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Mugger',
+        contentWarning: 'CW body 12345',
+      );
+      await pumpListWithScenario(tester, scenario);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CALL_STUB'), findsNothing);
+      expect(find.text('Buckle up'), findsNothing);
+      expect(find.byType(ScenarioCard), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'tapping phone icon on a scenario WITHOUT content_warning skips the sheet and navigates directly',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Waiter',
+        contentWarning: null,
+      );
+      await pumpListWithScenario(tester, scenario);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Buckle up'), findsNothing);
+      expect(find.text('CALL_STUB'), findsOneWidget);
+    },
+  );
+
+  // Spec deviation #3 (accepted 2026-04-29): scrim-tap is a valid cancel
+  // path. The screen-integration coverage exercises it end-to-end so a
+  // regression that re-blocked the scrim (or worse, navigated on dismiss)
+  // would fail here.
+  testWidgets(
+    'tapping the scrim outside the sheet returns to the list with no navigation',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Mugger',
+        contentWarning: 'CW body 12345',
+      );
+      await pumpListWithScenario(tester, scenario);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      // (20, 20) on a 390x844 surface lands in the top-left scrim region
+      // — well above the bottom-anchored sheet.
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CALL_STUB'), findsNothing);
+      expect(find.text('Buckle up'), findsNothing);
+      expect(find.byType(ScenarioCard), findsOneWidget);
+    },
+  );
 }

@@ -9,8 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('AppColors', () {
-    test('exposes exactly 10 tokens with exact UX-DR1 hex values', () {
-      expect(AppColors.values, hasLength(10));
+    test('exposes exactly 12 tokens with exact UX-DR1 hex values', () {
+      expect(AppColors.values, hasLength(12));
       // Direct Color equality avoids the Flutter 3.27+ `toARGB32()` API;
       // compatible with any Flutter SDK that matches pubspec's sdk floor.
       expect(AppColors.background, const Color(0xFF1E1F23));
@@ -23,9 +23,11 @@ void main() {
       expect(AppColors.destructive, const Color(0xFFE74C3C));
       expect(AppColors.warning, const Color(0xFFF59E0B));
       expect(AppColors.overlaySubtitle, const Color(0xFF4C4C4C));
+      expect(AppColors.headsUpBg, const Color(0xFFF5FFAD));
+      expect(AppColors.headsUpAccent, const Color(0xFF8F8621));
     });
 
-    test('all 10 tokens are distinct (no accidental duplicates)', () {
+    test('all 12 tokens are distinct (no accidental duplicates)', () {
       expect(AppColors.values.toSet(), hasLength(AppColors.values.length));
     });
   });

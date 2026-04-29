@@ -11,9 +11,8 @@ metadata:
   language_focus: "refusing demands, asking for clarification, describing financial situation"
   tts_voice_id: null  # Select a deep, gravelly male voice from Cartesia during calibration
   content_warning: >
-    This scenario simulates a threatening phone call. The character
-    will be verbally intimidating and demand money. No physical
-    contact occurs — it's a phone conversation.
+    The character will intimidate you and demand money.
+    No violence — just his voice, and yours.
 
   # Nullable difficulty overrides (null = use medium preset)
   patience_start: null       # effective: 80

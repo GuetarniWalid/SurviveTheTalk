@@ -11,9 +11,8 @@ metadata:
   language_focus: "emotional vocabulary, apologizing, making promises"
   tts_voice_id: null  # Select an expressive young female voice from Cartesia during calibration
   content_warning: >
-    This scenario involves an emotionally intense argument with a
-    romantic partner. The character will express anger, disappointment,
-    and guilt-trip you. No abusive language is used.
+    An angry, disappointed partner trying to guilt-trip you.
+    No insults — just a real argument.
 
   # Nullable difficulty overrides (null = use medium preset)
   patience_start: null       # effective: 80

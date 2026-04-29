@@ -13,6 +13,7 @@ import '../bloc/scenarios_state.dart';
 import '../models/call_usage.dart';
 import '../models/scenario.dart';
 import 'widgets/bottom_overlay_card.dart';
+import 'widgets/content_warning_sheet.dart';
 import 'widgets/scenario_card.dart';
 
 class ScenarioListScreen extends StatelessWidget {
@@ -134,7 +135,16 @@ class _List extends StatelessWidget {
   //     mid-call; the call screen owns its own hang-up flow.
   //   - /briefing and /debrief use `push` so the user can back-swipe to the
   //     scenario list naturally (these are read-only "preview" surfaces).
-  void _onCallTap(BuildContext context, Scenario scenario) {
+  //
+  // Story 5.4 (AC1): when `scenario.contentWarning != null`, await the
+  // content-warning sheet gate before navigating; cancel returns to list
+  // with no state change. Scenarios with no warning navigate directly.
+  Future<void> _onCallTap(BuildContext context, Scenario scenario) async {
+    if (scenario.contentWarning != null) {
+      final proceed = await showContentWarningSheet(context, scenario);
+      if (!proceed) return;
+      if (!context.mounted) return;
+    }
     context.go(AppRoutes.call, extra: scenario);
   }
 

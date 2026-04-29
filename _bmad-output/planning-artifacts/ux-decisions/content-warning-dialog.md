@@ -1,6 +1,6 @@
 # UX Decision — Content Warning Dialog
 
-**Status:** Accepted
+**Status:** Superseded (2026-04-29) — see Story 5.4 dev-story redesign and the Spec deviations section in `_bmad-output/implementation-artifacts/5-4-build-content-warning-display-for-intense-scenarios.md`. The shipped implementation is a `showModalBottomSheet` with a "HEADS UP" pill, "Buckle up" title, "Pick up" / "Not now" buttons, `isDismissible: true`, and `enableDrag: true` — points 1, 2, and 3 of the "Cross-cutting rules" below are stale.
 **Date:** 2026-04-24
 **Deciders:** Walid (Project Lead)
 **Blocks resolved:** Story 5.4 (Content warning display for intense scenarios) — AI-E from Epic 4 retrospective
