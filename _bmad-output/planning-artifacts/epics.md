@@ -1012,6 +1012,8 @@ As a user,
 I want to tap the phone icon on a scenario card and see a phone-dialing animation while the call connects,
 So that the transition to the call feels instant and natural, like dialing a real phone.
 
+**Architectural decision (must read before implementation):** [ADR 003 — Call-Session Lifecycle](adr/003-call-session-lifecycle.md). Story 6.1 implements **raw LiveKit** (no `flutter_callkit_incoming` / no CallKit / no ConnectionService wrapper). Three back-press strategy tiers are mandatory: (1) push the call screen via `Navigator.of(context, rootNavigator: true).push(...)` — NOT via `context.go('/call')` — to detach from `_GoRouterRefreshStream` which is the suspected root cause of the Story 5.2 back-press failures; (2) enable LiveKit's `AndroidAudioServiceConfiguration` foreground service (manifest `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MICROPHONE` permissions); (3) `UIBackgroundModes: [audio]` in `Info.plist`. The Smoke Test in §"Smoke test for Story 6.1" of ADR 003 is a Definition-of-Done gate. UX-DR10 ("forward-only navigation") is reinterpreted as documented in the ADR if Tier-1 empirically fails.
+
 **Acceptance Criteria:**
 
 **Given** the user taps the phone icon on a scenario card
