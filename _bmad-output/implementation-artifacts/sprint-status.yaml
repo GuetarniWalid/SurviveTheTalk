@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-29 (Story 5.5 done — code review applied: 7 decisions + 7 patches; auth 401 silent loop flagged HIGH-PRIORITY in deferred-work.md)
+# last_updated: 2026-04-29 (Epic 5 retrospective complete — doc: epic-5-retro-2026-04-29.md; epic-5 → done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-29 (Story 5.5 done — code review applied: 7 decisions + 7 patches; auth 401 silent loop flagged HIGH-PRIORITY in deferred-work.md)
+last_updated: 2026-04-29 (Epic 5 retrospective complete — doc: epic-5-retro-2026-04-29.md; epic-5 → done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -79,13 +79,13 @@ development_status:
   epic-4-retrospective: done  # 2026-04-23 retro completed, doc: epic-4-retro-2026-04-23.md
 
   # Epic 5: Scenario Browsing & Progression
-  epic-5: in-progress
+  epic-5: done
   5-1-build-scenarios-api-and-database: done  # code review completed 2026-04-24: 15 patches applied (seeder hardening, route ValidationError→SCENARIO_CORRUPT, stricter ordering tests, parametrised corruption coverage, ok_list delegates to ok, ScenariosListOut meta), 126 pytest green, pipecat.service reverted to www-data (5.1-CI-deploy sub-tag), 2 infra issues deferred to deferred-work.md
   5-2-build-scenario-list-screen-with-scenariocard-component: done  # code review 2026-04-27: 6 decisions resolved, 7 patches applied (1 deferred to Story 6.1 — back-press blocking on /call), 1 deferred item closed (debrief back-button), 156 flutter tests green, flutter analyze clean
   5-3-build-bottomoverlaycard-and-daily-call-limit-enforcement: done  # code review 2026-04-28: 3 decisions + 8 patches applied (TOCTOU BEGIN IMMEDIATE + busy_timeout, BOC visual drift documented in AC6, Semantics gate, mounted check, staticContentHeight recompute, conditional padding, frozen clock for paid-tier tests, AppSpacing tokens, buildWhen removed, predicate-based test finder), 8 items deferred to Epic 6/8/etc.
   5-4-build-content-warning-display-for-intense-scenarios: done  # code review 2026-04-29: 3 decisions resolved + 6 patches applied (rename dialog→sheet, AC7 minimumSize/tapTargetSize removal, release-build null-guard, AC7 320×1.5 textScale test surfaced 390px overflow → fixed via SingleChildScrollView, scrim-dismiss screen-integration test, deviation #5 declared for YAML edits), 6 items deferred (token discipline, double-tap re-entry, mid-dialog limit bypass, RTL, back-press untested, AA contrast claim), 208 flutter tests green
   5-5-refactor-scenario-list-error-screen-with-empathetic-ux: done  # code review 2026-04-29: 7 decisions resolved (6 accept + spec amendments, 1 status quo, 1 deferred HIGH-PRIORITY auth 401), 7 patches applied (ApiException.statusCode propagation, Semantics on HOLD ON/HEADS UP, FlutterError.onError overflow capture, pumpEventQueue × 8, comment fixes, deviation #4 withdrawn), 1 dismissed (false positive). 213 flutter tests green, analyze clean, server pytest 145 green. ⚠️ Auth 401 silent loop deferred to deferred-work.md as MUST-FIX-BEFORE-MVP-LAUNCH
-  epic-5-retrospective: optional
+  epic-5-retrospective: done  # 2026-04-29 retro completed, doc: epic-5-retro-2026-04-29.md
 
   # Epic 6: Animated Call Experience
   epic-6: backlog
