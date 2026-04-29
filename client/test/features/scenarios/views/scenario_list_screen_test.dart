@@ -1,4 +1,5 @@
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/theme/app_theme.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
@@ -165,69 +166,301 @@ void main() {
     expect(alphaTop, lessThan(betaTop));
   });
 
-  testWidgets('Error renders message and tap-to-retry hint', (tester) async {
-    const message =
-        'No internet connection. Please check your network and try again.';
-    when(() => mockBloc.state).thenReturn(const ScenariosError(message));
+  // ---------- Story 5.5 — Empathetic error view ----------
+
+  // Code → (title, body, repeat-body, icon) tuples used by the parametrised
+  // first/repeat-failure tests. Keep in lock-step with `_titleFor` /
+  // `_bodyFor` / `_iconFor` in scenario_list_screen.dart.
+  const errorCases = <Map<String, Object>>[
+    {
+      'code': 'NETWORK_ERROR',
+      'title': "You're offline.",
+      'firstBody':
+          'We need a connection to load your scenarios. Check your Wi-Fi or mobile data, then try again.',
+      'repeatBody':
+          'Still no signal. Move somewhere with better reception, then try again.',
+      'icon': Icons.cloud_off_outlined,
+    },
+    {
+      'code': 'SERVER_ERROR',
+      'title': 'Our servers are catching their breath.',
+      'firstBody': 'This is on us, not you. Try again in a moment.',
+      'repeatBody':
+          'Still struggling on our side. Give it a minute and try again, or restart the app if it persists.',
+      'icon': Icons.hourglass_empty_outlined,
+    },
+    {
+      'code': 'MALFORMED_RESPONSE',
+      'title': "Something didn't load right.",
+      'firstBody':
+          "We've logged the issue. Try again — it usually works on the second try.",
+      'repeatBody': 'Still stuck. Restart the app to clear the slate.',
+      'icon': Icons.help_outline,
+    },
+    {
+      'code': 'UNKNOWN_ERROR',
+      'title': 'Something went wrong.',
+      'firstBody': "We're not sure what happened. Try again in a moment.",
+      'repeatBody': 'Still failing. Restart the app if this keeps happening.',
+      'icon': Icons.error_outline,
+    },
+  ];
+
+  Future<void> pumpErrorState(
+    WidgetTester tester, {
+    required String code,
+    required int retryCount,
+  }) async {
+    // 390×844 = iPhone 14 viewport (matches Figma `iPhone 16 - 8` reference
+    // class). The Story 5.5 redesign is calibrated for this size; smaller
+    // phones get an explicit overflow-sanity test below.
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final state = ScenariosError(code: code, retryCount: retryCount);
+    when(() => mockBloc.state).thenReturn(state);
     whenListen(
       mockBloc,
       const Stream<ScenariosState>.empty(),
-      initialState: const ScenariosError(message),
+      initialState: state,
     );
 
     await tester.pumpWidget(_harness(mockBloc));
     await tester.pump();
+  }
 
-    expect(find.text(message), findsOneWidget);
-    expect(find.text('Tap to retry'), findsOneWidget);
-  });
-
-  testWidgets('tapping the error area dispatches LoadScenariosEvent',
+  for (final c in errorCases) {
+    testWidgets(
+      '${c['code']}: first failure renders title + first-body + icon + Try again',
       (tester) async {
-    const message = 'Boom.';
-    when(() => mockBloc.state).thenReturn(const ScenariosError(message));
-    whenListen(
-      mockBloc,
-      const Stream<ScenariosState>.empty(),
-      initialState: const ScenariosError(message),
+        await pumpErrorState(
+          tester,
+          code: c['code'] as String,
+          retryCount: 0,
+        );
+
+        expect(find.text(c['title'] as String), findsOneWidget);
+        expect(find.text(c['firstBody'] as String), findsOneWidget);
+        expect(find.byIcon(c['icon'] as IconData), findsOneWidget);
+        expect(find.text('Try again'), findsOneWidget);
+      },
     );
 
-    await tester.pumpWidget(_harness(mockBloc));
-    await tester.pump();
+    testWidgets(
+      '${c['code']}: retryCount=1 swaps first-body for repeat-body (title sticky)',
+      (tester) async {
+        await pumpErrorState(
+          tester,
+          code: c['code'] as String,
+          retryCount: 1,
+        );
 
-    await tester.tap(find.text('Tap to retry'));
-    await tester.pump();
-
-    verify(() => mockBloc.add(any<LoadScenariosEvent>())).called(1);
-  });
+        expect(find.text(c['title'] as String), findsOneWidget);
+        expect(find.text(c['repeatBody'] as String), findsOneWidget);
+        expect(find.text(c['firstBody'] as String), findsNothing);
+      },
+    );
+  }
 
   testWidgets(
-    'tapping anywhere on the empty scaffold area (not just on the centered text) dispatches LoadScenariosEvent',
+    'retryCount=5 still shows the repeat (retryCount>=1) variant — no third tier',
     (tester) async {
-      // AC3 (post-review decision 6 — 2026-04-27): the WHOLE scaffold body
-      // is the retry hit-target, not just the small centered Column.
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
-      const message = 'Boom.';
-      when(() => mockBloc.state).thenReturn(const ScenariosError(message));
-      whenListen(
-        mockBloc,
-        const Stream<ScenariosState>.empty(),
-        initialState: const ScenariosError(message),
+      await pumpErrorState(
+        tester,
+        code: 'NETWORK_ERROR',
+        retryCount: 5,
       );
 
-      await tester.pumpWidget(_harness(mockBloc));
-      await tester.pump();
+      expect(
+        find.text(
+          'Still no signal. Move somewhere with better reception, then try again.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'We need a connection to load your scenarios. Check your Wi-Fi or mobile data, then try again.',
+        ),
+        findsNothing,
+      );
+    },
+  );
 
-      // Tap near the top-left of the visible body, well above the centered
-      // error text. If the hit-target is whole-screen, this still dispatches
-      // a retry; if it's only the centered Column (pre-fix behaviour), it
-      // would do nothing and the verify call would fail with `called(0)`.
-      await tester.tapAt(const Offset(60, 120));
+  testWidgets(
+    'tapping the "Try again" button dispatches LoadScenariosEvent',
+    (tester) async {
+      await pumpErrorState(
+        tester,
+        code: 'UNKNOWN_ERROR',
+        retryCount: 0,
+      );
+
+      await tester.tap(find.text('Try again'));
       await tester.pump();
 
       verify(() => mockBloc.add(any<LoadScenariosEvent>())).called(1);
+    },
+  );
+
+  testWidgets(
+    'tapping the empty space outside the button does NOT dispatch LoadScenariosEvent',
+    (tester) async {
+      // Story 5.5 post-Figma decision (2026-04-29): retry is button-only.
+      // The previous full-area GestureDetector (Story 5.2 post-review
+      // decision 6) was removed because it could fire on accidental
+      // scroll-to-end gestures and the discoverable accent-green CTA at
+      // the bottom is unambiguous. (10, 10) lands at the top-left corner
+      // (gutter); (50, 100) lands above the icon. Neither should retry.
+      await pumpErrorState(
+        tester,
+        code: 'UNKNOWN_ERROR',
+        retryCount: 0,
+      );
+
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pump();
+      await tester.tapAt(const Offset(50, 100));
+      await tester.pump();
+
+      verifyNever(() => mockBloc.add(any<LoadScenariosEvent>()));
+    },
+  );
+
+  testWidgets(
+    'title color is AppColors.textPrimary, NOT AppColors.destructive',
+    (tester) async {
+      // Regression guard: the red title from Story 5.2 is reclaimed for
+      // irreversible actions only — the error screen now reads as a pause.
+      await pumpErrorState(
+        tester,
+        code: 'NETWORK_ERROR',
+        retryCount: 0,
+      );
+
+      final titleWidget =
+          tester.widget<Text>(find.text("You're offline."));
+      expect(titleWidget.style?.color, AppColors.textPrimary);
+      expect(titleWidget.style?.color, isNot(AppColors.destructive));
+    },
+  );
+
+  testWidgets(
+    'BottomOverlayCard stays hidden during ScenariosError (AC7 regression)',
+    (tester) async {
+      // _OverlayHost returns SizedBox.shrink for any non-Loaded state —
+      // no half-truth like "Free tier" without the count during an error.
+      await pumpErrorState(
+        tester,
+        code: 'NETWORK_ERROR',
+        retryCount: 0,
+      );
+
+      expect(find.byType(BottomOverlayCard), findsNothing);
+      // Sanity: none of the BOC's three copy variants leak through.
+      expect(find.text('Unlock all scenarios'), findsNothing);
+      expect(find.text('Subscribe to keep calling'), findsNothing);
+      expect(find.text('No more calls today'), findsNothing);
+    },
+  );
+
+  // ---------- Story 5.5 — Figma iphone-16-8 redesign ----------
+
+  testWidgets(
+    'every error code renders the common HOLD ON title + HEADS UP badge',
+    (tester) async {
+      // HOLD ON is the universal hero across all four codes (Figma redesign
+      // 2026-04-29). HEADS UP is the accent-green badge above it.
+      for (final c in errorCases) {
+        await pumpErrorState(
+          tester,
+          code: c['code'] as String,
+          retryCount: 0,
+        );
+        expect(
+          find.text('HOLD ON'),
+          findsOneWidget,
+          reason: 'HOLD ON missing for code ${c['code']}',
+        );
+        expect(
+          find.text('HEADS UP'),
+          findsOneWidget,
+          reason: 'HEADS UP missing for code ${c['code']}',
+        );
+      }
+    },
+  );
+
+  testWidgets(
+    'Try again button surfaces the retry icon (Figma stash:arrow-retry → Icons.refresh)',
+    (tester) async {
+      await pumpErrorState(
+        tester,
+        code: 'NETWORK_ERROR',
+        retryCount: 0,
+      );
+
+      // The button is a FilledButton with a manual Row(Icon(Icons.refresh),
+      // Text('Try again')) inside a FittedBox(scaleDown). find.byIcon scopes
+      // globally; the only Icons.refresh in the tree comes from this button.
+      expect(find.byIcon(Icons.refresh), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'error layout does not overflow at 320×480 with textScaler 1.5',
+    (tester) async {
+      // Belt-and-braces: the Figma reference targets 390+ but Walid's PRD
+      // does not exclude older devices. With longer body copy + repeat
+      // variant + 1.5× scale, the content column would be tall enough to
+      // collide with the bottom button — `Expanded(child: SingleChildScrollView)`
+      // wraps the upper content so it scrolls while the Try again button
+      // stays pinned at the bottom (button is a sibling outside the scroll
+      // view, so it never gets absorbed).
+      await tester.binding.setSurfaceSize(const Size(320, 480));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      // Capture any FlutterError raised during layout — RenderFlex overflow
+      // surfaces here (not as a sync exception), so `takeException()` alone
+      // misses it. `SingleChildScrollView` SHOULD absorb the overflow today,
+      // but if a future change drops the wrap, the layout error must fail.
+      final layoutErrors = <FlutterErrorDetails>[];
+      final originalOnError = FlutterError.onError;
+      FlutterError.onError = layoutErrors.add;
+      addTearDown(() => FlutterError.onError = originalOnError);
+
+      const state = ScenariosError(
+        code: 'NETWORK_ERROR',
+        retryCount: 0,
+      );
+      when(() => mockBloc.state).thenReturn(state);
+      whenListen(
+        mockBloc,
+        const Stream<ScenariosState>.empty(),
+        initialState: state,
+      );
+
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(
+            textScaler: TextScaler.linear(1.5),
+          ),
+          child: _harness(mockBloc),
+        ),
+      );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(
+        layoutErrors,
+        isEmpty,
+        reason:
+            'RenderFlex / overflow errors must not surface — if this fails, '
+            'check that the upper content remains wrapped in '
+            'Expanded + SingleChildScrollView.',
+      );
+      // Sanity-check the button is still in the tree (i.e., not pushed off
+      // screen by an expanded scroll view that ate the whole viewport).
+      expect(find.text('Try again'), findsOneWidget);
     },
   );
 

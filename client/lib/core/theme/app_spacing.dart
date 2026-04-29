@@ -82,4 +82,11 @@ class AppSpacing {
   static const double overlayCardPadding = 20.0;
   static const double overlayIconTextGap = 10.0;
   static const double overlayLineGap = 10.0;
+
+  /// Horizontal padding on the empathetic error screen (Story 5.5 Figma
+  /// `iPhone 16 - 8`: padding `30 36` outer column, vertical replaced by
+  /// SafeArea). Wider than `screenHorizontalScenarioList` (18) to give the
+  /// hero title and multi-line body more breathing room — error screens
+  /// should read calm, not cramped.
+  static const double screenHorizontalErrorView = 36.0;
 }

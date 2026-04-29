@@ -3,8 +3,13 @@ import 'package:dio/dio.dart';
 class ApiException implements Exception {
   final String code;
   final String message;
+  final int? statusCode;
 
-  const ApiException({required this.code, required this.message});
+  const ApiException({
+    required this.code,
+    required this.message,
+    this.statusCode,
+  });
 
   factory ApiException.fromDioException(DioException e) {
     if (e.type == DioExceptionType.connectionError ||
@@ -17,6 +22,7 @@ class ApiException implements Exception {
     }
 
     final response = e.response;
+    final statusCode = response?.statusCode;
     if (response != null && response.data is Map<String, dynamic>) {
       final data = response.data as Map<String, dynamic>;
       final error = data['error'];
@@ -26,16 +32,19 @@ class ApiException implements Exception {
           message:
               error['message'] as String? ??
               'Something went wrong. Please try again.',
+          statusCode: statusCode,
         );
       }
     }
 
-    return const ApiException(
+    return ApiException(
       code: 'UNKNOWN_ERROR',
       message: 'Something went wrong. Please try again.',
+      statusCode: statusCode,
     );
   }
 
   @override
-  String toString() => 'ApiException($code: $message)';
+  String toString() =>
+      'ApiException($code: $message${statusCode != null ? ', status=$statusCode' : ''})';
 }

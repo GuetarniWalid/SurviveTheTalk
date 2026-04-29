@@ -26,6 +26,15 @@ final class ScenariosLoaded extends ScenariosState {
 }
 
 final class ScenariosError extends ScenariosState {
-  final String message;
-  const ScenariosError(this.message);
+  /// One of: 'NETWORK_ERROR', 'SERVER_ERROR', 'MALFORMED_RESPONSE',
+  /// 'UNKNOWN_ERROR'. Copy lives in the view, keyed by this code — the
+  /// bloc no longer ferries user-facing strings.
+  final String code;
+
+  /// `0` on the first failure; increments by `1` each subsequent
+  /// consecutive failure; resets to `0` on any `ScenariosLoaded` emission.
+  /// Drives the repeat-failure copy variant in `_ErrorView`.
+  final int retryCount;
+
+  const ScenariosError({required this.code, required this.retryCount});
 }

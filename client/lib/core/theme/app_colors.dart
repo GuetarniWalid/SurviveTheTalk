@@ -47,7 +47,13 @@ class AppColors {
   static const Color headsUpBg = Color(0xFFF5FFAD);
   static const Color headsUpAccent = Color(0xFF8F8621);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 12.
+  // Empathetic error screen body text (Story 5.5 Figma iphone-16-8).
+  // Lighter than `textSecondary` so the multi-line body stays readable on
+  // a dark background under longer copy. errorBody on background contrast
+  // ≈ 11.4 : 1 (AA + AAA).
+  static const Color errorBody = Color(0xFFD8D8D8);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 13.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -61,5 +67,6 @@ class AppColors {
     overlaySubtitle,
     headsUpBg,
     headsUpAccent,
+    errorBody,
   ];
 }

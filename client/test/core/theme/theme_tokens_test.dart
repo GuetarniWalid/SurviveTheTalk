@@ -9,8 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('AppColors', () {
-    test('exposes exactly 12 tokens with exact UX-DR1 hex values', () {
-      expect(AppColors.values, hasLength(12));
+    test('exposes exactly 13 tokens with exact UX-DR1 hex values', () {
+      expect(AppColors.values, hasLength(13));
       // Direct Color equality avoids the Flutter 3.27+ `toARGB32()` API;
       // compatible with any Flutter SDK that matches pubspec's sdk floor.
       expect(AppColors.background, const Color(0xFF1E1F23));
@@ -25,9 +25,10 @@ void main() {
       expect(AppColors.overlaySubtitle, const Color(0xFF4C4C4C));
       expect(AppColors.headsUpBg, const Color(0xFFF5FFAD));
       expect(AppColors.headsUpAccent, const Color(0xFF8F8621));
+      expect(AppColors.errorBody, const Color(0xFFD8D8D8));
     });
 
-    test('all 12 tokens are distinct (no accidental duplicates)', () {
+    test('all 13 tokens are distinct (no accidental duplicates)', () {
       expect(AppColors.values.toSet(), hasLength(AppColors.values.length));
     });
   });
@@ -93,6 +94,8 @@ void main() {
       // iconHangUp is smaller than iconOffline).
       expect(AppSpacing.iconHangUp, 28.0);
       expect(AppSpacing.iconOffline, 40.0);
+      // Error screen horizontal padding (Story 5.5 Figma iphone-16-8).
+      expect(AppSpacing.screenHorizontalErrorView, 36.0);
     });
   });
 

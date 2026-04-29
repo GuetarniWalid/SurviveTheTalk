@@ -2,6 +2,17 @@
 
 Items flagged during code review but postponed — each entry records where the review surfaced it and why it was not actioned at the time.
 
+## ⚠️ MUST-FIX BEFORE MVP LAUNCH (HIGH-PRIORITY HOLDS)
+
+- **🔴 Silent 401 / `AUTH_UNAUTHORIZED` handling — cross-cutting auth gap** *(surfaced 2026-04-29 in code review of Story 5.5; flagged HIGH-PRIORITY by Walid)*
+  - **Symptom:** When the JWT expires, the server returns HTTP 401 with `code: 'AUTH_UNAUTHORIZED'`. The client has NO interceptor for this — every feature bloc that hits the API translates it through `_classifyApiCode` (or its local equivalent) and the user sees a generic "try again" error. Retrying does nothing — the token is dead. The user is stuck in a loop until they kill and restart the app, and even then there's no flow to re-authenticate gracefully (auth router redirects assume a clean cold-start, not a session-expiry mid-flow).
+  - **Why it's high-priority:** before MVP launch, sessions WILL expire (default JWT TTL × N days × real-world users). Without this, a non-trivial fraction of returning users hits a dead-end loop on day-30+ and churns silently.
+  - **Right fix (proposed):** add a `Dio` interceptor in `client/lib/core/api/api_client.dart` that catches `response.statusCode == 401`, clears `TokenStorage`, dispatches `AuthEvent.SessionExpired`, and lets `GoRouter`'s `refreshListenable` redirect to `/auth`. The bloc-level error mapping (`_classifyApiCode`) then never sees a 401 — it's intercepted upstream.
+  - **Wrong fix to avoid:** adding an `AUTH_REQUIRED` slot to each feature bloc's error state (would couple auth to every feature, leaks the abstraction, multiplies maintenance).
+  - **Touched by:** `client/lib/core/api/api_client.dart` (add interceptor), `client/lib/features/auth/bloc/auth_bloc.dart` (handle `SessionExpired`), `client/lib/core/router/app_router.dart` (verify refresh listenable wiring), and any feature bloc that currently catches `ApiException` (audit they no longer expect AUTH codes).
+  - **Suggested home:** dedicated story in Epic 8 (Monetization & Subscription) or earlier if MVP closed-beta exposes the gap. Should land BEFORE the public-launch milestone.
+  - **Tests:** integration test that pumps a 401 mid-app-flow and asserts the user lands on `/auth` with the previous nav stack preserved (so they can return to where they were after re-auth).
+
 ## Deferred from: code review of story 4-5-build-first-call-incoming-call-experience (2026-04-23)
 
 - **Bot subprocess never reaped** — `server/api/routes_calls.py:63-76` fires `subprocess.Popen` and never tracks it. Real lifecycle (terminate on call-end, zombie cleanup) belongs to Epic 6.4 / 7.1 via `POST /calls/{id}/end`.
@@ -184,3 +195,18 @@ Three items (`meta.calls_remaining` staleness, `Popen`/LiveKit cleanup, tier-tra
 - **RTL locale — `WrapAlignment.end` aligns to left edge under Arabic/Hebrew** — no-op today (project is French-only per memory + Dev Notes "no localization"). Resurface when localisation lands. [client/lib/features/scenarios/views/widgets/content_warning_dialog.dart:208]
 - **Android back-press / full-distance drag-down dismissal path untested** — `?? false` coercion at line 42 handles the null-result case, but no test pumps a back-press or threshold-crossing drag to verify the resolved value is `false`. Add when next touching dialog tests. [client/test/features/scenarios/views/widgets/content_warning_dialog_test.dart]
 - **AA contrast claim unverified by automated test** — `app_colors.dart:43` comment claims `headsUpAccent on headsUpBg ≈ 4.6:1`; `#8F8621` on `#F5FFAD` actually computes around 4.0-4.5:1 depending on tool — borderline AA-large. No `theme_tokens_test.dart` enforcement. Add a contrast-ratio assertion when the next palette swap happens. [client/lib/core/theme/app_colors.dart:43]
+
+## Deferred from: code review of 5-5-refactor-scenario-list-error-screen-with-empathetic-ux (2026-04-29)
+
+- **retryCount increments unbounded** — by design per AC1 (no third copy tier); document only; close when localisation pass adds copy variants. [client/lib/features/scenarios/bloc/scenarios_bloc.dart:~62]
+- **`previous = state` capture stale under future co-events** — moot today (single-event surface). Resurface when `RefreshScenariosEvent` or similar co-handler is added. [client/lib/features/scenarios/bloc/scenarios_bloc.dart:~27-30]
+- **`_classifyApiCode` not unit-tested in isolation** — only bloc-integration coverage. Promote to a shared util + add unit tests when a second feature adopts the same error-mapping pattern. [client/lib/features/scenarios/bloc/scenarios_bloc.dart:~61-65]
+- **Loading state renders blank screen for up to 15s after a retry tap** — pre-existing from Story 5.2; no spinner, no preserved error context. Add a `_LoadingView` with progress when UX feedback prioritises this. [client/lib/features/scenarios/views/scenario_list_screen.dart:~37-39]
+- **No test asserts `BottomOverlayCard` absent during `ScenariosLoading`** — pre-existing coverage gap; current Loading test only asserts no `ScenarioCard`. Add when next touching the file. [client/test/features/scenarios/views/scenario_list_screen_test.dart:~129-144]
+- **`SCENARIO_LOAD_FAILED` and broader server-code error mapping** — `_classifyApiCode` covers the four canonical client codes only; server emits ~6 5xx-class string codes (LIVEKIT_TOKEN_FAILED, BOT_SPAWN_FAILED, etc.). Bundle into a status-code-aware refactor in Epic 6+ when call/debrief flows add error surfaces. [server/api/routes_calls.py, server/api/routes_scenarios.py]
+- **Empty/whitespace `ApiException.code` falls into UNKNOWN_ERROR** — defensive future-proofing; not exercised today. Add if a server change ships codes missing the `error.code` field.
+- **Hardcoded tap coords `Offset(50, 100)` / `Offset(10, 10)` fragile under viewport refactors** — at 390×844 they correctly land outside the IconBadge, but a future SafeArea/header tweak could overlap. Replace with widget-finder + `tester.tap(find.byType(...))` next time the test is touched. [client/test/features/scenarios/views/scenario_list_screen_test.dart:~320]
+- **`FilledButton` missing `foregroundColor`** — explicit white text/icon means rendering is correct, but ripple/highlight overlay falls back to theme `onPrimary` (may look wrong on accent green). Add `foregroundColor: AppColors.background` (or matching) when next polishing the button. [client/lib/features/scenarios/views/scenario_list_screen.dart:~351-360]
+- **`FittedBox(scaleDown)` shrinks 24-px refresh icon below design at textScaler 3.0** — accessibility max iOS edge case; on 320-wide phone the cluster overflows and FittedBox scales the icon down to ~22px. Surface when MVP testing exposes accessibility regressions. [client/lib/features/scenarios/views/scenario_list_screen.dart:~285-308]
+- **In-flight guard test body unchanged but renamed** — verify `verify(...).called(1)` still locks in single Loading→Error cycle when next touching the test file. [client/test/features/scenarios/bloc/scenarios_bloc_test.dart:~775]
+
