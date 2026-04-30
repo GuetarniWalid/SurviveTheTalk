@@ -4,9 +4,11 @@ import 'package:client/core/onboarding/vibration_service.dart';
 import 'package:client/features/call/bloc/incoming_call_bloc.dart';
 import 'package:client/features/call/bloc/incoming_call_event.dart';
 import 'package:client/features/call/bloc/incoming_call_state.dart';
+import 'package:client/features/call/models/call_session.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/views/incoming_call_screen.dart';
 import 'package:client/features/call/views/widgets/character_avatar.dart';
+import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -23,14 +25,26 @@ class MockCallRepository extends Mock implements CallRepository {}
 
 class MockConsentStorage extends Mock implements ConsentStorage {}
 
-Widget _host(IncomingCallBloc bloc) {
+Widget _host(
+  IncomingCallBloc bloc, {
+  Widget Function(Scenario, CallSession)? callScreenBuilder,
+}) {
   return MaterialApp(
     home: BlocProvider<IncomingCallBloc>.value(
       value: bloc,
-      child: const IncomingCallScreen(),
+      child: IncomingCallScreen(callScreenBuilder: callScreenBuilder),
     ),
   );
 }
+
+const _kCallStubKey = ValueKey('incoming_call_stub');
+
+const _kFakeSession = CallSession(
+  callId: 1,
+  roomName: 'call-xyz',
+  token: 'user-token',
+  livekitUrl: 'wss://livekit.example.com',
+);
 
 void main() {
   late MockIncomingCallBloc mockBloc;
@@ -171,4 +185,49 @@ void main() {
     // the "Timer still pending" warning that leaks into later tests.
     await tester.pumpWidget(const MaterialApp(home: Scaffold()));
   });
+
+  testWidgets(
+    'IncomingCallConnected pushes the call surface via root Navigator '
+    'with the tutorial scenario',
+    (tester) async {
+      // Start ringing, then transition to Connected so the BlocListener
+      // fires the push exactly once.
+      whenListen(
+        mockBloc,
+        Stream<IncomingCallState>.fromIterable(const [
+          IncomingCallConnected(_kFakeSession),
+        ]),
+        initialState: const IncomingCallRinging(),
+      );
+
+      Scenario? capturedScenario;
+      CallSession? capturedSession;
+
+      await tester.pumpWidget(
+        _host(
+          mockBloc,
+          callScreenBuilder: (scenario, session) {
+            capturedScenario = scenario;
+            capturedSession = session;
+            return const Scaffold(
+              key: _kCallStubKey,
+              body: Center(child: Text('CALL_STUB')),
+            );
+          },
+        ),
+      );
+      // Two pumps: one for initial render + one for the streamed
+      // Connected emission and the post-frame async push.
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+      expect(find.text('CALL_STUB'), findsOneWidget);
+      // Scenario passed to the builder is the hardcoded tutorial literal.
+      expect(capturedScenario, isNotNull);
+      expect(capturedScenario!.id, 'waiter_easy_01');
+      expect(capturedScenario!.riveCharacter, 'waiter');
+      expect(capturedSession, _kFakeSession);
+    },
+  );
 }

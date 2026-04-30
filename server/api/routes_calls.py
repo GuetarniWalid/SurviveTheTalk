@@ -13,6 +13,7 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import yaml
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pipecat.runner.livekit import generate_token, generate_token_with_agent
@@ -24,7 +25,7 @@ from config import Settings
 from db.database import get_connection
 from db.queries import get_user_by_id, insert_call_session
 from models.schemas import InitiateCallIn, InitiateCallOut
-from pipeline.scenarios import TUTORIAL_SCENARIO_ID, load_scenario_prompt
+from pipeline.scenarios import load_scenario_prompt
 
 router = APIRouter(prefix="/calls", tags=["calls"], dependencies=[AUTH_DEPENDENCY])
 
@@ -33,10 +34,12 @@ settings = Settings()
 
 @router.post("/initiate")
 async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
-    """Start the tutorial call: persist a row + spawn a bot + return room creds.
+    """Start a scenario call: persist a row + spawn a bot + return room creds.
 
-    Contract (Story 4.5 + Story 5.3):
-      - Hardcoded scenario `waiter_easy_01` (full selection in Story 6.1).
+    Contract:
+      - `scenario_id` arrives in the request body (Story 6.1 widened
+        `InitiateCallIn` from empty to `{scenario_id: str}`); resolved to a
+        YAML in `pipeline/scenarios/` via `load_scenario_prompt`.
       - Auth required (JWT via `AUTH_DEPENDENCY`).
       - Cap-check (FR21 via `compute_call_usage`) runs BEFORE token mint,
         BEFORE INSERT, BEFORE bot spawn — a blocked call leaves zero
@@ -46,21 +49,9 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
         passed via the `SYSTEM_PROMPT` env var (bot reads it in `run_bot`).
       - Returns the `{data, meta}` envelope with `call_id`, `room_name`,
         user `token`, and `livekit_url` so the client can join the room.
-
-    Failure envelope: every exception is surfaced as an HTTPException whose
-    `detail.code` feeds the global envelope handler in `api/app.py`. The bot
-    subprocess is the LAST side-effect — if it fails, the freshly-inserted
-    `call_sessions` row is rolled back via a separate connection (the hot-path
-    connection has already closed when Popen runs).
-
-    Connection lifecycle: ONE `aiosqlite` connection covers cap-check →
-    scenario load → token mint → INSERT. Holding it across the in-process
-    steps avoids the double-open from Story 5.3's first iteration. The
-    rollback path for `BOT_SPAWN_FAILED` legitimately opens a second
-    connection because Popen runs after the hot-path block has closed.
     """
     user_id: int = request.state.user_id
-    scenario_id = TUTORIAL_SCENARIO_ID
+    scenario_id = payload.scenario_id
     room_name = f"call-{uuid4()}"
 
     try:
@@ -88,13 +79,19 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
             # 2. Scenario prompt (file IO, no DB) — fail fast on bad YAML.
             try:
                 system_prompt = load_scenario_prompt(scenario_id)
-            except (FileNotFoundError, RuntimeError, ValueError, KeyError) as exc:
+            except (
+                FileNotFoundError,
+                RuntimeError,
+                ValueError,
+                KeyError,
+                yaml.YAMLError,
+            ) as exc:
                 logger.exception(f"Failed to load scenario prompt for {scenario_id!r}")
                 raise HTTPException(
                     status_code=500,
                     detail={
                         "code": "SCENARIO_LOAD_FAILED",
-                        "message": "Could not prepare the tutorial scenario.",
+                        "message": "Could not prepare the scenario.",
                     },
                 ) from exc
 

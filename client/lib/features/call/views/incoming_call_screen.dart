@@ -9,11 +9,44 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/call_colors.dart';
+import '../../scenarios/models/scenario.dart';
 import '../bloc/incoming_call_bloc.dart';
 import '../bloc/incoming_call_event.dart';
 import '../bloc/incoming_call_state.dart';
+import '../models/call_session.dart';
+import 'call_screen.dart';
 import 'tutorial_scenario.dart';
 import 'widgets/character_avatar.dart';
+
+/// Builds the in-call surface to push from `IncomingCallConnected`.
+/// Defaults to `CallScreen.new`. Tests pass a lightweight stub so we don't
+/// build a real LiveKit `Room` (whose internal timers leak across tests).
+/// Symmetric with the same-named typedef in `scenario_list_screen.dart`.
+typedef CallScreenBuilder =
+    Widget Function(Scenario scenario, CallSession session);
+
+Widget _defaultCallScreenBuilder(Scenario scenario, CallSession session) {
+  return CallScreen(scenario: scenario, callSession: session);
+}
+
+/// Tutorial scenario literal pushed to `CallScreen` from the onboarding
+/// path. There is no DB-backed `Scenario` at onboarding time (the user
+/// hasn't reached the scenario list yet); Story 6.1 keeps this hardcoded
+/// per AC9 Option (a). Story 6.2's character-variant code reads
+/// `scenario.riveCharacter` and assumes non-null — this literal is the
+/// onboarding answer for that contract.
+const Scenario _kTutorialScenario = Scenario(
+  id: TutorialScenario.id,
+  title: TutorialScenario.characterName,
+  difficulty: 'easy',
+  isFree: true,
+  riveCharacter: TutorialScenario.riveCharacter,
+  languageFocus: <String>['ordering food'],
+  contentWarning: null,
+  bestScore: null,
+  attempts: 0,
+  tagline: '',
+);
 
 // Screen-specific typography — mirrors the native incoming-call visual.
 // Not promoted to AppTypography because these sizes exist only on this screen.
@@ -31,7 +64,12 @@ const double _kScreenBottomPadding = 70.0;
 const double _kButtonRowHorizontalPadding = 40.0;
 
 class IncomingCallScreen extends StatefulWidget {
-  const IncomingCallScreen({super.key});
+  /// Optional injection seam for tests (symmetric with `ScenarioListScreen`).
+  /// Production callers omit this — `CallScreen.new` is used. Tests pass a
+  /// stub so the listener-driven push doesn't build a real `Room`.
+  final CallScreenBuilder? callScreenBuilder;
+
+  const IncomingCallScreen({super.key, this.callScreenBuilder});
 
   @override
   State<IncomingCallScreen> createState() => _IncomingCallScreenState();
@@ -92,7 +130,32 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     return BlocListener<IncomingCallBloc, IncomingCallState>(
       listener: (context, state) {
         if (state is IncomingCallConnected) {
-          context.go(AppRoutes.call, extra: state.session);
+          // Detached from go_router (ADR 003 §Tier 1) — push via root
+          // Navigator so PopScope(canPop: false) is arbitrated against
+          // the root navigator instead of the GoRouter shell.
+          //
+          // Awaiting the push lets us route the user OUT of
+          // IncomingCallScreen when the call ends — without this, the
+          // user pops back to a still-"ringing" Accept/Decline screen
+          // with no exit path. `seenFirstCall` is already persisted by
+          // the bloc, so the redirect at `/` lands on `/scenarios`.
+          () async {
+            final builder =
+                widget.callScreenBuilder ?? _defaultCallScreenBuilder;
+            await Navigator.of(context, rootNavigator: true).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => builder(_kTutorialScenario, state.session),
+                fullscreenDialog: true,
+              ),
+            );
+            // `context.mounted` (not the State's `mounted`) is what the
+            // analyzer wants here — the listener's BuildContext is not
+            // tied to this widget's State. After the push the user is
+            // back on IncomingCallScreen; route them out so the call
+            // doesn't strand on the "ringing" surface.
+            if (!context.mounted) return;
+            context.go(AppRoutes.root);
+          }();
         } else if (state is IncomingCallDeclined ||
             state is IncomingCallError) {
           // Error path mirrors Decline: a failed first call should never

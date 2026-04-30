@@ -6,10 +6,10 @@ class CallRepository {
 
   CallRepository(this._apiClient);
 
-  Future<CallSession> initiateCall() async {
+  Future<CallSession> initiateCall({required String scenarioId}) async {
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/calls/initiate',
-      data: const <String, dynamic>{},
+      data: <String, dynamic>{'scenario_id': scenarioId},
     );
     final data = response.data!['data'] as Map<String, dynamic>;
     return CallSession.fromJson(data);

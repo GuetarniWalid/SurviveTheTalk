@@ -1,4 +1,4 @@
-"""Tests for the /calls/initiate endpoint (Story 4.5)."""
+"""Tests for the /calls/initiate endpoint (Story 4.5 + 6.1 widening)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from fastapi.testclient import TestClient
 
 from auth.jwt_service import issue_token
 from tests.conftest import register_user as _register_user
+
+# Default request body for the happy-path tests. Story 6.1 made `scenario_id`
+# required; the tutorial id keeps these tests aligned with the YAML actually
+# present on disk (`server/pipeline/scenarios/the-waiter.yaml`).
+_TUTORIAL_BODY = {"scenario_id": "waiter_easy_01"}
 
 # Frozen UTC instant used by paid-tier tests so the seed timestamps and the
 # handler's "today" computation can never disagree across UTC midnight (CI runs
@@ -27,7 +32,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def test_initiate_requires_jwt(client):
     """No Authorization header → 401 AUTH_UNAUTHORIZED."""
-    response = client.post("/calls/initiate", json={})
+    response = client.post("/calls/initiate", json=_TUTORIAL_BODY)
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
@@ -37,7 +42,7 @@ def test_initiate_rejects_invalid_jwt(client):
     """Malformed JWT → 401 AUTH_UNAUTHORIZED."""
     response = client.post(
         "/calls/initiate",
-        json={},
+        json=_TUTORIAL_BODY,
         headers=_auth_header("not.a.jwt"),
     )
 
@@ -61,7 +66,7 @@ def test_initiate_happy_path_returns_envelope(
 
     response = client.post(
         "/calls/initiate",
-        json={},
+        json=_TUTORIAL_BODY,
         headers=_auth_header(token),
     )
 
@@ -95,7 +100,7 @@ def test_initiate_persists_call_session_row(
 
     response = client.post(
         "/calls/initiate",
-        json={},
+        json=_TUTORIAL_BODY,
         headers=_auth_header(token),
     )
     call_id = response.json()["data"]["call_id"]
@@ -135,7 +140,7 @@ def test_initiate_spawns_bot_with_scenario_prompt(
 
     response = client.post(
         "/calls/initiate",
-        json={},
+        json=_TUTORIAL_BODY,
         headers=_auth_header(token),
     )
     assert response.status_code == 200
@@ -182,7 +187,7 @@ def test_initiate_generates_both_tokens(
 
     client.post(
         "/calls/initiate",
-        json={},
+        json=_TUTORIAL_BODY,
         headers=_auth_header(token),
     )
 
@@ -208,11 +213,145 @@ def test_connect_and_initiate_coexist(
 
 
 def test_scenario_loader_rejects_unknown_id():
-    """load_scenario_prompt raises ValueError on unknown scenario ids."""
+    """load_scenario_prompt raises FileNotFoundError on unknown scenario ids
+    (Story 6.1 widened the loader from ValueError → FileNotFoundError so the
+    route's existing exception arm at routes_calls.py surfaces it as the
+    canonical SCENARIO_LOAD_FAILED envelope).
+    """
     from pipeline.scenarios import load_scenario_prompt
 
-    with pytest.raises(ValueError):
-        load_scenario_prompt("mugger_hard_01")
+    with pytest.raises(FileNotFoundError):
+        load_scenario_prompt("does_not_exist")
+
+
+# ---------- Story 6.1 — `scenario_id` body field ----------
+
+
+def test_initiate_validates_scenario_id_required(
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Empty body → 422 + canonical VALIDATION_ERROR envelope."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={},
+        headers=_auth_header(token),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.parametrize(
+    "bad_scenario_id",
+    [
+        "",  # empty string passed Pydantic before P8 — now rejected by min_length
+        " " * 5,  # whitespace fails the charset pattern
+        "x" * 65,  # over max_length=64
+        "../../etc/passwd",  # path-traversal-shaped string fails the charset pattern
+        "Waiter-EASY-01",  # uppercase + dash fail the lowercase-snake-case pattern
+    ],
+)
+def test_initiate_rejects_invalid_scenario_id_shapes(
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+    bad_scenario_id: str,
+) -> None:
+    """Schema-level rejection of empty / oversized / wrong-charset ids — they
+    must surface as VALIDATION_ERROR (422), not SCENARIO_LOAD_FAILED (500),
+    so a bad client can't amplify logs by sending unbounded strings (the
+    `logger.exception` arm in the route would otherwise write the full id
+    to disk per request).
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": bad_scenario_id},
+        headers=_auth_header(token),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_rejects_unknown_scenario(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Unknown scenario_id → 500 + SCENARIO_LOAD_FAILED (no DB row, no Popen)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "does_not_exist"},
+        headers=_auth_header(token),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "SCENARIO_LOAD_FAILED"
+
+    # No row was inserted, no bot was spawned (the failure happens before
+    # both side-effects in the route's hot path).
+    conn = sqlite3.connect(test_db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0
+    mock_popen.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "scenario_id",
+    ["waiter_easy_01", "cop_hard_01"],
+)
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_persists_requested_scenario_id(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    scenario_id: str,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Parametrised happy path — `call_sessions.scenario_id` matches the body."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": scenario_id},
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+    call_id = response.json()["data"]["call_id"]
+
+    conn = sqlite3.connect(test_db_path)
+    row = conn.execute(
+        "SELECT scenario_id FROM call_sessions WHERE id = ?",
+        (call_id,),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == scenario_id
 
 
 # ---------- Story 5.3 — daily/lifetime call cap enforcement ----------
@@ -275,7 +414,9 @@ def test_initiate_returns_403_call_limit_reached_when_free_user_exhausted(
     )
     token = issue_token(user_id)
 
-    response = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CALL_LIMIT_REACHED"
@@ -305,7 +446,9 @@ def test_initiate_returns_403_when_paid_user_exhausted_today(
     )
     token = issue_token(user_id)
 
-    response = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CALL_LIMIT_REACHED"
@@ -339,7 +482,9 @@ def test_initiate_succeeds_when_paid_user_has_calls_yesterday_only(
     )
     token = issue_token(user_id)
 
-    response = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
 
     assert response.status_code == 200
     assert response.json()["data"]["token"] == "user-token-xyz"
@@ -369,7 +514,9 @@ def test_initiate_does_not_persist_when_capped(
     )
     token = issue_token(user_id)
 
-    response = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
     assert response.status_code == 403
 
     conn = sqlite3.connect(test_db_path)
@@ -406,7 +553,9 @@ def test_initiate_does_not_spawn_bot_when_capped(
     )
     token = issue_token(user_id)
 
-    response = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
     assert response.status_code == 403
 
     mock_popen.assert_not_called()

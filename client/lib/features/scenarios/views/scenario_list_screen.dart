@@ -3,9 +3,16 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/router.dart';
+import '../../../core/api/api_client.dart';
+import '../../../core/api/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/app_toast.dart';
+import '../../call/models/call_session.dart';
+import '../../call/repositories/call_repository.dart';
+import '../../call/views/call_screen.dart';
+import '../../call/views/no_network_screen.dart';
 import '../../paywall/views/paywall_sheet.dart';
 import '../bloc/scenarios_bloc.dart';
 import '../bloc/scenarios_event.dart';
@@ -16,8 +23,31 @@ import 'widgets/bottom_overlay_card.dart';
 import 'widgets/content_warning_sheet.dart';
 import 'widgets/scenario_card.dart';
 
+/// Builds the in-call surface to push from `_onCallTap`. Defaults to
+/// `CallScreen.new`. Tests pass a lightweight stub to avoid constructing a
+/// real LiveKit `Room` (which spawns background timers that leak across
+/// test boundaries).
+typedef CallScreenBuilder =
+    Widget Function(Scenario scenario, CallSession session);
+
+Widget _defaultCallScreenBuilder(Scenario scenario, CallSession session) {
+  return CallScreen(scenario: scenario, callSession: session);
+}
+
 class ScenarioListScreen extends StatelessWidget {
-  const ScenarioListScreen({super.key});
+  /// Optional injection seam for tests. Production uses
+  /// `CallRepository(ApiClient())` — passing nothing keeps the existing
+  /// router wiring unchanged.
+  final CallRepository? callRepository;
+
+  /// Optional injection seam for tests. Production uses `CallScreen.new`.
+  final CallScreenBuilder? callScreenBuilder;
+
+  const ScenarioListScreen({
+    super.key,
+    this.callRepository,
+    this.callScreenBuilder,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +78,12 @@ class ScenarioListScreen extends StatelessWidget {
                         AppSpacing.screenHorizontalScenarioList,
                         0,
                       ),
-                      child: _List(scenarios: scenarios, usage: usage),
+                      child: _List(
+                        scenarios: scenarios,
+                        usage: usage,
+                        callRepository: callRepository,
+                        callScreenBuilder: callScreenBuilder,
+                      ),
                     ),
                   );
                 case ScenariosError(:final code, :final retryCount):
@@ -97,31 +132,51 @@ class _OverlayHost extends StatelessWidget {
   }
 }
 
-class _List extends StatelessWidget {
+class _List extends StatefulWidget {
   final List<Scenario> scenarios;
   final CallUsage usage;
+  final CallRepository? callRepository;
+  final CallScreenBuilder? callScreenBuilder;
 
-  const _List({required this.scenarios, required this.usage});
+  const _List({
+    required this.scenarios,
+    required this.usage,
+    this.callRepository,
+    this.callScreenBuilder,
+  });
+
+  @override
+  State<_List> createState() => _ListState();
+}
+
+class _ListState extends State<_List> {
+  /// Tap debounce — set to true while a `/calls/initiate` POST is in
+  /// flight, gates `_onCallTap` at the top so a second tap can't fire a
+  /// second POST. The bloc-level `if (state is ScenariosLoading) return`
+  /// guard doesn't help here: the bloc isn't transitioning, only the local
+  /// async closure is awaiting. Story 6.1 chose the StatefulWidget path
+  /// (vs. ValueNotifier on ScenarioCard) because ScenarioCard has no
+  /// per-tap visual feedback requirement in 6.1 — see Dev Notes.
+  bool _initiating = false;
+
+  late final CallRepository _callRepository =
+      widget.callRepository ?? CallRepository(ApiClient());
 
   @override
   Widget build(BuildContext context) {
     // Reserve exactly the BOC's rendered height (static content + the
     // device's bottom safe-area inset) so the last ScenarioCard sits flush
-    // above the pinned overlay. The split avoids LayoutBuilder jitter
-    // (static portion is layout-known) while staying accurate per device
-    // (safe-area portion comes from MediaQuery). When the BOC is absent
-    // (paid-with-calls — `BottomOverlayCard.isVisibleFor` returns false),
-    // reserve nothing so paid users don't see a phantom bottom gutter.
+    // above the pinned overlay.
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
-    final reservedForOverlay = BottomOverlayCard.isVisibleFor(usage)
+    final reservedForOverlay = BottomOverlayCard.isVisibleFor(widget.usage)
         ? BottomOverlayCard.staticContentHeight + bottomInset
         : 0.0;
     return ListView.separated(
       padding: EdgeInsets.only(bottom: reservedForOverlay),
-      itemCount: scenarios.length,
+      itemCount: widget.scenarios.length,
       separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.cardGap),
       itemBuilder: (context, i) {
-        final scenario = scenarios[i];
+        final scenario = widget.scenarios[i];
         return ScenarioCard(
           scenario: scenario,
           onCallTap: () => _onCallTap(context, scenario),
@@ -134,22 +189,72 @@ class _List extends StatelessWidget {
     );
   }
 
-  // Navigation strategy (AC5, post-review decision 4 — 2026-04-27):
-  //   - /call uses `go` so back-swipe cannot exit a live WebRTC session
-  //     mid-call; the call screen owns its own hang-up flow.
-  //   - /briefing and /debrief use `push` so the user can back-swipe to the
-  //     scenario list naturally (these are read-only "preview" surfaces).
+  // Story 6.1 contract:
+  //   1. await content-warning sheet (existing behaviour).
+  //   2. await POST /calls/initiate (was: navigate to /call placeholder).
+  //   3. push CallScreen via the *root* Navigator (ADR 003 §Tier 1 —
+  //      detaches the call screen from go_router so PopScope is arbitrated
+  //      against the root navigator instead of the GoRouter shell).
   //
-  // Story 5.4 (AC1): when `scenario.contentWarning != null`, await the
-  // content-warning sheet gate before navigating; cancel returns to list
-  // with no state change. Scenarios with no warning navigate directly.
+  // Failure routing (AC6):
+  //   - NETWORK_ERROR        → push NoNetworkScreen (root nav)
+  //   - CALL_LIMIT_REACHED   → PaywallSheet.show (modal)
+  //   - any other ApiException → stay on scenario list (no inline retry
+  //                              banner — see feedback_error_ux.md)
   Future<void> _onCallTap(BuildContext context, Scenario scenario) async {
+    if (_initiating) return;
     if (scenario.contentWarning != null) {
       final proceed = await showContentWarningSheet(context, scenario);
       if (!proceed) return;
       if (!context.mounted) return;
     }
-    context.go(AppRoutes.call, extra: scenario);
+
+    setState(() => _initiating = true);
+    try {
+      final session = await _callRepository.initiateCall(
+        scenarioId: scenario.id,
+      );
+      if (!context.mounted) return;
+      final builder =
+          widget.callScreenBuilder ?? _defaultCallScreenBuilder;
+      await Navigator.of(context, rootNavigator: true).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => builder(scenario, session),
+          fullscreenDialog: true,
+        ),
+      );
+    } on ApiException catch (e) {
+      if (!context.mounted) return;
+      switch (e.code) {
+        case 'NETWORK_ERROR':
+          await Navigator.of(context, rootNavigator: true).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const NoNetworkScreen(),
+              fullscreenDialog: true,
+            ),
+          );
+        case 'CALL_LIMIT_REACHED':
+          await PaywallSheet.show(context);
+        default:
+          // Generic 5xx (LIVEKIT_TOKEN_FAILED, BOT_SPAWN_FAILED,
+          // SCENARIO_LOAD_FAILED, UNKNOWN_ERROR, etc.). Stay on the list
+          // (the safe fallback already exists right here) but surface a
+          // red toast so the user knows their tap registered and the
+          // failure is scenario-specific + temporary. AppToast (Story
+          // 4.3) is the same primitive used for the spam-folder hint —
+          // reused with `error` type so the colour is destructive red.
+          AppToast.show(
+            context,
+            message:
+                "This scenario hit a snag. Try a different one — we're on it.",
+            type: AppToastType.error,
+          );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _initiating = false);
+      }
+    }
   }
 
   void _onReportTap(BuildContext context, Scenario scenario) {

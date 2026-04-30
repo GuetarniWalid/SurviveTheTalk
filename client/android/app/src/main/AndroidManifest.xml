@@ -5,6 +5,13 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- ADR 003 §Tier 2 — pre-declared for the foreground-service install
+         path. LiveKit Flutter SDK 2.6.4 does NOT auto-install an audio
+         foreground service (see Story 6.1 Dev Notes); the permissions stay
+         in the manifest so a future SDK bump or wrapper (Story 6.5+) can
+         flip the service on without a manifest change. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:label="client"

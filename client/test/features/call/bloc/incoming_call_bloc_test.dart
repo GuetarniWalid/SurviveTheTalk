@@ -57,7 +57,7 @@ void main() {
     blocTest<IncomingCallBloc, IncomingCallState>(
       'happy path emits [Accepting, Connected] and saves first-call flag',
       setUp: () {
-        when(() => mockCallRepository.initiateCall())
+        when(() => mockCallRepository.initiateCall(scenarioId: any(named: 'scenarioId')))
             .thenAnswer((_) async => _session);
       },
       build: buildBloc,
@@ -76,7 +76,7 @@ void main() {
     blocTest<IncomingCallBloc, IncomingCallState>(
       'ApiException emits [Accepting, Error]',
       setUp: () {
-        when(() => mockCallRepository.initiateCall()).thenThrow(
+        when(() => mockCallRepository.initiateCall(scenarioId: any(named: 'scenarioId'))).thenThrow(
           const ApiException(
             code: 'NETWORK_ERROR',
             message: 'No connection.',
@@ -103,7 +103,7 @@ void main() {
     blocTest<IncomingCallBloc, IncomingCallState>(
       'unexpected error emits generic Error message',
       setUp: () {
-        when(() => mockCallRepository.initiateCall())
+        when(() => mockCallRepository.initiateCall(scenarioId: any(named: 'scenarioId')))
             .thenThrow(StateError('boom'));
       },
       build: buildBloc,
@@ -131,7 +131,7 @@ void main() {
       verify: (_) {
         verify(() => mockVibrationService.stop()).called(greaterThanOrEqualTo(1));
         verify(() => mockConsentStorage.saveFirstCallShown()).called(1);
-        verifyNever(() => mockCallRepository.initiateCall());
+        verifyNever(() => mockCallRepository.initiateCall(scenarioId: any(named: 'scenarioId')));
       },
     );
   });
@@ -140,7 +140,7 @@ void main() {
     blocTest<IncomingCallBloc, IncomingCallState>(
       'stops vibration on Accept transition',
       setUp: () {
-        when(() => mockCallRepository.initiateCall())
+        when(() => mockCallRepository.initiateCall(scenarioId: any(named: 'scenarioId')))
             .thenAnswer((_) async => _session);
       },
       build: buildBloc,

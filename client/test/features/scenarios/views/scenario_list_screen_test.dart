@@ -1,6 +1,12 @@
+import 'dart:async';
+
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/api/api_exception.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/theme/app_theme.dart';
+import 'package:client/features/call/models/call_session.dart';
+import 'package:client/features/call/repositories/call_repository.dart';
+import 'package:client/features/call/views/no_network_screen.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
@@ -47,6 +53,32 @@ const _kPaidExhausted = CallUsage(
 class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
     implements ScenariosBloc {}
 
+class MockCallRepository extends Mock implements CallRepository {}
+
+/// Test stub that stands in for `CallScreen` so the production push goes
+/// through real `Navigator.push` machinery without constructing a real
+/// LiveKit `Room` (whose background timers leak across test boundaries).
+///
+/// Carries a stable Key so the test can assert "the call surface mounted"
+/// via `find.byKey(_kCallStubKey)` instead of relying on the textual
+/// "CALL_STUB" body finder, which would brittle-couple the assertion to
+/// the placeholder copy.
+const Key _kCallStubKey = ValueKey('call_screen_stub');
+
+Widget _stubCallScreen(Scenario scenario, CallSession session) {
+  return const Scaffold(
+    key: _kCallStubKey,
+    body: Center(child: Text('CALL_STUB')),
+  );
+}
+
+const _kFakeSession = CallSession(
+  callId: 1,
+  roomName: 'call-stub',
+  token: 'tok',
+  livekitUrl: 'wss://stub',
+);
+
 Scenario _build({
   required String id,
   required String title,
@@ -80,11 +112,10 @@ GoRouter _router(Widget screen, MockScenariosBloc bloc) {
           child: screen,
         ),
       ),
-      GoRoute(
-        path: '/call',
-        builder: (context, state) =>
-            const Scaffold(body: Center(child: Text('CALL_STUB'))),
-      ),
+      // Story 6.1: `/call` is no longer a GoRouter route — the call screen
+      // is pushed via the *root* Navigator (ADR 003 §Tier 1). Tests that
+      // verified navigation to a `/call` GoRoute now look for the actual
+      // `CallScreen` widget instance in the tree.
       GoRoute(
         path: '/debrief/:scenarioId',
         builder: (context, state) => Scaffold(
@@ -109,10 +140,20 @@ GoRouter _router(Widget screen, MockScenariosBloc bloc) {
   );
 }
 
-Widget _harness(MockScenariosBloc bloc) => MaterialApp.router(
-      theme: AppTheme.dark(),
-      routerConfig: _router(const ScenarioListScreen(), bloc),
-    );
+Widget _harness(
+  MockScenariosBloc bloc, {
+  CallRepository? callRepository,
+  CallScreenBuilder? callScreenBuilder,
+}) => MaterialApp.router(
+  theme: AppTheme.dark(),
+  routerConfig: _router(
+    ScenarioListScreen(
+      callRepository: callRepository,
+      callScreenBuilder: callScreenBuilder ?? _stubCallScreen,
+    ),
+    bloc,
+  ),
+);
 
 void main() {
   late MockScenariosBloc mockBloc;
@@ -557,8 +598,10 @@ void main() {
 
   Future<void> pumpListWithScenario(
     WidgetTester tester,
-    Scenario scenario,
-  ) async {
+    Scenario scenario, {
+    CallRepository? callRepository,
+    CallScreenBuilder? callScreenBuilder,
+  }) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -571,7 +614,13 @@ void main() {
       initialState:
           ScenariosLoaded(scenarios: [scenario], usage: _kFreshUsage),
     );
-    await tester.pumpWidget(_harness(mockBloc));
+    await tester.pumpWidget(
+      _harness(
+        mockBloc,
+        callRepository: callRepository,
+        callScreenBuilder: callScreenBuilder,
+      ),
+    );
     await tester.pump();
   }
 
@@ -583,7 +632,11 @@ void main() {
         title: 'Mugger',
         contentWarning: 'CW body 12345',
       );
-      await pumpListWithScenario(tester, scenario);
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenAnswer((_) async => _kFakeSession);
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
@@ -591,26 +644,35 @@ void main() {
       expect(find.text('Buckle up'), findsOneWidget);
       expect(find.text('CW body 12345'), findsOneWidget);
       // Still on the list — navigation has NOT happened yet.
-      expect(find.text('CALL_STUB'), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      // POST not fired — gated by the content-warning sheet.
+      verifyNever(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      );
     },
   );
 
   testWidgets(
-    'tapping Pick up in the sheet navigates to /call with the scenario',
+    'tapping Pick up POSTs scenario_id and pushes CallScreen via root Navigator',
     (tester) async {
       final scenario = _build(
         id: 's1',
         title: 'Mugger',
         contentWarning: 'CW body 12345',
       );
-      await pumpListWithScenario(tester, scenario);
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenAnswer((_) async => _kFakeSession);
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Pick up'));
       await tester.pumpAndSettle();
 
-      expect(find.text('CALL_STUB'), findsOneWidget);
+      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
       expect(find.text('Buckle up'), findsNothing);
     },
   );
@@ -623,34 +685,156 @@ void main() {
         title: 'Mugger',
         contentWarning: 'CW body 12345',
       );
-      await pumpListWithScenario(tester, scenario);
+      final mockRepo = MockCallRepository();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Not now'));
       await tester.pumpAndSettle();
 
-      expect(find.text('CALL_STUB'), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsNothing);
       expect(find.text('Buckle up'), findsNothing);
       expect(find.byType(ScenarioCard), findsOneWidget);
+      verifyNever(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      );
     },
   );
 
   testWidgets(
-    'tapping phone icon on a scenario WITHOUT content_warning skips the sheet and navigates directly',
+    'tapping phone icon on a scenario WITHOUT content_warning POSTs and pushes directly',
     (tester) async {
       final scenario = _build(
         id: 's1',
         title: 'Waiter',
         contentWarning: null,
       );
-      await pumpListWithScenario(tester, scenario);
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenAnswer((_) async => _kFakeSession);
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
+      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
       expect(find.text('Buckle up'), findsNothing);
-      expect(find.text('CALL_STUB'), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+    },
+  );
+
+  // ---------- Story 6.1 — failure routing & tap debounce ----------
+
+  testWidgets(
+    'NETWORK_ERROR pushes the NoNetworkScreen via root Navigator',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenThrow(
+        const ApiException(code: 'NETWORK_ERROR', message: 'No connection.'),
+      );
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(NoNetworkScreen), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'CALL_LIMIT_REACHED shows the PaywallSheet (not the CallScreen)',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenThrow(
+        const ApiException(
+          code: 'CALL_LIMIT_REACHED',
+          message: "You've used all your calls.",
+        ),
+      );
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      // PaywallSheet is a modal bottom sheet — its content (any text) sits
+      // above the scenario list. We assert by widget type instead of text
+      // because the copy is owned by PaywallSheet not this test.
+      expect(find.byType(BottomSheet), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'generic 5xx (BOT_SPAWN_FAILED) shows the red AppToast with the in-persona copy',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenThrow(
+        const ApiException(code: 'BOT_SPAWN_FAILED', message: 'Server error'),
+      );
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pump();
+      // Toast is inserted via Overlay after a 600ms delay (see
+      // _ToastOverlayState.initState). Pump enough wall-time to clear that
+      // delay and let the slide-in animation settle.
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // The exact wording is the contractual user-visible promise — if it
+      // changes, the assertion will surface the change.
+      expect(
+        find.text(
+          "This scenario hit a snag. Try a different one — we're on it.",
+        ),
+        findsOneWidget,
+      );
+      // The user is still on the list (no NoNetworkScreen, no PaywallSheet).
+      expect(find.byType(NoNetworkScreen), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      // Drain the 10s auto-dismiss timer so the binding's teardown invariant
+      // doesn't fire `!timersPending`.
+      await tester.pump(const Duration(seconds: 11));
+      await tester.pump(const Duration(milliseconds: 400));
+    },
+  );
+
+  testWidgets(
+    'tap debounce: a second tap during in-flight POST does NOT fire a second request',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      final mockRepo = MockCallRepository();
+      // Hold the request open by returning a never-resolving Future.
+      final completer = Completer<CallSession>();
+      when(
+        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+      ).thenAnswer((_) => completer.future);
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pump();
+      // While the POST is in flight, tap again.
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pump();
+
+      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
+
+      // Cleanup: complete the future so addTearDown doesn't leak a pending
+      // microtask into the next test.
+      completer.complete(_kFakeSession);
+      await tester.pumpAndSettle();
     },
   );
 

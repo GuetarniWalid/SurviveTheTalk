@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-29 (Epic 5 retrospective complete — doc: epic-5-retro-2026-04-29.md; epic-5 → done)
+# last_updated: 2026-04-30 (Story 6.1 → done after smoke gate green; Story 6.2 ready-for-dev)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-29 (Epic 5 retrospective complete — doc: epic-5-retro-2026-04-29.md; epic-5 → done)
+last_updated: 2026-04-30 (Story 6.1 → done after smoke gate green; Story 6.2 ready-for-dev)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -88,9 +88,9 @@ development_status:
   epic-5-retrospective: done  # 2026-04-29 retro completed, doc: epic-5-retro-2026-04-29.md
 
   # Epic 6: Animated Call Experience
-  epic-6: backlog
-  6-1-build-call-initiation-from-scenario-list-with-connection-animation: backlog
-  6-2-build-call-screen-with-rive-character-canvas: backlog
+  epic-6: in-progress
+  6-1-build-call-initiation-from-scenario-list-with-connection-animation: done  # code review 2026-04-30: 17 patches applied + 1 from D2 (red AppToast for generic 5xx); 2 decisions resolved; 4 deferred (already in deferred-work.md). Smoke gate fully green at SHA 28fd11c (8/8 boxes); 234 client tests + 154 server tests green; flutter analyze + ruff clean.
+  6-2-build-call-screen-with-rive-character-canvas: ready-for-dev
   6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: backlog
   6-4-implement-silence-handling-and-character-hang-up-mechanic: backlog
   6-5-build-voluntary-call-end-and-no-network-screen: backlog

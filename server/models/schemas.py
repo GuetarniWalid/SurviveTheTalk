@@ -37,10 +37,14 @@ class VerifyCodeOut(BaseModel):
 class InitiateCallIn(BaseModel):
     """Request body for POST /calls/initiate.
 
-    Empty in Story 4.5 — the tutorial scenario is hardcoded server-side.
-    Full scenario selection (a `scenario_id` field) lands with Story 6.1
-    once the scenarios table exists (Story 5.1).
+    `scenario_id` is required (no default) — the server resolves it to a
+    YAML in `pipeline/scenarios/` via `load_scenario_prompt`. Bounded
+    length + charset prevent log-amplification (an unbounded string would
+    hit `logger.exception` on lookup-miss) and reject obvious garbage at
+    the schema boundary.
     """
+
+    scenario_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
 
 
 class InitiateCallOut(BaseModel):

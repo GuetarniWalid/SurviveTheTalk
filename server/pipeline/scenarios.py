@@ -1,12 +1,12 @@
-"""Scenario prompt loader for the tutorial call.
+"""Scenario prompt loader.
 
-Story 4.5 needs the `/calls/initiate` endpoint to spawn the Pipecat bot with
-Tina the Waitress's scenario prompt — built by concatenating `base_prompt` and
-`checkpoints[0].prompt_segment` from the canonical YAML.
+Story 4.5 hardcoded the tutorial scenario; Story 6.1 widens the loader to
+support every YAML in `server/pipeline/scenarios/` by building a
+`{scenario_id: yaml_path}` lookup table at module import time.
 
-Full scenario selection (a DB-backed scenarios table, checkpoint-aware prompt
-composition) lands in Story 5.1 + 6.1 + 6.6. Until then, Story 4.5 hardcodes
-the tutorial id and reads the YAML once per process lifetime.
+The lookup is built from each YAML's `metadata.id` field — NOT from the
+filename — so a future rename of `the-cop.yaml` does not silently break
+the mapping.
 
 **YAML source-of-truth:** the canonical scenarios live in
 `_bmad-output/planning-artifacts/scenarios/` (Epic 3 authoring), but the
@@ -25,7 +25,6 @@ import yaml
 TUTORIAL_SCENARIO_ID = "waiter_easy_01"
 
 _SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
-_TUTORIAL_SCENARIO_YAML = _SCENARIOS_DIR / "the-waiter.yaml"
 
 _SPEAK_FIRST_DIRECTIVE = (
     "\n\nYou will speak first when the call begins. Start with: "
@@ -36,30 +35,68 @@ _SPEAK_FIRST_DIRECTIVE = (
 _PROMPT_CACHE: dict[str, str] = {}
 
 
+def _build_scenario_index() -> dict[str, Path]:
+    """Scan `_SCENARIOS_DIR` and return `{scenario_id: yaml_path}`.
+
+    Reads each YAML's top-level `metadata.id` to build the index. Files with
+    a missing or empty `metadata.id` are skipped (they're not addressable by
+    id anyway — `load_scenario_prompt` would fail with `FileNotFoundError`).
+
+    A malformed YAML (parse error, encoding error, unexpected shape) is
+    logged and skipped rather than crashing the module import — a single
+    bad file must NOT take the whole `/calls` surface offline at server
+    boot. A duplicate `metadata.id` across files raises `RuntimeError` at
+    import (silent overwrite would route users to the wrong prompt).
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    index: dict[str, Path] = {}
+    for path in sorted(_SCENARIOS_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, UnicodeDecodeError, OSError) as exc:
+            log.error("scenario_index_skip_malformed file=%s err=%s", path.name, exc)
+            continue
+        metadata = (data or {}).get("metadata") or {}
+        scenario_id = metadata.get("id")
+        if not (isinstance(scenario_id, str) and scenario_id):
+            continue
+        if scenario_id in index:
+            raise RuntimeError(
+                f"Duplicate scenario_id {scenario_id!r} found in "
+                f"{index[scenario_id].name} and {path.name}. Each "
+                f"`metadata.id` must be unique across the scenarios dir."
+            )
+        index[scenario_id] = path
+    return index
+
+
+_SCENARIO_INDEX: dict[str, Path] = _build_scenario_index()
+
+
 def load_scenario_prompt(scenario_id: str) -> str:
     """Return the composed system prompt for `scenario_id`.
 
     Composition is `base_prompt` + the first checkpoint's `prompt_segment` +
-    the "speak first" directive (AC3). Only `waiter_easy_01` is supported in
-    Story 4.5; unknown ids raise `ValueError` rather than silently falling
-    back to the waiter prompt, because a wrong-scenario bot spawn would be
-    a confusing class of bug to debug in production.
+    the "speak first" directive. Unknown ids raise `FileNotFoundError`
+    (caught by the route handler and surfaced as `SCENARIO_LOAD_FAILED`).
 
     The composed prompt is cached after the first successful load so the
     async `/calls/initiate` handler never blocks on disk I/O per request.
     """
-    if scenario_id != TUTORIAL_SCENARIO_ID:
-        raise ValueError(
-            f"Unknown scenario_id: {scenario_id!r}. Story 4.5 only supports "
-            f"{TUTORIAL_SCENARIO_ID!r}; full scenario selection arrives in "
-            "Story 5.1 / 6.1."
-        )
-
     cached = _PROMPT_CACHE.get(scenario_id)
     if cached is not None:
         return cached
 
-    data = yaml.safe_load(_TUTORIAL_SCENARIO_YAML.read_text(encoding="utf-8"))
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     base_prompt = data["base_prompt"].rstrip()
     checkpoints = data["checkpoints"]
     if not checkpoints:

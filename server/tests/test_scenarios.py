@@ -284,7 +284,11 @@ def test_meta_calls_remaining_decrements_after_initiate(
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
 
-    init = client.post("/calls/initiate", json={}, headers=_auth_header(token))
+    init = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "waiter_easy_01"},
+        headers=_auth_header(token),
+    )
     assert init.status_code == 200
 
     body = client.get("/scenarios", headers=_auth_header(token)).json()

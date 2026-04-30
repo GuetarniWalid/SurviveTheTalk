@@ -50,7 +50,9 @@ class IncomingCallBloc extends Bloc<IncomingCallEvent, IncomingCallState> {
     if (emit.isDone) return;
     emit(const IncomingCallAccepting());
     try {
-      final session = await _callRepository.initiateCall();
+      final session = await _callRepository.initiateCall(
+        scenarioId: 'waiter_easy_01',
+      );
       // Storage failure must not cancel a successful call: the bot is
       // already running on the server, so we surface Connected regardless
       // and let the next launch re-show the incoming-call screen if the
