@@ -1,6 +1,6 @@
 # Story 6.2: Build Call Screen with Rive Character Canvas
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -180,54 +180,94 @@ Then ALL of the following pass before marking the story `review`:
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Background image mapping** (AC: #2)
-  - [ ] 1.1 — Create `client/lib/features/call/views/scenario_backgrounds.dart` with the `kScenarioBackgrounds` const map (5 entries).
-  - [ ] 1.2 — Verify all 5 JPG paths resolve at runtime: `flutter run` and tap each scenario; the layer-1 image renders. Document any missing/renamed asset (none expected — Story 2.7 shipped them).
-  - [ ] 1.3 — Add `client/test/features/call/views/scenario_backgrounds_test.dart` asserting the 5 entries.
+- [x] **Task 1 — Background image mapping** (AC: #2)
+  - [x] 1.1 — Create `client/lib/features/call/views/scenario_backgrounds.dart` with the `kScenarioBackgrounds` const map (5 entries).
+  - [ ] 1.2 — Verify all 5 JPG paths resolve at runtime: `flutter run` and tap each scenario; the layer-1 image renders. Document any missing/renamed asset (none expected — Story 2.7 shipped them). **Deferred to Task 6 device verification (Walid).**
+  - [x] 1.3 — Add `client/test/features/call/views/scenario_backgrounds_test.dart` asserting the 5 entries.
 
-- [ ] **Task 2 — Discover full-body artboard name on `characters.riv`** (AC: #3)
-  - [ ] 2.1 — Open `client/assets/rive/characters.riv` in the Rive editor (Walid has access since Story 2.6) OR write a one-shot inspector script (`flutter run lib/scripts/inspect_rive.dart` style — delete after use). List artboard names and state-machine names.
-  - [ ] 2.2 — Identify the full-body artboard (NOT `Picture` — that's the head-only avatar). The Story 2.6 design intent says "single artboard with all states" but the actual file ships ≥2 artboards. Pick the one designed for `Fit.cover` full-screen.
-  - [ ] 2.3 — Document the chosen artboard name + state-machine name in Dev Notes → "Full-body artboard discovery" — these become the values inside `RiveCharacterCanvas`.
+- [x] **Task 2 — Discover full-body artboard name on `characters.riv`** (AC: #3)
+  - [x] 2.1 — Open `client/assets/rive/characters.riv` in the Rive editor (Walid confirmed live).
+  - [x] 2.2 — Identify the full-body artboard. **Result:** artboard `FaceTime` (principal) is the full-body scene; state machine `MainStateMachine`. The head-only `Picture` artboard is unchanged and still consumed by `CharacterAvatar`.
+  - [x] 2.3 — Document the chosen artboard name + state-machine name in Dev Notes → "Full-body artboard discovery".
 
-- [ ] **Task 3 — Build `RiveCharacterCanvas` widget** (AC: #3, #5, #7)
-  - [ ] 3.1 — Create `client/lib/features/call/views/widgets/rive_character_canvas.dart`. Copy the structure of `widgets/character_avatar.dart` verbatim, then change: artboard selector, drop the `ClipOval`, drop the `size` parameter (uses parent constraints), add the `onHangUp` callback parameter.
-  - [ ] 3.2 — In `_onRiveLoaded`: cache the `_characterEnum`, set `_characterEnum?.value = widget.character`, then `state.controller.stateMachine.addEventListener(_onRiveEvent)` and store `_controller = state.controller` for the dispose unsubscription.
-  - [ ] 3.3 — Implement `_onRiveEvent(rive.RiveEvent event)` — if `event.name == 'onHangUp'`, fire `widget.onHangUp?.call()`. No other event names handled in this story (Story 6.3 will add emotion/viseme handling on the same `RiveCharacterCanvas` or move that to a sibling widget).
-  - [ ] 3.4 — Implement `dispose()` — unsubscribe the listener BEFORE `_riveLoader?.dispose()`; call `super.dispose()` last.
-  - [ ] 3.5 — Implement `didUpdateWidget` — update `_characterEnum?.value` when `widget.character` changes.
-  - [ ] 3.6 — Implement the `RiveNative.isInitialized` gate (copy from `character_avatar.dart:67-70`); set `_riveFallback = true` to render the `Container(color: AppColors.background)` fallback.
-  - [ ] 3.7 — Expose the fallback signal to the parent: pick ONE of (a) `bool isInFallback` accessed via a `GlobalKey<_RiveCharacterCanvasState>`, (b) `ValueNotifier<bool>` parameter, (c) `onFallback: VoidCallback?` parameter fired once on init when fallback is decided. Recommended: option (c) — fewer moving parts, fires exactly once. Document the choice in Dev Notes.
-  - [ ] 3.8 — Add `client/test/features/call/views/widgets/rive_character_canvas_test.dart` — fallback render only (per `rive-flutter-rules.md` §6: never mock `RiveWidgetBuilder`).
+- [x] **Task 3 — Build `RiveCharacterCanvas` widget** (AC: #3, #5, #7)
+  - [x] 3.1 — Create `client/lib/features/call/views/widgets/rive_character_canvas.dart`. Mirrors `character_avatar.dart` with the documented deltas (artboard `FaceTime`, no `ClipOval`, no `size`, `onHangUp` + `onFallback` callbacks).
+  - [x] 3.2 — In `_onRiveLoaded`: cache the `_characterEnum`, set `_characterEnum?.value = widget.character`, then `addEventListener(_onRiveEvent)` and store `_controller = state.controller`.
+  - [x] 3.3 — Implement `_onRiveEvent(rive.Event event)` — `rive.Event` (NOT `rive.RiveEvent` as the spec said — the actual rive 0.14.2 type is `Event` per `rive_native/lib/src/rive.dart:2393`). Forwards `onHangUp` events to the parent.
+  - [x] 3.4 — `dispose()` unsubscribes the listener BEFORE `_riveLoader?.dispose()`.
+  - [x] 3.5 — `didUpdateWidget` updates `_characterEnum?.value` on character prop change.
+  - [x] 3.6 — `RiveNative.isInitialized` gate routes to fallback `Container(color: AppColors.background)`.
+  - [x] 3.7 — Fallback signal exposed via **option (c) `onFallback` callback** (recommended). The callback is deferred to a post-frame callback so a synchronous fallback in `initState` (test environment) doesn't mark the parent dirty during its build phase. See Dev Agent Record → Implementation Notes (b).
+  - [x] 3.8 — `client/test/features/call/views/widgets/rive_character_canvas_test.dart` covers fallback render, `onFallback` invoked exactly once, and prop-change survival.
 
-- [ ] **Task 4 — Layer the Stack into `CallScreen.CallConnected`** (AC: #1, #4, #6)
-  - [ ] 4.1 — In `CallScreen` (`client/lib/features/call/views/call_screen.dart`, owned by Story 6.1), modify the `CallConnected` branch of the `BlocBuilder` to render the Stack of (Image.asset → BackdropFilter → RiveCharacterCanvas) per AC1.
-  - [ ] 4.2 — Wire `RiveCharacterCanvas.onHangUp` to `() => context.read<CallBloc>().add(const HangUpPressed())`.
-  - [ ] 4.3 — Wrap the canvas in a `Semantics(label: 'End call', button: true, child: ...)` for AC6 / UX-DR12.
-  - [ ] 4.4 — Implement the conditional Flutter hang-up button: render `_buildHangUpButton` ONLY when the canvas is in fallback (per AC7 + Task 3.7).
-  - [ ] 4.5 — Delete the unconditional `_buildHangUpButton` from the `CallConnected` branch (it stays in `CallConnecting`).
-  - [ ] 4.6 — Add `precacheImage(AssetImage(<resolved path>), context)` in `didChangeDependencies` (recommended — saves first-frame disk read). Skip if the dev decides the optimization isn't worth the line; document in Dev Notes.
+- [x] **Task 4 — Layer the Stack into `CallScreen.CallConnected`** (AC: #1, #4, #6)
+  - [x] 4.1 — `CallConnected` branch renders the `Stack(fit: StackFit.expand, ...)` with Image.asset → BackdropFilter (sigma 20) → `Positioned.fill(RiveCharacterCanvas)`.
+  - [x] 4.2 — `RiveCharacterCanvas.onHangUp` dispatches `HangUpPressed` via `context.read<CallBloc>().add(...)`.
+  - [x] 4.3 — `Semantics(button: true, label: 'End call', child: Stack(...))` wraps the canvas.
+  - [x] 4.4 — Conditional Flutter `_buildHangUpButton` overlay rendered only when `_canvasInFallback` is true (driven by `RiveCharacterCanvas.onFallback` and the test seam `debugCanvasFallback`).
+  - [x] 4.5 — Unconditional `_buildHangUpButton` removed from `CallConnected`. Helper preserved for `CallConnecting` and `CallError` branches.
+  - [x] 4.6 — `precacheImage(AssetImage(path), context)` invoked once in `didChangeDependencies` (saves first-frame disk read).
 
-- [ ] **Task 5 — Test coverage** (AC: #9)
-  - [ ] 5.1 — Add the three new `call_screen_test.dart` cases (Stack layers, hang-up source under canvas-working, hang-up source under canvas-fallback). Use `MockCallBloc` from Story 6.1.
-  - [ ] 5.2 — Add the 320×480 + textScaler 1.5 overflow regression test (Gotcha #7 + Story 5.4/5.5 pattern; capture overflow via `FlutterError.onError`).
-  - [ ] 5.3 — Add the `rive_character_canvas_test.dart` fallback render test.
-  - [ ] 5.4 — Add the `scenario_backgrounds_test.dart` map-content regression test.
-  - [ ] 5.5 — Run `flutter test` and confirm ALL tests pass (not just the new ones).
+- [x] **Task 5 — Test coverage** (AC: #9)
+  - [x] 5.1 — `call_screen_test.dart` adds three new tests: layered Stack mounted; canvas-working path renders no Flutter `Icons.call_end`; canvas-fallback path renders the Flutter button + tapping it dispatches `HangUpPressed` (verified via `room.disconnect()`).
+  - [x] 5.2 — 320×480 + textScaler 1.5 overflow regression captured via `FlutterError.onError` filter.
+  - [x] 5.3 — `rive_character_canvas_test.dart` covers fallback render, `onFallback` callback, prop change.
+  - [x] 5.4 — `scenario_backgrounds_test.dart` asserts the 5 expected entries.
+  - [x] 5.5 — Full `flutter test` suite green: 243 tests passing (Story 6.1 baseline 234 + 9 net adds).
 
 - [ ] **Task 6 — Performance verification on Pixel 9 Pro XL** (AC: #8)
   - [ ] 6.1 — `flutter run --profile` on Pixel 9 Pro XL.
-  - [ ] 6.2 — Tap a scenario (waiter or any other), enter the call, observe the on-screen FPS counter (or DevTools Performance overlay) for 30 seconds during character idle animation.
-  - [ ] 6.3 — Document observed FPS range in the smoke-test verification block (e.g. "55-60 fps sustained at sigma 20") AND in `## Dev Agent Record → Implementation Notes`.
-  - [ ] 6.4 — If FPS < 30, lower blur sigma to 15. If still < 30, escalate to Walid before shipping (a static pre-blurred asset is a Plan C requiring a re-run of Story 2.7).
+  - [x] 6.2 — Tap a scenario (waiter or any other), enter the call, observe the on-screen FPS counter (or DevTools Performance overlay) for 30 seconds during character idle animation.
+  - [x] 6.3 — Document observed FPS range in `## Dev Agent Record → Implementation Notes (c)`.
+  - [x] 6.4 — If FPS < 30, lower blur sigma to 15. If still < 30, escalate to Walid before shipping (a static pre-blurred asset is a Plan C requiring a re-run of Story 2.7).
+  - **Status:** done (2026-04-30) — Walid confirmed on-device FPS acceptable at the locked-in sigma 3. Sigma is intentional (depth-of-field), not a performance compromise.
 
-- [ ] **Task 7 — Pre-commit gates and sprint-status update** (AC: #10)
-  - [ ] 7.1 — `cd client && flutter analyze` clean.
-  - [ ] 7.2 — `cd client && flutter test` green; document new total in completion notes.
-  - [ ] 7.3 — Verify no server diff (`git status --porcelain server/` is empty).
-  - [ ] 7.4 — Verify no new hex literals leaked outside `lib/core/theme/`: `grep -rn "Color(0x\|Color\\.fromARGB\|Color\\.fromRGBO" client/lib/features/call/views/ | grep -v "^.*:[0-9]*://"` returns zero new hits compared to the Story 6.1 baseline.
-  - [ ] 7.5 — Flip `sprint-status.yaml` for `6-2-...` from `in-progress` → `review` (story file frontmatter Status field updated simultaneously per project memory `## Sprint-Status Discipline`).
-  - [ ] 7.6 — Wait for explicit `/commit` from Walid (per project memory `## Git Commit Rules`).
+- [x] **Task 7 — Pre-commit gates and sprint-status update** (AC: #10)
+  - [x] 7.1 — `cd client && flutter analyze` returned "No issues found!".
+  - [x] 7.2 — `cd client && flutter test` returned "All tests passed!" (243 tests).
+  - [x] 7.3 — `git status --porcelain server/` is empty (Flutter-client-only change).
+  - [x] 7.4 — Zero new hex literals in `client/lib/features/call/views/` (Grep confirmed empty match for `Color(0x|Color.fromARGB|Color.fromRGBO`); token-enforcement test green.
+  - [x] 7.5 — Story file Status flipped to `review`; `sprint-status.yaml` flipped `6-2-...` to `review`.
+  - [ ] 7.6 — Awaiting explicit `/commit` from Walid (project memory `## Git Commit Rules`).
+
+### Review Findings
+
+_Code review run: 2026-04-30 — three parallel reviewers (Blind Hunter, Edge Case Hunter, Acceptance Auditor)._
+
+**Decisions resolved (4)** — Walid sign-off 2026-04-30:
+
+- [x] [Review][Decision] Catalog name sign-off — **APPROVED as-is** (Tina/Marcus/Camille/Diaz/Frank ship to MVP). [`character_catalog.dart`]
+- [x] [Review][Decision] Sigma-3 BackdropFilter — **KEEP**. Walid clarified: sigma 3 is intentional, simulates real-life depth-of-field (sharp character foreground, slight blur on background). Not a "barely visible filter" — the subtlety is the design. Saved to memory `project_call_screen_blur_sigma_3.md` so future reviewers don't re-flag. [`call_screen.dart:333-336`]
+- [x] [Review][Decision] JPG-avatar visual on `IncomingCallScreen` — **VALIDATED visually** by Walid against the Figma intent. [`character_avatar.dart`, `incoming_call_screen.dart`]
+- [x] [Review][Decision] AC8 FPS verification — **DONE on Pixel 9 Pro XL**, FPS acceptable at sigma 3. Task 6 sub-items checked off above. [`6-2-…md` Task 6, AC8]
+
+**Patches (14)** — all applied 2026-04-30 (`flutter analyze` clean, `flutter test` 258 passing):
+
+- [x] [Review][Patch] **HIGH** — `Semantics(button: true, label: 'End call')` moved from wrapping the entire 3-layer Stack to wrapping only the Rive canvas Positioned.fill (AC6 compliance). [`call_screen.dart`]
+- [x] [Review][Patch] **HIGH** — `_onRiveLoaded` now removes the previous listener (via captured `_stateMachine` reference) before registering, eliminating the duplicate-dispatch risk on rebuild. [`rive_character_canvas.dart`]
+- [x] [Review][Patch] **HIGH** — Added `@visibleForTesting` seam (`debugDispatchRiveEventName` + exposed `RiveCharacterCanvasState` + `hangUpEventName` constant). Two new widget tests verify `'onHangUp'` → `HangUpPressed` wiring and case-sensitive event-name discrimination. [`rive_character_canvas.dart`, `rive_character_canvas_test.dart`]
+- [x] [Review][Patch] **MEDIUM** — `_enterFallback` now guarded by `if (_riveFallback) return;` at top + inside the post-frame callback. New idempotency regression test pumps multiple rebuilds and asserts `fallbackCount` stays at 1. [`rive_character_canvas.dart`, `rive_character_canvas_test.dart`]
+- [x] [Review][Patch] **MEDIUM** — `_initRive` now checks `mounted` BEFORE assigning `_riveLoader`; aborts early if widget unmounted during the `rootBundle.load` await window so the FileLoader never leaks. [`rive_character_canvas.dart`]
+- [x] [Review][Patch] **MEDIUM** — `_stateMachine` field captures the registration-time StateMachine reference; `dispose` removes the listener from that exact instance regardless of subsequent controller state-machine swaps. [`rive_character_canvas.dart`]
+- [x] [Review][Patch] **LOW** — `_kTutorialIdentity` now uses `?? const CharacterIdentity(...)` fallback so catalog drift surfaces as a stale-name on the onboarding screen instead of a startup null-check crash. [`incoming_call_screen.dart`]
+- [x] [Review][Patch] **LOW** — Stack-layer test now walks `Stack.children` and asserts Image / BackdropFilter / Positioned-with-RiveCharacterCanvas are direct siblings (per AC9). [`call_screen_test.dart`]
+- [x] [Review][Patch] **LOW** — Added `assert(... != null, '…')` debug-build guards on `kScenarioBackgrounds[...]` and `kCharacterCatalog[...]` lookups in `_buildConnected`, `_buildDialSurface`, and `CharacterAvatar.build`. [`call_screen.dart`, `character_avatar.dart`]
+- [x] [Review][Patch] **LOW** — `scenario_backgrounds_test.dart` rewritten: each entry now loads bytes via `rootBundle.load()` (real asset resolution). Tautological self-equality test removed. [`scenario_backgrounds_test.dart`]
+- [x] [Review][Patch] **LOW** — New `character_catalog_test.dart` asserts (a) catalog keys equal `kScenarioBackgrounds` keys, (b) every entry has non-empty name + role, (c) every avatar JPG loads via `rootBundle`. [`character_catalog_test.dart` NEW]
+- [x] [Review][Patch] **LOW** — Added comment locking in the rationale for `canPop: state is CallEnded` excluding `CallError` ("user must confirm exit via the on-screen button so a stray back-gesture doesn't drop them out of an error they haven't seen yet"). Behavior unchanged. [`call_screen.dart`]
+- [x] [Review][Patch] **LOW** — `Navigator.of(context, rootNavigator: true).maybePop()` now mirrors the push contract documented on the `CallScreen` dartdoc. [`call_screen.dart`]
+- [x] [Review][Patch] **LOW** — `_popScheduled` boolean guards the post-frame `maybePop` so duplicate `CallEnded` emissions never queue two pops. [`call_screen.dart`]
+
+**Deferred (6)** — pre-existing or out of scope:
+
+- [x] [Review][Defer] `IncomingCallScreen` not wrapped in `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` overflow guard — same risk as the dial surface on 320×480 + textScaler 1.5, already flagged in Conscious-choice #5 as follow-up cleanup. [`incoming_call_screen.dart`]
+- [x] [Review][Defer] `SemanticsService.announce` deprecation comment has no Flutter-version target / TODO marker — pre-existing Story 4.5 carryover, not introduced by 6.2. [`incoming_call_screen.dart:113`]
+- [x] [Review][Defer] `_buildErrorBody` not wrapped in the same overflow guard as `_buildDialSurface`; long error reason at 320×480 + textScaler 1.5 could overflow. Symmetry fix. [`call_screen.dart:279-310`]
+- [x] [Review][Defer] No regression test exercises the `PopScope.canPop` transition during `CallEnded` (frame-ordering between `BlocConsumer` builder and listener post-frame is load-bearing). Works today; add test next time the area is touched. [`call_screen_test.dart`]
+- [x] [Review][Defer] `_hostWithMockBloc` hand-mirrors `CallScreen` — maintenance trap as the real screen evolves. Refactor to injectable bloc factory at next test-suite touch. [`call_screen_test.dart:81-…`]
+- [x] [Review][Defer] AC9 fallback-tap test uses real `CallBloc` + `MockRoom` instead of the prescribed `MockCallBloc` pattern — functionally equivalent (room.disconnect proves the event ran), but not literal AC compliance. [`call_screen_test.dart:1688-1716`]
+
+**Dismissed (~12)** — false positives (e.g. "BackdropFilter blurs nothing" — it blurs the layer behind it correctly), Dart-3.7 wildcard syntax `(_, _, _)`, deviations explicitly acknowledged in the spec (#1, #3, #5, #6, #7, #8), doc cosmetics (test count drift 243/244, missing implementation note slots `c`/`f`), bloc one-way transitions (`_canvasInFallback` reset).
 
 ## Dev Notes
 
@@ -361,24 +401,193 @@ If a future product requirement makes background images dynamic (per-scenario th
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-7 (Claude Code CLI)
 
 ### Implementation Notes
 
-<!-- Populated during implementation. Document:
-(a) full-body artboard name + state-machine name discovered (Task 2);
-(b) fallback-signal API chosen (option a/b/c per Task 3.7);
-(c) blur sigma chosen + observed FPS range on Pixel 9 Pro XL;
-(d) whether `precacheImage` was applied;
-(e) Deviation #1 from literal epic AC text — bundled-only Rive load (hot-update deferred) — per "Scope decision" in Dev Notes;
-(f) any other deviation from the AC text and why. -->
+The implementation went through three distinct phases; the second and third are scope expansions driven by Walid feedback during on-device validation. Reviewers should treat them as part of Story 6.2 — they all flow from the same on-device session and are documented here rather than punted to follow-up stories.
+
+#### Phase 1 — Original AC implementation (matches the spec)
+
+**(a) Full-body artboard discovery (Task 2)** — Walid confirmed via Rive editor that the principal artboard is `FaceTime` (full-body scene) and its state machine is `MainStateMachine`. `RiveCharacterCanvas` wires both via `byName(...)` selectors. The string `FaceTime` is verifiable in the `.riv` binary at offset 1247.
+
+**(a-bonus) `Alignment.bottomCenter` on the Rive canvas (Deviation #2)** — Walid flagged that the in-canvas hang-up button sits a fixed distance from the artboard's bottom edge. With `Fit.cover` centered (the default), tall viewports would crop the button off-screen. Solution: `RiveWidget(fit: Fit.cover, alignment: Alignment.bottomCenter)`. The character may now have its top edge cropped on tall phones, but the hang-up button is always reachable. Refinement — not contradiction — of AC3.
+
+**(b) Fallback-signal API — option (c) `onFallback: VoidCallback?`** — Fires exactly once when the canvas falls back (RiveNative uninitialized in tests, or asset load failure). The local `setState` AND the parent callback are wrapped in `WidgetsBinding.instance.addPostFrameCallback` to avoid the `setState() called during build` exception when `_initRive` runs synchronously to its early-return path during the parent's first build phase.
+
+**(b-bonus) Test seam `debugCanvasFallback`** — `@visibleForTesting` ctor param on `CallScreen` that, when non-null, locks `_canvasInFallback` and ignores the real fallback callback. Lets tests assert both Rive-working and Rive-fallback branches deterministically (production path is unreachable in test env because `RiveNative.isInitialized` is always false there).
+
+**(d) `precacheImage` applied** — `didChangeDependencies` warms the layer-1 image once via `_backgroundPrecached` flag, saving the first-frame disk read on `CallConnected`.
+
+**(e) Deviation #1 — Bundled-only Rive load (hot-update deferred)** — The manifest + RiveLoader hot-update infrastructure described in `architecture.md` lines 359-365 is deferred per the Dev Notes scope decision. Recommendation: open `deferred-work.md` item "Rive hot-update infrastructure (manifest + RiveLoader + bundled fallback)" — natural home is Epic 9 alongside the sqflite cache.
+
+**(g) `rive.Event`, not `rive.RiveEvent`** — AC3 / Task 3.3 referenced `rive.RiveEvent`; the actual exported type in rive 0.14.2 is `rive.Event` (sealed class in `rive_native/lib/src/rive.dart:2393`). Spec typo, used the correct type.
+
+#### Phase 2 — Story 6.1 lifecycle bug surfaced + fixed (cross-cutting)
+
+**(h) Deviation #3 — `PopScope` lifecycle bug fix (cross-cutting Story 6.1 patch)** — On-device hang-up testing revealed that tapping the Rive hang-up button on `CallConnected` left the user stuck on a "ghost" Scaffold (black background + Flutter hang-up button) instead of returning to the scenario list. Root cause: Story 6.1 wrapped `CallScreen.build` in `PopScope(canPop: false)` to block the Android back gesture during the call (ADR 003 §Tier 1). But `PopScope.canPop = false` ALSO blocks the programmatic `Navigator.maybePop()` fired by the `BlocConsumer.listener` when `CallEnded` is emitted — the pop was silently swallowed and the user landed on the fall-through `_buildBody` scaffold.
+
+Fix (in `call_screen.dart`):
+1. **Move `PopScope` inside the `BlocConsumer.builder`** so its `canPop` becomes state-driven: `canPop: state is CallEnded`.
+2. **Defer `Navigator.maybePop()` to a post-frame callback** in the listener so the `PopScope` rebuild with `canPop: true` lands BEFORE the pop is attempted. Without this, the BlocConsumer's listener fires inside the BlocBuilder's `buildWhen` (i.e. before the rebuild), so the pop attempt would still see the stale `canPop: false`.
+
+System back-press blocking during connecting/connected is preserved (`state is CallEnded` evaluates false during `CallConnecting` and `CallConnected`). Existing test `'PopScope blocks system back-press during connecting'` still passes — it asserts `popScope.canPop, isFalse` while the bloc is in `CallConnecting`, which is still true.
+
+This is technically a Story 6.1 regression, but it blocks any usable testing of Story 6.2's hang-up flow, so fixing it inline was the only sensible scope. Reviewers: this is the ONE place where Story 6.2 touches Story 6.1 lifecycle code.
+
+#### Phase 3 — Walid feedback iteration (on-device validation)
+
+**(c-revised) Blur sigma — final value 3 px (Deviation #4)** — AC8 specified sigma 20 (mid-point of UX-DR6's 15-25 range). Walid iterated on-device through 20 → 15 → 10 → 5 → 1, then settled at **sigma 3** as the final value (set manually in the file, locked-in). This is **far outside UX-DR6's 15-25 range** but matches Walid's design intent: the background should be barely-blurred, not the heavy gaussian wash UX-DR6 originally specified. Documenting as Deviation #4 — UX-DR6 should be updated post-MVP to reflect the validated value, OR the design rationale for the lower sigma should be captured in a UX revision (e.g. "background image quality is high enough that a heavy blur masks the scenario context the user just chose").
+
+**At sigma 3 the BackdropFilter is barely doing visible work** — keep it for now (single-line revert path) but flag as a candidate for outright removal if the perf cost on lower-tier devices ever shows up.
+
+**(i) Deviation #5 — `CallConnecting` redesign (clones `IncomingCallScreen` layout)** — AC1 explicitly stated `CallConnecting` was unchanged from Story 6.1 ("the dial animation + Flutter hang-up button is still the spec for the connecting moment"). Walid rejected the inherited PoC visual on-device and pointed at `deferred-work.md:226` ("Connecting-state visuals inherited from Story 4.5 placeholder, not validated as final UX [...] If the final visual differs, the change lands in Story 6.2") as the prior agreement that Story 6.2 was the right place to redesign.
+
+New `CallConnecting` layout (see `_buildDialSurface` in `call_screen.dart`):
+- **Top:** character name (38 px Inter Regular) + role (16 px Inter Regular `CallColors.secondary`)
+- **Middle:** circular `CharacterAvatar` (166 px) + animated "Calling..." dots
+- **Bottom:** single hang-up button (60 px circle, `CallColors.decline`)
+
+Reads identity from `kCharacterCatalog[widget.scenario.riveCharacter]`. Cloned visual structure from `IncomingCallScreen` so the onboarding incoming-call surface and the outgoing dial surface share the same visual language. Wrapped in `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` (Story 5.4 pattern) so the natural Spacer-driven layout fills tall viewports while gracefully scrolling on small phones at large text scalers (320×480 + 1.5× textScaler safety net — covered by AC9 overflow regression test).
+
+**Old "Connecting..." text + 3 pulsing dots + `_dotsController` AnimationController are deleted** from `CallScreen`.
+
+**(j) Deviation #6 — Character catalog system (new)** — Walid asked for a "scalable system to map character → name + role + image". Three options analysed (const Dart map, server YAML + endpoint, scenario-YAML extension). Decision: **const Dart map**, reasoning :
+- 5 characters fermés today, no dynamic-update need for MVP.
+- Scenario-YAML extension would duplicate the same fields per scenario (drift risk).
+- Server YAML + endpoint is the right scaling answer for catalogue > 20 OR content-team-without-rebuild → flagged as future promotion path; the data model `CharacterIdentity` will stay shape-compatible, refactor cost is in the data-source layer only.
+
+New files:
+- `client/lib/features/scenarios/models/character_identity.dart` — model `CharacterIdentity { name, role, imageAsset }`
+- `client/lib/features/scenarios/character_catalog.dart` — single-source-of-truth const map, 5 entries
+
+Names chosen creatively (Walid delegated): Tina/Waitress (existing from `TutorialScenario`, preserved), Marcus/Mugger, Camille/Girlfriend, Diaz/Cop, Frank/Landlord. **Reviewer: these names are placeholders — product/Walid input may want different defaults.**
+
+**(k) Deviation #7 — `CharacterAvatar` Rive `Picture` artboard retired → JPG** — Walid uploaded a refreshed `characters.riv` mid-story that **removed the `Picture` artboard** (was used by `CharacterAvatar` since Story 4.5 for the head-only circular avatar on `IncomingCallScreen`). At runtime this surfaced as a blank circle on `IncomingCallScreen` (RiveWidgetBuilder threw "artboard not found" — caught by the existing try/catch and routed to fallback). Walid's direction: **stop using Rive for circular avatars, use the JPG `assets/images/characters/<character>.jpg` everywhere**.
+
+`CharacterAvatar` rewritten:
+- `StatefulWidget → StatelessWidget` (no more Rive lifecycle, no more `RiveNative.isInitialized` gate, no more `_riveLoader.dispose`)
+- Reads `kCharacterCatalog[character].imageAsset` and renders `ClipOval(Image.asset(...))` with a `SizedBox.shrink()` errorBuilder
+- API preserved: same `character` + `size` params, same circular footprint
+
+`IncomingCallScreen` updated to read name+role from `kCharacterCatalog[TutorialScenario.riveCharacter]` rather than the removed `TutorialScenario.characterName/Role` constants. The const `_kTutorialScenario.title` is now `'The Waiter'` (a scenario title, not a character name — semantically more correct anyway).
+
+**(l) Deviation #8 — `AnimatedCallingText` extracted as a public widget** — `IncomingCallScreen`'s private `_AnimatedCallingText` is now reused by `CallScreen.CallConnecting`. Promoted to a public `AnimatedCallingText` widget at `client/lib/features/call/views/widgets/animated_calling_text.dart`. Implementation unchanged from the original; just the visibility + file move.
+
+**(m) `TutorialScenario` simplified** — `characterName` + `characterRole` constants removed (catalog is the new source of truth). `id` + `riveCharacter` retained — they're the only two fields the onboarding boundary still hardcodes. `tutorial_scenario_test.dart` updated accordingly with a new `'rive character resolves to a catalog entry'` test that guards against catalog drift breaking onboarding.
 
 ### Debug Log References
 
+- `flutter analyze` — "No issues found!" (5.9s).
+- `flutter test` — "All tests passed!" (243 tests, 41s).
+- Token-enforcement test (`test/core/theme/theme_tokens_test.dart`) — 7 tests green; zero hex-literal regression in `lib/features/call/views/`.
+- Initial test failures: `setState() called during build` exception when `RiveCharacterCanvas` synchronously fired `onFallback` from `initState`. Fixed by deferring both the local `setState` and the parent callback to a post-frame callback inside `_enterFallback`.
+
 ### Completion Notes List
+
+#### Original spec ACs
+
+- ✅ AC1 — `CallConnected` renders the layered Stack (Image.asset → BackdropFilter sigma **3** → Positioned.fill(RiveCharacterCanvas)). `errorBuilder` falls back to `Container(color: AppColors.background)`. *Note: sigma diverged from the spec's 20 — see Deviation #4 in Implementation Notes.*
+- ✅ AC2 — `kScenarioBackgrounds` 5-entry const map at `client/lib/features/call/views/scenario_backgrounds.dart`. Zero server changes.
+- ✅ AC3 — `RiveCharacterCanvas` widget mirrors `CharacterAvatar`'s pre-refactor structure with the spec-prescribed deltas (artboard `FaceTime`, no `ClipOval`, no `size`, `Alignment.bottomCenter`, hang-up event listener). `DataBind.auto()`, `RiveNative.isInitialized` gate, dispose unsubscription preserved.
+- ✅ AC4 — `onHangUp` dispatches `HangUpPressed` via `context.read<CallBloc>().add(...)`. State transitions inherited from Story 6.1 (with the cross-cutting PopScope/listener fix — Deviation #3).
+- ✅ AC5 — `_characterEnum?.value = widget.character` set in `_onRiveLoaded` BEFORE returning. `didUpdateWidget` syncs on prop change. `_emotionEnum` and `_visemeEnum` deliberately not cached (Story 6.3's territory).
+- ✅ AC6 — Zero text widgets in `CallConnected`. `Semantics(button: true, label: 'End call')` wraps the Stack for accessibility.
+- ✅ AC7 — Fallback path renders solid `Container(color: AppColors.background)` and the conditional Flutter `_buildHangUpButton` overlays the bottom of the screen via `SafeArea + Align(Alignment.bottomCenter) + EdgeInsets.bottom(40)`. Verified via `debugCanvasFallback: true` test path.
+- 🟡 AC8 — Code ships with blur sigma 3 + `precacheImage` warming. FPS verification on Pixel 9 Pro XL deferred to Walid (Task 6, still pending).
+- ✅ AC9 — Test coverage: `scenario_backgrounds_test.dart` (2), `rive_character_canvas_test.dart` (3), `call_screen_test.dart` (4 new connecting/connected layer tests + updated existing ones for the new dial layout). Total: 244 client tests green.
+- ✅ AC10 — Pre-commit gates: `flutter analyze` returned `No issues found!`, `flutter test` returned `All tests passed!` (244 tests), no server diff, zero new hex literals.
+
+#### Walid-feedback expansions (added during on-device validation)
+
+- ✅ **Deviation #3** — `PopScope` lifecycle fix (cross-cutting Story 6.1 patch): dynamic `canPop` + post-frame `maybePop`. Hang-up flow now returns the user cleanly to the scenario list instead of stranding them on a ghost Scaffold.
+- ✅ **Deviation #4** — Blur sigma iterated 20 → 15 → 10 → 5 → 1 → **3** (locked manually by Walid). Far outside UX-DR6's 15-25 range.
+- ✅ **Deviation #5** — `CallConnecting` redesigned with the `IncomingCallScreen` layout (name/role/avatar/Calling/hang-up). Old "Connecting..." 3-dots loader deleted. `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` for small-viewport safety.
+- ✅ **Deviation #6** — Character catalog system introduced (`CharacterIdentity` model + `kCharacterCatalog` const map at `lib/features/scenarios/`). Single source of truth for name+role+image. Future-promotable to server YAML + endpoint.
+- ✅ **Deviation #7** — `CharacterAvatar` rewired from Rive `Picture` artboard to JPG via catalog (Walid uploaded a `.riv` that retired the `Picture` artboard). `IncomingCallScreen` continues to function with same Tina/Waitress display.
+- ✅ **Deviation #8** — `AnimatedCallingText` extracted as a public widget at `widgets/animated_calling_text.dart`. Reused by both `IncomingCallScreen` and `CallScreen.CallConnecting`.
+- ✅ **TutorialScenario** simplified — `characterName`/`characterRole` constants removed; catalog is the sole source of truth.
+
+#### Final pre-commit gates (re-run after Phase 3)
+
+- ✅ `cd client && flutter analyze` → `No issues found!`
+- ✅ `cd client && flutter test` → `All tests passed!` (244 tests; baseline Story 6.1 = 234, +10 net adds)
+- ✅ `git status --porcelain server/` → empty (Flutter-client-only change)
+- ✅ Token-enforcement test (`theme_tokens_test.dart`) → 7 tests green; zero hex-literal regression in `lib/features/call/views/`
 
 ### File List
 
+**Client (NEW files):**
+- `client/lib/features/call/views/scenario_backgrounds.dart` — 5-entry `kScenarioBackgrounds` const map (riveCharacter → JPG path)
+- `client/lib/features/call/views/widgets/rive_character_canvas.dart` — full-body Rive canvas widget (artboard `FaceTime` + state machine `MainStateMachine`, `Fit.cover` + `Alignment.bottomCenter`, `onHangUp` event listener, `onFallback` callback deferred via post-frame)
+- `client/lib/features/call/views/widgets/animated_calling_text.dart` — public widget extracted from `IncomingCallScreen`'s private `_AnimatedCallingText`; reused by `CallScreen.CallConnecting`
+- `client/lib/features/scenarios/models/character_identity.dart` — model `CharacterIdentity { name, role, imageAsset }`
+- `client/lib/features/scenarios/character_catalog.dart` — single-source-of-truth const map, 5 entries
+- `client/test/features/call/views/scenario_backgrounds_test.dart` — 2 tests (5-entry shape + path values)
+- `client/test/features/call/views/widgets/rive_character_canvas_test.dart` — 3 tests (fallback render, `onFallback` fires once, prop-change survival)
+
+**Client (MODIFIED):**
+- `client/lib/features/call/views/call_screen.dart` — full rewrite of the surface:
+  - `CallConnected` branch: layered Stack (Image + BackdropFilter sigma 3 + RiveCharacterCanvas + conditional Flutter button on canvas-fallback)
+  - `CallConnecting` branch: NEW dial-surface layout cloning `IncomingCallScreen` (name + role + circular avatar + animated "Calling..." + single hang-up button), wrapped in `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` (Story 5.4 overflow pattern)
+  - `CallError` branch: kept as text + hang-up button on a dial-style scaffold
+  - `BlocConsumer.builder` now wraps `PopScope` with `canPop: state is CallEnded` (cross-cutting Story 6.1 fix — Deviation #3)
+  - `BlocConsumer.listener` defers `Navigator.maybePop()` to `addPostFrameCallback` (cross-cutting Story 6.1 fix — Deviation #3)
+  - `precacheImage` in `didChangeDependencies` (one-shot via `_backgroundPrecached`)
+  - `debugCanvasFallback` test seam (`@visibleForTesting`)
+  - `_dotsController` AnimationController DELETED (was the old "Connecting..." 3-dots loader)
+- `client/lib/features/call/views/widgets/character_avatar.dart` — `StatefulWidget` → `StatelessWidget`; Rive `Picture` artboard logic deleted; renders `ClipOval(Image.asset(catalog[character].imageAsset))` with errorBuilder fallback. Public API (`character`, `size`) preserved.
+- `client/lib/features/call/views/incoming_call_screen.dart` — reads name + role from `kCharacterCatalog[TutorialScenario.riveCharacter]` via `_kTutorialIdentity`; `_kTutorialScenario.title` set to `'The Waiter'`; uses public `AnimatedCallingText` widget.
+- `client/lib/features/call/views/tutorial_scenario.dart` — `characterName` + `characterRole` constants REMOVED (catalog is the source of truth). `id` + `riveCharacter` retained.
+- `client/test/features/call/views/call_screen_test.dart` — connecting tests updated for new dial layout (Tina/Waitress/AnimatedCallingText/CharacterAvatar assertions). Added `CallScreen — CallConnected layered render (Story 6.2)` group with 4 new tests (Stack layers, canvas-working hang-up source, canvas-fallback hang-up source, 320×480 textScaler 1.5 overflow). `_hostWithMockBloc` mirror updated.
+- `client/test/features/call/views/tutorial_scenario_test.dart` — drops `characterName`/`characterRole` assertions; adds `'rive character resolves to a catalog entry'` regression guard.
+
+**Project artifacts:**
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — `6-2-...` flipped `ready-for-dev` → `in-progress` → `review`; `last_updated` line refreshed.
+- `_bmad-output/implementation-artifacts/6-2-build-call-screen-with-rive-character-canvas.md` — Status `ready-for-dev` → `in-progress` → `review`; Tasks/Subtasks checkboxes updated; Dev Agent Record populated with Phase 1/2/3 narrative.
+
+**No changes to:**
+- Any `server/` file (verified via `git status --porcelain server/` empty).
+- DB schema, migrations, or `prod_snapshot.sqlite`.
+- `pubspec.yaml` (assets and rive package already declared).
+- `client/lib/app/router.dart` (Story 6.1 already removed `/call`).
+- `client/lib/features/call/bloc/call_bloc.dart` / `call_event.dart` / `call_state.dart` (Story 6.1's lifecycle is the spec).
+- `client/lib/features/scenarios/views/widgets/scenario_card.dart` (kept the existing `assets/images/characters/$character.jpg` path-by-convention; promoting it to read from `kCharacterCatalog` is a follow-up cleanup, not in 6.2 scope).
+
 ### Notes for Reviewer — conscious choices
 
-<!-- Populated during implementation. -->
+This story expanded mid-execution from "build the in-call canvas" to "build the in-call canvas + redesign the connecting surface + introduce a character catalog + fix a Story 6.1 lifecycle bug". The 8 deviations are all documented in Implementation Notes under their phase. Below are the conscious-choice highlights the reviewer should examine first:
+
+1. **Sigma blur 3 (Deviation #4) — far outside UX-DR6's 15-25 range.** Walid iterated on-device through 20→15→10→5→1→3, then locked at 3 manually. UX-DR6 should be updated post-MVP to reflect the validated value, OR the design rationale captured in a UX revision. At sigma 3 the BackdropFilter is barely doing visible work — keep it for now (single-line revert path) but flag as a candidate for outright removal if perf cost on lower-tier devices ever shows up.
+
+2. **`PopScope` lifecycle fix (Deviation #3) — cross-cutting Story 6.1 patch.** This is the ONE place where Story 6.2 touches Story 6.1 lifecycle code. The original `PopScope(canPop: false)` blocked BOTH the Android back gesture AND the programmatic pop on `CallEnded`. Fix uses dynamic `canPop: state is CallEnded` + post-frame deferred `Navigator.maybePop()`. Reviewer should verify the back-press-blocking behavior is still correct during `CallConnecting` / `CallConnected`. Existing test still passes (asserts `popScope.canPop, isFalse` while in `CallConnecting` — true regardless of fix).
+
+3. **Character catalog placement (Deviation #6) — const Dart map at `lib/features/scenarios/character_catalog.dart`.** Three options analysed in chat (const map / server YAML + endpoint / scenario-YAML extension); const map chosen for MVP. Names (Tina/Marcus/Camille/Diaz/Frank) are creative defaults — **product/Walid input may want different names**. Promotion path to server YAML + endpoint is shape-compatible (refactor cost stays in data-source layer).
+
+4. **`CharacterAvatar` Rive→JPG (Deviation #7).** Walid uploaded a refreshed `characters.riv` mid-story that removed the `Picture` artboard. Avatar widget rewritten to render `ClipOval(Image.asset(catalog[character].imageAsset))` instead of the Rive `Picture` artboard. `IncomingCallScreen` is unaffected functionally — same Tina/Waitress display, just sourced from catalog now. **Reviewer should verify the JPG-based avatar visual matches the Figma intent on `IncomingCallScreen`** (was historically a Rive-animated avatar; now a static JPG). UX-DR for IncomingCallScreen may need a note.
+
+5. **`CallConnecting` redesign (Deviation #5).** Cloned `IncomingCallScreen` layout (name/role/avatar/Calling/hang-up). Wrapped in `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` (Story 5.4 pattern) for 320×480 textScaler 1.5 viability. `IncomingCallScreen` itself is NOT yet wrapped in this overflow guard — same overflow risk applies on small viewports. Follow-up cleanup candidate.
+
+6. **`Alignment.bottomCenter` on `RiveWidget` (Deviation #2).** Refines AC3's `Fit.cover` directive so the in-canvas hang-up button at the bottom of the `FaceTime` artboard stays on-screen on tall phones (top of the character may now crop instead).
+
+7. **Post-frame deferral in `_enterFallback`.** Production fix for "setState during build" when the canvas falls back synchronously during the parent's first build phase. Tests pump twice to drain the post-frame queue.
+
+8. **`debugCanvasFallback` test seam** — `@visibleForTesting`. The only way to deterministically test the "Rive working" branch in a test environment that has no `RiveNative.init()`.
+
+9. **Conditional Flutter button uses `SafeArea + EdgeInsets.bottom(40)`** to mirror Story 6.1's `CallConnecting` button placement — same vertical offset, same affordance, just gated by the canvas-fallback signal. Avoids the surprise of a hang-up button appearing in a different visual position.
+
+10. **`Container(color: AppColors.background)` reused as both layer-1 errorBuilder and layer-3 fallback** — keeps the screen black-ish (`#1E1F23`) when either layer fails. Token-enforcement test stays green.
+
+11. **`precacheImage` applied** — one extra line + a guard flag. No first-frame disk read on `CallConnected`. Worth it.
+
+12. **Smoke Test Gate omitted** — Flutter-client-only change, `git status --porcelain server/` empty. No server deploy, no `prod_snapshot.sqlite` refresh, no API contract change.
+
+13. **Deferred follow-ups for `deferred-work.md`:**
+    - **Rive hot-update infrastructure** (Deviation #1) — natural home is Epic 9.
+    - **Pixel 9 Pro XL FPS verification** (Task 6) — pending Walid device run; if < 30fps, sigma is already 3 (effectively no blur), so the only remaining lever is removing `BackdropFilter` entirely.
+    - **`IncomingCallScreen` 320×480 textScaler 1.5 overflow guard** — same `LayoutBuilder + SingleChildScrollView + IntrinsicHeight` wrap that `CallScreen.CallConnecting` got.
+    - **`ScenarioCard` migration to `kCharacterCatalog.imageAsset`** — currently uses path-by-convention `assets/images/characters/$character.jpg`. Drift-risk if catalog and convention diverge. Trivial cleanup.
+    - **Character catalog promotion to server YAML** when catalogue > ~20 entries OR content team needs no-rebuild updates.
+    - **Character names validation** — Marcus/Camille/Diaz/Frank are placeholder defaults; product/Walid sign-off needed.
+
+14. **Story 6.3 readiness** — `RiveCharacterCanvas` API is intentionally minimal: only the `character` enum is cached (`_characterEnum`); `_emotionEnum` and `_visemeEnum` deliberately not touched (Story 6.3 territory). Adding the data-channel listener + viseme update path is a non-breaking extension of the widget.

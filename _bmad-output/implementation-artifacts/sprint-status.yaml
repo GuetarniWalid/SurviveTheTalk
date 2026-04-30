@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-30 (Story 6.1 → done after smoke gate green; Story 6.2 ready-for-dev)
+# last_updated: 2026-04-30 (Story 6.2 → done after code review; Story 6.3 unblocked)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-30 (Story 6.1 → done after smoke gate green; Story 6.2 ready-for-dev)
+last_updated: 2026-04-30 (Story 6.2 → done after code review; Story 6.3 unblocked)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -90,8 +90,8 @@ development_status:
   # Epic 6: Animated Call Experience
   epic-6: in-progress
   6-1-build-call-initiation-from-scenario-list-with-connection-animation: done  # code review 2026-04-30: 17 patches applied + 1 from D2 (red AppToast for generic 5xx); 2 decisions resolved; 4 deferred (already in deferred-work.md). Smoke gate fully green at SHA 28fd11c (8/8 boxes); 234 client tests + 154 server tests green; flutter analyze + ruff clean.
-  6-2-build-call-screen-with-rive-character-canvas: ready-for-dev
-  6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: backlog
+  6-2-build-call-screen-with-rive-character-canvas: done  # code review 2026-04-30: 14 patches applied (3 HIGH: Semantics scope, duplicate Rive listener, missing onHangUp event test; 3 MEDIUM: onFallback idempotency, FileLoader leak guard, StateMachine reference capture; 8 LOW: bang-fallback, AC9 sibling assertion, debug asserts, real-asset tests, catalog test, CallError rationale, rootNavigator pop symmetry, _popScheduled guard); 4 decisions resolved (catalog names approved, sigma 3 confirmed intentional DoF — saved to memory, JPG avatar visually validated, FPS check OK on Pixel 9 Pro XL); 6 deferred (already in deferred-work.md). Final: flutter analyze clean, 258 tests green (+14 from baseline 244).
+  6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: ready-for-dev  # spec drilled deep on Rive 10/12-enum vs epic 7/8 drift, Cartesia word-timestamps reality, server-side EmotionEmitter + VisemeEmitter + client DataChannelHandler — DO NOT START until 6.2 is `done`
   6-4-implement-silence-handling-and-character-hang-up-mechanic: backlog
   6-5-build-voluntary-call-end-and-no-network-screen: backlog
   6-6-build-checkpointmanager-and-checkpoint-aware-exchangeclassifier: backlog

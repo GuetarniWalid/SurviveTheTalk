@@ -9,6 +9,8 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/call_colors.dart';
+import '../../scenarios/character_catalog.dart';
+import '../../scenarios/models/character_identity.dart';
 import '../../scenarios/models/scenario.dart';
 import '../bloc/incoming_call_bloc.dart';
 import '../bloc/incoming_call_event.dart';
@@ -16,6 +18,7 @@ import '../bloc/incoming_call_state.dart';
 import '../models/call_session.dart';
 import 'call_screen.dart';
 import 'tutorial_scenario.dart';
+import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
 
 /// Builds the in-call surface to push from `IncomingCallConnected`.
@@ -37,7 +40,7 @@ Widget _defaultCallScreenBuilder(Scenario scenario, CallSession session) {
 /// onboarding answer for that contract.
 const Scenario _kTutorialScenario = Scenario(
   id: TutorialScenario.id,
-  title: TutorialScenario.characterName,
+  title: 'The Waiter',
   difficulty: 'easy',
   isFree: true,
   riveCharacter: TutorialScenario.riveCharacter,
@@ -47,6 +50,20 @@ const Scenario _kTutorialScenario = Scenario(
   attempts: 0,
   tagline: '',
 );
+
+/// Catalog entry for the onboarding character. `tutorial_scenario_test.dart`
+/// guards `riveCharacter` against catalog drift, so the lookup is expected
+/// to resolve. The fallback is defensive — a top-level `!` would crash the
+/// app at module-load time if the catalog ever drifted, masking the real
+/// failure (a blank circle on the onboarding screen is recoverable; a
+/// startup crash is not).
+final CharacterIdentity _kTutorialIdentity =
+    kCharacterCatalog[TutorialScenario.riveCharacter] ??
+        const CharacterIdentity(
+          name: 'Tina',
+          role: 'Waitress',
+          imageAsset: 'assets/images/characters/waiter.jpg',
+        );
 
 // Screen-specific typography — mirrors the native incoming-call visual.
 // Not promoted to AppTypography because these sizes exist only on this screen.
@@ -103,8 +120,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         // floor. Suppress until a Flutter bump lands.
         // ignore: deprecated_member_use
         SemanticsService.announce(
-          'Calling ${TutorialScenario.characterName}, '
-          '${TutorialScenario.characterRole}. '
+          'Calling ${_kTutorialIdentity.name}, '
+          '${_kTutorialIdentity.role}. '
           'Double tap Accept to pick up, or Decline to dismiss.',
           TextDirection.ltr,
         );
@@ -206,12 +223,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
   }
 
   Widget _buildCharacterIdentity() {
-    return const Column(
+    return Column(
       children: [
         Text(
-          TutorialScenario.characterName,
+          _kTutorialIdentity.name,
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             fontFamily: 'Inter',
             fontSize: _kCallNameSize,
             fontWeight: FontWeight.w400,
@@ -220,9 +237,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
           ),
         ),
         Text(
-          TutorialScenario.characterRole,
+          _kTutorialIdentity.role,
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             fontFamily: 'Inter',
             fontSize: _kCallRoleSize,
             fontWeight: FontWeight.w400,
@@ -244,7 +261,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
         SizedBox(height: 12),
         Padding(
           padding: EdgeInsets.symmetric(vertical: 12),
-          child: _AnimatedCallingText(
+          child: AnimatedCallingText(
             style: TextStyle(
               fontFamily: 'Inter',
               fontSize: _kCallStatusSize,
@@ -380,60 +397,3 @@ class _CallButton extends StatelessWidget {
   }
 }
 
-/// "Calling" followed by three dots that pulse in sequence — classic
-/// loader cadence. The text's total width never changes (all three dots
-/// are always painted, only their alpha toggles) so the centered text
-/// doesn't wobble as the animation cycles.
-class _AnimatedCallingText extends StatefulWidget {
-  final TextStyle style;
-
-  const _AnimatedCallingText({required this.style});
-
-  @override
-  State<_AnimatedCallingText> createState() => _AnimatedCallingTextState();
-}
-
-class _AnimatedCallingTextState extends State<_AnimatedCallingText> {
-  static const Duration _kDotInterval = Duration(milliseconds: 400);
-
-  Timer? _timer;
-  int _dotCount = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(_kDotInterval, (_) {
-      if (!mounted) return;
-      setState(() {
-        _dotCount = (_dotCount + 1) % 4;
-      });
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final baseStyle = widget.style;
-    final hiddenStyle = baseStyle.copyWith(color: Colors.transparent);
-    TextStyle dotStyle(int index) =>
-        index <= _dotCount ? baseStyle : hiddenStyle;
-
-    return Text.rich(
-      TextSpan(
-        style: baseStyle,
-        children: [
-          const TextSpan(text: 'Calling'),
-          TextSpan(text: '.', style: dotStyle(1)),
-          TextSpan(text: '.', style: dotStyle(2)),
-          TextSpan(text: '.', style: dotStyle(3)),
-        ],
-      ),
-      textAlign: TextAlign.center,
-    );
-  }
-}
