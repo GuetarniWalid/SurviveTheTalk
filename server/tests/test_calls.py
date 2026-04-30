@@ -168,6 +168,10 @@ def test_initiate_spawns_bot_with_scenario_prompt(
     # The waiter base_prompt is present (sanity-check the YAML loader).
     assert "Tina" in system_prompt
     assert "The Golden Fork" in system_prompt
+    # Story 6.3 — SCENARIO_CHARACTER env var carries the YAML
+    # `metadata.rive_character` slug so the spawned bot can build
+    # character-aware classifier prompts.
+    assert env.get("SCENARIO_CHARACTER") == "waiter"
 
 
 @patch("api.routes_calls.subprocess.Popen")

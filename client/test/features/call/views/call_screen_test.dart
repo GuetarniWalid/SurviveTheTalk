@@ -5,6 +5,7 @@ import 'package:client/features/call/bloc/call_bloc.dart';
 import 'package:client/features/call/bloc/call_event.dart';
 import 'package:client/features/call/bloc/call_state.dart';
 import 'package:client/features/call/models/call_session.dart';
+import 'package:client/features/call/services/data_channel_handler.dart';
 import 'package:client/features/call/views/call_screen.dart';
 import 'package:client/features/call/views/widgets/animated_calling_text.dart';
 import 'package:client/features/call/views/widgets/character_avatar.dart';
@@ -21,6 +22,8 @@ class MockRoom extends Mock implements Room {}
 class MockLocalParticipant extends Mock implements LocalParticipant {}
 
 class MockCallBloc extends MockBloc<CallEvent, CallState> implements CallBloc {}
+
+class MockDataChannelHandler extends Mock implements DataChannelHandler {}
 
 const _session = CallSession(
   callId: 1,
@@ -488,6 +491,92 @@ void main() {
             reason: 'CallConnected must not overflow at 320×480 textScaler 1.5');
 
         await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  });
+
+  group('CallScreen — DataChannelHandler lifecycle (Story 6.3)', () {
+    testWidgets(
+      'constructs the handler exactly once on first CallConnected and not again',
+      (tester) async {
+        // The `??=` + `prev is! CallConnected && next is CallConnected`
+        // listenWhen filter together guarantee the handler is built once.
+        // Counting builder invocations is the most direct check.
+        final builderCalls = <Room>[];
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onViseme,
+              }) {
+                builderCalls.add(room);
+                return mock;
+              },
+            ),
+          ),
+        );
+        // Pump past the bloc's 1-s minimum-display floor so CallConnected
+        // is actually emitted (the listener fires only on the listenWhen
+        // transition, not on initial-state subscription).
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        expect(builderCalls.length, 1,
+            reason: 'handler MUST be built exactly once on first CallConnected');
+        // The Room passed to the builder is the same Room CallBloc owns.
+        expect(identical(builderCalls.single, fixture.room), isTrue);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'disposes the handler when CallScreen unmounts',
+      (tester) async {
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onViseme,
+              }) {
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        // Sanity: the handler was constructed (dispose hasn't fired yet).
+        verifyNever(() => mock.dispose());
+
+        // Unmount the screen — `_CallScreenState.dispose` must call
+        // `_dataChannelHandler?.dispose()` BEFORE `super.dispose()`.
+        await tester.pumpWidget(const SizedBox.shrink());
+        // Settle any pending micro-tasks (the dispose() future fire).
+        await tester.pump();
+
+        verify(() => mock.dispose()).called(1);
       },
     );
   });

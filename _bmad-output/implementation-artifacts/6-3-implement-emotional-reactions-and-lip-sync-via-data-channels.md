@@ -1,6 +1,6 @@
 # Story 6.3: Implement Emotional Reactions and Lip Sync via Data Channels
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -298,106 +298,106 @@ Then ALL of the following pass before flipping the story to `review`:
 >
 > **Transition rule:** Every unchecked box below is a stop-ship for the `in-progress → review` transition. Paste the actual command run and its output as proof.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_ <!-- paste the Active/Main PID line -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ Workflow run `25183597452` green on commit `986f694` (later amended to `477491d` for the OpenRouter `reasoning` flag fix; both deployed via auto-trigger). Healthcheck endpoint returned `{"git_sha":"986f69439b593c52adc20bdb52184ab5eee6c04c","status":"ok","db":"ok"}` post-deploy. Service `active (running)` continuously from 2026-04-30 onwards.
 
-- [ ] **Happy-path call: end-to-end emotion + viseme envelopes arrive at the client.** A 30-second call from the device on the The Waiter scenario produces ≥ 1 `{"type":"emotion",...}` and ≥ 1 `{"type":"viseme",...}` per second of TTS playback, observed via a temporary `dev.log` in `DataChannelHandler._onDataReceived` and read from `adb logcat` (Android) or `flutter logs` (device).
+- [x] **Happy-path call: end-to-end emotion + viseme envelopes arrive at the client.** A 30-second call from the device on the The Waiter scenario produces ≥ 1 `{"type":"emotion",...}` and ≥ 1 `{"type":"viseme",...}` per second of TTS playback, observed via a temporary `dev.log` in `DataChannelHandler._onDataReceived` and read from `adb logcat` (Android) or `flutter logs` (device).
   - _Command:_ `flutter run --release` on Pixel 9 Pro XL → tap The Waiter → speak 3-4 lines → tap hang-up → review the log buffer.
   - _Expected:_ Multiple `dev.log` lines for both `type: emotion` and `type: viseme`. The `emotion` value is one of the 7 reactive values. The `viseme_id` is in `0..11`.
-  - _Actual:_ <!-- paste 5-10 representative lines + summary of counts -->
+  - _Actual:_ Confirmed via `adb logcat | grep "6.3-smoke"` 2026-05-01 14:15-14:16. Sample lines: `handler-recv type=emotion data={emotion: impatience, intensity: 0.6}` ; `handler-recv type=viseme data={viseme_id: 8, timestamp_ms: 3556}` ; `handler-recv type=viseme data={viseme_id: 0, timestamp_ms: 3796}`. Visemes burst per word during bot speech (matches Cartesia per-word `TTSTextFrame` emit cadence) ; emotions emit ~0.6-2.4s after each user turn finalize. Walid visually confirmed character expression transitions (`satisfaction → impatience → satisfaction`) on-device. **Note**: viseme timing/granularity rated visually catastrophic in the same gate — 2 distinct bugs identified (word-level granularity + primary/rest timing collapse) and scoped into Story 6.3b before Epic 6 close-out.
 
-- [ ] **Emotion classifier respects the 7-value subset.** No `sadness`, `boredom`, or `impressed` reach the client during the test call. (These are reserved for stories 6.4 / 6.6 / 6.7.)
+- [x] **Emotion classifier respects the 7-value subset.** No `sadness`, `boredom`, or `impressed` reach the client during the test call. (These are reserved for stories 6.4 / 6.6 / 6.7.)
   - _Command:_ `grep -E "type.*emotion" <flutter-log-buffer> | grep -oE "emotion.: ?\"[^\"]+\"" | sort -u`
   - _Expected:_ All values in `{satisfaction, smirk, frustration, impatience, anger, confusion, disgust_hangup}`.
-  - _Actual:_ <!-- paste the unique emotion values observed -->
+  - _Actual:_ Across multiple test calls 2026-05-01, observed values: `satisfaction`, `impatience`, `frustration`, `confusion`, `anger`. Walid confirmed visual transitions for these on-device. Defensive guard `_ALLOWED_EMOTIONS` frozenset in `emotion_emitter.py` rejects anything else at parse time. Zero `sadness`/`boredom`/`impressed` observed in any classification.
 
-- [ ] **Stale-task cancellation works.** Make 3 user turns within 5 seconds; only the third triggers an emotion envelope.
+- [x] **Stale-task cancellation works.** Make 3 user turns within 5 seconds; only the third triggers an emotion envelope.
   - _Command:_ `ssh root@167.235.63.129 "journalctl -u pipecat.service --since '5 min ago' | grep -E 'cancelled stale|emotion classifier'"`
   - _Expected:_ ≥ 2 `cancelled stale emotion-classifier task` log lines per 3-rapid-turn burst.
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ **In-vivo non-observable, validated by unit test instead.** Pipecat's `SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=1.8)` enforces ≥1.8 s of silence between two finalised `TranscriptionFrame`s, AND post-fix OpenRouter classification completes in ~1-1.5 s. So in conversational tempo each classification finishes BEFORE the next turn arrives → no in-flight task to cancel. The mechanism is exercised and proven in `server/tests/test_emotion_emitter.py::test_rapid_user_turns_only_last_emits` (3 frames @ 0.01 s spacing × 50 ms classifier delay → assert exactly 1 emit, classifier called 3 times, prior 2 cancelled). It remains a defensive net for the rare slow-OpenRouter case in production.
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 100 --since "10 min ago"` shows no ERROR or Traceback for the test calls.
-  - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
+- [x] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 100 --since "10 min ago"` shows no ERROR or Traceback for the test calls.
+  - _Proof:_ Verified 2026-05-01 11:00 onwards via `journalctl -u pipecat.service --since "30 min ago" --no-pager | grep -E "Traceback|ERROR"` → empty output. **Pre-fix the gate surfaced two real bugs that journalctl loud-failed on**: (a) `pipeline.emotion_emitter:_classify_and_emit:125 - emotion classifier timeout` × N (every classification timing out — fixed by moving `reasoning: {enabled: false}` out of `extra_body` to the top-level OpenRouter payload), and (b) `Resource 'punkt_tab' not found` × N (NLTK data missing — fixed by `nltk.download('punkt_tab', download_dir='/usr/share/nltk_data')` on VPS). Both fixed and re-verified clean.
 
-- [ ] **DB side-effect is `N/A`.** This story does not write or migrate any DB tables; the only DB write during the test is the existing Story 6.1 INSERT into `call_sessions` (one row per call).
+- [x] **DB side-effect is `N/A`.** This story does not write or migrate any DB tables; the only DB write during the test is the existing Story 6.1 INSERT into `call_sessions` (one row per call).
   - _Command:_ `ssh root@167.235.63.129 "/opt/survive-the-talk/repo/server/.venv/bin/python -c 'import sqlite3; c=sqlite3.connect(\"/opt/survive-the-talk/data/db.sqlite\"); print(c.execute(\"SELECT COUNT(*) FROM call_sessions\").fetchone())'"`
   - _Expected:_ count went up by 1 per smoke-test call; no other table changed.
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ Confirmed during testing — each smoke call inserted exactly 1 row into `call_sessions` (Story 6.1 INSERT path, untouched by 6.3). Walid hit the daily cap (3 paid-tier calls/day) twice during testing → 3 rows present each time, reset via targeted `DELETE FROM call_sessions WHERE user_id = 1 AND started_at >= date('now')`. No other table modified. Schema migrations unchanged: `git diff --name-only -- server/db/migrations/` empty. (Side note: surfaced an unrelated bug — `paid` tier appears to be capped at 3/day same as `free`; flagged for separate investigation, out of 6.3 scope.)
 
-- [ ] **DB backup taken BEFORE deploy.** `N/A` — this story has zero schema changes. Mark with one-line rationale: "No migration; no backup required."
+- [x] **DB backup taken BEFORE deploy.** `N/A` — this story has zero schema changes. Mark with one-line rationale: "No migration; no backup required."
   - _Proof:_ N/A — non-migration story.
 
-- [ ] **Error envelope still works for `/calls/initiate` (regression net for Story 6.1).** Hit the endpoint with an expired JWT; confirm the canonical `{error}` envelope is unchanged.
+- [x] **Error envelope still works for `/calls/initiate` (regression net for Story 6.1).** Hit the endpoint with an expired JWT; confirm the canonical `{error}` envelope is unchanged.
   - _Command:_ `curl -sS -H "Authorization: Bearer expired-jwt" -H "Content-Type: application/json" -d '{"scenario_id":"the_waiter"}' http://167.235.63.129/calls/initiate`
   - _Expected:_ `401` + `{"error": "AUTH_UNAUTHORIZED", ...}`.
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ Tested 2026-05-01 with payload `{"scenario_id":"waiter_easy_01"}` (canonical id from `the-waiter.yaml`). Response: `HTTP 401` + `{"error":{"code":"AUTH_UNAUTHORIZED","message":"Missing or invalid token."}}`. Story 6.1 envelope contract preserved.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Author `EmotionEmitter` Pipecat FrameProcessor** (AC: #1)
-  - [ ] 1.1 — Create `server/pipeline/emotion_emitter.py` with the `EmotionEmitter(FrameProcessor)` class. Inherit from `pipecat.processors.frame_processor.FrameProcessor`.
-  - [ ] 1.2 — Add `_ALLOWED_EMOTIONS = frozenset({'satisfaction','smirk','frustration','impatience','anger','confusion','disgust_hangup'})` at module level.
-  - [ ] 1.3 — Override `process_frame(self, frame, direction)`: pass-through with `await self.push_frame(frame, direction)`; on `TranscriptionFrame` with non-empty `text`, schedule classification via `asyncio.create_task` after cancelling any in-flight task.
-  - [ ] 1.4 — Implement `_classify(text: str) -> dict | None` as a coroutine. Builds the prompt using `EMOTION_CLASSIFIER_PROMPT` (added to `pipeline/prompts.py` in Task 4); calls OpenRouter via `httpx.AsyncClient` (one ephemeral client per call OR shared with `bot.py`'s `OpenRouterLLMService` — the simpler path is a fresh client; document the choice). Returns `{"emotion","intensity"}` on success, `None` on JSON parse fail, model-returned-out-of-set, or HTTP error.
-  - [ ] 1.5 — `asyncio.wait_for(self._classify(text), timeout=2.0)` wraps the call; on `TimeoutError` log `WARNING` and return None.
-  - [ ] 1.6 — On non-None result, `await self.push_frame(OutputTransportMessageFrame(message={"type":"emotion","data": result}), FrameDirection.DOWNSTREAM)`.
-  - [ ] 1.7 — Track in-flight task on `self._in_flight: asyncio.Task | None = None`. New transcription cancels old via `task.cancel()` + `await asyncio.gather(task, return_exceptions=True)`; log `INFO "cancelled stale emotion-classifier task"`.
-  - [ ] 1.8 — Add tests at `server/tests/pipeline/test_emotion_emitter.py` covering AC9 server-side cases 1-6.
+- [x] **Task 1 — Author `EmotionEmitter` Pipecat FrameProcessor** (AC: #1)
+  - [x] 1.1 — Create `server/pipeline/emotion_emitter.py` with the `EmotionEmitter(FrameProcessor)` class. Inherit from `pipecat.processors.frame_processor.FrameProcessor`.
+  - [x] 1.2 — Add `_ALLOWED_EMOTIONS = frozenset({'satisfaction','smirk','frustration','impatience','anger','confusion','disgust_hangup'})` at module level.
+  - [x] 1.3 — Override `process_frame(self, frame, direction)`: pass-through with `await self.push_frame(frame, direction)`; on `TranscriptionFrame` with non-empty `text`, schedule classification via `asyncio.create_task` after cancelling any in-flight task.
+  - [x] 1.4 — Implement `_classify(text: str) -> dict | None` as a coroutine. Builds the prompt using `EMOTION_CLASSIFIER_PROMPT` (added to `pipeline/prompts.py` in Task 4); calls OpenRouter via `httpx.AsyncClient` (one ephemeral client per call OR shared with `bot.py`'s `OpenRouterLLMService` — the simpler path is a fresh client; document the choice). Returns `{"emotion","intensity"}` on success, `None` on JSON parse fail, model-returned-out-of-set, or HTTP error.
+  - [x] 1.5 — `asyncio.wait_for(self._classify(text), timeout=2.0)` wraps the call; on `TimeoutError` log `WARNING` and return None.
+  - [x] 1.6 — On non-None result, `await self.push_frame(OutputTransportMessageFrame(message={"type":"emotion","data": result}), FrameDirection.DOWNSTREAM)`.
+  - [x] 1.7 — Track in-flight task on `self._in_flight: asyncio.Task | None = None`. New transcription cancels old via `task.cancel()` + `await asyncio.gather(task, return_exceptions=True)`; log `INFO "cancelled stale emotion-classifier task"`.
+  - [x] 1.8 — Add tests at `server/tests/pipeline/test_emotion_emitter.py` covering AC9 server-side cases 1-6.
 
-- [ ] **Task 2 — Author `VisemeEmitter` Pipecat FrameProcessor** (AC: #2)
-  - [ ] 2.1 — Create `server/pipeline/viseme_emitter.py` with the `VisemeEmitter(FrameProcessor)` class.
-  - [ ] 2.2 — Implement `word_to_viseme_id(word: str) -> int` as a pure module-level function with the `_VOWEL_GROUPS` and `_CONSONANT_HINTS` tuples from AC2.
-  - [ ] 2.3 — Override `process_frame`: pass-through `TTSTextFrame` always; on `TTSTextFrame` extract `(word, timestamp_seconds)` (verify the actual attribute names from `TTSTextFrame` at implementation time — they may differ from the `_WordTimestampEntry` shape); compute `viseme_id` + `timestamp_ms`; emit primary viseme; emit follow-up rest viseme at `timestamp_ms + word_duration_ms` where `word_duration_ms = max(80, len(word) * 60)`.
-  - [ ] 2.4 — Add tests at `server/tests/pipeline/test_viseme_emitter.py` covering AC9 server-side cases 1-4.
+- [x] **Task 2 — Author `VisemeEmitter` Pipecat FrameProcessor** (AC: #2)
+  - [x] 2.1 — Create `server/pipeline/viseme_emitter.py` with the `VisemeEmitter(FrameProcessor)` class.
+  - [x] 2.2 — Implement `word_to_viseme_id(word: str) -> int` as a pure module-level function with the `_VOWEL_GROUPS` and `_CONSONANT_HINTS` tuples from AC2.
+  - [x] 2.3 — Override `process_frame`: pass-through `TTSTextFrame` always; on `TTSTextFrame` extract `(word, timestamp_seconds)` (verify the actual attribute names from `TTSTextFrame` at implementation time — they may differ from the `_WordTimestampEntry` shape); compute `viseme_id` + `timestamp_ms`; emit primary viseme; emit follow-up rest viseme at `timestamp_ms + word_duration_ms` where `word_duration_ms = max(80, len(word) * 60)`.
+  - [x] 2.4 — Add tests at `server/tests/pipeline/test_viseme_emitter.py` covering AC9 server-side cases 1-4.
 
-- [ ] **Task 3 — Add `load_scenario_metadata` helper + plumb `SCENARIO_CHARACTER` env var** (AC: #3)
-  - [ ] 3.1 — In `server/pipeline/scenarios.py`, add a NEW helper `load_scenario_metadata(scenario_id: str) -> dict` that reads the same YAML file `load_scenario_prompt` reads but returns the entire `metadata` block (or at least `metadata.rive_character`). Ensure the existing `load_scenario_prompt` still works unchanged (its return type/signature is the spec for Story 6.1's path).
-  - [ ] 3.2 — In `server/api/routes_calls.py`, after calling `load_scenario_prompt`, also call `load_scenario_metadata` and extract `metadata['rive_character']`. Add it to the `bot_env` dict alongside `SYSTEM_PROMPT`: `bot_env = {**os.environ, "SYSTEM_PROMPT": system_prompt, "SCENARIO_CHARACTER": rive_character}`.
-  - [ ] 3.3 — Update tests in `server/tests/api/test_routes_calls.py` to verify the new env var is set on the spawned subprocess.
+- [x] **Task 3 — Add `load_scenario_metadata` helper + plumb `SCENARIO_CHARACTER` env var** (AC: #3)
+  - [x] 3.1 — In `server/pipeline/scenarios.py`, add a NEW helper `load_scenario_metadata(scenario_id: str) -> dict` that reads the same YAML file `load_scenario_prompt` reads but returns the entire `metadata` block (or at least `metadata.rive_character`). Ensure the existing `load_scenario_prompt` still works unchanged (its return type/signature is the spec for Story 6.1's path).
+  - [x] 3.2 — In `server/api/routes_calls.py`, after calling `load_scenario_prompt`, also call `load_scenario_metadata` and extract `metadata['rive_character']`. Add it to the `bot_env` dict alongside `SYSTEM_PROMPT`: `bot_env = {**os.environ, "SYSTEM_PROMPT": system_prompt, "SCENARIO_CHARACTER": rive_character}`.
+  - [x] 3.3 — Update tests in `server/tests/api/test_routes_calls.py` to verify the new env var is set on the spawned subprocess.
 
-- [ ] **Task 4 — Wire `EmotionEmitter` + `VisemeEmitter` into `bot.py`** (AC: #3)
-  - [ ] 4.1 — In `server/pipeline/prompts.py`, add `EMOTION_CLASSIFIER_PROMPT` as a module-level f-string-able constant (the prompt template from AC1).
-  - [ ] 4.2 — In `server/pipeline/bot.py`, read `os.environ.get("SCENARIO_CHARACTER", "waiter")` (default to waiter for the legacy `/connect` path).
-  - [ ] 4.3 — Instantiate `EmotionEmitter(character=character_name, openrouter_api_key=settings.openrouter_api_key)` and `VisemeEmitter()`.
-  - [ ] 4.4 — Insert into the pipeline list at the positions specified in AC3.
-  - [ ] 4.5 — Smoke-run locally with `uv run python -m pipeline.bot --url ... --room ... --token ...` against a dev LiveKit room (or document why local smoke is skipped — probably needs the full FastAPI scaffolding to mint a token).
-  - [ ] 4.6 — Add `server/tests/pipeline/test_bot_pipeline_wiring.py` (or update existing) per AC9 server case 7.
+- [x] **Task 4 — Wire `EmotionEmitter` + `VisemeEmitter` into `bot.py`** (AC: #3)
+  - [x] 4.1 — In `server/pipeline/prompts.py`, add `EMOTION_CLASSIFIER_PROMPT` as a module-level f-string-able constant (the prompt template from AC1).
+  - [x] 4.2 — In `server/pipeline/bot.py`, read `os.environ.get("SCENARIO_CHARACTER", "waiter")` (default to waiter for the legacy `/connect` path).
+  - [x] 4.3 — Instantiate `EmotionEmitter(character=character_name, openrouter_api_key=settings.openrouter_api_key)` and `VisemeEmitter()`.
+  - [x] 4.4 — Insert into the pipeline list at the positions specified in AC3.
+  - [x] 4.5 — Smoke-run locally with `uv run python -m pipeline.bot --url ... --room ... --token ...` against a dev LiveKit room (or document why local smoke is skipped — probably needs the full FastAPI scaffolding to mint a token). _SKIPPED at dev time:_ requires a live LiveKit URL + a freshly minted agent JWT (only the FastAPI `/calls/initiate` route mints them); the wiring guard test (`test_bot_pipeline_wiring.py`) covers the static-import path. Real end-to-end validation happens during the Smoke Test Gate post-deploy.
+  - [x] 4.6 — Add `server/tests/pipeline/test_bot_pipeline_wiring.py` (or update existing) per AC9 server case 7.
 
-- [ ] **Task 5 — Author `DataChannelHandler` service** (AC: #4)
-  - [ ] 5.1 — Create `client/lib/features/call/services/data_channel_handler.dart`. Constructor takes `Room`, `onEmotion`, `onViseme`. Internal: `CancelListenFunc? _cancel;`.
-  - [ ] 5.2 — In constructor, call `room.events.on<DataReceivedEvent>(_onDataReceived)`; store the cancel handle.
-  - [ ] 5.3 — `_onDataReceived` decodes `utf8.decode(event.data)` → `jsonDecode(...)`; switches on `payload['type']`; calls the typed callbacks. Errors (decode, missing fields) are caught and logged via `dev.log` at level `Level.FINE` (700) — never thrown.
-  - [ ] 5.4 — `dispose()` is idempotent: `await _cancel?.call(); _cancel = null;`.
-  - [ ] 5.5 — Add tests at `client/test/features/call/services/data_channel_handler_test.dart` covering AC9 client-side cases 1-8. Use `mocktail` for `Room` and `RemoteParticipant`. Mock `room.events.on<DataReceivedEvent>(...)` to return a `CancelListenFunc` recorded in the test for assertions.
+- [x] **Task 5 — Author `DataChannelHandler` service** (AC: #4)
+  - [x] 5.1 — Create `client/lib/features/call/services/data_channel_handler.dart`. Constructor takes `Room`, `onEmotion`, `onViseme`. Internal: `CancelListenFunc? _cancel;`.
+  - [x] 5.2 — In constructor, call `room.events.on<DataReceivedEvent>(_onDataReceived)`; store the cancel handle.
+  - [x] 5.3 — `_onDataReceived` decodes `utf8.decode(event.data)` → `jsonDecode(...)`; switches on `payload['type']`; calls the typed callbacks. Errors (decode, missing fields) are caught and logged via `dev.log` at level `Level.FINE` (700) — never thrown.
+  - [x] 5.4 — `dispose()` is idempotent: `await _cancel?.call(); _cancel = null;`.
+  - [x] 5.5 — Add tests at `client/test/features/call/services/data_channel_handler_test.dart` covering AC9 client-side cases 1-8. Use `mocktail` for `Room` and `RemoteParticipant`. Mock `room.events.on<DataReceivedEvent>(...)` to return a `CancelListenFunc` recorded in the test for assertions.
 
-- [ ] **Task 6 — Extend `RiveCharacterCanvas` with `setEmotion` / `setVisemeId`** (AC: #5)
-  - [ ] 6.1 — In `client/lib/features/call/views/widgets/rive_character_canvas.dart`, promote `_RiveCharacterCanvasState` → `RiveCharacterCanvasState` (drop the leading underscore on the class name; keep the constructor `_RiveCharacterCanvasState()` form unchanged at the framework boundary).
-  - [ ] 6.2 — Add `rive.ViewModelInstanceEnum? _emotionEnum;` and `rive.ViewModelInstanceEnum? _visemeEnum;` fields.
-  - [ ] 6.3 — In `_onRiveLoaded`, after caching `_characterEnum`, cache `_emotionEnum` and `_visemeEnum` via `viewModel?.enumerator('emotion')` and `viewModel?.enumerator('visemeId')`.
-  - [ ] 6.4 — Add public `setEmotion(String emotion)` and `setVisemeId(int visemeId)` methods per AC5.
-  - [ ] 6.5 — Add the `_idToCase` private const map at top-of-file.
-  - [ ] 6.6 — Update `client/test/features/call/views/widgets/rive_character_canvas_test.dart` per AC9 client case 2 (2 new tests).
+- [x] **Task 6 — Extend `RiveCharacterCanvas` with `setEmotion` / `setVisemeId`** (AC: #5)
+  - [x] 6.1 — In `client/lib/features/call/views/widgets/rive_character_canvas.dart`, promote `_RiveCharacterCanvasState` → `RiveCharacterCanvasState` (drop the leading underscore on the class name; keep the constructor `_RiveCharacterCanvasState()` form unchanged at the framework boundary).
+  - [x] 6.2 — Add `rive.ViewModelInstanceEnum? _emotionEnum;` and `rive.ViewModelInstanceEnum? _visemeEnum;` fields.
+  - [x] 6.3 — In `_onRiveLoaded`, after caching `_characterEnum`, cache `_emotionEnum` and `_visemeEnum` via `viewModel?.enumerator('emotion')` and `viewModel?.enumerator('visemeId')`.
+  - [x] 6.4 — Add public `setEmotion(String emotion)` and `setVisemeId(int visemeId)` methods per AC5.
+  - [x] 6.5 — Add the `_idToCase` private const map at top-of-file.
+  - [x] 6.6 — Update `client/test/features/call/views/widgets/rive_character_canvas_test.dart` per AC9 client case 2 (2 new tests).
 
-- [ ] **Task 7 — Expose `Room` from `CallBloc`** (AC: #7)
-  - [ ] 7.1 — In `client/lib/features/call/bloc/call_bloc.dart`, add the `Room get room => _room;` getter with the documented contract from AC7.
-  - [ ] 7.2 — Update `client/test/features/call/bloc/call_bloc_test.dart` per AC9 client case 3.
+- [x] **Task 7 — Expose `Room` from `CallBloc`** (AC: #7)
+  - [x] 7.1 — In `client/lib/features/call/bloc/call_bloc.dart`, add the `Room get room => _room;` getter with the documented contract from AC7.
+  - [x] 7.2 — Update `client/test/features/call/bloc/call_bloc_test.dart` per AC9 client case 3.
 
-- [ ] **Task 8 — Wire `DataChannelHandler` into `CallScreen`** (AC: #6)
-  - [ ] 8.1 — In `client/lib/features/call/views/call_screen.dart`, add `_canvasKey: GlobalKey<RiveCharacterCanvasState>` and `_dataChannelHandler: DataChannelHandler?` fields.
-  - [ ] 8.2 — Wrap the existing `BlocBuilder` (Story 6.2's tree) inside a `BlocListener<CallBloc, CallState>` with `listenWhen` filter per AC6.
-  - [ ] 8.3 — In the `listener` callback, construct the `DataChannelHandler` once with closures into `_canvasKey.currentState`.
-  - [ ] 8.4 — Pass `key: _canvasKey` into `RiveCharacterCanvas(...)`.
-  - [ ] 8.5 — In `dispose()`, `await _dataChannelHandler?.dispose();` BEFORE `super.dispose()`.
-  - [ ] 8.6 — Update `client/test/features/call/views/call_screen_test.dart` per AC9 client case 4 (2 new tests).
+- [x] **Task 8 — Wire `DataChannelHandler` into `CallScreen`** (AC: #6)
+  - [x] 8.1 — In `client/lib/features/call/views/call_screen.dart`, add `_canvasKey: GlobalKey<RiveCharacterCanvasState>` and `_dataChannelHandler: DataChannelHandler?` fields.
+  - [x] 8.2 — Wrap the existing `BlocBuilder` (Story 6.2's tree) inside a `BlocListener<CallBloc, CallState>` with `listenWhen` filter per AC6.
+  - [x] 8.3 — In the `listener` callback, construct the `DataChannelHandler` once with closures into `_canvasKey.currentState`.
+  - [x] 8.4 — Pass `key: _canvasKey` into `RiveCharacterCanvas(...)`.
+  - [x] 8.5 — In `dispose()`, `await _dataChannelHandler?.dispose();` BEFORE `super.dispose()`.
+  - [x] 8.6 — Update `client/test/features/call/views/call_screen_test.dart` per AC9 client case 4 (2 new tests).
 
-- [ ] **Task 9 — Pre-commit + Smoke Test gates** (AC: #8, #10)
-  - [ ] 9.1 — `cd server && python -m ruff check .` + `python -m ruff format --check .` + `.venv/Scripts/python -m pytest` all green.
-  - [ ] 9.2 — `cd client && flutter analyze` "No issues found!"
-  - [ ] 9.3 — `cd client && flutter test` "All tests passed!"
+- [x] **Task 9 — Pre-commit + Smoke Test gates** (AC: #8, #10)
+  - [x] 9.1 — `cd server && python -m ruff check .` + `python -m ruff format --check .` + `.venv/Scripts/python -m pytest` all green. _191 tests passed (+46 vs. 145 baseline, more than spec'd because Story 6.1 / 6.2 also added server tests since the spec was written)._
+  - [x] 9.2 — `cd client && flutter analyze` "No issues found!"
+  - [x] 9.3 — `cd client && flutter test` "All tests passed!" _272 tests passed (+14 net new vs. 258 baseline)._
   - [ ] 9.4 — Commit (Walid will trigger via `/commit` — DO NOT auto-commit).
   - [ ] 9.5 — Deploy to VPS via SSH: `scp` the changed files, `systemctl restart pipecat.service`, OR (if a CI deploy pipeline is wired) push + watch the workflow.
   - [ ] 9.6 — Execute the Smoke Test Gate above, paste proofs into the unchecked boxes.
-  - [ ] 9.7 — Flip `sprint-status.yaml` for `6-3-...` from `in-progress` → `review` (story file frontmatter Status field updated simultaneously per project memory `## Sprint-Status Discipline`).
+  - [x] 9.7 — Flip `sprint-status.yaml` for `6-3-...` from `in-progress` → `review` (story file frontmatter Status field updated simultaneously per project memory `## Sprint-Status Discipline`).
   - [ ] 9.8 — Wait for explicit `/commit` from Walid (per project memory `## Git Commit Rules`).
 
 ## Dev Notes
@@ -524,25 +524,137 @@ Both emitters use `FrameDirection.DOWNSTREAM` so the `OutputTransportMessageFram
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-7 (Opus 4.7)
 
 ### Implementation Notes
 
-<!-- Populated during implementation. Document at minimum:
-(a) Deviation #1 — heuristic word→viseme mapper instead of g2p_en/phonemizer (per Dev Notes).
-(b) Deviation #2 — `data_channel_handler.dart` replaces the architecture's planned `viseme_handler.dart` + (the missing) `livekit_service.dart` (per Project Structure Notes).
-(c) Final pipecat `TTSTextFrame` field names verified at implementation time (the AC2 description says "verify the actual attribute names" — paste the result).
-(d) The `EMOTION_CLASSIFIER_PROMPT` final wording (the AC1 example is a starter; tune at implementation time and paste here).
-(e) Any in-flight task cancellation edge case observed under load (e.g. `asyncio.CancelledError` propagation patterns).
-(f) Future Coupling Note for Story 6.6 author — whether to merge `EmotionEmitter` and `ExchangeClassifier` once both are live.
-(g) Any third deviation if encountered. -->
+**Deviation #1 — heuristic word→viseme mapper, not g2p_en/phonemizer.** Confirmed at implementation time: pipecat's Cartesia integration (`pipecat/services/cartesia/tts.py:614-617`) surfaces only word-level timestamps via `add_word_timestamps([(word, timestamp_seconds)])`; phoneme timestamps are not exposed. The heuristic in `viseme_emitter.py` walks a single `_PRIORITY` table (digraph/cluster substring matching, lip-distinctness ordering) and maps each word to the strongest articulator. Quality at conversational speed is "close enough" for a stylized 2D character; if post-MVP UX testing flags lip-sync as a blocker, the only file that needs to change is `viseme_emitter.py` — the data-channel envelope and Flutter handler stay identical.
+
+**Deviation #2 — `data_channel_handler.dart` replaces the architecture's planned `viseme_handler.dart` + (the missing) `livekit_service.dart`.** Story 6.1 inlined `Room` ownership into `CallBloc` (intentional simplification, never built `livekit_service.dart`). Story 6.3 lands the FIRST file under `client/lib/features/call/services/` — `data_channel_handler.dart`. Its concerns are the union of (decode + dispatch) for emotion AND viseme; the architecture's planned `viseme_handler.dart` is folded into it. The int → enum-case-name mapping for visemes lives on the Rive boundary (`RiveCharacterCanvasState.setVisemeId` via `_kVisemeIdToCase`), not on the handler.
+
+**Deviation #3 — server tests live flat in `server/tests/`, not in `server/tests/pipeline/`.** The story spec asked for `server/tests/pipeline/test_*.py`, but the existing convention is flat (no nested package mirror) — `tests/test_transcript_logger.py`, `tests/test_scenarios.py`, etc. Followed convention rather than introducing a one-off subdirectory at N=2 emitters. If Stories 6.4 / 6.6 add a third + fourth, lift to `tests/pipeline/` then.
+
+**Deviation #4 — story spec's pinned word→viseme outcomes required reordering vs. the spec's tuple order.** AC2 prescribed `_CONSONANT_HINTS` ordered `(th, chjsh, fv, bmp, l, r, cdgknstxyz)` then `_VOWEL_GROUPS`. With that order, "fish" mapped to 5 (chjsh, via "sh") and "see" mapped to 2 (cdgknstxyz, via "s") — contradicting the spec's pinned table (`fish → 11`, `see → 4`). Resolved by collapsing the two tuples into a single `_PRIORITY` list with explicit priority intent: strong consonants (th, fv, bmp) → mid-strength consonants (chjsh, l, r) → strong vowels (ee, qwoo, o) → generic alveolar bucket (cdgknstxyz) → default aei. All 15 pinned words now match. Documented inline in `viseme_emitter.py`'s `_PRIORITY` comment.
+
+**Deviation #5 — classifier timeout 2.0s → 5.0s (surfaced 2026-05-01 via code review).** AC1 mandates `asyncio.wait_for(timeout=2.0)`. The shipped code uses `_CLASSIFIER_TIMEOUT_SECONDS = 5.0`. Reason: the smoke gate (Story 6.3 box 5) initially loud-failed with `pipeline.emotion_emitter:_classify_and_emit:125 - emotion classifier timeout` on EVERY classification — Qwen3.5 Flash via OpenRouter was running in default reasoning mode (5–15 s per call) because the `reasoning: {enabled: false}` flag was nested inside `extra_body` (an OpenAI-Python-SDK convention that OpenRouter's HTTP API silently drops). The fix lifted `reasoning` to the top of the JSON body AND raised the timeout to 5.0 s as defense-in-depth: even with reasoning disabled, OpenRouter occasionally takes 1–3 s under load, and the 2.0 s budget left no headroom. The HTTP-level timeout (`_HTTP_TIMEOUT_SECONDS = 4.5`) sits below the classifier timeout so httpx aborts first and we surface a clean log line instead of an opaque `asyncio.TimeoutError`. Trade-off: a stuck classification now blocks for up to 5 s before the next user-turn cancel-and-replace fires. Acceptable because pipecat's `SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=1.8)` enforces ≥1.8 s of silence between finalised user turns — the cancel happens via the next finalised `TranscriptionFrame` arrival, NOT during the silence window.
+
+**TTSTextFrame field names verified.** `frame.text` carries the word (inherited from `TextFrame`); `frame.pts` is the presentation timestamp in nanoseconds (set by `TTSService._add_word_timestamps` at `pipecat/services/tts_service.py:1175-1176`). `VisemeEmitter` derives `timestamp_ms = int(round(frame.pts / 1_000_000))`; pre-baseline frames whose `pts` is `None` fall back to 0 (covered by `test_emit_handles_missing_pts`).
+
+**`EMOTION_CLASSIFIER_PROMPT` final wording.** Module-level constant in `pipeline/prompts.py`. Uses `.format(character=..., text=...)` placeholder substitution. Strict-JSON instruction with explicit "no prose, no preamble, no Markdown fences" guardrail; mapping rules cover all 7 reactive enum values. The defensive parser also strips ```json fences if the model produces them anyway.
+
+**In-flight cancellation edge case.** `_schedule_classification` awaits `asyncio.gather(prior, return_exceptions=True)` BEFORE creating the replacement task. Without this `await`, a stale verdict could land via `push_frame` AFTER the new one (interleaved on the same event-loop iteration). Verified by `test_rapid_user_turns_only_last_emits` — three frames back-to-back yield exactly one envelope, with the third's text.
+
+**Future Coupling Note for Story 6.6 author.** Story 6.6 will build `ExchangeClassifier` for checkpoint advancement. Tempting to merge with `EmotionEmitter` (both classify user turns). DO NOT pre-merge: different prompts, different output schemas, different latency budgets, premature abstraction at N=1 (per `feedback_mvp_iteration_strategy.md`). If post-6.6 cost analysis shows the doubled OpenRouter call is material, refactor THEN — at that point both shapes are known and the merge is informed.
+
+**Test seam choices on the client.**
+- `DataChannelHandler` tests use `EventsEmitter<RoomEvent>` directly + `emit()` to fire `DataReceivedEvent` (the `@internal` annotation is silenced via `// ignore_for_file: invalid_use_of_internal_member` because there is no public way to publish a synthetic data-channel event without a live WebRTC peer).
+- `CallScreen` tests inject a `debugHandlerBuilder` factory (typedef `DataChannelHandlerBuilder`) so the construction-count + `dispose-on-unmount` lifecycle assertions can use a mocktail `MockDataChannelHandler`.
+- `RiveCharacterCanvasState` was promoted from `@visibleForTesting` (Story 6.2) to a genuine public class because `_CallScreenState` now depends on it as the type bound for `GlobalKey<RiveCharacterCanvasState>` — production code, not test-only.
 
 ### Debug Log References
 
+- Server: `cd server && .venv/Scripts/python -m pytest -q` → 191 passed (10 EmotionEmitter + 21 VisemeEmitter + 4 bot wiring + 2 scenarios metadata + 1 SCENARIO_CHARACTER env var = 38 new, plus prior baselines)
+- Client: `cd client && flutter test` → 272 passed (9 DataChannelHandler + 2 RiveCharacterCanvas Story 6.3 + 1 CallBloc.room + 2 CallScreen lifecycle = 14 new)
+- Server lint: `cd server && python -m ruff check . && python -m ruff format --check .` → clean
+- Client lint: `cd client && flutter analyze` → No issues found!
+
 ### Completion Notes List
+
+- All 8 functional ACs (#1–#8) implemented; AC #9 (test coverage) and AC #10 (pre-commit gates) are green. AC #8 (Smoke Test Gate boxes) and the deploy/commit subtasks (Task 9.4–9.8) are intentionally left UNCHECKED — they require Walid's manual VPS deploy + on-device smoke pass.
+- Server tests rose from 145 (Story 5.5 baseline) to 191 (+46). Note: Stories 6.1 / 6.2 added server tests in the interim, so the spec's "≥ 155" target was outdated; Story 6.3 contributes ~38 of the +46.
+- Client tests rose from 258 (Story 6.2 baseline) to 272 (+14 net new), matching the spec's "~13 net new" target.
+- Zero new colors introduced (token-enforcement test stays green); zero DB schema or migration touch (prod_snapshot.sqlite untouched).
+- The `RiveCharacterCanvasState` class lost its `@visibleForTesting` annotation because `CallScreen` now depends on it through a `GlobalKey<RiveCharacterCanvasState>` seam — that's a real production API now.
 
 ### File List
 
+**Server — created:**
+- `server/pipeline/emotion_emitter.py`
+- `server/pipeline/viseme_emitter.py`
+- `server/tests/test_emotion_emitter.py`
+- `server/tests/test_viseme_emitter.py`
+- `server/tests/test_bot_pipeline_wiring.py`
+
+**Server — modified:**
+- `server/pipeline/bot.py` — read `SCENARIO_CHARACTER` env var; instantiate `EmotionEmitter` + `VisemeEmitter`; insert into pipeline list at the spec'd positions.
+- `server/pipeline/prompts.py` — added `EMOTION_CLASSIFIER_PROMPT` constant.
+- `server/pipeline/scenarios.py` — added `load_scenario_metadata(scenario_id)` helper.
+- `server/api/routes_calls.py` — load metadata + pass `SCENARIO_CHARACTER` env var to spawned bot subprocess.
+- `server/tests/test_calls.py` — assert `SCENARIO_CHARACTER` env var on Popen.
+- `server/tests/test_scenarios.py` — 2 new tests for `load_scenario_metadata`.
+
+**Client — created:**
+- `client/lib/features/call/services/data_channel_handler.dart`
+- `client/test/features/call/services/data_channel_handler_test.dart`
+
+**Client — modified:**
+- `client/lib/features/call/views/widgets/rive_character_canvas.dart` — added `_kVisemeIdToCase` const map; cached `_emotionEnum` / `_visemeEnum`; added public `setEmotion` / `setVisemeId` setters; promoted `RiveCharacterCanvasState` to a genuine public class (dropped `@visibleForTesting`).
+- `client/lib/features/call/views/call_screen.dart` — added `_canvasKey` (`GlobalKey<RiveCharacterCanvasState>`), `_dataChannelHandler`, `debugHandlerBuilder` test seam; widened the `BlocConsumer` listener to construct the handler on first `CallConnected`; disposed the handler in `dispose()` before `super.dispose()`.
+- `client/lib/features/call/bloc/call_bloc.dart` — added `Room get room => _room;` read-only getter with documented contract.
+- `client/test/features/call/views/widgets/rive_character_canvas_test.dart` — 2 new fallback-mode tests for the setters.
+- `client/test/features/call/views/call_screen_test.dart` — 2 new lifecycle tests (handler-construct-once, handler-disposed-on-unmount).
+- `client/test/features/call/bloc/call_bloc_test.dart` — 1 new test for the `room` getter identity.
+
+**Story tracking:**
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — flipped `6-3-...` `ready-for-dev` → `in-progress` → `review`; `last_updated` to 2026-04-30.
+- `_bmad-output/implementation-artifacts/6-3-implement-emotional-reactions-and-lip-sync-via-data-channels.md` — checked off all functional task boxes; populated Dev Agent Record + File List + Notes; flipped Status to `review`.
+
 ### Notes for Reviewer — conscious choices
 
-<!-- Populated during implementation. -->
+1. **Order of consonant priority in `viseme_emitter.py`** deviates from the AC2 tuples to make the spec's pinned word table (`fish → 11`, `see → 4`) hold. See Deviation #4. Inline comment documents the priority intent.
+2. **EmotionEmitter uses an ephemeral `httpx.AsyncClient` per classify call**, not a shared client with `OpenRouterLLMService`. Reason: simpler — no lifecycle coupling, no shared-state risk during stale-task cancellation. Cost: a TCP handshake per call, mitigated by the 1.8s HTTP timeout (< 2.0s classifier timeout) and the rare-event nature of user turns. If observed under prod load to be a tax, this is a 5-line refactor (hold a class-level client with `await self._client.aclose()` in a teardown hook).
+3. **`bot.py` defaults `SCENARIO_CHARACTER` to `"waiter"`** (not the more obvious empty string or hard error) so the legacy `/connect` PoC entrypoint — which doesn't go through `routes_calls.py` and won't set the env var — keeps working. Documented inline.
+4. **`CallScreen.debugHandlerBuilder` is the only new public test seam**; the previous Story 6.2 added `debugCanvasFallback`. Both are gated behind `@visibleForTesting` and ignored by production callers.
+5. **`@internal` `EventsEmitter.emit` use** in `data_channel_handler_test.dart` is silenced via `// ignore_for_file: invalid_use_of_internal_member` at the top of the test file. There is no public way to publish a synthetic `DataReceivedEvent` without a live WebRTC peer, and the existing `call_bloc_test.dart` pattern uses the same `EventsEmitter<RoomEvent>` construct in test (it relies on `room.disconnect()` triggering an internal emit, which we can't replicate for `DataReceivedEvent`).
+6. **The handler's `_onDataReceived` is `Future<void>` not `void`** because `room.events.on<DataReceivedEvent>(...)` accepts `FutureOr<void> Function(T)`. We don't need async work yet, but the signature future-proofs Story 6.4's `hang_up_warning` / `call_end` handling which may need to await navigation.
+7. **VisemeEmitter emits TWO envelopes per word** (primary viseme + rest follow-up). The rest follow-up's timestamp uses a heuristic word-duration estimate (`max(80, len(word) * 60)` ms). Pure-heuristic — Cartesia doesn't tell us the actual per-word duration. If lip-flap ever feels stuck-open, this is the dial to turn.
+8. **Smoke Test Gate boxes 1, 2, 3, 4, 5, 7 + Tasks 9.4–9.8 are intentionally UNCHECKED.** They require a real VPS deploy + on-device smoke pass + Walid's `/commit` decision per project memory. Box 6 (DB backup) is N/A because this story has zero schema changes.
+
+### Review Findings
+
+_Code review run 2026-05-01 against commit 477491d (vs c207e75) — 3 parallel layers: Blind Hunter (adversarial, diff-only), Edge Case Hunter (boundary walk, full project access), Acceptance Auditor (spec ↔ code conformance, full context). All 16 patches applied (14 code edits + 2 already-resolved in working tree); 8 deferred; 4 dismissed; 1 decision-needed resolved → defer (Walid: "pre-MVP, no real users")._
+
+_Post-review state: server **198 tests passing** (+7 vs 191 baseline: emit-layer rejection, cleanup-hook drain, ctor-rejects-empty-key, JSON-fence + unlabeled-fence parsers, pts=0 baseline regression, 12-case enum coverage). Client **275 tests passing** (+3 vs 272 baseline: kVisemeIdToCase contract, kAllowedEmotions contract, setEmotion allow-list defense). `flutter analyze` clean; `ruff check` + `ruff format --check` clean. Skipped: P3 (httpx cleanup — `async with` already handles it; combined with cleanup-hook P1 covers all real shutdown cases). P13 (smoke gate Box 6) already flipped in working tree from spec edit pass._
+
+**Patches (HIGH)**
+
+- [x] [Review][Patch] **In-flight emotion classifier task not drained on pipeline shutdown** — no `cleanup`/`stop_tasks` override; on call-end the asyncio task is GC'd while pending → `Task was destroyed but it is pending!` log + possible orphan `httpx.AsyncClient`. [`server/pipeline/emotion_emitter.py`]
+- [x] [Review][Patch] **`pts_ns is None` vs falsy `if pts_ns`** — `int(round(pts_ns/1_000_000)) if pts_ns else 0` collapses legitimate `pts=0` (first audio frame after baseline reset) into the missing-pts branch. Use `pts_ns is None`. [`server/pipeline/viseme_emitter.py:130`]
+- [x] [Review][Patch] ~~**`httpx.AsyncClient` cleanup may not run on `wait_for` cancel**~~ — investigated: `async with httpx.AsyncClient(...)` already calls `aclose()` on `__aexit__` even on `CancelledError`. The "Task exception never retrieved" path is closed by P1 (cleanup hook drains `_in_flight` on shutdown) + the existing `asyncio.gather(prior, return_exceptions=True)` on cancel-and-replace. No code change needed. [`server/pipeline/emotion_emitter.py`]
+
+**Patches (MEDIUM)**
+
+- [x] [Review][Patch] **`getattr(frame, "finalized", True)` defaults True** — wrong-direction default. If a future pipecat version drops/renames the attribute, classifier fires on every interim word. Default to `False`. [`server/pipeline/emotion_emitter.py:1530`]
+- [x] [Review][Patch] **Markdown-fence stripping uses set-based `.strip("`")`** — strips ALL leading/trailing backticks, not the matched fence pair. Use a regex (`^```\w*\s*\n?(.*?)\n?```$`) with DOTALL. [`server/pipeline/emotion_emitter.py:1640-1645`]
+- [x] [Review][Patch] **Reserved-emotion test exercises only the parser, not the emitter** — `test_classifier_returning_reserved_emotion_is_rejected` returns `None` from `_parse_classifier_output`, so the emitter's rejection path is untested. Add a direct test where `_classify` is patched to return `{"emotion":"sadness",...}` and assert no `OutputTransportMessageFrame` is emitted. [`server/tests/test_emotion_emitter.py`]
+- [x] [Review][Patch] **"Subscribes once" client test asserts nothing** — `test_constructor_subscribes_to_DataReceivedEvent_exactly_once` ends with a no-assertion comment. Verify via mocktail `verify(...).called(1)` on `room.events.on<DataReceivedEvent>(...)`. [`client/test/features/call/services/data_channel_handler_test.dart` first test]
+- [x] [Review][Patch] **OpenRouter API key not validated at startup** — if `settings.openrouter_api_key` is empty/None, every classify hits OpenRouter with `Bearer None`, returns 401, classifier silently no-ops, character locks in default emotion. Validate on `EmotionEmitter.__init__` or `bot.py` startup. [`server/pipeline/bot.py:115-122`]
+- [x] [Review][Patch] **`setEmotion`/`setVisemeId` race with widget unmount** — closure on `_canvasKey.currentState?.setEmotion` fires from a still-active LiveKit subscription during the dispose window between `_dataChannelHandler = null` and the awaited `_cancel()` resolution. Add `if (!mounted) return;` inside `setEmotion`/`setVisemeId` on the canvas state. [`client/lib/features/call/views/widgets/rive_character_canvas.dart`, `call_screen.dart:204-207`]
+- [x] [Review][Patch] **Cancelled prior task may still emit if cancel point is post-`push_frame`** — `task.cancel()` only takes effect at the next await; `push_frame(OutputTransportMessageFrame(...))` may not be a cancellation point in pipecat. Add a per-task generation counter: bump on schedule, capture in task, skip emit if outdated. [`server/pipeline/emotion_emitter.py:1538-1582`]
+- [x] [Review][Patch] **`_kVisemeIdToCase` ↔ server `_PRIORITY` not cross-validated** — adding a 13th viseme on one side without the other silently drops envelopes (no log, no test failure). Add an integration test that asserts every server `_PRIORITY` id has a client `_kVisemeIdToCase` entry. [`client/lib/features/call/views/widgets/rive_character_canvas.dart` ↔ `server/pipeline/viseme_emitter.py`]
+- [x] [Review][Patch] **Undeclared deviation: classifier timeout 2.0s → 5.0s** — AC1 mandates `wait_for(timeout=2.0)` but code uses `_CLASSIFIER_TIMEOUT_SECONDS = 5.0` with inline justification. Add as **Deviation #5** in Implementation Notes per project pattern. [`server/pipeline/emotion_emitter.py:1495`]
+- [x] [Review][Patch] **Smoke gate Box 6 ("DB side-effect is N/A") left unchecked** — already flipped in working tree during the smoke-gate documentation pass (committed file shows `[ ]`, current file shows `[x]` with the rationale "Confirmed during testing — each smoke call inserted exactly 1 row..."). No additional edit needed; the next commit will include the working-tree state. [`6-3-...md` Smoke Test Gate]
+
+**Patches (LOW)**
+
+- [x] [Review][Patch] **Client `setEmotion` lacks server-mirrored allow-list** — if server emits a typo (`"sastisfaction"`), Rive 0.14.x silently no-ops; character stays in default emotion with no visible failure. Mirror `_ALLOWED_EMOTIONS` as a `const _kAllowedEmotions` set on the client and skip writes outside it. [`client/lib/features/call/views/widgets/rive_character_canvas.dart:631-633`]
+- [x] [Review][Patch] **`prune-releases.sh` TOCTOU on realpath** — script resolves `$resolved=$(realpath -- "$target")`, validates the case match, then `rm -rf -- "$target"` (not `"$resolved"`). Symlink swap between calls bypasses the defense. Use `rm -rf -- "$resolved"`. [`deploy/prune-releases.sh`]
+- [x] [Review][Patch] **`DataChannelHandler.dispose()` does not catch `_cancel` errors** — combined with `unawaited(handler.dispose())` from `CallScreen.dispose()`, a regressed LiveKit SDK throw becomes an unhandled future error. Wrap in `try { await cancel(); } catch (e, st) { dev.log(..., error: e, stackTrace: st); }`. [`client/lib/features/call/services/data_channel_handler.dart:419-425`]
+
+**Deferred**
+
+- [x] [Review][Defer] VisemeEmitter primary+rest emitted back-to-back with `timestamp_ms` ignored client-side — already scheduled in Story 6.3b (sprint-status note: word-level lip-sync rated catastrophic on smoke; syllable-level fix shipping next). [`server/pipeline/viseme_emitter.py`]
+- [x] [Review][Defer] `_VOWEL_GROUPS` `'o'` substring rule too broad ("not", "for", "to" all bucket into id 3 absent earlier hit) — heuristic concern, revisit alongside 6.3b syllable-level rewrite. [`server/pipeline/viseme_emitter.py:_PRIORITY`]
+- [x] [Review][Defer] `_word_duration_ms = max(80, len(word) * 60)` — arbitrary floor, mismatches real Cartesia per-word durations; revisit alongside 6.3b. [`server/pipeline/viseme_emitter.py`]
+- [x] [Review][Defer] `load_scenario_metadata` ignores cache — re-reads YAML on every `initiate_call`. Acknowledged tradeoff in inline comment; benchmark not provided. Add `@lru_cache` if prod metrics show it. [`server/pipeline/scenarios.py`]
+- [x] [Review][Defer] VisemeEmitter has no `finalized` check on `TTSTextFrame` — pipecat 0.0.108 only emits via `_add_word_timestamps` (always finalized), so not active. Revisit if Cartesia integration changes. [`server/pipeline/viseme_emitter.py`]
+- [x] [Review][Defer] `intensity` defaulting differs server vs. client (`0.5` vs `0.0`) — future contract drift, no active bug (server clamps to 0.5 today). [`emotion_emitter.py` ↔ `data_channel_handler.dart`]
+- [x] [Review][Defer] `BlocConsumer.listenWhen` does not fire on initial state — production `CallBloc` always starts in `CallConnecting` so live behavior is fine; concern is hypothetical for future code reuse with seeded `BlocProvider.value`. [`call_screen.dart:184-209`]
+- [x] [Review][Defer] `disgust_hangup` half-wired — Story 6.4 owns hang-up wiring; until then the emotion is classifiable but not actionable. **Resolution: accepted as-is — pre-MVP, no real users; the abusive-input edge case has no exposure until public launch.** [`server/pipeline/prompts.py`, `server/pipeline/emotion_emitter.py:_ALLOWED_EMOTIONS`]
+
+**Dismissed (4)**
+
+- BH#1 `await asyncio.gather(prior, return_exceptions=True)` blocks pipeline before scheduling replacement — explicit AC1 design ("Cancellation MUST be awaited so the cancelled task does not push a stale frame after the new one"). Dismiss as per-spec.
+- BH#5 `unawaited(handler.dispose())` in `_CallScreenState.dispose()` — standard Flutter pattern (sync `State.dispose()` cannot await); handler synchronously nulls `_cancel`, and `_canvasKey.currentState?` is null-safe. Dismiss.
+- BH#17 + Auditor sprint-status flipped to `review` while smoke gate boxes unchecked — Note-for-Reviewer #8 declares the unchecked boxes intentional (require real VPS deploy + Walid's `/commit`). Project memory rule: don't auto-commit. Dismiss as accepted process.
+- BH#7 OpenRouter model slug `qwen/qwen3.5-flash-02-23` looks suspect — smoke gate proved it works after the `reasoning` flag fix (logs show successful classifications post-fix). Dismiss.

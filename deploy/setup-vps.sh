@@ -5,7 +5,13 @@
 # GitHub Actions:
 #
 #   scp ~/.ssh/github_deploy.pub root@167.235.63.129:/tmp/gh_pubkey.pub
+#   scp deploy/prune-releases.sh root@167.235.63.129:/tmp/prune-releases.sh
 #   ssh root@167.235.63.129 'bash -s' < deploy/setup-vps.sh
+#
+# Re-running is safe — every step below is idempotent. Re-run when:
+#   - sudoers grants change (e.g. step 3 adds a new entry)
+#   - deploy/prune-releases.sh changes (step 7 reinstalls it)
+#   - deploy user permissions need refreshing
 #
 # (The two-step pattern — scp first, then bash -s — is robust against shell
 #  word-splitting of the pubkey. An earlier single-line form passed the key
@@ -17,7 +23,8 @@
 #      adds it to the `www-data` group (so deploy + www-data can co-read files).
 #   2. Authorises the GitHub Actions public key for that user.
 #   3. Grants `deploy` narrow sudo: systemctl (restart/status/daemon-reload),
-#      journalctl read, and installing a new pipecat.service unit.
+#      journalctl read, installing a new pipecat.service unit, and running
+#      the release-pruner wrapper.
 #   4. Creates the `releases/`, `backups/` directories with `deploy` ownership.
 #   5. Aligns `/opt/survive-the-talk/.env`, `data/`, and `data/db.sqlite` so
 #      the runtime user `www-data` can read .env / read+write the DB, AND the
@@ -26,6 +33,9 @@
 #      per pipecat.service; default perms don't grant www-data DB write).
 #   6. Installs system tooling: sqlite3 CLI (for workflow backup step) + uv
 #      (Python pkg manager — used to keep prod venv in sync with uv.lock).
+#   7. Installs deploy/prune-releases.sh to /usr/local/sbin/ so the workflow
+#      can prune old release dirs as root (sidestepping the cross-owner
+#      `.pyc` problem from pipecat.service running as www-data).
 #
 # What it does NOT do:
 #   - Touch the running `pipecat.service` unit (migrate-to-releases.sh does
@@ -59,7 +69,7 @@ if [[ -z "${GH_PUBKEY// }" ]]; then
     exit 1
 fi
 
-echo "==> 1/6 Creating deploy user"
+echo "==> 1/7 Creating deploy user"
 if ! id -u deploy >/dev/null 2>&1; then
     useradd -m -s /bin/bash deploy
     passwd -l deploy  # SSH-key-only, no password login
@@ -80,7 +90,7 @@ if ! grep -q '^umask 022' /home/deploy/.profile 2>/dev/null; then
     echo "    pinned umask 022 in /home/deploy/.profile"
 fi
 
-echo "==> 2/6 Authorising GitHub Actions SSH key for deploy"
+echo "==> 2/7 Authorising GitHub Actions SSH key for deploy"
 mkdir -p /home/deploy/.ssh
 chmod 700 /home/deploy/.ssh
 # `restrict` disables port forwarding, agent forwarding, etc. — least privilege.
@@ -95,7 +105,7 @@ fi
 chmod 600 /home/deploy/.ssh/authorized_keys
 chown -R deploy:deploy /home/deploy/.ssh
 
-echo "==> 3/6 Granting narrow sudo on pipecat.service"
+echo "==> 3/7 Granting narrow sudo on pipecat.service + prune wrapper"
 cat > /etc/sudoers.d/deploy <<'EOF'
 # CI deploy user — minimum privileges for service mgmt + log inspection.
 # Story 5.1 retro #2 (GitHub Actions deploy pipeline).
@@ -112,17 +122,21 @@ deploy ALL=(root) NOPASSWD: /usr/bin/journalctl -u pipecat.service -n 80 --no-pa
 # checked-in copy when deploy/pipecat.service changes. Source path is fixed
 # to /tmp/pipecat.service.new (workflow scps there); mode is fixed to 0644.
 deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 /tmp/pipecat.service.new /etc/systemd/system/pipecat.service
+# Release pruner — wrapper does its own arg validation (7-hex SHA shape),
+# so no sudoers glob is needed and `..` traversal is impossible. Source:
+# deploy/prune-releases.sh in the repo, installed by step 7 of this script.
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/prune-releases.sh
 EOF
 chmod 440 /etc/sudoers.d/deploy
 visudo -cf /etc/sudoers.d/deploy >/dev/null
 echo "    sudoers installed + validated"
 
-echo "==> 4/6 Creating releases/ and backups/ dirs"
+echo "==> 4/7 Creating releases/ and backups/ dirs"
 mkdir -p /opt/survive-the-talk/releases /opt/survive-the-talk/backups
 chown deploy:deploy /opt/survive-the-talk /opt/survive-the-talk/releases /opt/survive-the-talk/backups
 echo "    /opt/survive-the-talk/{releases,backups} owned by deploy"
 
-echo "==> 5/6 Aligning ownership so www-data (runtime) + deploy (CI) coexist"
+echo "==> 5/7 Aligning ownership so www-data (runtime) + deploy (CI) coexist"
 # pipecat.service runs as User=www-data (see deploy/pipecat.service). That
 # user must be able to:
 #   - read /opt/survive-the-talk/.env  (systemd reads it as root, but some
@@ -152,7 +166,7 @@ else
     echo "    /opt/survive-the-talk/data/ does not exist yet — skipping"
 fi
 
-echo "==> 6/6 Installing system tooling (sqlite3 CLI, uv)"
+echo "==> 6/7 Installing system tooling (sqlite3 CLI, uv)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq sqlite3 curl >/dev/null
@@ -163,6 +177,24 @@ if ! sudo -u deploy bash -c 'command -v uv' >/dev/null 2>&1; then
 else
     echo "    uv already installed for deploy user, skipping"
 fi
+
+echo "==> 7/7 Installing prune-releases.sh wrapper"
+# The wrapper runs as root via the sudoers entry granted in step 3. Source
+# of truth is `deploy/prune-releases.sh` in the repo; the caller scp's it
+# to /tmp/ before invoking this script (see header). Owner=root mode=0755
+# so no other user can edit it (would be a priv-esc — `deploy` runs it
+# as root via NOPASSWD). Re-running this script overwrites with the latest
+# repo content, so updating the wrapper is just a re-run away.
+PRUNE_SRC=/tmp/prune-releases.sh
+if [[ ! -f "$PRUNE_SRC" ]]; then
+    echo "ERROR: $PRUNE_SRC not found. Copy the wrapper to the VPS first:" >&2
+    echo "  scp deploy/prune-releases.sh root@VPS:$PRUNE_SRC" >&2
+    echo "  ssh root@VPS 'bash -s' < deploy/setup-vps.sh" >&2
+    exit 1
+fi
+install -m 0755 -o root -g root "$PRUNE_SRC" /usr/local/sbin/prune-releases.sh
+echo "    /usr/local/sbin/prune-releases.sh installed (root:root mode 0755)"
+rm -f "$PRUNE_SRC"
 
 # Clean up the staged pubkey — authorized_keys already holds the canonical
 # copy, and /tmp is world-readable so the uploaded file is a weak info leak.

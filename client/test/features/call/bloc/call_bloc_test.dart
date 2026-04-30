@@ -241,4 +241,22 @@ void main() {
       verify(() => fixture.room.disconnect()).called(1);
     });
   });
+
+  group('CallBloc.room (Story 6.3)', () {
+    test('exposes the same Room instance passed to the constructor', () async {
+      // Story 6.3 — `DataChannelHandler` needs read-only access to the
+      // underlying Room so it can subscribe to DataReceivedEvent. The
+      // getter MUST return the very same instance (not a copy / wrapper).
+      final fixture = _buildRoom();
+      final bloc = CallBloc(
+        session: _session,
+        scenario: _scenario,
+        room: fixture.room,
+      );
+
+      expect(identical(bloc.room, fixture.room), isTrue);
+
+      await bloc.close();
+    });
+  });
 }

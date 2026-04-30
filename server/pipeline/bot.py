@@ -26,8 +26,10 @@ from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
+from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
+from pipeline.viseme_emitter import VisemeEmitter
 
 
 async def run_bot(url: str, room: str, token: str) -> None:
@@ -41,6 +43,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     """
     settings = Settings()
     system_prompt = os.environ.get("SYSTEM_PROMPT") or SARCASTIC_CHARACTER_PROMPT
+    # Story 6.3 — `SCENARIO_CHARACTER` is set by `routes_calls.initiate_call`
+    # from the scenario YAML's `metadata.rive_character`. The legacy
+    # `/connect` path doesn't set it, so default to "waiter" to keep the
+    # PoC entry alive.
+    scenario_character = os.environ.get("SCENARIO_CHARACTER") or "waiter"
 
     transport = LiveKitTransport(
         url=url,
@@ -108,15 +115,29 @@ async def run_bot(url: str, room: str, token: str) -> None:
     transcript_user = TranscriptLogger(collector=collector, role="user")
     transcript_character = TranscriptLogger(collector=collector, role="character")
 
+    # Story 6.3 — emotion + viseme observers. EmotionEmitter watches user
+    # TranscriptionFrames (must sit between transcript_user and the user
+    # context aggregator so it sees the *finalized* transcription); the
+    # async classifier never blocks the pipeline. VisemeEmitter watches
+    # per-word TTSTextFrames (sits between tts and transport.output() so
+    # the envelope is broadcast in playback order).
+    emotion_emitter = EmotionEmitter(
+        character=scenario_character,
+        openrouter_api_key=settings.openrouter_api_key,
+    )
+    viseme_emitter = VisemeEmitter()
+
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
             transcript_user,
+            emotion_emitter,
             context_aggregator.user(),
             llm,
             transcript_character,
             tts,
+            viseme_emitter,
             transport.output(),
             context_aggregator.assistant(),
         ]

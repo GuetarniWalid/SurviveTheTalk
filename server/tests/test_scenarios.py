@@ -325,3 +325,28 @@ def test_meta_count_and_timestamp_still_present(
 
     assert meta["count"] == 5
     assert meta["timestamp"].endswith("Z")
+
+
+# ---------- Story 6.3 — load_scenario_metadata helper ----------
+
+
+def test_load_scenario_metadata_returns_rive_character() -> None:
+    """`load_scenario_metadata("waiter_easy_01")` returns a dict whose
+    `rive_character` field is `"waiter"` (matches the YAML metadata block).
+    """
+    from pipeline.scenarios import load_scenario_metadata
+
+    metadata = load_scenario_metadata("waiter_easy_01")
+    assert metadata["rive_character"] == "waiter"
+
+
+def test_load_scenario_metadata_unknown_id_raises() -> None:
+    """Unknown scenario ids raise FileNotFoundError (parity with
+    `load_scenario_prompt` so the route's existing exception arm at
+    `routes_calls.py` surfaces them as the canonical `SCENARIO_LOAD_FAILED`
+    envelope).
+    """
+    from pipeline.scenarios import load_scenario_metadata
+
+    with pytest.raises(FileNotFoundError):
+        load_scenario_metadata("does_not_exist")

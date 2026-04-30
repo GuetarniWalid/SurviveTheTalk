@@ -187,4 +187,144 @@ void main() {
       },
     );
   });
+
+  group('RiveCharacterCanvas — wire-format constants (Story 6.3)', () {
+    test(
+      'kVisemeIdToCase covers the full 12-case Rive contract from Story 2.6',
+      () {
+        // Catches drift if a future edit removes a viseme id without
+        // also updating the server-side `_PRIORITY` table. A missing id
+        // would silently no-op on the client — the server emits an int
+        // the client cannot map.
+        expect(
+          kVisemeIdToCase.keys.toSet(),
+          Set<int>.from(List<int>.generate(12, (i) => i)),
+        );
+        // Spot-check the canonical name mapping (Story 2.6 §3 verbatim).
+        expect(kVisemeIdToCase[0], 'rest');
+        expect(kVisemeIdToCase[1], 'aei');
+        expect(kVisemeIdToCase[11], 'fv');
+      },
+    );
+
+    test(
+      'kAllowedEmotions matches the 7-value subset from Story 2.6 §1',
+      () {
+        // Mirrors `server/pipeline/emotion_emitter.py:_ALLOWED_EMOTIONS`.
+        // Drift between server and client surfaces here — a server-side
+        // emotion outside this set is silently dropped by `setEmotion`.
+        expect(kAllowedEmotions, {
+          'satisfaction',
+          'smirk',
+          'frustration',
+          'impatience',
+          'anger',
+          'confusion',
+          'disgust_hangup',
+        });
+        // Reserved values for downstream stories MUST stay out.
+        for (final reserved in ['sadness', 'boredom', 'impressed']) {
+          expect(
+            kAllowedEmotions.contains(reserved),
+            isFalse,
+            reason: '$reserved is reserved for Stories 6.4 / 6.6',
+          );
+        }
+      },
+    );
+  });
+
+  group('RiveCharacterCanvas — emotion + viseme setters (Story 6.3)', () {
+    testWidgets(
+      'setEmotion no-ops in fallback mode without throwing',
+      (tester) async {
+        // In fallback mode the cached `_emotionEnum` is null (no Rive
+        // ViewModel ever loaded). The setter MUST be null-safe per AC5.
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: SizedBox.expand(
+                child: RiveCharacterCanvas(character: 'waiter'),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<RiveCharacterCanvasState>(
+          find.byType(RiveCharacterCanvas),
+        );
+
+        // No exception, no crash — just a silent write into a null cache.
+        state.setEmotion('satisfaction');
+        state.setEmotion('confusion');
+        // Same value twice — Rive deduplicates ViewModel writes
+        // internally; the public setter is idempotent at the call site.
+        state.setEmotion('confusion');
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'setEmotion silently drops values outside the allow-list',
+      (tester) async {
+        // Defense in depth: a server-side typo or a stale envelope from a
+        // future story (e.g. `sadness` reserved for 6.4) MUST NOT crash
+        // and MUST NOT reach the Rive ViewModel even if the cache were
+        // present.
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: SizedBox.expand(
+                child: RiveCharacterCanvas(character: 'waiter'),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<RiveCharacterCanvasState>(
+          find.byType(RiveCharacterCanvas),
+        );
+
+        state.setEmotion('sastisfaction'); // typo
+        state.setEmotion('sadness'); // reserved for downstream stories
+        state.setEmotion(''); // empty
+        state.setEmotion('not_a_real_emotion');
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'setVisemeId handles in-range and out-of-range ids without throwing',
+      (tester) async {
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: SizedBox.expand(
+                child: RiveCharacterCanvas(character: 'waiter'),
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<RiveCharacterCanvasState>(
+          find.byType(RiveCharacterCanvas),
+        );
+
+        // 4 = ee, in range; 99 = unknown, must drop silently. Both go
+        // through the int → string lookup — neither path may throw.
+        state.setVisemeId(4);
+        state.setVisemeId(99);
+        state.setVisemeId(0); // rest
+        state.setVisemeId(11); // fv (last valid id)
+        state.setVisemeId(-1); // negative — also unknown
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
 }

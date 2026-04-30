@@ -14,10 +14,22 @@ import '../bloc/call_bloc.dart';
 import '../bloc/call_event.dart';
 import '../bloc/call_state.dart';
 import '../models/call_session.dart';
+import '../services/data_channel_handler.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
 import 'widgets/rive_character_canvas.dart';
+
+/// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
+/// `DataChannelHandler.new`; tests inject a counting / mock-returning
+/// alternative through `CallScreen.debugHandlerBuilder` to assert the
+/// "construct exactly once" + "dispose on tear-down" lifecycle contract.
+typedef DataChannelHandlerBuilder =
+    DataChannelHandler Function({
+      required Room room,
+      required void Function(String emotion, double intensity) onEmotion,
+      required void Function(int visemeId, int timestampMs) onViseme,
+    });
 
 // Layout constants — mirrored from `IncomingCallScreen` so the outgoing
 // dial state matches the onboarding incoming-call screen visually (per
@@ -61,12 +73,21 @@ class CallScreen extends StatefulWidget {
   @visibleForTesting
   final bool? debugCanvasFallback;
 
+  /// Story 6.3 test seam. Production passes nothing; the screen falls back
+  /// to `DataChannelHandler.new`. Tests pass a builder that records
+  /// construction count and returns a mock handler — used to assert the
+  /// "construct once on first CallConnected" + "dispose on unmount"
+  /// lifecycle contract.
+  @visibleForTesting
+  final DataChannelHandlerBuilder? debugHandlerBuilder;
+
   const CallScreen({
     super.key,
     required this.scenario,
     required this.callSession,
     this.room,
     this.debugCanvasFallback,
+    this.debugHandlerBuilder,
   });
 
   @override
@@ -95,6 +116,19 @@ class _CallScreenState extends State<CallScreen> {
   /// scheduled so we never queue two pops.
   bool _popScheduled = false;
 
+  /// Story 6.3 — `GlobalKey` seam between `CallScreen` and the Rive canvas.
+  /// `_dataChannelHandler` invokes `setEmotion` / `setVisemeId` through
+  /// `_canvasKey.currentState?` so a missing canvas (rebuild between
+  /// envelopes, fallback mode where the State exists but the cached
+  /// enums are null) becomes a silent no-op instead of an exception.
+  final GlobalKey<RiveCharacterCanvasState> _canvasKey =
+      GlobalKey<RiveCharacterCanvasState>();
+
+  /// Story 6.3 — owned by the screen, constructed on first `CallConnected`,
+  /// disposed in `dispose()` BEFORE `super.dispose()`. The bloc owns the
+  /// `Room` lifecycle; this handler is a non-lifecycle subscriber.
+  DataChannelHandler? _dataChannelHandler;
+
   @override
   void initState() {
     super.initState();
@@ -118,6 +152,15 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    // Story 6.3 — fire-and-forget the data-channel cancel. `?.dispose()`
+    // is null-safe for the CallError-during-connect path where
+    // `CallConnected` never fired. Order matters: dispose owned objects
+    // first, then call super.
+    final handler = _dataChannelHandler;
+    _dataChannelHandler = null;
+    if (handler != null) {
+      unawaited(handler.dispose());
+    }
     if (!_blocCreated) {
       // Safety net: the bloc never ran, so `CallBloc.close()` will not.
       // Drop the Room ourselves so we don't leak background timers (TTLMap
@@ -139,8 +182,32 @@ class _CallScreenState extends State<CallScreen> {
         )..add(const CallStarted());
       },
       child: BlocConsumer<CallBloc, CallState>(
-        listenWhen: (previous, current) => current is CallEnded,
+        listenWhen: (previous, current) =>
+            current is CallEnded ||
+            (previous is! CallConnected && current is CallConnected),
         listener: (context, state) {
+          // Story 6.3 — wire the data-channel handler exactly once on the
+          // first transition into CallConnected. The `??=` + the
+          // `prev is! CallConnected && next is CallConnected` listenWhen
+          // filter together guarantee single-construction even if the
+          // bloc replays CallConnected via a later state path.
+          if (state is CallConnected && _dataChannelHandler == null) {
+            final builder =
+                widget.debugHandlerBuilder ?? DataChannelHandler.new;
+            _dataChannelHandler = builder(
+              room: context.read<CallBloc>().room,
+              // Intensity (the `_` in onEmotion) and timestamp_ms (the
+              // `_` in onViseme) are received but not yet consumed;
+              // they're future hooks for emotion-blend / predictive
+              // viseme scheduling. Documented as a deliberate ignore so
+              // reviewers don't flag dead args.
+              onEmotion: (emotion, _) =>
+                  _canvasKey.currentState?.setEmotion(emotion),
+              onViseme: (id, _) =>
+                  _canvasKey.currentState?.setVisemeId(id),
+            );
+          }
+
           if (state is! CallEnded) return;
           if (_popScheduled) return;
           _popScheduled = true;
@@ -374,6 +441,7 @@ class _CallScreenState extends State<CallScreen> {
             button: true,
             label: 'End call',
             child: RiveCharacterCanvas(
+              key: _canvasKey,
               character: widget.scenario.riveCharacter,
               onHangUp: () =>
                   context.read<CallBloc>().add(const HangUpPressed()),

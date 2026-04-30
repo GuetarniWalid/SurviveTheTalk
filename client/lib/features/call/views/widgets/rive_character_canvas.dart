@@ -4,6 +4,41 @@ import 'package:rive/rive.dart' as rive;
 
 import '../../../../core/theme/app_colors.dart';
 
+/// Story 6.3 — int → enum-case-name lookup for the Rive `visemeId` enum.
+/// Mirrors Story 2.6 §3 verbatim. Top-of-file (and library-public) so a
+/// cross-contract test can assert all 12 ids are present without
+/// instantiating the State.
+const Map<int, String> kVisemeIdToCase = <int, String>{
+  0: 'rest',
+  1: 'aei',
+  2: 'cdgknstxyz',
+  3: 'o',
+  4: 'ee',
+  5: 'chjsh',
+  6: 'bmp',
+  7: 'qwoo',
+  8: 'r',
+  9: 'l',
+  10: 'th',
+  11: 'fv',
+};
+
+/// Story 6.3 — server-mirrored allow-list for the runtime-reactive emotion
+/// enum (the 7-value subset of Story 2.6 §1; matches `_ALLOWED_EMOTIONS`
+/// in `server/pipeline/emotion_emitter.py`). Rive 0.14.x's null-safe enum
+/// write silently no-ops on a typo, so a misspelled server-side value
+/// would produce no visible failure. Filtering at the boundary surfaces
+/// the drift via this allow-list.
+const Set<String> kAllowedEmotions = <String>{
+  'satisfaction',
+  'smirk',
+  'frustration',
+  'impatience',
+  'anger',
+  'confusion',
+  'disgust_hangup',
+};
+
 /// Full-screen Rive character canvas for the in-call surface (Story 6.2).
 ///
 /// Renders the `FaceTime` artboard from `assets/rive/characters.riv` — the
@@ -48,7 +83,11 @@ class RiveCharacterCanvas extends StatefulWidget {
   State<RiveCharacterCanvas> createState() => RiveCharacterCanvasState();
 }
 
-@visibleForTesting
+/// Public State class — Story 6.3 promoted this from `@visibleForTesting`
+/// to a genuine production API because `_CallScreenState` now depends on
+/// it as the type bound for a `GlobalKey<RiveCharacterCanvasState>` seam
+/// (the canvas exposes `setEmotion(...)` / `setVisemeId(...)` setters that
+/// the data-channel handler invokes).
 class RiveCharacterCanvasState extends State<RiveCharacterCanvas> {
   static const String _assetPath = 'assets/rive/characters.riv';
 
@@ -65,6 +104,13 @@ class RiveCharacterCanvasState extends State<RiveCharacterCanvas> {
   /// swap state machines if rebuilt).
   rive.StateMachine? _stateMachine;
   rive.ViewModelInstanceEnum? _characterEnum;
+
+  /// Story 6.3 — cached enum handles for the runtime-driven character
+  /// reactions. Null until `_onRiveLoaded` runs (or in fallback mode);
+  /// the public `setEmotion` / `setVisemeId` methods are null-safe so a
+  /// pre-load or fallback write is a silent no-op.
+  rive.ViewModelInstanceEnum? _emotionEnum;
+  rive.ViewModelInstanceEnum? _visemeEnum;
   bool _riveFallback = false;
 
   @override
@@ -140,9 +186,46 @@ class RiveCharacterCanvasState extends State<RiveCharacterCanvas> {
     if (viewModel != null) {
       _characterEnum = viewModel.enumerator('character');
       _characterEnum?.value = widget.character;
+      // Story 6.3 — runtime-driven emotion + viseme enum handles. The
+      // names match the Rive ViewModel property names from Story 2.6
+      // §1+§2. A null return means the property is missing in the .riv —
+      // the smoke test loud-fails on schema drift, so an in-call setter
+      // call is a silent no-op (per `rive-flutter-rules.md` §5).
+      _emotionEnum = viewModel.enumerator('emotion');
+      _visemeEnum = viewModel.enumerator('visemeId');
     }
     _stateMachine = state.controller.stateMachine;
     _stateMachine?.addEventListener(_onRiveEvent);
+  }
+
+  /// Story 6.3 — public setter wired by `_CallScreenState` via the
+  /// `GlobalKey<RiveCharacterCanvasState>` seam. Idempotent: writing the
+  /// same value twice is a no-op (Rive 0.14.x deduplicates ViewModel
+  /// writes internally).
+  ///
+  /// The `mounted` guard protects against the race window between
+  /// `DataChannelHandler.dispose()` nulling the LiveKit cancel handle
+  /// (synchronous) and the awaited cancel resolution (async): a
+  /// late-fired `DataReceivedEvent` could otherwise reach this setter
+  /// after the State is being torn down. The allow-list filter is
+  /// defense-in-depth against server-side typos that Rive's null-safe
+  /// enum write would otherwise silently no-op on.
+  void setEmotion(String emotion) {
+    if (!mounted) return;
+    if (!kAllowedEmotions.contains(emotion)) return;
+    _emotionEnum?.value = emotion;
+  }
+
+  /// Story 6.3 — public setter for the lip-sync viseme. The int → string
+  /// conversion is here (not on the wire) because the Rive enum is
+  /// string-typed; the server emits ints for compactness. Out-of-range
+  /// ids are dropped silently. `mounted` guard mirrors `setEmotion` —
+  /// see its docstring for the lifecycle race rationale.
+  void setVisemeId(int visemeId) {
+    if (!mounted) return;
+    final caseName = kVisemeIdToCase[visemeId];
+    if (caseName == null) return;
+    _visemeEnum?.value = caseName;
   }
 
   void _onRiveEvent(rive.Event event) {

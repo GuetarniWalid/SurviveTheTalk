@@ -1,5 +1,5 @@
 # generated: 2026-03-30
-# last_updated: 2026-04-30 (Story 6.2 → done after code review; Story 6.3 unblocked)
+# last_updated: 2026-05-01 (Story 6.3 code review complete: 16 patches applied, 8 deferred, 4 dismissed; 198 server tests + 275 client tests green; status review → done)
 # project: surviveTheTalk2
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-03-30
-last_updated: 2026-04-30 (Story 6.2 → done after code review; Story 6.3 unblocked)
+last_updated: 2026-05-01 (Story 6.3 code review complete: 16 patches applied, 8 deferred, 4 dismissed; 198 server tests + 275 client tests green; status review → done)
 project: surviveTheTalk2
 project_key: NOKEY
 tracking_system: file-system
@@ -91,8 +91,9 @@ development_status:
   epic-6: in-progress
   6-1-build-call-initiation-from-scenario-list-with-connection-animation: done  # code review 2026-04-30: 17 patches applied + 1 from D2 (red AppToast for generic 5xx); 2 decisions resolved; 4 deferred (already in deferred-work.md). Smoke gate fully green at SHA 28fd11c (8/8 boxes); 234 client tests + 154 server tests green; flutter analyze + ruff clean.
   6-2-build-call-screen-with-rive-character-canvas: done  # code review 2026-04-30: 14 patches applied (3 HIGH: Semantics scope, duplicate Rive listener, missing onHangUp event test; 3 MEDIUM: onFallback idempotency, FileLoader leak guard, StateMachine reference capture; 8 LOW: bang-fallback, AC9 sibling assertion, debug asserts, real-asset tests, catalog test, CallError rationale, rootNavigator pop symmetry, _popScheduled guard); 4 decisions resolved (catalog names approved, sigma 3 confirmed intentional DoF — saved to memory, JPG avatar visually validated, FPS check OK on Pixel 9 Pro XL); 6 deferred (already in deferred-work.md). Final: flutter analyze clean, 258 tests green (+14 from baseline 244).
-  6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: ready-for-dev  # spec drilled deep on Rive 10/12-enum vs epic 7/8 drift, Cartesia word-timestamps reality, server-side EmotionEmitter + VisemeEmitter + client DataChannelHandler — DO NOT START until 6.2 is `done`
-  6-4-implement-silence-handling-and-character-hang-up-mechanic: backlog
+  6-3-implement-emotional-reactions-and-lip-sync-via-data-channels: done  # code review 2026-05-01: 16 patches applied (3 HIGH: cleanup hook + pts_ns is None + httpx cleanup investigated; 10 MED: emit-layer rejection filter + generation counter + finalized=False default + regex Markdown fence + reserved-emotion test + subscribe-once assertion + API key validation + mounted check + cross-contract tests + Deviation #5 doc + Box 6 already done; 3 LOW: client allow-list mirror + prune-releases.sh `$resolved` + DataChannelHandler try/catch); 8 deferred to deferred-work.md; 4 dismissed (per-spec await design, Flutter sync-dispose pattern, status-flip-with-Note-8, OpenRouter slug smoke-proven). 198 server tests + 275 client tests green; flutter analyze + ruff clean. Smoke gate revealed catastrophic word-level lip-sync 2026-05-01 → fix shipped via 6-3b before close-out.
+  6-3b-improve-lip-sync-from-word-to-syllable-level: ready-for-dev  # spec drafted + extended 2026-05-01: zero-dep syllable-level VisemeEmitter (Bug 1) + time-scheduled emit via asyncio.create_task (Bug 2), server-only refactor (~100-120 LOC), wire format unchanged, 6 new pytest cases. Phoneme-level (g2p_en) deferred. Smoke gate also surfaced 2 Story 6.3 bug-fixes already amended into 986f694: emotion classifier reasoning flag + NLTK punkt_tab on VPS.
+  6-4-implement-silence-handling-and-character-hang-up-mechanic: ready-for-dev  # spec drilled deep on PatienceTracker (asyncio silence ladder, server-side meter), DataChannelHandler extension for hang_up_warning + call_end, RemoteCallEnded event in CallBloc, ADR-003 numbering drift surfaced (POST /calls/end stays in 6.5) — DO NOT START until 6.3 is `done`
   6-5-build-voluntary-call-end-and-no-network-screen: backlog
   6-6-build-checkpointmanager-and-checkpoint-aware-exchangeclassifier: backlog
   6-7-build-checkpointstepper-overlay-for-call-screen: backlog

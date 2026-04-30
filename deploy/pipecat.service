@@ -16,8 +16,17 @@ Group=www-data
 # If the healthcheck at the end of the workflow fails post-restart with a
 # "Permission denied" log line, fix the perms in `deploy/setup-vps.sh` —
 # DO NOT fall back to `User=root` (security downgrade).
+#
+# PYTHONDONTWRITEBYTECODE=1 stops Python from writing `.pyc` files into
+# `.venv/lib/python3.12/site-packages/` at import time. Those files would
+# otherwise be owned by `www-data` (the service user) and the workflow's
+# `deploy`-user prune step couldn't remove them — group membership doesn't
+# grant cross-owner deletion. With no `.pyc`, `rm -rf <release>` works
+# cleanly because every file in the release tree is owned by the user that
+# wrote it (`deploy` rsyncs source, `deploy` runs `uv sync`).
 WorkingDirectory=/opt/survive-the-talk/current/server
 EnvironmentFile=/opt/survive-the-talk/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/survive-the-talk/current/server/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5s

@@ -61,3 +61,30 @@ for confirmation → mention wait time.
 CARTESIA_VOICE_ID = (
     "62ae83ad-4f6a-430b-af41-a9bede9286ca"  # Gemma — Decisive Agent (British female)
 )
+
+
+# Story 6.3 — emotion classifier prompt template.
+#
+# Tight, single-shot classification prompt for the user's most-recent line.
+# The character placeholder is filled per-call from the scenario YAML's
+# `metadata.rive_character` (e.g. "waiter", "cop"). The 7-value enum is the
+# subset of Story 2.6's `emotion` Rive enum that is *runtime-reactive*; the
+# remaining values (`sadness`, `boredom`, `impressed`) are owned by Stories
+# 6.4 / 6.6 and MUST NOT be emitted from this classifier.
+EMOTION_CLASSIFIER_PROMPT = """\
+You judge how a stylized character should react emotionally to the user's \
+last line in a high-pressure conversation. The character role is: {character}.
+
+Respond with strict JSON only — no prose, no preamble, no Markdown fences:
+{{"emotion": "<one of: satisfaction|smirk|frustration|impatience|anger|confusion|disgust_hangup>", "intensity": <float 0.0-1.0>}}
+
+Mapping rules:
+- Grammar mistakes or awkward phrasing → frustration or smirk
+- Off-topic / unclear / irrelevant content → confusion
+- Polite, clear, on-task line → satisfaction
+- Pushy or demanding tone → impatience
+- Hostile or insulting tone → anger
+- Abusive / sexual / threatening content → disgust_hangup
+
+User line: {text}
+"""

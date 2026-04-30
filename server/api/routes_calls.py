@@ -25,7 +25,7 @@ from config import Settings
 from db.database import get_connection
 from db.queries import get_user_by_id, insert_call_session
 from models.schemas import InitiateCallIn, InitiateCallOut
-from pipeline.scenarios import load_scenario_prompt
+from pipeline.scenarios import load_scenario_metadata, load_scenario_prompt
 
 router = APIRouter(prefix="/calls", tags=["calls"], dependencies=[AUTH_DEPENDENCY])
 
@@ -76,9 +76,12 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                     },
                 )
 
-            # 2. Scenario prompt (file IO, no DB) — fail fast on bad YAML.
+            # 2. Scenario prompt + metadata (file IO, no DB) — fail fast on
+            # bad YAML. Story 6.3 added `metadata.rive_character` plumbing so
+            # the spawned bot can build character-aware classifier prompts.
             try:
                 system_prompt = load_scenario_prompt(scenario_id)
+                scenario_metadata = load_scenario_metadata(scenario_id)
             except (
                 FileNotFoundError,
                 RuntimeError,
@@ -94,6 +97,7 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                         "message": "Could not prepare the scenario.",
                     },
                 ) from exc
+            rive_character = str(scenario_metadata.get("rive_character") or "waiter")
 
             # 3. LiveKit tokens (no DB).
             try:
@@ -174,7 +178,11 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
     # the DB row, not also try to kill an in-flight process. The rollback
     # opens a fresh connection because the hot-path connection closed when
     # `async with` exited above.
-    bot_env = {**os.environ, "SYSTEM_PROMPT": system_prompt}
+    bot_env = {
+        **os.environ,
+        "SYSTEM_PROMPT": system_prompt,
+        "SCENARIO_CHARACTER": rive_character,
+    }
     try:
         subprocess.Popen(
             [

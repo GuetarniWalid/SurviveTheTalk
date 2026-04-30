@@ -256,11 +256,18 @@ jobs:
 
       - name: Prune old releases (keep last 3)
         if: success()
+        # Delegated to a root-runnable wrapper at /usr/local/sbin/prune-releases.sh
+        # (installed by deploy/setup-vps.sh, source: deploy/prune-releases.sh).
+        # The wrapper validates each release dir name against the
+        # `${GITHUB_SHA::7}` shape (7 hex chars) before deleting, so even
+        # though sudoers grants the script with no arg matching, no path
+        # traversal is possible. Running as root is necessary because
+        # pre-PYTHONDONTWRITEBYTECODE releases carry `.pyc` files owned by
+        # `www-data` that `deploy` (group-only member) cannot remove.
+        # A real failure here is a real problem — do NOT swallow errors.
         run: |
-          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" "
-            cd $VPS_RELEASES &&
-            ls -1t | tail -n +4 | xargs -I{} rm -rf {}
-          "
+          ssh "$VPS_USER@${{ secrets.VPS_HOST }}" \
+            "sudo -n /usr/local/sbin/prune-releases.sh"
 
       - name: Deploy summary
         if: always()

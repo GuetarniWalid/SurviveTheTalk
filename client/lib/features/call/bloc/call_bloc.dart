@@ -37,6 +37,15 @@ class CallBloc extends Bloc<CallEvent, CallState> {
   /// handles a double-disconnect gracefully but it surfaces as a noisy log).
   bool _roomDisconnected = false;
 
+  /// Read-only access to the underlying LiveKit Room for non-lifecycle
+  /// subscriptions (e.g. `DataChannelHandler` listening to
+  /// `DataReceivedEvent`). The bloc remains the single owner of the
+  /// Room's connect/disconnect lifecycle. DO NOT call `disconnect()` on
+  /// this Room from outside the bloc — emit a `HangUpPressed` event
+  /// instead so the lifecycle guards (`_hangingUp`, `_roomDisconnected`)
+  /// stay coherent.
+  Room get room => _room;
+
   CallBloc({
     required CallSession session,
     required Scenario scenario,

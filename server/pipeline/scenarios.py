@@ -75,6 +75,31 @@ def _build_scenario_index() -> dict[str, Path]:
 _SCENARIO_INDEX: dict[str, Path] = _build_scenario_index()
 
 
+def load_scenario_metadata(scenario_id: str) -> dict:
+    """Return the YAML's `metadata` block for `scenario_id`.
+
+    Story 6.3 needs `metadata.rive_character` so `bot.py` can build
+    character-aware classifier prompts. Composed prompts are cached but
+    the metadata read is a single YAML deserialization per call — the
+    file is small and the route handler tolerates the cost on the
+    initiate path. Unknown ids raise `FileNotFoundError` (matching
+    `load_scenario_prompt`).
+    """
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    metadata = (data or {}).get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has malformed `metadata` (not a dict)."
+        )
+    return metadata
+
+
 def load_scenario_prompt(scenario_id: str) -> str:
     """Return the composed system prompt for `scenario_id`.
 
