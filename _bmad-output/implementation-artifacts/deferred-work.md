@@ -13,6 +13,89 @@ Items flagged during code review but postponed — each entry records where the 
   - **Suggested home:** dedicated story in Epic 8 (Monetization & Subscription) or earlier if MVP closed-beta exposes the gap. Should land BEFORE the public-launch milestone.
   - **Tests:** integration test that pumps a 401 mid-app-flow and asserts the user lands on `/auth` with the previous nav stack preserved (so they can return to where they were after re-auth).
 
+## Deferred from: code review of story 6-3b-improve-lip-sync-from-word-to-syllable-level (2026-05-12)
+
+- **Latent: no defensive `data.size < frames * stride` check in the playback callback** — the outer `try { ... } catch (t: Throwable)` would catch an `ArrayIndexOutOfBoundsException` if libwebrtc ever delivers a truncated buffer, but silently (logged at error level only). Trust in the SDK contract for now; revisit if the catch ever fires in production logs. Touched: `client/android/app/src/main/kotlin/com/surviveTheTalk/client/AudioClockChannel.kt` (`onWebRtcAudioTrackSamplesReady`).
+- **Brittle coupling to flutter_webrtc plugin internals** — the entire pivot rests on reflecting into `methodCallHandler.playbackSamplesReadyCallbackAdapter` via `Class.getDeclaredField`. The class import `com.cloudwebrtc.webrtc.audio.PlaybackSamplesReadyCallbackAdapter` and the field name are plugin-internal (not part of the public API). Any flutter_webrtc minor-version bump that renames or restructures either would break the analyzer silently — the catch in `tryAttachCallback` swallows the `NoSuchFieldException` and the mouth simply never animates, with no surfaced error beyond a log line. Mitigations: pin the flutter_webrtc version in `pubspec.yaml` (already pinned at 2.6.4 per memory note), add a smoke-gate item that re-verifies attach success on every plugin upgrade, and consider upstreaming a public-API request to expose a `PlaybackSamplesReadyCallback` registration hook. Touched: `client/android/app/src/main/kotlin/com/surviveTheTalk/client/AudioClockChannel.kt` (`tryAttachCallback`).
+
+- **🟡 Audio↔viseme phase offset is unmeasured and uncompensated — current sync is "good enough" but not optimal** *(surfaced 2026-05-12 via critical follow-up assessment after the /bmad-code-review of 6-3b; flagged HIGH-VALUE-BUT-NOT-MVP-BLOCKING)*
+
+  ### Background
+
+  Story 6.3b ships client-side viseme generation by hooking flutter_webrtc's `PlaybackSamplesReadyCallback` and analysing each PCM chunk on the WebRTC audio thread. The architectural premise is "**structural sync**" — because the analyzer runs on the same thread that hands bytes to the speaker, the viseme cannot drift in time relative to the audio. This premise is correct.
+
+  However, "cannot drift" ≠ "phase-aligned". There is an inherent, **unmeasured and uncompensated** phase offset of order **20-100 ms** between the moment a phoneme is *heard* and the moment the corresponding mouth shape is *visible*. Walid validated lip-sync visually on Pixel 9 Pro XL and it looked correct — that's because (a) the human perceptual threshold for lip-sync error is ~80-100 ms (broadcast standard EBU R37 tolerates ±60 ms audio-lead, ±125 ms audio-lag), (b) the 80 ms hysteresis floor masks micro-jitter, (c) on a stylised 2D character at conversational speed the brain forgives a lot.
+
+  We're under the perceptual threshold today. We are *not* optimal.
+
+  ### Four sources of phase offset (additive)
+
+  1. **AudioTrack output latency (the dominant term, currently ignored)** — `PlaybackSamplesReadyCallback` fires when bytes are *enqueued* into the WebRTC playback pipeline. The Android `AudioTrack` buffers those bytes before they reach the DAC; on Pixel-class devices this is typically **20-80 ms** depending on audio path (low-latency vs default), sample rate, and current system load. The viseme emitted at sample-write-time is therefore **early** relative to the sound the user actually hears by that amount. We never query `AudioTrack.getTimestamp()` or `getLatency()` to know the offset, so we can't correct for it.
+
+  2. **Main-thread post jitter** — `mainHandler.post { sink.success(v) }` lands the viseme on the next UI frame at vsync. At 60 Hz that's a uniformly-distributed **0-16 ms** delay depending on where in the cycle we tossed the runnable. Adds variance, not bias.
+
+  3. **Flutter EventChannel + binary messenger** — `~1-3 ms` to cross the native→Dart isolate boundary via the platform messenger. Bias.
+
+  4. **Rive state machine transition** — `setVisemeId` triggers an interpolation from the current pose to the target pose over the duration configured inside the `.riv` file (typically 60-100 ms for "snappy" transitions, 150-200 ms for "soft"). The peak of the visual mouth shape lags the `setVisemeId` call by half the transition duration. Bias.
+
+  Net: **~20-100 ms variable offset, dominated by AudioTrack buffering**, with sign that depends on how much (4) Rive transition compensates against (1) AudioTrack lead. Today we don't measure, so we don't know if we're net-early or net-late, only that the *magnitude* is plausibly under the perceptual threshold.
+
+  ### Three viable improvements, ranked by ROI
+
+  **A — `AudioTrack.getTimestamp()` compensation [~80% of the gain, ~30% of the cost]**
+
+  Instead of emitting visemes when bytes are *queued*, emit them when bytes are *played*. Mechanism:
+  - In `AudioClockChannel.kt`, on each callback measure the gap between `samples.framePosition` (or the equivalent monotonic write counter) and the playback timestamp from `AudioTrack.getTimestamp(AudioTimestamp)`, smoothed over a 100-ms window.
+  - Compute `delay_ms = (framesPending / sampleRate) * 1000` where `framesPending = writeIndex - timestamp.framePosition`.
+  - Replace `mainHandler.post { ... }` with `mainHandler.postDelayed({ ... }, delay_ms.toLong())`.
+
+  Caveats:
+  - We don't own the AudioTrack — flutter_webrtc's JavaAudioDeviceModule does. Accessing it requires another reflection round-trip (the field `webRtcAudioTrack` inside `MethodCallHandlerImpl`, similarly private). This compounds the "brittle coupling" risk already flagged above.
+  - `AudioTrack.getTimestamp` returns false on some devices / audio paths; need a fallback to `getLatency()` (deprecated but functional) or a fixed 40-ms default offset.
+  - The hysteresis floor (80 ms) and the delay (~40-60 ms typical) sum to noticeable visemes-on-rests at end-of-utterance — would need to verify on-device.
+
+  **B — Vsync-aligned post via `Choreographer.postFrameCallback` [~10% of the gain, ~10% of the cost]**
+
+  Replace `mainHandler.post { ... }` with `Choreographer.getInstance().postFrameCallback { ... sink.success(v) }`. The viseme then lands exactly on the next UI frame instead of "somewhere in the next 16 ms". Eliminates jitter source (2) entirely. Negligible risk — Choreographer is documented public API and exists since API 16.
+
+  **C — Lookahead buffering [~moderate gain, ~moderate cost — deferred]**
+
+  Buffer the last N chunks (say N=3 ≈ 30 ms) and emit the viseme of `chunk[t-N]` with a delay of `N × chunk_duration`. This means the analyser sees 30 ms of audio context per decision (more stable classification, less micro-flicker) AND we're emitting the viseme N×10 ms *earlier* in wall-clock time than today, partially compensating (1). Worth it only if A is rejected.
+
+  **D — Native Rive rendering [non-viable today]**
+
+  Move Rive rendering to the Android side via Rive's Android runtime, bypassing the Flutter EventChannel hop entirely. Eliminates (3) and possibly (4) if we control transition timing natively. This is a **massive architectural refactor** — would require rewriting `RiveCharacterCanvas` as a platform view, lose the Flutter widget tree integration, and break every existing test. Not worth pursuing unless A+B+C prove insufficient.
+
+  ### Why this is not MVP-blocking
+
+  - On-device validation showed acceptable lip-sync subjectively.
+  - The dominant offset (AudioTrack buffer) is within human perceptual tolerance (<80 ms on Pixel 9 Pro XL low-latency audio path; cellular call audio is also subject to ~20-40 ms acoustic-echo-cancellation latency, comparable order).
+  - The hysteresis floor (80 ms) already masks the variance.
+  - Walid's explicit on-device validation is the bar that closes the smoke gate.
+
+  ### Why it's worth a follow-up story before public launch
+
+  - "Good enough" today on Pixel 9 Pro XL is not a guarantee on older / mid-tier Android devices where AudioTrack buffer latency can reach **150-200 ms** (e.g. some Samsung A-series, low-end Xiaomi). On those devices we may cross the perceptual threshold without ever knowing — App Store reviewers and critical YouTube reviewers will catch it.
+  - The fix is bounded and measurable: instrument the offset, apply A+B, re-instrument, prove the offset dropped. ~1-2 days of work.
+
+  ### Suggested home
+
+  A dedicated story **6.3c** (or post-Epic 6 follow-up) titled "Audio↔viseme phase compensation via AudioTrack.getTimestamp + Choreographer post". Should land **before** public launch, ideally **before** the closed beta on heterogeneous devices.
+
+  ### Acceptance criteria for the follow-up
+
+  - Add a debug instrumentation mode (toggleable via Settings or a build flag) that logs, every 1 s, the measured AudioTrack offset and the cumulative viseme→display latency. Disable in release.
+  - Implement (A) compensation; verify median offset drops by ≥ 30 ms compared to baseline on three device classes (flagship like Pixel 9, mid-tier like Pixel 6a, low-end like a Samsung A14 or BlueStacks).
+  - Implement (B) Choreographer post; verify standard deviation of the offset drops to under 5 ms (vs ~8 ms today from the uniform 0-16 ms jitter).
+  - No regression on Walid's subjective on-device visual on Pixel 9 Pro XL — the lip-sync must look as good or better.
+  - No new tests beyond an instrumentation unit test asserting offset values plumb through; the actual quality is a smoke-gate observation.
+
+  ### Touched (when actioned)
+
+  - `client/android/app/src/main/kotlin/com/surviveTheTalk/client/AudioClockChannel.kt` — read AudioTrack timestamp, replace `mainHandler.post` with `postDelayed`, Choreographer post.
+  - `client/lib/features/call/services/viseme_scheduler.dart` — possibly nothing if we keep the EventChannel contract; possibly an optional `instantaneousOffset` field for debug overlay.
+  - New `client/android/app/src/test/kotlin/.../AudioClockOffsetTest.kt` if we can test the offset calculation purely (likely yes — it's arithmetic).
+
 ## Deferred from: code review of story 6-3-implement-emotional-reactions-and-lip-sync-via-data-channels (2026-05-01)
 
 - **VisemeEmitter primary+rest emitted back-to-back; client ignores `timestamp_ms`** — server pushes the primary viseme then a rest follow-up in the same async tick; the client `setVisemeId` writes immediately on receive. Result: mouth opens then snaps shut on the same wire-tick. Already scheduled in **Story 6.3b** (sprint-status note: word-level lip-sync rated catastrophic on smoke; syllable-level fix shipping next). Touched: `server/pipeline/viseme_emitter.py`, `client/lib/features/call/services/data_channel_handler.dart`.

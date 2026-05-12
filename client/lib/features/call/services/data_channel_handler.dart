@@ -13,6 +13,13 @@ import 'package:livekit_client/livekit_client.dart';
 /// no `participant_id`). The handler decodes UTF-8 bytes → JSON → switches
 /// on `type`.
 ///
+/// Visemes are NOT routed here — Story 6.3b moved viseme generation to
+/// the client side (PCM-buffer analysis on the audio thread, see
+/// `AudioClockChannel.kt` + `VisemeScheduler`). The server no longer
+/// emits `type=viseme` envelopes; if a future server regression
+/// reintroduces them they will be silently dropped via the `default`
+/// branch.
+///
 /// One instance per active call. Constructed by `_CallScreenState` AFTER
 /// the bloc enters `CallConnected` (i.e. once the LiveKit `Room` is bound)
 /// and disposed in `_CallScreenState.dispose()` BEFORE `super.dispose()`.
@@ -24,14 +31,11 @@ class DataChannelHandler {
   DataChannelHandler({
     required Room room,
     required void Function(String emotion, double intensity) onEmotion,
-    required void Function(int visemeId, int timestampMs) onViseme,
-  }) : _onEmotion = onEmotion,
-       _onViseme = onViseme {
+  }) : _onEmotion = onEmotion {
     _cancel = room.events.on<DataReceivedEvent>(_onDataReceived);
   }
 
   final void Function(String emotion, double intensity) _onEmotion;
-  final void Function(int visemeId, int timestampMs) _onViseme;
   CancelListenFunc? _cancel;
 
   Future<void> _onDataReceived(DataReceivedEvent event) async {
@@ -60,12 +64,6 @@ class DataChannelHandler {
         if (emotion is String && emotion.isNotEmpty) {
           final i = (intensity is num) ? intensity.toDouble() : 0.0;
           _onEmotion(emotion, i);
-        }
-      case 'viseme':
-        final id = data['viseme_id'];
-        final ts = data['timestamp_ms'];
-        if (id is int && ts is int) {
-          _onViseme(id, ts);
         }
       default:
         // Owned by Stories 6.4 (`hang_up_warning`, `call_end`) / 6.7

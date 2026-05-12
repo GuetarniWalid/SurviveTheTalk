@@ -517,7 +517,6 @@ void main() {
               debugHandlerBuilder: ({
                 required room,
                 required onEmotion,
-                required onViseme,
               }) {
                 builderCalls.add(room);
                 return mock;
@@ -557,7 +556,6 @@ void main() {
               debugHandlerBuilder: ({
                 required room,
                 required onEmotion,
-                required onViseme,
               }) {
                 return mock;
               },

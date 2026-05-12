@@ -50,7 +50,6 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
-      onViseme: (_, _) {},
     );
 
     // Emit ONE envelope; if the handler subscribed twice (or zero times)
@@ -78,7 +77,6 @@ void main() {
     final handler = DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
-      onViseme: (_, _) {},
     );
 
     fixture.emitter.emit(
@@ -106,7 +104,6 @@ void main() {
     final handler = DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) {},
-      onViseme: (_, _) {},
     );
 
     await handler.dispose();
@@ -120,7 +117,6 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (e, i) => received.add((e, i)),
-      onViseme: (_, _) {},
     );
 
     fixture.emitter.emit(
@@ -134,13 +130,20 @@ void main() {
     expect(received, [('satisfaction', 0.7)]);
   });
 
-  test('viseme envelope routes to onViseme with int values', () async {
+  test('viseme envelope is silently dropped (server no longer emits it)',
+      () async {
+    // Story 6.3b moved viseme generation to the client side. If a future
+    // server regression starts emitting `type=viseme` again, the handler
+    // must drop it without routing or throwing — AND must keep
+    // processing subsequent envelopes on the same subscription. A throw
+    // in the viseme branch would silently kill the LiveKit stream and
+    // make future emotion envelopes vanish; the second emit below is
+    // the trip-wire that catches that regression.
     final fixture = _buildRoom();
-    final received = <(int, int)>[];
+    var emotionCalls = 0;
     DataChannelHandler(
       room: fixture.room,
-      onEmotion: (_, _) {},
-      onViseme: (id, ts) => received.add((id, ts)),
+      onEmotion: (_, _) => emotionCalls++,
     );
 
     fixture.emitter.emit(
@@ -150,18 +153,30 @@ void main() {
       }),
     );
     await _flush();
+    expect(emotionCalls, 0, reason: 'viseme must not route to emotion');
 
-    expect(received, [(4, 1500)]);
+    // Trip-wire: prove the subscription is still alive after the drop.
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'emotion',
+        'data': {'emotion': 'satisfaction', 'intensity': 0.5},
+      }),
+    );
+    await _flush();
+    expect(
+      emotionCalls,
+      1,
+      reason: 'handler must still process emotion after dropping viseme — '
+          'a throw in the viseme branch would have killed the stream',
+    );
   });
 
   test('unknown envelope type is silently dropped', () async {
     final fixture = _buildRoom();
     var emotionCalls = 0;
-    var visemeCalls = 0;
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
-      onViseme: (_, _) => visemeCalls++,
     );
 
     fixture.emitter.emit(
@@ -173,24 +188,20 @@ void main() {
     await _flush();
 
     expect(emotionCalls, 0);
-    expect(visemeCalls, 0);
   });
 
   test('malformed JSON does not crash and does not call back', () async {
     final fixture = _buildRoom();
     var emotionCalls = 0;
-    var visemeCalls = 0;
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
-      onViseme: (_, _) => visemeCalls++,
     );
 
     fixture.emitter.emit(_rawEnvelope(utf8.encode('not-json')));
     await _flush();
 
     expect(emotionCalls, 0);
-    expect(visemeCalls, 0);
   });
 
   test('missing inner field is silently dropped', () async {
@@ -199,7 +210,6 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
-      onViseme: (_, _) {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'emotion', 'data': {}}));
@@ -214,7 +224,6 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (e, i) => received.add((e, i)),
-      onViseme: (_, _) {},
     );
 
     fixture.emitter.emit(

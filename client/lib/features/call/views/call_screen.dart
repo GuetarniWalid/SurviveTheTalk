@@ -15,6 +15,7 @@ import '../bloc/call_event.dart';
 import '../bloc/call_state.dart';
 import '../models/call_session.dart';
 import '../services/data_channel_handler.dart';
+import '../services/viseme_scheduler.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
@@ -28,7 +29,6 @@ typedef DataChannelHandlerBuilder =
     DataChannelHandler Function({
       required Room room,
       required void Function(String emotion, double intensity) onEmotion,
-      required void Function(int visemeId, int timestampMs) onViseme,
     });
 
 // Layout constants — mirrored from `IncomingCallScreen` so the outgoing
@@ -129,6 +129,12 @@ class _CallScreenState extends State<CallScreen> {
   /// `Room` lifecycle; this handler is a non-lifecycle subscriber.
   DataChannelHandler? _dataChannelHandler;
 
+  /// Story 6.3b — sister object to `_dataChannelHandler`. Subscribes to
+  /// the native `AudioClockChannel` EventChannel and forwards each
+  /// platform-generated viseme onto the Rive canvas. Same lifecycle as
+  /// the handler.
+  VisemeScheduler? _visemeScheduler;
+
   @override
   void initState() {
     super.initState();
@@ -161,6 +167,11 @@ class _CallScreenState extends State<CallScreen> {
     if (handler != null) {
       unawaited(handler.dispose());
     }
+    final scheduler = _visemeScheduler;
+    _visemeScheduler = null;
+    if (scheduler != null) {
+      unawaited(scheduler.dispose());
+    }
     if (!_blocCreated) {
       // Safety net: the bloc never ran, so `CallBloc.close()` will not.
       // Drop the Room ourselves so we don't leak background timers (TTLMap
@@ -192,19 +203,23 @@ class _CallScreenState extends State<CallScreen> {
           // filter together guarantee single-construction even if the
           // bloc replays CallConnected via a later state path.
           if (state is CallConnected && _dataChannelHandler == null) {
-            final builder =
+            final room = context.read<CallBloc>().room;
+            // Story 6.3b — VisemeScheduler subscribes to the native
+            // EventChannel (`AudioClockChannel.kt`) and applies each
+            // viseme arriving from the audio thread directly on the
+            // Rive canvas. No data-channel involvement.
+            _visemeScheduler = VisemeScheduler(
+              applyViseme: (id) => _canvasKey.currentState?.setVisemeId(id),
+            );
+            final handlerBuilder =
                 widget.debugHandlerBuilder ?? DataChannelHandler.new;
-            _dataChannelHandler = builder(
-              room: context.read<CallBloc>().room,
-              // Intensity (the `_` in onEmotion) and timestamp_ms (the
-              // `_` in onViseme) are received but not yet consumed;
-              // they're future hooks for emotion-blend / predictive
-              // viseme scheduling. Documented as a deliberate ignore so
-              // reviewers don't flag dead args.
+            _dataChannelHandler = handlerBuilder(
+              room: room,
+              // Intensity (the `_` in onEmotion) is received but not yet
+              // consumed; future hook for emotion-blend. Documented as
+              // a deliberate ignore so reviewers don't flag dead args.
               onEmotion: (emotion, _) =>
                   _canvasKey.currentState?.setEmotion(emotion),
-              onViseme: (id, _) =>
-                  _canvasKey.currentState?.setVisemeId(id),
             );
           }
 
