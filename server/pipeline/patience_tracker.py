@@ -288,7 +288,7 @@ class PatienceTracker(FrameProcessor):
 
         if (
             isinstance(frame, BotStoppedSpeakingFrame)
-            and direction == FrameDirection.DOWNSTREAM
+            and direction == FrameDirection.UPSTREAM
         ):
             # The bot finished its server-side outbound — but the
             # client's speaker still has 0.5-1.5 s of buffered audio
@@ -303,9 +303,17 @@ class PatienceTracker(FrameProcessor):
             # → ladder starts mid-greeting → stage 1 impatience
             # fires while the user is still listening.
             #
-            # Direction-gated: BSF is canonically downstream; an
-            # upstream BSF (e.g. from a sniffing test harness) must
-            # not emit a spurious envelope.
+            # Direction-gated: pipecat 0.0.108's BaseOutputTransport
+            # (see `_bot_stopped_speaking()`) pushes BSF in BOTH
+            # directions — downstream goes into the sink (nowhere,
+            # output is the last processor), upstream travels BACK up
+            # the pipeline. PatienceTracker sits UPSTREAM of the
+            # output transport, so the only direction we actually see
+            # is UPSTREAM. The original Story 6.4 implementation
+            # checked DOWNSTREAM (latent bug — silent regression in
+            # prod for 2 days; no escalation log ever fired in
+            # journalctl despite multiple device tests). Fixed 2026-
+            # 05-15 as Déviation #28.
             logger.info("PatienceTracker: pushing bot_speaking_ended envelope")
             await self.push_frame(
                 OutputTransportMessageFrame(

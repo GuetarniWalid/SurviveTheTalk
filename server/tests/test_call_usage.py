@@ -58,11 +58,13 @@ def _insert_call_session(
     user_id: int,
     started_at: str,
     scenario_id: str = "waiter_easy_01",
+    status: str = "completed",
 ) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO call_sessions(user_id, scenario_id, started_at) VALUES (?, ?, ?)",
-        (user_id, scenario_id, started_at),
+        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, scenario_id, started_at, status),
     )
     conn.commit()
     conn.close()
@@ -206,3 +208,42 @@ def test_unknown_tier_raises_value_error(migrated_db):
 
     with pytest.raises(ValueError, match="Unsupported tier"):
         asyncio.run(_compute(user_id, "garbage"))
+
+
+# ---------- Story 6.5 — status filter on cap-counting queries ----------
+
+
+def test_failed_row_does_not_decrement_calls_remaining(migrated_db):
+    """A `'failed'` row (janitored orphan, or Popen rollback) does NOT count.
+
+    Regression net for the AC3 status filter: without the filter, every
+    Popen-rollback or janitored orphan would permanently burn a slot from
+    the user's lifetime quota.
+    """
+    user_id = _insert_user(migrated_db)
+    # Three failed rows — they should not count, leaving the full lifetime cap.
+    for ts in (
+        "2026-04-01T08:00:00Z",
+        "2026-04-02T09:00:00Z",
+        "2026-04-03T10:00:00Z",
+    ):
+        _insert_call_session(migrated_db, user_id, ts, status="failed")
+
+    usage = asyncio.run(_compute(user_id, "free"))
+
+    assert usage["calls_remaining"] == CALLS_PER_PERIOD
+
+
+def test_pending_row_decrements_calls_remaining(migrated_db):
+    """A `'pending'` row (in-flight call) DOES count toward the cap.
+
+    A tight-loop /calls/initiate would otherwise bypass FR21: without
+    `'pending'` in the filter, the user could spam-INSERT rows that the
+    janitor doesn't reach for an hour, racking up uncounted calls.
+    """
+    user_id = _insert_user(migrated_db)
+    _insert_call_session(migrated_db, user_id, "2026-04-01T08:00:00Z", status="pending")
+
+    usage = asyncio.run(_compute(user_id, "free"))
+
+    assert usage["calls_remaining"] == CALLS_PER_PERIOD - 1

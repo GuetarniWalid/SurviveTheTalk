@@ -33,7 +33,7 @@ final class ScenariosError extends ScenariosState {
 
   /// `0` on the first failure; increments by `1` each subsequent
   /// consecutive failure; resets to `0` on any `ScenariosLoaded` emission.
-  /// Drives the repeat-failure copy variant in `_ErrorView`.
+  /// Drives the repeat-failure copy variant in `EmpatheticErrorScreen`.
   final int retryCount;
 
   const ScenariosError({required this.code, required this.retryCount});

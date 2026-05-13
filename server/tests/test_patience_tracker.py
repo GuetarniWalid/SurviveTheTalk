@@ -276,9 +276,7 @@ def test_ten_second_silence_hang_up_full_sequence(
         # the exit-line wait releases (still routed through the frame
         # path because that's what the hang-up sequence awaits).
         assert tracker._hang_up_in_progress
-        await tracker.process_frame(
-            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
-        )
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await _drain(tracker)
 
     _run(_drive())
@@ -412,9 +410,7 @@ def test_abuse_classifier_triggers_inappropriate_content_hangup(
         # Give the hang-up task a beat to push the exit-line TTSSpeakFrame.
         await asyncio.sleep(0.02)
         # Synthesise the bot-stopped to release the exit-line wait.
-        await tracker.process_frame(
-            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
-        )
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await _drain(tracker)
 
     _run(_drive())
@@ -454,9 +450,7 @@ def test_schedule_hang_up_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None
         tracker._schedule_hang_up("character_hung_up")
         # Release the exit-line wait.
         await asyncio.sleep(0.02)
-        await tracker.process_frame(
-            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
-        )
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await _drain(tracker)
 
     _run(_drive())
@@ -482,9 +476,7 @@ def test_bot_stopped_speaking_pushes_bot_speaking_ended_envelope(
     captured = _capture_pushed(tracker)
 
     async def _drive() -> None:
-        await tracker.process_frame(
-            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
-        )
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     _run(_drive())
 
@@ -518,9 +510,7 @@ def test_handle_playback_idle_ignored_during_hang_up(
         assert tracker._silence_task is None, (
             "silence ladder must not start during hang-up"
         )
-        await tracker.process_frame(
-            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
-        )
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await _drain(tracker)
 
     _run(_drive())
@@ -820,18 +810,30 @@ def test_duplicate_playback_idle_does_not_spawn_parallel_ladders(
 # ---------- Test 18: BSF upstream does NOT emit bot_speaking_ended (P17) ---
 
 
-def test_upstream_bot_stopped_speaking_does_not_emit_envelope(
+def test_downstream_bot_stopped_speaking_does_not_emit_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BSF is canonically downstream. An upstream BSF (e.g. from a
-    sniffing test harness or unusual pipecat configuration) must not
-    push a spurious `bot_speaking_ended` envelope downstream."""
+    """Pipecat 0.0.108's BaseOutputTransport pushes BSF in BOTH
+    directions — the downstream copy goes into the sink (output is
+    the last processor; `_next` is None), the upstream copy travels
+    back up the pipeline and is what PatienceTracker observes.
+
+    The downstream BSF is a no-op for our purposes. A test harness
+    that injects BSF DOWNSTREAM (e.g. a sniffer middleware between
+    upstream processors) must NOT cause a spurious envelope.
+
+    See Déviation #28 (2026-05-15) — the original Story 6.4
+    implementation had the direction check inverted; this test
+    used to assert the symmetric case.
+    """
     _shrink_timers(monkeypatch)
     tracker = PatienceTracker(**_fast_easy())
     captured = _capture_pushed(tracker)
 
     async def _drive() -> None:
-        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await tracker.process_frame(
+            BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
 
     _run(_drive())
 
@@ -842,7 +844,7 @@ def test_upstream_bot_stopped_speaking_does_not_emit_envelope(
         and f.message.get("type") == "bot_speaking_ended"
     ]
     assert bot_speaking_ended == [], (
-        "upstream BSF must NOT push bot_speaking_ended envelope"
+        "downstream BSF must NOT push bot_speaking_ended envelope"
     )
 
 
@@ -889,3 +891,94 @@ def test_cancel_resets_self_speaking_and_prompt_event(
         await _drain(tracker)
 
     _run(_drive())
+
+
+# ---------- Test 19: Déviation #28 contract test — direction parity ----------
+
+
+def test_BSF_direction_matches_pipecat_emission_routing():
+    """Cross-reference contract: PatienceTracker's
+    `BotStoppedSpeakingFrame` direction check MUST match the
+    direction `pipecat.transports.base_output.BaseOutputTransport`
+    actually emits.
+
+    Background: the original Story 6.4 implementation checked
+    `direction == FrameDirection.DOWNSTREAM` for BSF. Pipecat 0.0.108
+    actually pushes BSF in BOTH directions from
+    `_bot_stopped_speaking()` — but the downstream copy goes into
+    the sink (output is the last processor, `_next is None`), so
+    PatienceTracker only ever sees the UPSTREAM copy as it travels
+    back through the pipeline. The check never fired in prod for 2
+    days; no escalation log ever surfaced in journalctl. The
+    existing unit tests passed because they sent BSF DOWNSTREAM
+    directly to `process_frame`, matching the (wrong) impl. Two
+    self-consistent layers of wrong silently broke the silence
+    ladder.
+
+    This test breaks that self-consistency by reading the SOURCE
+    TEXT of pipecat's `_bot_stopped_speaking` AND of
+    PatienceTracker, and asserting they agree on direction.
+    Either of these going out of sync fires the test before
+    deploy:
+      - A pipecat upgrade that flips BSF routing.
+      - An accidental edit to `patience_tracker.py` that reverts
+        Déviation #28 (e.g. a future Story author who reads the
+        Story 6.4 spec and "fixes" what looks like a typo).
+
+    Source-text matching is fragile (renames break it) but cheap
+    and load-bearing — Déviation #28 documents the load-bearing
+    invariant explicitly so future readers know to update both
+    sides AND this test when pipecat upgrades.
+    """
+    import inspect
+
+    from pipecat.transports.base_output import BaseOutputTransport
+
+    # (1) pipecat side — locate the `_bot_stopped_speaking` method
+    # in the BaseOutputTransport source and confirm it emits BSF
+    # with `FrameDirection.UPSTREAM`. (It also emits a downstream
+    # copy that goes into the sink; we don't care about that.)
+    pipecat_src = inspect.getsource(BaseOutputTransport)
+    fn_marker = "async def _bot_stopped_speaking"
+    fn_start = pipecat_src.find(fn_marker)
+    assert fn_start != -1, (
+        "pipecat 0.0.108 structure changed — `_bot_stopped_speaking` no "
+        "longer present on `BaseOutputTransport`. Re-verify the BSF "
+        "emission contract (Déviation #28) against the new pipecat "
+        "version before this test can be trusted again."
+    )
+    # The method body is short; 1500 chars is a generous slice that
+    # always captures both push_frame calls without bleeding into the
+    # next method.
+    fn_body = pipecat_src[fn_start : fn_start + 1500]
+    assert "BotStoppedSpeakingFrame()" in fn_body, (
+        "pipecat changed the BSF emission shape — Déviation #28 needs re-verification."
+    )
+    assert "FrameDirection.UPSTREAM" in fn_body, (
+        "pipecat NO LONGER pushes BSF upstream from "
+        "`_bot_stopped_speaking`. PatienceTracker's UPSTREAM check "
+        "(Déviation #28) is built on this assumption — it MUST be "
+        "updated to match pipecat's new routing before this can ship "
+        "to prod."
+    )
+
+    # (2) Our side — locate the BSF branch in `patience_tracker.py`
+    # and confirm we still gate on UPSTREAM. An accidental flip back
+    # to DOWNSTREAM would re-introduce the original silent regression.
+    pt_src = inspect.getsource(pt_mod)
+    bsf_marker = "isinstance(frame, BotStoppedSpeakingFrame)"
+    bsf_start = pt_src.find(bsf_marker)
+    assert bsf_start != -1, (
+        "PatienceTracker source no longer references "
+        "`BotStoppedSpeakingFrame` — the silence-ladder arming path "
+        "changed. Re-evaluate this contract test against the new shape."
+    )
+    # 300 chars is enough to capture the `and direction == ...` clause
+    # without bleeding into the body of the if.
+    branch = pt_src[bsf_start : bsf_start + 300]
+    assert "FrameDirection.UPSTREAM" in branch, (
+        "PatienceTracker's BSF check no longer gates on UPSTREAM. This "
+        "reverts Déviation #28 — silence escalation will be inert in "
+        "prod (the original Story 6.4 regression). Re-apply UPSTREAM "
+        "or update this test if pipecat routing genuinely changed."
+    )

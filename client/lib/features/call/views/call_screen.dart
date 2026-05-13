@@ -7,17 +7,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import '../../../core/services/connectivity_service.dart';
+import '../../../core/services/end_call_retry_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/call_colors.dart';
 import '../../scenarios/character_catalog.dart';
 import '../../scenarios/models/character_identity.dart';
 import '../../scenarios/models/scenario.dart';
+import '../../../core/api/api_client.dart';
 import '../bloc/call_bloc.dart';
 import '../bloc/call_event.dart';
 import '../bloc/call_state.dart';
 import '../models/call_session.dart';
+import '../repositories/call_repository.dart';
 import '../services/data_channel_handler.dart';
 import '../services/viseme_scheduler.dart';
+import 'call_ended_notice_screen.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
@@ -36,7 +41,8 @@ typedef DataChannelHandlerBuilder =
       required Room room,
       required void Function(String emotion, double intensity) onEmotion,
       required void Function(int secondsRemaining) onHangUpWarning,
-      required void Function(String reason, Map<String, dynamic> data) onCallEnd,
+      required void Function(String reason, Map<String, dynamic> data)
+      onCallEnd,
       required void Function() onBotSpeakingEnded,
     });
 
@@ -98,6 +104,10 @@ class CallScreen extends StatefulWidget {
     this.debugCanvasFallback,
     this.debugHandlerBuilder,
     this.debugPlaybackDrainBuffer,
+    this.debugEndCallResultTimeout,
+    this.callRepository,
+    this.connectivityService,
+    this.endCallRetryService,
   });
 
   /// Story 6.4 test seam. When non-null, overrides the bloc's
@@ -107,12 +117,54 @@ class CallScreen extends StatefulWidget {
   @visibleForTesting
   final Duration? debugPlaybackDrainBuffer;
 
+  /// Story 6.5 Déviation #27 test seam. When non-null, overrides the
+  /// bloc's `endCallResultTimeout` (default 1 s in production). Tests
+  /// that don't mock `CallRepository` get an unresolvable POST future
+  /// in `_pendingEndCalls`; the bloc would otherwise hang up to 1 s
+  /// waiting for the response, blowing past the typical 50 ms pump
+  /// window. Setting `Duration.zero` makes `_awaitEndCallResult`
+  /// return immediately with whatever's already cached (typically
+  /// null in those tests).
+  @visibleForTesting
+  final Duration? debugEndCallResultTimeout;
+
+  /// Story 6.5 — optional injection seam for the repository that drives
+  /// `POST /calls/{id}/end`. Production callers pass nothing —
+  /// `CallScreen` builds `CallRepository(ApiClient())` once in `initState`
+  /// and forwards it to `CallBloc`. Tests pass a `MockCallRepository`.
+  /// Mirrors how `scenario_list_screen.dart` exposes the same seam for
+  /// `initiateCall` (Story 6.1).
+  @visibleForTesting
+  final CallRepository? callRepository;
+
+  /// Story 6.5 review (post-deploy E2E) — optional injection seam for the
+  /// connectivity monitor that fires `RoomDisconnected` on mid-call
+  /// airplane-mode toggle. Production callers pass nothing — `CallScreen`
+  /// builds `ConnectivityService()` (which wraps `Connectivity()`) once
+  /// in `initState`. Tests pass a `MockConnectivityService` whose
+  /// `onConnectivityLost` stream they control.
+  @visibleForTesting
+  final ConnectivityService? connectivityService;
+
+  /// Story 6.5 Option B (post-deploy fix) — optional injection seam for
+  /// the persistent retry queue that holds `/end` POSTs which failed
+  /// while offline. Production callers pass the app-level singleton
+  /// from `bootstrap()` (the same instance also drains the queue on
+  /// connectivity-regain via its own listener). Tests pass a
+  /// `MockEndCallRetryService` to assert the bloc queues failed
+  /// requests rather than dropping them.
+  @visibleForTesting
+  final EndCallRetryService? endCallRetryService;
+
   @override
   State<CallScreen> createState() => _CallScreenState();
 }
 
 class _CallScreenState extends State<CallScreen> {
   late final Room _room;
+  late final CallRepository _callRepository;
+  late final ConnectivityService _connectivityService;
+  EndCallRetryService? _endCallRetryService;
 
   /// Set true once `BlocProvider<CallBloc>` runs `create` — the bloc takes
   /// ownership of the Room from that point and `close()` will disconnect.
@@ -174,7 +226,31 @@ class _CallScreenState extends State<CallScreen> {
   void initState() {
     super.initState();
     _room = widget.room ?? Room();
+    _callRepository = widget.callRepository ?? CallRepository(ApiClient());
+    _connectivityService = widget.connectivityService ?? ConnectivityService();
+    // Story 6.5 Option B — read the app-level singleton via
+    // RepositoryProvider when no explicit injection. Tests that
+    // construct CallScreen outside an App-shell either pass an
+    // explicit service or accept the null case (the bloc handles a
+    // null service gracefully — failed POSTs fall back to the
+    // janitor sweep backstop for cap-counter recovery).
+    _endCallRetryService =
+        widget.endCallRetryService ?? _tryReadEndCallRetryService(context);
     _canvasInFallback = widget.debugCanvasFallback ?? false;
+  }
+
+  /// Best-effort lookup of the app-level retry service. Returns null
+  /// when no `RepositoryProvider<EndCallRetryService>` ancestor exists
+  /// (e.g. widget-test environments that pump `CallScreen` standalone).
+  /// Wrapped in try/catch because `context.read` throws on a missing
+  /// ancestor, and we prefer a null fall-back to a crash on the dial
+  /// surface.
+  EndCallRetryService? _tryReadEndCallRetryService(BuildContext context) {
+    try {
+      return context.read<EndCallRetryService>();
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -279,9 +355,14 @@ class _CallScreenState extends State<CallScreen> {
           session: widget.callSession,
           scenario: widget.scenario,
           room: _room,
+          callRepository: _callRepository,
+          connectivityService: _connectivityService,
+          endCallRetryService: _endCallRetryService,
           playbackDrainBuffer:
               widget.debugPlaybackDrainBuffer ??
               const Duration(milliseconds: 500),
+          endCallResultTimeout:
+              widget.debugEndCallResultTimeout ?? const Duration(seconds: 1),
         )..add(const CallStarted());
       },
       child: BlocConsumer<CallBloc, CallState>(
@@ -378,19 +459,48 @@ class _CallScreenState extends State<CallScreen> {
           if (state is! CallEnded) return;
           if (_popScheduled) return;
           _popScheduled = true;
-          // Defer to post-frame so the builder rebuilds with `canPop:
-          // true` BEFORE the pop is attempted — otherwise the still-
-          // mounted `PopScope(canPop: false)` of the previous frame
-          // intercepts the maybePop and the screen stays stuck on a
-          // CallEnded state with the fallback Scaffold visible.
+          // Story 6.5 Déviation #27 — pick the post-call route based on
+          // (endReason, wasGifted). Three buckets:
           //
-          // `rootNavigator: true` mirrors the push contract documented on
-          // the `CallScreen` dartdoc (ADR 003 §Tier 1) so the pop targets
-          // the same Navigator the route was pushed onto, even when the
-          // listener's BuildContext could resolve to a nested navigator.
+          //   1. `network_lost` (any gift outcome): the user needs to
+          //      see "you lost connection, here's what happened to your
+          //      quota". ALWAYS push the notice screen.
+          //   2. `character_hung_up` / `inappropriate_content` AND
+          //      `wasGifted=true`: the short-call gift screen.
+          //   3. Everything else (`user_hung_up`, `survived`,
+          //      non-gifted character/inappropriate >= 30 s):
+          //      straight pop to scenarios — Story 7.2 will own the
+          //      richer Call-Ended overlay for those later.
+          //
+          // Defer to post-frame so the builder rebuilds with `canPop:
+          // true` BEFORE the pop / pushReplacement is attempted —
+          // otherwise the still-mounted `PopScope(canPop: false)` of
+          // the previous frame intercepts navigation.
+          //
+          // `rootNavigator: true` mirrors the push contract documented
+          // on the `CallScreen` dartdoc (ADR 003 §Tier 1).
+          final endReason = state.endReason;
+          final wasGifted = state.wasGifted;
+          final showsNotice =
+              endReason == 'network_lost' ||
+              ((endReason == 'character_hung_up' ||
+                      endReason == 'inappropriate_content') &&
+                  wasGifted == true);
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (context.mounted) {
-              Navigator.of(context, rootNavigator: true).maybePop();
+            if (!context.mounted) return;
+            final nav = Navigator.of(context, rootNavigator: true);
+            if (showsNotice && endReason != null) {
+              nav.pushReplacement(
+                MaterialPageRoute<void>(
+                  builder: (_) => CallEndedNoticeScreen(
+                    endReason: endReason,
+                    wasGifted: wasGifted,
+                    giftsRemainingToday: state.giftsRemainingToday,
+                  ),
+                ),
+              );
+            } else {
+              nav.maybePop();
             }
           });
         },
@@ -568,8 +678,7 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Widget _buildConnected(BuildContext context) {
-    final backgroundPath =
-        kScenarioBackgrounds[widget.scenario.riveCharacter];
+    final backgroundPath = kScenarioBackgrounds[widget.scenario.riveCharacter];
     assert(
       backgroundPath != null,
       'No scenario background registered for riveCharacter '
@@ -584,8 +693,7 @@ class _CallScreenState extends State<CallScreen> {
           Image.asset(
             backgroundPath,
             fit: BoxFit.cover,
-            errorBuilder: (_, _, _) =>
-                Container(color: AppColors.background),
+            errorBuilder: (_, _, _) => Container(color: AppColors.background),
           )
         else
           Container(color: AppColors.background),
@@ -648,11 +756,7 @@ class _CallScreenState extends State<CallScreen> {
           child: const SizedBox(
             width: 60,
             height: 60,
-            child: Icon(
-              Icons.call_end,
-              color: AppColors.textPrimary,
-              size: 28,
-            ),
+            child: Icon(Icons.call_end, color: AppColors.textPrimary, size: 28),
           ),
         ),
       ),

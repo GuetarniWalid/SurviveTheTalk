@@ -1,8 +1,26 @@
-// Minimal Story 6.1 placeholder — full UX-DR7 design lands in Story 6.5.
+// Empathetic no-network surface for the call-dial path (FR8).
+//
+// Pushed by `scenario_list_screen._handleCallInitiate` when dio surfaces
+// `ApiException.code == 'NETWORK_ERROR'`. Reuses the shared
+// `EmpatheticErrorScreen` so the visual is identical to the
+// scenarios-list offline error — one polish, one update site.
+//
+// Story 6.5 refactor (Deviation #12 + review D1 hybrid): replaced the
+// UX-DR7-specific WiFi-barred / avatar-circle / hang-up-button layout
+// with the shared empathetic surface. Walid's call — DRY over spec
+// literalism. Three context-specific overrides keep the surface
+// faithful to the call-failure semantics:
+//   - `bodyOverride`: the default scenarios-list body ("...to load your
+//     scenarios") is wrong here — the user was dialing a call, not
+//     loading the list. Override to "...to start the call".
+//   - `retryLabel: 'Go back'`: the CTA pops back to the scenario list
+//     rather than retrying anything; "Try again" was misleading.
+//   - `semanticsLabel: 'Close'`: UX-DR12 accessibility — assistive tech
+//     announces the action ("Close"), not the visible label.
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
-import '../../../core/theme/call_colors.dart';
+import '../../../core/widgets/empathetic_error_screen.dart';
 
 class NoNetworkScreen extends StatelessWidget {
   const NoNetworkScreen({super.key});
@@ -11,65 +29,14 @@ class NoNetworkScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            const Spacer(),
-            const Icon(
-              Icons.wifi_off,
-              size: 64,
-              color: AppColors.textSecondary,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'No network',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontFamily: 'Inter',
-                fontSize: 24,
-                fontWeight: FontWeight.w400,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                'We need a connection to start the call.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontFamily: 'Inter',
-                  fontSize: 16,
-                  fontWeight: FontWeight.w400,
-                  color: CallColors.secondary,
-                ),
-              ),
-            ),
-            const Spacer(),
-            Semantics(
-              button: true,
-              label: 'Go back',
-              child: Material(
-                color: CallColors.decline,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: () => Navigator.of(context).maybePop(),
-                  child: const SizedBox(
-                    width: 60,
-                    height: 60,
-                    child: Icon(
-                      Icons.call_end,
-                      color: AppColors.textPrimary,
-                      size: 28,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 40),
-          ],
-        ),
+      body: EmpatheticErrorScreen(
+        code: 'NETWORK_ERROR',
+        onRetry: () => Navigator.of(context).maybePop(),
+        retryLabel: 'Go back',
+        semanticsLabel: 'Close',
+        bodyOverride:
+            'We need a connection to start the call. Check your Wi-Fi or '
+            'mobile data, then try again.',
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/app/app.dart';
 import 'package:client/core/onboarding/consent_storage.dart';
+import 'package:client/core/services/end_call_retry_service.dart';
 import 'package:client/features/auth/bloc/auth_bloc.dart';
 import 'package:client/features/auth/bloc/auth_event.dart';
 import 'package:client/features/auth/bloc/auth_state.dart';
@@ -27,6 +28,8 @@ class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
     implements ScenariosBloc {}
 
 class MockConsentStorage extends Mock implements ConsentStorage {}
+
+class MockEndCallRetryService extends Mock implements EndCallRetryService {}
 
 void main() {
   late MockAuthBloc mockAuthBloc;
@@ -300,4 +303,117 @@ void main() {
     expect(find.text('Survive\nThe Talk'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Story 6.5 Option B (PD3) — AppLifecycleState.resumed triggers '
+    'EndCallRetryService.replayAll() so a queue stuck after a missed '
+    'connectivity-regain event drains the next time the user '
+    'foregrounds the app',
+    (tester) async {
+      final mockRetryService = MockEndCallRetryService();
+      when(() => mockRetryService.replayAll()).thenAnswer((_) async => 0);
+
+      when(() => mockAuthBloc.state).thenReturn(AuthInitial());
+      whenListen(
+        mockAuthBloc,
+        Stream<AuthState>.value(AuthInitial()),
+        initialState: AuthInitial(),
+      );
+      when(
+        () => mockOnboardingBloc.state,
+      ).thenReturn(const OnboardingInitial());
+      whenListen(
+        mockOnboardingBloc,
+        const Stream<OnboardingState>.empty(),
+        initialState: const OnboardingInitial(),
+      );
+
+      await tester.pumpWidget(
+        App(
+          authBloc: mockAuthBloc,
+          onboardingBloc: mockOnboardingBloc,
+          consentStorage: mockConsentStorage,
+          endCallRetryService: mockRetryService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Initial frame — no resume event yet. Bootstrap is what would
+      // normally fire the first replayAll() in production; the App
+      // widget only owns the lifecycle-resume trigger.
+      verifyNever(() => mockRetryService.replayAll());
+
+      // Simulate the app coming back to foreground. The framework's
+      // SystemChannels.lifecycle string is what the platform sends;
+      // dispatching it to the binding mirrors a real Android resume
+      // event arriving on the platform channel.
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await tester.pump();
+
+      verify(() => mockRetryService.replayAll()).called(1);
+
+      // Hide → resume cycle fires a second drain — every foregrounding
+      // is a potential "user just left the metro" moment. Flutter
+      // enforces a strict state machine (resumed → inactive → hidden
+      // → paused → hidden → inactive → resumed), so we step through
+      // each intermediate state.
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.inactive,
+      );
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.hidden,
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.inactive,
+      );
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await tester.pump();
+
+      verify(() => mockRetryService.replayAll()).called(1);
+    },
+  );
+
+  testWidgets(
+    'AppLifecycleState.resumed with no EndCallRetryService is a no-op '
+    '(legacy widget-test path that omits the service must not crash)',
+    (tester) async {
+      when(() => mockAuthBloc.state).thenReturn(AuthInitial());
+      whenListen(
+        mockAuthBloc,
+        Stream<AuthState>.value(AuthInitial()),
+        initialState: AuthInitial(),
+      );
+      when(
+        () => mockOnboardingBloc.state,
+      ).thenReturn(const OnboardingInitial());
+      whenListen(
+        mockOnboardingBloc,
+        const Stream<OnboardingState>.empty(),
+        initialState: const OnboardingInitial(),
+      );
+
+      await tester.pumpWidget(
+        App(
+          authBloc: mockAuthBloc,
+          onboardingBloc: mockOnboardingBloc,
+          consentStorage: mockConsentStorage,
+          // endCallRetryService deliberately omitted.
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

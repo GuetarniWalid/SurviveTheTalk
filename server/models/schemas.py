@@ -7,6 +7,8 @@ in `api/responses.py` — these models cover the inner payloads only.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -52,6 +54,54 @@ class InitiateCallOut(BaseModel):
     room_name: str
     token: str
     livekit_url: str
+
+
+class EndCallIn(BaseModel):
+    """Request body for POST /calls/{call_id}/end.
+
+    `reason` MUST match one of the canonical values defined in
+    `_bmad-output/planning-artifacts/call-ended-screen-design.md`
+    §Variant Selection Logic. Story 6.5 review D4 — `'survived'` is
+    pre-widened now so Story 6.6 (CheckpointManager) ships a server that
+    already accepts it; forgetting the widen would otherwise silently 422
+    the client's POST and orphan the row until the janitor's 1 h sweep.
+    """
+
+    reason: Literal[
+        "user_hung_up",
+        "character_hung_up",
+        "inappropriate_content",
+        "network_lost",
+        "survived",
+    ]
+
+
+class EndCallOut(BaseModel):
+    """Response body for POST /calls/{call_id}/end.
+
+    `status` is `'completed'` on a first-end of a `'pending'` row. On an
+    idempotent re-call against a `'failed'` row (janitor swept it before
+    /end landed, OR the row was gifted on first-end), the response
+    reflects the current row state. The client treats both as terminal —
+    the cap counter is freed either way.
+
+    Story 6.5 Déviation #27 — the gift fields drive a client-side notice
+    screen so the user understands why they were returned to the
+    scenario list AND whether the call cost them a cap slot:
+
+    - `was_gifted` is True iff the server applied a gift (one of the
+      3-per-day allowance was consumed). Coupled with `status='failed'`
+      to skip the cap counter.
+    - `gifts_remaining_today` is the number of gifts left in the
+      user's daily allowance, AFTER this call's accounting. Drives the
+      "X cadeaux restants" copy on the notice screen. Clamped to >= 0.
+    """
+
+    call_id: int
+    status: Literal["completed", "failed"]
+    duration_sec: int
+    was_gifted: bool = False
+    gifts_remaining_today: int = 3
 
 
 class HealthOut(BaseModel):

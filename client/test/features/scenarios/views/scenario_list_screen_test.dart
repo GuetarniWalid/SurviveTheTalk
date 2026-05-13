@@ -211,7 +211,8 @@ void main() {
 
   // Code → (title, body, repeat-body, icon) tuples used by the parametrised
   // first/repeat-failure tests. Keep in lock-step with `_titleFor` /
-  // `_bodyFor` / `_iconFor` in scenario_list_screen.dart.
+  // `_bodyFor` / `_iconFor` in `core/widgets/empathetic_error_screen.dart`
+  // (extracted from scenario_list_screen.dart in Story 6.5 Deviation #12).
   const errorCases = <Map<String, Object>>[
     {
       'code': 'NETWORK_ERROR',

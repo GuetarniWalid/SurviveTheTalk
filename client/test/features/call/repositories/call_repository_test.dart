@@ -114,4 +114,89 @@ void main() {
       );
     });
   });
+
+  // Story 6.5 — POST /calls/{call_id}/end.
+  group('CallRepository.endCall', () {
+    Response<Map<String, dynamic>> endEnvelope(int callId, int durationSec) {
+      return Response<Map<String, dynamic>>(
+        requestOptions: RequestOptions(path: '/calls/$callId/end'),
+        statusCode: 200,
+        data: <String, dynamic>{
+          'data': <String, dynamic>{
+            'call_id': callId,
+            'status': 'completed',
+            'duration_sec': durationSec,
+          },
+          'meta': const {'timestamp': '2026-05-13T10:00:00Z'},
+        },
+      );
+    }
+
+    test('posts {"reason": ...} body to /calls/{callId}/end', () async {
+      String? capturedPath;
+      Map<String, dynamic>? capturedBody;
+      when(
+        () => mockApiClient.post<Map<String, dynamic>>(
+          any(),
+          data: any(named: 'data'),
+        ),
+      ).thenAnswer((invocation) async {
+        capturedPath = invocation.positionalArguments[0] as String?;
+        capturedBody =
+            invocation.namedArguments[#data] as Map<String, dynamic>?;
+        return endEnvelope(7, 30);
+      });
+
+      await repository.endCall(callId: 7, reason: 'user_hung_up');
+
+      expect(capturedPath, equals('/calls/7/end'));
+      expect(capturedBody, equals({'reason': 'user_hung_up'}));
+    });
+
+    test('propagates ApiException from ApiClient (caller is catch-site)',
+        () async {
+      // The repo does NOT swallow — CallBloc._endCallSilently is the catch
+      // site so a failed POST stays loggable but invisible to the UI.
+      when(
+        () => mockApiClient.post<Map<String, dynamic>>(
+          any(),
+          data: any(named: 'data'),
+        ),
+      ).thenThrow(
+        const ApiException(code: 'NETWORK_ERROR', message: 'No connection.'),
+      );
+
+      expect(
+        () => repository.endCall(callId: 7, reason: 'user_hung_up'),
+        throwsA(
+          isA<ApiException>().having((e) => e.code, 'code', 'NETWORK_ERROR'),
+        ),
+      );
+    });
+
+    for (final reason in const [
+      'user_hung_up',
+      'character_hung_up',
+      'inappropriate_content',
+      'network_lost',
+    ]) {
+      test('round-trips reason="$reason"', () async {
+        Map<String, dynamic>? capturedBody;
+        when(
+          () => mockApiClient.post<Map<String, dynamic>>(
+            any(),
+            data: any(named: 'data'),
+          ),
+        ).thenAnswer((invocation) async {
+          capturedBody =
+              invocation.namedArguments[#data] as Map<String, dynamic>?;
+          return endEnvelope(11, 12);
+        });
+
+        await repository.endCall(callId: 11, reason: reason);
+
+        expect(capturedBody, equals({'reason': reason}));
+      });
+    }
+  });
 }

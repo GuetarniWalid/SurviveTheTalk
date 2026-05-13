@@ -155,13 +155,21 @@ async def insert_call_session(
     scenario_id: str,
     started_at: str,
 ) -> int:
-    """Insert a new call_sessions row, returning the new id.
+    """Insert a new call_sessions row in `'pending'` state, returning the new id.
 
-    `duration_sec` and `cost_cents` are left NULL here — they are filled in
-    later by `POST /calls/{id}/end` (Story 6.4 / 7.1).
+    `duration_sec` and `cost_cents` are left NULL here — `duration_sec` is
+    filled in by `POST /calls/{id}/end` (Story 6.5), `cost_cents` stays NULL
+    per Story 6.5 Deviation #1 (FR46 deferred post-MVP).
+
+    `status` is set explicitly to `'pending'`, overriding the column's
+    DEFAULT `'completed'`. The default exists only to backfill historical
+    rows on the migration 008 path — every NEW row written via this helper
+    is in-flight and must count toward the cap (Story 6.5 AC3) until
+    `/end` flips it OR the janitor sweeps it to `'failed'`.
     """
     cursor = await db.execute(
-        "INSERT INTO call_sessions(user_id, scenario_id, started_at) VALUES (?, ?, ?)",
+        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status) "
+        "VALUES (?, ?, ?, 'pending')",
         (user_id, scenario_id, started_at),
     )
     await db.commit()
@@ -179,6 +187,42 @@ async def get_call_session(
         "SELECT * FROM call_sessions WHERE id = ?", (call_id,)
     ) as cursor:
         return await cursor.fetchone()
+
+
+async def end_call_session(
+    db: aiosqlite.Connection,
+    call_id: int,
+    user_id: int,
+    duration_sec: int,
+    *,
+    gifted: bool = False,
+) -> bool:
+    """Flip a `'pending'` row to terminal state with the computed duration.
+
+    Returns True if the row was flipped (first call), False if no row was
+    affected — which happens when the row was already `'completed'`/
+    `'failed'` (idempotent re-call) OR when the row doesn't exist OR when
+    `user_id` doesn't match (cross-user). The caller disambiguates via
+    `get_call_session` so the 404 / idempotent paths split correctly.
+
+    Caller MUST be inside `BEGIN IMMEDIATE` so the SELECT-then-UPDATE pair
+    is TOCTOU-safe against concurrent /end calls — same shape as the
+    `/calls/initiate` cap-check transaction (see routes_calls.py:134).
+
+    Story 6.5 Déviation #27 — when `gifted=True`, status flips to
+    `'failed'` instead of `'completed'` (so the cap-counter filter
+    `status IN ('pending', 'completed')` excludes it) AND `gifted=1`
+    is recorded so `count_user_gifts_today` can enforce the 3-per-day
+    quota. `duration_sec` is still recorded — gifted is about
+    cap-counter accounting, not data loss.
+    """
+    terminal_status = "failed" if gifted else "completed"
+    cursor = await db.execute(
+        "UPDATE call_sessions SET status = ?, duration_sec = ?, gifted = ? "
+        "WHERE id = ? AND user_id = ? AND status = 'pending'",
+        (terminal_status, duration_sec, 1 if gifted else 0, call_id, user_id),
+    )
+    return cursor.rowcount == 1
 
 
 # Scenario rows are stored as JSON-in-TEXT (`briefing`, `exit_lines`,
@@ -298,10 +342,48 @@ async def upsert_scenario(db: aiosqlite.Connection, row: dict) -> None:
 
 
 async def count_user_call_sessions_total(db: aiosqlite.Connection, user_id: int) -> int:
-    """Lifetime call_sessions count for a user (used by free-tier policy)."""
+    """Lifetime cap-eligible call_sessions count (used by free-tier policy).
+
+    Story 6.5 added the `status` filter: only `'pending'` (in-flight) and
+    `'completed'` rows count toward the cap. `'failed'` rows — set by the
+    janitor sweep when a `'pending'` row goes orphan past 1 h, or by the
+    `/calls/initiate` Popen-rollback path — do NOT count, so the user
+    eventually gets their quota back from a server-side failure.
+
+    `'pending'` MUST count: otherwise a malicious client could POST
+    /calls/initiate in a tight loop without ever calling /end and bypass
+    FR21 entirely. The janitor frees abandoned `'pending'` rows after 1 h
+    so the cap-counter is eventually consistent.
+    """
     async with db.execute(
-        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ?",
+        "SELECT COUNT(*) FROM call_sessions "
+        "WHERE user_id = ? AND status IN ('pending', 'completed')",
         (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def count_user_gifts_today(
+    db: aiosqlite.Connection, user_id: int, since_iso: str
+) -> int:
+    """Count `gifted=1` call_sessions rows for the user since `since_iso`.
+
+    Story 6.5 Déviation #27 — the "free gifts" anti-frustration system
+    awards up to 3 gifted call_sessions per user per UTC day. Reasons
+    that can be gifted: `network_lost` (always eligible), and
+    `character_hung_up` / `inappropriate_content` when `duration_sec
+    < 30`. Past the 3-per-day quota the row is counted normally (cap
+    consumed) even if it would otherwise be eligible.
+
+    `since_iso` should be today's UTC midnight as ISO 8601 with `Z`
+    suffix — same shape as `started_at` for the lex comparison to
+    behave temporally.
+    """
+    async with db.execute(
+        "SELECT COUNT(*) FROM call_sessions "
+        "WHERE user_id = ? AND started_at >= ? AND gifted = 1",
+        (user_id, since_iso),
     ) as cursor:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
@@ -310,14 +392,20 @@ async def count_user_call_sessions_total(db: aiosqlite.Connection, user_id: int)
 async def count_user_call_sessions_since(
     db: aiosqlite.Connection, user_id: int, since_iso: str
 ) -> int:
-    """call_sessions count for a user since `since_iso` (used by paid-tier policy).
+    """Cap-eligible call_sessions count since `since_iso` (paid-tier policy).
 
     `started_at` is stored as ISO 8601 UTC (per Architecture line 550), so a
     lexicographic `>=` comparison against a same-format `since_iso` is
     equivalent to a temporal comparison. Cheaper than parsing per-row.
+
+    Story 6.5 added the `status IN ('pending', 'completed')` filter — same
+    rationale as `count_user_call_sessions_total` above (`'failed'` rows
+    don't count; `'pending'` rows do).
     """
     async with db.execute(
-        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ? AND started_at >= ?",
+        "SELECT COUNT(*) FROM call_sessions "
+        "WHERE user_id = ? AND started_at >= ? "
+        "AND status IN ('pending', 'completed')",
         (user_id, since_iso),
     ) as cursor:
         row = await cursor.fetchone()

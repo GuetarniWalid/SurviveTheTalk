@@ -2,19 +2,25 @@
 
 Introduced by Story 4.5 to replace the PoC `/connect` endpoint with an
 authenticated, persisted call-initiation flow. `/connect` is deliberately
-kept alive alongside this router — its tests still pass and the legacy
-Flutter client continues to use it. Story 6.1 retires `/connect`.
+kept alive alongside this router (legacy compatibility) but no client
+ships against it anymore. Story 6.1 added the `scenario_id` body param.
+Story 6.5 added `POST /calls/{call_id}/end` for voluntary call end +
+extended the Popen rollback with explicit LiveKit room cleanup.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from uuid import uuid4
 
+import aiosqlite
 import yaml
 from fastapi import APIRouter, HTTPException, Request
+from livekit import api as livekit_api
 from loguru import logger
 from pipecat.runner.livekit import generate_token, generate_token_with_agent
 
@@ -23,13 +29,134 @@ from api.responses import now_iso, ok
 from api.usage import compute_call_usage
 from config import Settings
 from db.database import get_connection
-from db.queries import get_user_by_id, insert_call_session
-from models.schemas import InitiateCallIn, InitiateCallOut
+from db.queries import (
+    count_user_gifts_today,
+    end_call_session,
+    get_call_session,
+    get_user_by_id,
+    insert_call_session,
+)
+from models.schemas import EndCallIn, EndCallOut, InitiateCallIn, InitiateCallOut
 from pipeline.scenarios import load_scenario_metadata, load_scenario_prompt
+
+# Story 6.5 review (P19) — bound the LiveKit cleanup so a hung DNS
+# / TLS handshake on the Popen-rollback path cannot block the request
+# worker indefinitely. 5 s is generous for a healthy LiveKit Cloud
+# round-trip (~50-200 ms typical) but well under any request-timeout
+# the client would impose.
+_LIVEKIT_DELETE_TIMEOUT_SECONDS = 5.0
+
+# Story 6.5 Déviation #27 — "free gifts" anti-frustration system.
+# A user gets up to `_GIFTS_PER_DAY` `/end` calls per UTC day where
+# the cap counter is NOT consumed, on reasons that are not the user's
+# explicit choice. Eligibility:
+#   - reason == 'network_lost'                       → always eligible
+#   - reason in ('character_hung_up', 'inappropriate_content')
+#         AND duration_sec < _GIFT_SHORT_THRESHOLD_SECONDS  → eligible
+#   - else                                                       → NOT eligible
+# Past the daily quota, an otherwise-eligible call counts normally
+# (cap consumed) — anti-abuse on the "fake airplane mode at 4 min 50 s"
+# pattern. The 3-per-day budget caps the cheater's free-call value at
+# ~3 × ~30 ¢ ≈ 1 € of LLM/STT/TTS spend per day per user.
+_GIFTS_PER_DAY = 3
+_GIFT_SHORT_THRESHOLD_SECONDS = 30
+# Reasons where the threshold gate applies. `'network_lost'` skips
+# the gate (any duration is eligible — connection loss is genuinely
+# external to the user). `'user_hung_up'` and `'survived'` are never
+# eligible regardless of duration (clear user intent).
+_GIFT_SHORT_THRESHOLD_REASONS = frozenset(
+    {"character_hung_up", "inappropriate_content"}
+)
+_GIFT_ANY_DURATION_REASONS = frozenset({"network_lost"})
+
+
+def _today_utc_iso() -> str:
+    """Today's UTC midnight as a `Z`-suffixed ISO 8601 string.
+
+    Used to build the `since` cutoff for `count_user_gifts_today`. Lex
+    comparison against the `started_at` column behaves temporally per
+    the data-shape convention (see architecture.md line 550).
+    """
+    return (
+        datetime.now(UTC)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
 
 router = APIRouter(prefix="/calls", tags=["calls"], dependencies=[AUTH_DEPENDENCY])
 
 settings = Settings()
+
+
+async def livekit_delete_room(settings: Settings, room_name: str) -> None:
+    """Explicitly delete a LiveKit room (Popen-rollback cleanup path).
+
+    Story 6.5 Deviation #5 — verified import shape:
+    `livekit.api.LiveKitAPI(url, api_key, api_secret).room.delete_room(
+        DeleteRoomRequest(room=room_name))`. The SDK ships as a transitive
+    dep of `pipecat-ai` (no new dependency required).
+
+    Caller MUST wrap in `try/except` so a LiveKit-side failure does not
+    mask the original failure (e.g. `BOT_SPAWN_FAILED`). This helper does
+    NOT swallow its own exceptions — the caller decides the policy.
+
+    `aclose()` releases the underlying `aiohttp.ClientSession` so we do
+    not leak a TCP connection per Popen-rollback. The session is created
+    per call rather than reused; the rollback path is cold enough that a
+    per-call session is fine.
+
+    Story 6.5 review (P26): constructor is wrapped so that a DNS / SSL
+    failure during `LiveKitAPI(...)` itself does NOT leak an aiohttp
+    session. If the constructor raises, there is nothing to close —
+    propagate the exception untouched. Only on a successful construct
+    do we enter the try/finally that guarantees `aclose()`.
+    """
+    lk = livekit_api.LiveKitAPI(
+        url=settings.livekit_url,
+        api_key=settings.livekit_api_key,
+        api_secret=settings.livekit_api_secret,
+    )
+    try:
+        await lk.room.delete_room(livekit_api.DeleteRoomRequest(room=room_name))
+    finally:
+        await lk.aclose()
+
+
+async def _safe_livekit_delete_room(settings: Settings, room_name: str) -> None:
+    """Best-effort LiveKit room cleanup with a hard timeout.
+
+    Wraps `livekit_delete_room` in `asyncio.wait_for` so a hung remote
+    cannot block the calling request worker indefinitely. All errors
+    (timeout, network, LiveKit-side rejection, asyncio cancellation
+    inside the helper itself) are caught and logged — the caller MUST
+    NOT rely on this helper for correctness, only for cost hygiene.
+
+    Story 6.5 review (P7, P19): consolidates the rollback-path cleanup
+    so all callers share the same timeout + shielding behaviour.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(livekit_delete_room(settings, room_name)),
+            timeout=_LIVEKIT_DELETE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"livekit_delete_room timed out for {room_name} "
+            f"after {_LIVEKIT_DELETE_TIMEOUT_SECONDS}s; relying on "
+            f"LiveKit's idle-room TTL"
+        )
+    except BaseException:
+        # BaseException covers asyncio.CancelledError too — a cancelled
+        # rollback must STILL log so we know cleanup never ran. We do
+        # not re-raise: this helper's whole purpose is to be safe to
+        # call from any cleanup path, including ones that are
+        # themselves unwinding from a cancellation.
+        logger.warning(
+            f"livekit_delete_room failed for {room_name}",
+            exc_info=True,
+        )
 
 
 @router.post("/initiate")
@@ -201,9 +328,25 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
         )
     except OSError as exc:
         logger.exception(f"Failed to spawn pipeline bot for room {room_name}")
+        # Story 6.5 review (D3): flip the row to `'failed'` rather than
+        # hard-DELETE. The `count_user_call_sessions_*` filter excludes
+        # `'failed'` rows so the cap counter is freed immediately
+        # (same UX as the original DELETE), but the audit trail is
+        # preserved — operators can grep `'failed'` rows to monitor
+        # Popen failure rates. Symmetric with the janitor sweep, which
+        # also FLIPs abandoned `'pending'` rows to `'failed'`.
         async with get_connection() as db:
-            await db.execute("DELETE FROM call_sessions WHERE id = ?", (call_id,))
+            await db.execute(
+                "UPDATE call_sessions SET status = 'failed' WHERE id = ?",
+                (call_id,),
+            )
             await db.commit()
+        # Story 6.5: explicit LiveKit cleanup so the minted-but-unused
+        # room does not idle for ~5 min on the billing side. Wrapped in
+        # the safe helper (timeout + shield + log-only) so a LiveKit-side
+        # failure does NOT mask the BOT_SPAWN_FAILED envelope — the
+        # user's experience is identical.
+        await _safe_livekit_delete_room(settings, room_name)
         raise HTTPException(
             status_code=500,
             detail={
@@ -220,5 +363,248 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
             room_name=room_name,
             token=user_token,
             livekit_url=settings.livekit_url,
+        )
+    )
+
+
+@router.post("/{call_id}/end")
+async def end_call(
+    call_id: int,
+    request: Request,
+    payload: EndCallIn,
+) -> dict:
+    """End a call session: flip status → completed, compute duration_sec.
+
+    Idempotent — calling twice on the same `call_id` is a no-op on the
+    second call (returns the same envelope; does NOT re-flip the status
+    nor recompute `duration_sec` from the second-call "now").
+
+    Cross-user calls return 404 (NOT 403) so the endpoint cannot be used
+    to enumerate other users' `call_id`s — same info-leak pattern as the
+    scenario-detail endpoint.
+
+    Story 6.5 Deviation #1: `cost_cents` stays NULL — FR46 (operator cost
+    tracking) is deferred post-MVP; the per-provider rate sheet has never
+    been authored.
+    Story 6.5 Deviation #2: debrief generation is stubbed — Story 7.1 owns
+    the LLM analyzer and the `debriefs` table.
+    Story 6.5 Deviation #3: no explicit `livekit.delete_room` on the happy
+    path — LiveKit's idle-room TTL (~5 min) handles cleanup. Explicit
+    cleanup ships only on the Popen rollback path (see /initiate).
+    """
+    user_id: int = request.state.user_id
+
+    async with get_connection() as db:
+        # Story 6.5 review (P22): cheap read-only ownership / existence
+        # check BEFORE `BEGIN IMMEDIATE`. This keeps a malicious
+        # enumerator probing other users' call_ids from acquiring (and
+        # holding) the global write lock per probe — they get a 404
+        # back fast on a read-only SELECT, no write-side amplification.
+        # The authoritative re-check inside BEGIN IMMEDIATE below keeps
+        # TOCTOU safety: if the row was deleted (it never is — we
+        # FLIP, not DELETE — but the inner SELECT still re-verifies)
+        # or status-flipped between the two reads, the inner branch
+        # observes the current state.
+        pre_row = await get_call_session(db, call_id)
+        if pre_row is None or pre_row["user_id"] != user_id:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "CALL_NOT_FOUND",
+                    "message": "Call not found.",
+                },
+            )
+
+        # BEGIN IMMEDIATE serialises the SELECT-then-UPDATE pair against
+        # concurrent /end calls so the idempotency check + status flip is
+        # atomic (same TOCTOU-safe pattern as /initiate's cap-check).
+        # Story 6.5 review (P17): `OperationalError("database is
+        # locked")` under sustained contention surfaces as a 503 with
+        # Retry-After so the client (or its retry layer) can back off
+        # instead of seeing a generic 500 the user-facing surface treats
+        # as a permanent failure.
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+        except aiosqlite.OperationalError as exc:
+            if "database is locked" in str(exc).lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "DB_BUSY",
+                        "message": "Try again in a moment.",
+                    },
+                    headers={"Retry-After": "1"},
+                ) from exc
+            raise
+
+        try:
+            row = await get_call_session(db, call_id)
+
+            # 404 covers BOTH "no such call_id" AND "call_id belongs to
+            # another user" — info-leak prevention. Same envelope shape so
+            # a malicious enumerator cannot distinguish the two. The
+            # pre-check above caught the cheap case; this re-check
+            # protects against a row vanishing between the two reads
+            # (defensive — today's code path never deletes).
+            if row is None or row["user_id"] != user_id:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "CALL_NOT_FOUND",
+                        "message": "Call not found.",
+                    },
+                )
+
+            current_status = row["status"]
+
+            if current_status in ("completed", "failed"):
+                # Idempotent re-call: return the persisted duration without
+                # re-flipping. The first /end's "now" is the authoritative
+                # end-time; a second /end must NOT overwrite it.
+                await db.commit()
+                stored_duration_raw = row["duration_sec"]
+                if stored_duration_raw is None:
+                    # Story 6.5 review (P6): a terminal row with NULL
+                    # duration_sec violates the invariant established
+                    # by `end_call_session` (always writes a non-NULL
+                    # int) and the migration 008 backfill (legacy rows
+                    # get `'completed'` status but their duration is
+                    # already NULL — they pre-date the column). Log
+                    # loudly so the data-integrity bug surfaces. Don't
+                    # crash the request: return 0 so the client's
+                    # fire-and-forget path still treats this as
+                    # terminal and unsticks the cap counter.
+                    logger.error(
+                        "call_ended_null_duration "
+                        f"call_id={call_id} user_id={user_id} "
+                        f"status={current_status} "
+                        "— terminal row with NULL duration_sec"
+                    )
+                stored_duration = (
+                    int(stored_duration_raw) if stored_duration_raw is not None else 0
+                )
+                # Story 6.5 Déviation #27 — idempotent re-call returns
+                # the gift flag from the persisted row. The client uses
+                # it on retry paths so the gift notice screen still
+                # appears even if the original POST's response was
+                # lost (e.g. the bloc retried after a queued POST
+                # eventually drained but the client missed the first
+                # response).
+                stored_gifted = bool(row["gifted"])
+                gifts_today = await count_user_gifts_today(
+                    db, user_id, _today_utc_iso()
+                )
+                return ok(
+                    EndCallOut(
+                        call_id=call_id,
+                        status=current_status,
+                        duration_sec=stored_duration,
+                        was_gifted=stored_gifted,
+                        gifts_remaining_today=max(0, _GIFTS_PER_DAY - gifts_today),
+                    )
+                )
+
+            # First /end on a 'pending' row: compute duration_sec from
+            # started_at + now(). Clamp to >= 0 defensively — a clock skew
+            # or a malformed timestamp must not produce a negative
+            # duration that downstream cost-calc would mishandle.
+            #
+            # Story 6.5 review (P20): defensive parse — `started_at`
+            # SHOULD always be a `Z`-suffixed ISO 8601 string set by
+            # `responses.now_iso()`, but a NULL value (corrupt row, a
+            # future migration that forgot to backfill) or a format
+            # drift would otherwise raise AttributeError / ValueError
+            # and surface as a 500. We log + use duration_sec=0 so the
+            # client still observes a clean terminal state and the cap
+            # counter is unstuck; the operator sees the log.
+            raw_started_at = row["started_at"]
+            try:
+                # Python 3.11+ accepts the `Z` suffix natively; older
+                # paths fall through `replace`. Keep the replace for
+                # belt-and-braces.
+                started_at = datetime.fromisoformat(
+                    raw_started_at.replace("Z", "+00:00")
+                )
+                duration_sec = max(
+                    0,
+                    int((datetime.now(UTC) - started_at).total_seconds()),
+                )
+            except (AttributeError, TypeError, ValueError):
+                logger.exception(
+                    "call_ended_bad_started_at "
+                    f"call_id={call_id} user_id={user_id} "
+                    f"raw_started_at={raw_started_at!r} "
+                    "— defaulting duration_sec=0"
+                )
+                duration_sec = 0
+
+            # Story 6.5 Déviation #27 — decide gift eligibility BEFORE
+            # writing terminal state. The gifts_today count is read
+            # inside the BEGIN IMMEDIATE so two simultaneous /end
+            # requests on the same user can both arrive at the 3-per-day
+            # ceiling at most once — past that, even an otherwise-
+            # eligible row counts normally. (Strictly speaking the
+            # write-lock pattern serialises both reads anyway, so the
+            # race is mathematically impossible; defensive reasoning
+            # documented for readers who haven't internalised aiosqlite
+            # transaction semantics.)
+            today_iso = _today_utc_iso()
+            gifts_today = await count_user_gifts_today(db, user_id, today_iso)
+            eligible_by_rule = payload.reason in _GIFT_ANY_DURATION_REASONS or (
+                payload.reason in _GIFT_SHORT_THRESHOLD_REASONS
+                and duration_sec < _GIFT_SHORT_THRESHOLD_SECONDS
+            )
+            within_quota = gifts_today < _GIFTS_PER_DAY
+            was_gifted = eligible_by_rule and within_quota
+            flipped = await end_call_session(
+                db,
+                call_id=call_id,
+                user_id=user_id,
+                duration_sec=duration_sec,
+                gifted=was_gifted,
+            )
+            if not flipped:
+                # Race: another /end fired between our SELECT and UPDATE.
+                # BEGIN IMMEDIATE should prevent this; defensive rollback
+                # + 404 keeps us safe if the contract ever drifts.
+                await db.rollback()
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "CALL_NOT_FOUND",
+                        "message": "Call not found.",
+                    },
+                )
+            await db.commit()
+        except HTTPException:
+            raise
+        except BaseException:
+            await db.rollback()
+            raise
+
+    # Optional: livekit.delete_room(room_name) — relying on LiveKit's
+    # idle-room TTL (~5 min) for empty-room cleanup. See Story 6.5
+    # Deviation #3 in the story file's Implementation Notes.
+
+    # TODO(Story 7.1): trigger debrief generation here.
+
+    logger.info(
+        f"call_ended call_id={call_id} user_id={user_id} "
+        f"reason={payload.reason} duration_sec={duration_sec} "
+        f"gifted={was_gifted}"
+    )
+
+    # gifts_remaining is "after this call" — if was_gifted, we just
+    # consumed one, so the client sees N-1. If not gifted, count is
+    # unchanged. Clamped to 0 defensively.
+    gifts_remaining = max(0, _GIFTS_PER_DAY - gifts_today - (1 if was_gifted else 0))
+    return ok(
+        EndCallOut(
+            call_id=call_id,
+            status="failed" if was_gifted else "completed",
+            duration_sec=duration_sec,
+            was_gifted=was_gifted,
+            gifts_remaining_today=gifts_remaining,
         )
     )

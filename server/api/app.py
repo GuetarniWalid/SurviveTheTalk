@@ -8,12 +8,15 @@ or Pydantic validation error into the uniform `{"error": {...}}` envelope.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from loguru import logger
 
 from api.call_endpoint import router as call_router
 from api.responses import err
@@ -21,8 +24,74 @@ from api.routes_auth import router as auth_router
 from api.routes_calls import router as calls_router
 from api.routes_health import router as health_router
 from api.routes_scenarios import router as scenarios_router
-from db.database import run_migrations
+from db.database import get_connection, run_migrations
+from db.janitor import sweep_abandoned_call_sessions
 from db.seed_scenarios import seed_scenarios
+
+# 15 min cadence. See Story 6.5 §"Why the janitor sweeps every 15 min".
+JANITOR_INTERVAL_SECONDS = 15 * 60
+
+# Story 6.5 review (P8) — circuit-breaker on persistent sweep failures.
+# After this many consecutive failures the loop stretches its wait to
+# `JANITOR_BACKOFF_SECONDS` (1 h) so a permanently-broken DB does NOT
+# spam `journalctl` every 15 min indefinitely. A single successful sweep
+# resets the counter.
+JANITOR_FAILURE_THRESHOLD = 3
+JANITOR_BACKOFF_SECONDS = 60 * 60
+
+# Story 6.5 review (P9) — bound the lifespan teardown so a long-running
+# sweep cannot starve systemd's `TimeoutStopSec` (default 90 s on most
+# distros). We give the loop 30 s to observe `stop_event` and exit
+# cleanly; past that, we cancel the task and let the cancellation
+# unwind through the existing `except Exception` (which logs but does
+# not re-raise into the lifespan finally).
+JANITOR_SHUTDOWN_TIMEOUT_SECONDS = 30
+
+
+async def _janitor_loop(stop_event: asyncio.Event) -> None:
+    """Periodic sweep of abandoned `'pending'` call_sessions.
+
+    Runs ONE initial sweep on startup, then waits up to
+    `JANITOR_INTERVAL_SECONDS` between cycles. Fail-soft: a sweep failure
+    is logged via `logger.exception` but the loop keeps running — the
+    next tick retries 15 min later (or `JANITOR_BACKOFF_SECONDS` if the
+    failure streak crosses `JANITOR_FAILURE_THRESHOLD`).
+
+    Cancellation: the lifespan signals `stop_event` to break the wait
+    cleanly. Using an Event instead of `asyncio.sleep` + `task.cancel()`
+    avoids interrupting an in-flight DB operation, which under aiosqlite
+    can leave the worker thread posting to a closed loop — visible in
+    pytest as "Event loop is closed" warnings during teardown.
+    """
+    consecutive_failures = 0
+    while not stop_event.is_set():
+        try:
+            async with get_connection() as db:
+                flipped = await sweep_abandoned_call_sessions(db, now=datetime.now(UTC))
+                if flipped > 0:
+                    logger.info(f"janitor_swept count={flipped}")
+            consecutive_failures = 0
+        except Exception:
+            consecutive_failures += 1
+            logger.exception(
+                "janitor sweep failed "
+                f"(consecutive_failures={consecutive_failures}); "
+                "will retry"
+            )
+        # Stretch the wait when we are stuck in a failure streak so we
+        # do not spam logs every 15 min on a permanently-broken DB.
+        wait = (
+            JANITOR_BACKOFF_SECONDS
+            if consecutive_failures >= JANITOR_FAILURE_THRESHOLD
+            else JANITOR_INTERVAL_SECONDS
+        )
+        # wait_for raises TimeoutError when the interval elapses without
+        # the stop signal — same effect as `asyncio.sleep(...)` but
+        # responsive to a clean shutdown.
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=wait)
+        except asyncio.TimeoutError:
+            continue
 
 
 @asynccontextmanager
@@ -32,10 +101,38 @@ async def lifespan(app: FastAPI):
     `seed_scenarios()` runs AFTER `run_migrations()` because it depends on the
     `scenarios` table existing. A seed failure raises and aborts startup —
     `systemd` will restart and the traceback lands in `journalctl`.
+
+    Story 6.5: spawns `_janitor_loop` as a background task so abandoned
+    `'pending'` call_sessions get flipped to `'failed'` (and stop burning
+    quota). The task is cancelled + awaited on lifespan exit.
     """
     await run_migrations()
     await seed_scenarios()
-    yield
+    stop_event = asyncio.Event()
+    janitor = asyncio.create_task(_janitor_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        # Bound the wait so systemd's TimeoutStopSec doesn't kill us
+        # mid-sweep on a slow DB. The asyncio.Event-based design lets
+        # the loop body finish its current sweep cleanly; if that
+        # sweep itself is wedged past the timeout we cancel and let
+        # the cancellation unwind.
+        try:
+            await asyncio.wait_for(janitor, timeout=JANITOR_SHUTDOWN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "janitor did not exit within "
+                f"{JANITOR_SHUTDOWN_TIMEOUT_SECONDS}s; cancelling"
+            )
+            janitor.cancel()
+            try:
+                await janitor
+            except (asyncio.CancelledError, Exception):
+                pass
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="surviveTheTalk API", lifespan=lifespan)

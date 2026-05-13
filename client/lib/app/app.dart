@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -6,6 +8,7 @@ import '../core/api/api_client.dart';
 import '../core/auth/token_storage.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/permission_service.dart';
+import '../core/services/end_call_retry_service.dart';
 import '../core/theme/app_theme.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_event.dart';
@@ -22,6 +25,7 @@ class App extends StatefulWidget {
   final ConsentStorage? consentStorage;
   final TokenStorage? tokenStorage;
   final ScenariosBloc? scenariosBloc;
+  final EndCallRetryService? endCallRetryService;
 
   const App({
     super.key,
@@ -30,13 +34,14 @@ class App extends StatefulWidget {
     this.consentStorage,
     this.tokenStorage,
     this.scenariosBloc,
+    this.endCallRetryService,
   });
 
   @override
   State<App> createState() => _AppState();
 }
 
-class _AppState extends State<App> {
+class _AppState extends State<App> with WidgetsBindingObserver {
   late final AuthBloc _authBloc;
   late final OnboardingBloc _onboardingBloc;
   late final ConsentStorage _consentStorage;
@@ -46,6 +51,18 @@ class _AppState extends State<App> {
   @override
   void initState() {
     super.initState();
+    // Story 6.5 Option B (post-deploy PD3) — observe app lifecycle so
+    // `EndCallRetryService.replayAll()` runs every time the user brings
+    // the app back to foreground, not only on `onConnectivityRegained`.
+    // Live VPS test 2026-05-15: `connectivity_plus`'s
+    // `NetworkCallback` on Android can silently miss the regain
+    // transition after a brief background trip (notification panel for
+    // airplane-mode toggle, switching to a browser to verify net),
+    // leaving a queued POST stuck until the next cold-start. Wiring
+    // the resume hook here is a belt-and-braces drain trigger — three
+    // independent paths (boot, connectivity-regain, lifecycle-resume)
+    // converge on the same idempotent `replayAll()`.
+    WidgetsBinding.instance.addObserver(this);
     _consentStorage = widget.consentStorage ?? ConsentStorage();
 
     if (widget.authBloc != null) {
@@ -90,6 +107,7 @@ class _AppState extends State<App> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (widget.authBloc == null) {
       _authBloc.close();
     }
@@ -101,8 +119,23 @@ class _AppState extends State<App> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      // Fire-and-forget — `replayAll()` is internally idempotent (the
+      // `_replayInFlight` guard prevents overlapping drains) and
+      // tolerates an empty queue (returns 0, no POST traffic).
+      // No await: lifecycle callbacks must return quickly.
+      final retryService = widget.endCallRetryService;
+      if (retryService != null) {
+        unawaited(retryService.replayAll());
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return MultiBlocProvider(
+    final blocs = MultiBlocProvider(
       providers: [
         BlocProvider<AuthBloc>.value(value: _authBloc),
         BlocProvider<OnboardingBloc>.value(value: _onboardingBloc),
@@ -113,6 +146,19 @@ class _AppState extends State<App> {
         theme: AppTheme.dark(),
         routerConfig: _router,
       ),
+    );
+    // Story 6.5 Option B — expose the retry singleton to descendants
+    // (CallScreen reads it via `context.read<EndCallRetryService>()`
+    // in initState). `.value` because the lifecycle is owned by
+    // `bootstrap()`, not by this widget — App should not dispose
+    // the service. Tests that construct `App` without passing the
+    // service simply skip this wrapper (the bloc's null-tolerant path
+    // covers the test surface).
+    final retryService = widget.endCallRetryService;
+    if (retryService == null) return blocs;
+    return RepositoryProvider<EndCallRetryService>.value(
+      value: retryService,
+      child: blocs,
     );
   }
 }

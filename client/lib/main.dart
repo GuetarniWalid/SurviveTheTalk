@@ -1,9 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:rive/rive.dart';
 
 import 'app/app.dart';
+import 'core/api/api_client.dart';
 import 'core/auth/token_storage.dart';
 import 'core/onboarding/consent_storage.dart';
+import 'core/services/connectivity_service.dart';
+import 'core/services/end_call_retry_service.dart';
+import 'core/services/end_call_retry_storage.dart';
+import 'features/call/repositories/call_repository.dart';
 
 /// Bootstrap sequence required by Rive 0.14.x:
 ///   1. WidgetsFlutterBinding.ensureInitialized() — enables async plugins
@@ -60,12 +67,34 @@ Future<void> bootstrap() async {
   // already-authenticated; ConsentStorage covers the onboarding gates.
   final consentStorage = ConsentStorage();
   final tokenStorage = TokenStorage();
-  await Future.wait<void>([
-    consentStorage.preload(),
-    tokenStorage.preload(),
-  ]);
+  await Future.wait<void>([consentStorage.preload(), tokenStorage.preload()]);
 
-  runApp(App(consentStorage: consentStorage, tokenStorage: tokenStorage));
+  // Story 6.5 Option B (post-deploy fix) — app-level singleton that
+  // replays any `/end` POSTs that failed while offline. Constructed
+  // here so its connectivity listener lives for the app lifetime
+  // (no per-screen lifecycle racing). The retry service uses its
+  // own `CallRepository` — independent of the `CallScreen`'s instance —
+  // because it operates outside the call's lifecycle (e.g. on app boot
+  // long after the original call has ended).
+  final connectivityService = ConnectivityService();
+  final endCallRetryService = EndCallRetryService(
+    storage: EndCallRetryStorage(),
+    repository: CallRepository(ApiClient()),
+  );
+  endCallRetryService.attach(connectivityService);
+  // Fire-and-forget the initial drain so a queue left over from a
+  // previous session (user killed the app while offline) gets cleared
+  // as soon as boot finishes. No await — startup must not block on a
+  // network round-trip.
+  unawaited(endCallRetryService.replayAll());
+
+  runApp(
+    App(
+      consentStorage: consentStorage,
+      tokenStorage: tokenStorage,
+      endCallRetryService: endCallRetryService,
+    ),
+  );
 }
 
 Future<void> main() async {
