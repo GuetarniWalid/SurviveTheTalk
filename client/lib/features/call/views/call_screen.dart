@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:developer' as dev;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -25,10 +27,17 @@ import 'widgets/rive_character_canvas.dart';
 /// `DataChannelHandler.new`; tests inject a counting / mock-returning
 /// alternative through `CallScreen.debugHandlerBuilder` to assert the
 /// "construct exactly once" + "dispose on tear-down" lifecycle contract.
+///
+/// Story 6.4 widened the signature with `onHangUpWarning`, `onCallEnd`,
+/// and `onBotSpeakingEnded` so the handler can route server-driven
+/// envelopes back to the screen / bloc.
 typedef DataChannelHandlerBuilder =
     DataChannelHandler Function({
       required Room room,
       required void Function(String emotion, double intensity) onEmotion,
+      required void Function(int secondsRemaining) onHangUpWarning,
+      required void Function(String reason, Map<String, dynamic> data) onCallEnd,
+      required void Function() onBotSpeakingEnded,
     });
 
 // Layout constants — mirrored from `IncomingCallScreen` so the outgoing
@@ -88,7 +97,15 @@ class CallScreen extends StatefulWidget {
     this.room,
     this.debugCanvasFallback,
     this.debugHandlerBuilder,
+    this.debugPlaybackDrainBuffer,
   });
+
+  /// Story 6.4 test seam. When non-null, overrides the bloc's
+  /// `playbackDrainBuffer` (default 500 ms in production). Tests pass
+  /// `Duration.zero` so `PlaybackDrained` → disconnect happens
+  /// synchronously inside the test's 50 ms wait window.
+  @visibleForTesting
+  final Duration? debugPlaybackDrainBuffer;
 
   @override
   State<CallScreen> createState() => _CallScreenState();
@@ -135,6 +152,24 @@ class _CallScreenState extends State<CallScreen> {
   /// the handler.
   VisemeScheduler? _visemeScheduler;
 
+  /// Story 6.4 — gates the upstream `playback_idle` publish + the
+  /// bloc's `PlaybackDrained` dispatch. The naive
+  /// `VisemeScheduler.onSilenceConfirmed` fires on EVERY 600 ms
+  /// silence window, including intra-sentence Cartesia pauses in a
+  /// multi-sentence bot turn. Without this gate, those pauses would
+  /// be mis-classified as "bot turn over" and the silence ladder
+  /// would start mid-greeting.
+  ///
+  /// Set to true on receiving `bot_speaking_ended` (server signal
+  /// that the current bot turn's outbound audio buffer drained).
+  /// Cleared by the next `onSilenceConfirmed` (which IS the post-
+  /// turn silence — user's speaker actually drained).
+  ///
+  /// The bloc's `PlaybackDrained` safety timer (10 s after
+  /// `RemoteCallEnded`) covers the case where this gate never arms
+  /// during the hang-up sequence (e.g. the envelope is lost).
+  bool _awaitingPlaybackIdle = false;
+
   @override
   void initState() {
     super.initState();
@@ -153,6 +188,60 @@ class _CallScreenState extends State<CallScreen> {
       if (path != null) {
         precacheImage(AssetImage(path), context);
       }
+    }
+  }
+
+  /// Fire-and-forget `{"type":"playback_idle"}` upstream to Pipecat
+  /// via LiveKit's reliable data channel. `bot.py`'s
+  /// `on_data_received` event handler routes it to
+  /// `PatienceTracker.handle_playback_idle()`, which starts the
+  /// silence ladder from the user's perceived end-of-bot-speech
+  /// (instead of the server's outbound flush, which fired ~1 s
+  /// ahead due to WebRTC jitter buffering).
+  ///
+  /// `reliable: true` so SCTP retransmits a dropped packet — losing
+  /// this signal would mean the silence ladder never starts for that
+  /// turn until the next bot utterance ends.
+  void _publishPlaybackIdle(Room room) {
+    final participant = room.localParticipant;
+    if (participant == null) {
+      // Room is mid-teardown or pre-connect — the bloc's safety
+      // timer (10 s after `RemoteCallEnded`) covers this case. Log
+      // so a regression that wedges `localParticipant=null` during
+      // a healthy call surfaces in the diagnostic tail.
+      dev.log(
+        'CallScreen: publishData(playback_idle) skipped — '
+        'localParticipant is null',
+        name: 'call.uplink',
+        level: 700,
+      );
+      return;
+    }
+    final bytes = utf8.encode(jsonEncode({'type': 'playback_idle'}));
+    // Belt-and-braces: `publishData` returns a Future but a guard-rail
+    // assertion (room disconnected, codec mismatch) could throw
+    // synchronously. `.catchError` only catches async failures, so a
+    // sync throw would escape as an unhandled future error. Wrap the
+    // call so both modes route through the same diagnostic.
+    try {
+      unawaited(
+        participant.publishData(bytes, reliable: true).catchError((Object e) {
+          // The data channel can throw during teardown (room
+          // disconnecting). The bloc's safety timer covers the
+          // case where the server never receives this signal.
+          dev.log(
+            'CallScreen: publishData(playback_idle) failed: $e',
+            name: 'call.uplink',
+            level: 700,
+          );
+        }),
+      );
+    } catch (e) {
+      dev.log(
+        'CallScreen: publishData(playback_idle) threw sync: $e',
+        name: 'call.uplink',
+        level: 700,
+      );
     }
   }
 
@@ -190,6 +279,9 @@ class _CallScreenState extends State<CallScreen> {
           session: widget.callSession,
           scenario: widget.scenario,
           room: _room,
+          playbackDrainBuffer:
+              widget.debugPlaybackDrainBuffer ??
+              const Duration(milliseconds: 500),
         )..add(const CallStarted());
       },
       child: BlocConsumer<CallBloc, CallState>(
@@ -208,8 +300,45 @@ class _CallScreenState extends State<CallScreen> {
             // EventChannel (`AudioClockChannel.kt`) and applies each
             // viseme arriving from the audio thread directly on the
             // Rive canvas. No data-channel involvement.
+            //
+            // Story 6.4 — the same PCM stream that drives lip-sync
+            // also serves as the "speaker is silent now" signal that
+            // tells the bloc when the server's exit-line audio has
+            // actually finished playing locally. Naive callback that
+            // fires on EVERY silence window; the bloc gates on its
+            // own `_remoteEndPending` flag (mid-call gaps are ignored
+            // there).
             _visemeScheduler = VisemeScheduler(
               applyViseme: (id) => _canvasKey.currentState?.setVisemeId(id),
+              onSilenceConfirmed: () {
+                if (!context.mounted) return;
+                // The silence-confirmed callback fires on EVERY 600 ms
+                // silence window — including intra-utterance Cartesia
+                // pauses in a multi-sentence bot turn. Gate on
+                // `_awaitingPlaybackIdle` so we only act on the silence
+                // window that comes AFTER `bot_speaking_ended` (i.e.
+                // the actual end-of-turn silence).
+                //
+                // Two consumers gated by the same flag:
+                //
+                // 1. Server-side `PatienceTracker` — publish
+                //    `playback_idle` upstream so the silence ladder
+                //    counts from the user's ear, not the server's
+                //    outbox.
+                //
+                // 2. Bloc's hang-up drain (`PlaybackDrained`) — let
+                //    the bloc disconnect the room only after the
+                //    exit-line audio has actually finished playing.
+                //
+                // The upstream publish is fire-and-forget; loss is
+                // tolerable (SCTP retransmits on the data channel,
+                // and the bloc's 10 s safety timer covers the rare
+                // case where the message never lands).
+                if (!_awaitingPlaybackIdle) return;
+                _awaitingPlaybackIdle = false;
+                _publishPlaybackIdle(room);
+                context.read<CallBloc>().add(const PlaybackDrained());
+              },
             );
             final handlerBuilder =
                 widget.debugHandlerBuilder ?? DataChannelHandler.new;
@@ -220,6 +349,29 @@ class _CallScreenState extends State<CallScreen> {
               // a deliberate ignore so reviewers don't flag dead args.
               onEmotion: (emotion, _) =>
                   _canvasKey.currentState?.setEmotion(emotion),
+              // Story 6.4 — `hang_up_warning` has no in-call UI surface
+              // (UX-DR6: zero text on screen during calls). Reserved as
+              // a hook for a future debrief-transition story. The
+              // deliberate no-op is the production behaviour.
+              onHangUpWarning: (_) {},
+              // Story 6.4 — server-driven hang-up reaches the bloc as
+              // `RemoteCallEnded`; the bloc handles room teardown and
+              // emits CallEnded, which the BlocConsumer.listener above
+              // pops back to /scenarios.
+              onCallEnd: (reason, data) {
+                if (!context.mounted) return;
+                context.read<CallBloc>().add(RemoteCallEnded(reason, data));
+              },
+              // Story 6.4 — server signals end-of-bot-turn (outbound
+              // audio drained). Arms the `_awaitingPlaybackIdle` gate
+              // so the NEXT confirmed silence (user's speaker drained)
+              // publishes `playback_idle` upstream. The data-channel
+              // SCTP message arrives at the client well BEFORE the
+              // tail audio is decoded + played, so the gate is set in
+              // time for the post-utterance silence.
+              onBotSpeakingEnded: () {
+                _awaitingPlaybackIdle = true;
+              },
             );
           }
 

@@ -100,6 +100,131 @@ def load_scenario_metadata(scenario_id: str) -> dict:
     return metadata
 
 
+# ============================================================
+# Story 6.4 — Difficulty presets + PatienceTracker config resolver
+# ============================================================
+
+# Source of truth: `difficulty-calibration.md` §4.3 cross-checked
+# against the `effective:` comments in each scenario YAML's metadata
+# block. Tied to the running schema — every scenario YAML's nullable
+# overrides resolve through this table when null. NEVER duplicate the
+# preset values inline elsewhere; import this constant.
+_DIFFICULTY_PRESETS: dict[str, dict] = {
+    "easy": {
+        "initial_patience": 100,
+        "fail_penalty": -15,
+        "silence_penalty": -10,
+        "recovery_bonus": 5,
+        "silence_prompt_seconds": 6.0,
+        "silence_hangup_seconds": 10.0,
+        "escalation_thresholds": [75, 50, 25, 0],
+    },
+    "medium": {
+        "initial_patience": 80,
+        "fail_penalty": -20,
+        "silence_penalty": -15,
+        "recovery_bonus": 3,
+        "silence_prompt_seconds": 4.0,
+        "silence_hangup_seconds": 7.0,
+        "escalation_thresholds": [60, 30, 0],
+    },
+    "hard": {
+        "initial_patience": 60,
+        "fail_penalty": -25,
+        "silence_penalty": -20,
+        "recovery_bonus": 0,
+        "silence_prompt_seconds": 3.0,
+        "silence_hangup_seconds": 5.0,
+        "escalation_thresholds": [30, 0],
+    },
+}
+
+# The 7 nullable override keys the scenario YAML may set in
+# `metadata`. When null, the preset wins; when non-null, the YAML wins.
+_PATIENCE_OVERRIDE_KEYS = (
+    "initial_patience",  # YAML key: patience_start (alias below)
+    "fail_penalty",
+    "silence_penalty",
+    "recovery_bonus",
+    "silence_prompt_seconds",
+    "silence_hangup_seconds",
+    "escalation_thresholds",
+)
+
+
+def resolve_patience_config(scenario_id: str) -> dict:
+    """Return a non-null PatienceTracker config dict for `scenario_id`.
+
+    Reads the scenario YAML, picks the difficulty preset row, and
+    applies nullable overrides from `metadata` (YAML wins when set).
+    Also folds in `total_checkpoints` (derived from the
+    `checkpoints` list length) so the caller can populate the
+    `call_end` envelope's progress field.
+
+    Raises:
+        FileNotFoundError: Unknown scenario id (parity with the rest
+            of this module).
+        RuntimeError: `metadata.difficulty` is missing or not one of
+            `easy` / `medium` / `hard` — defensive against future
+            YAML drift.
+    """
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    metadata = data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has malformed `metadata` (not a dict)."
+        )
+
+    difficulty = metadata.get("difficulty")
+    if difficulty not in _DIFFICULTY_PRESETS:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has unknown difficulty {difficulty!r}; "
+            f"expected one of {sorted(_DIFFICULTY_PRESETS)}."
+        )
+
+    preset = _DIFFICULTY_PRESETS[difficulty]
+    config: dict = dict(preset)
+
+    # The YAML names the starting meter `patience_start`; the
+    # PatienceTracker constructor names it `initial_patience`. Map
+    # the alias before walking the rest of the override keys.
+    yaml_aliases = {"initial_patience": "patience_start"}
+    for key in _PATIENCE_OVERRIDE_KEYS:
+        yaml_key = yaml_aliases.get(key, key)
+        override = metadata.get(yaml_key)
+        if override is not None:
+            config[key] = override
+
+    checkpoints = data.get("checkpoints") or []
+    if not isinstance(checkpoints, list):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has malformed `checkpoints` (not a list)."
+        )
+    config["total_checkpoints"] = len(checkpoints)
+
+    # Defensive: a YAML `patience_start: 0` override would silently
+    # produce a `survival_pct` denominator of zero in PatienceTracker's
+    # arithmetic. Fail loud at config-resolution time so the bug
+    # surfaces at process start, not on the first hang-up.
+    if (
+        not isinstance(config["initial_patience"], int)
+        or config["initial_patience"] <= 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} resolved to "
+            f"initial_patience={config['initial_patience']!r}; must be a positive int."
+        )
+
+    return config
+
+
 def load_scenario_prompt(scenario_id: str) -> str:
     """Return the composed system prompt for `scenario_id`.
 

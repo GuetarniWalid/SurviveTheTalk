@@ -172,6 +172,9 @@ def test_initiate_spawns_bot_with_scenario_prompt(
     # `metadata.rive_character` slug so the spawned bot can build
     # character-aware classifier prompts.
     assert env.get("SCENARIO_CHARACTER") == "waiter"
+    # Story 6.4 — SCENARIO_ID env var lets the spawned bot resolve the
+    # PatienceTracker config via `resolve_patience_config(scenario_id)`.
+    assert env.get("SCENARIO_ID") == "waiter_easy_01"
 
 
 @patch("api.routes_calls.subprocess.Popen")

@@ -350,3 +350,160 @@ def test_load_scenario_metadata_unknown_id_raises() -> None:
 
     with pytest.raises(FileNotFoundError):
         load_scenario_metadata("does_not_exist")
+
+
+# ---------- Story 6.4 — resolve_patience_config helper ----------
+
+
+def test_resolve_patience_config_happy_path_easy() -> None:
+    """`waiter_easy_01` (all overrides null, difficulty=easy) resolves
+    to the easy preset row plus `total_checkpoints` derived from the
+    YAML's checkpoints list.
+    """
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert config["initial_patience"] == 100
+    assert config["fail_penalty"] == -15
+    assert config["silence_penalty"] == -10
+    assert config["recovery_bonus"] == 5
+    assert config["silence_prompt_seconds"] == 6.0
+    assert config["silence_hangup_seconds"] == 10.0
+    assert config["escalation_thresholds"] == [75, 50, 25, 0]
+    # The waiter YAML defines 6 checkpoints (greet → close).
+    assert config["total_checkpoints"] == 6
+
+
+def test_resolve_patience_config_yaml_override_wins(tmp_path, monkeypatch) -> None:
+    """A non-null `silence_hangup_seconds` in the YAML overrides the
+    preset value.
+    """
+    from pipeline import scenarios as scenarios_mod
+
+    fake_yaml = tmp_path / "synthetic.yaml"
+    fake_yaml.write_text(
+        """
+metadata:
+  id: synthetic_easy_01
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  patience_start: null
+  fail_penalty: null
+  silence_penalty: null
+  recovery_bonus: null
+  silence_prompt_seconds: null
+  silence_hangup_seconds: 7.0
+  escalation_thresholds: null
+base_prompt: |
+  test
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+  - id: b
+    hint_text: b
+    prompt_segment: b
+    success_criteria: b
+""",
+        encoding="utf-8",
+    )
+
+    patched_index = dict(scenarios_mod._SCENARIO_INDEX)
+    patched_index["synthetic_easy_01"] = fake_yaml
+    monkeypatch.setattr(scenarios_mod, "_SCENARIO_INDEX", patched_index)
+
+    config = scenarios_mod.resolve_patience_config("synthetic_easy_01")
+    assert config["silence_hangup_seconds"] == 7.0
+    # Preset wins for un-overridden fields.
+    assert config["initial_patience"] == 100
+    assert config["total_checkpoints"] == 2
+
+
+def test_resolve_patience_config_rejects_non_positive_patience_start(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML `patience_start: 0` override would silently produce a
+    survival_pct denominator of zero. The resolver must fail loud at
+    config-resolution time so the bug surfaces at process start, not
+    on the first hang-up. Defensive against future YAML drift."""
+    from pipeline import scenarios as scenarios_mod
+
+    fake_yaml = tmp_path / "synthetic.yaml"
+    fake_yaml.write_text(
+        """
+metadata:
+  id: synthetic_zero_01
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  patience_start: 0
+  fail_penalty: null
+  silence_penalty: null
+  recovery_bonus: null
+  silence_prompt_seconds: null
+  silence_hangup_seconds: null
+  escalation_thresholds: null
+base_prompt: |
+  test
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+""",
+        encoding="utf-8",
+    )
+
+    patched_index = dict(scenarios_mod._SCENARIO_INDEX)
+    patched_index["synthetic_zero_01"] = fake_yaml
+    monkeypatch.setattr(scenarios_mod, "_SCENARIO_INDEX", patched_index)
+
+    with pytest.raises(RuntimeError, match="initial_patience"):
+        scenarios_mod.resolve_patience_config("synthetic_zero_01")
+
+
+def test_resolve_patience_config_unknown_difficulty_raises(
+    tmp_path, monkeypatch
+) -> None:
+    """Difficulty outside `easy`/`medium`/`hard` is a fail-loud condition."""
+    from pipeline import scenarios as scenarios_mod
+
+    fake_yaml = tmp_path / "synthetic.yaml"
+    fake_yaml.write_text(
+        """
+metadata:
+  id: synthetic_trivial_01
+  title: Synthetic
+  difficulty: trivial
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  test
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+""",
+        encoding="utf-8",
+    )
+
+    patched_index = dict(scenarios_mod._SCENARIO_INDEX)
+    patched_index["synthetic_trivial_01"] = fake_yaml
+    monkeypatch.setattr(scenarios_mod, "_SCENARIO_INDEX", patched_index)
+
+    with pytest.raises(RuntimeError, match="trivial"):
+        scenarios_mod.resolve_patience_config("synthetic_trivial_01")

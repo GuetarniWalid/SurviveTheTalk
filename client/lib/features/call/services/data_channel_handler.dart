@@ -31,11 +31,20 @@ class DataChannelHandler {
   DataChannelHandler({
     required Room room,
     required void Function(String emotion, double intensity) onEmotion,
-  }) : _onEmotion = onEmotion {
+    required void Function(int secondsRemaining) onHangUpWarning,
+    required void Function(String reason, Map<String, dynamic> data) onCallEnd,
+    required void Function() onBotSpeakingEnded,
+  }) : _onEmotion = onEmotion,
+       _onHangUpWarning = onHangUpWarning,
+       _onCallEnd = onCallEnd,
+       _onBotSpeakingEnded = onBotSpeakingEnded {
     _cancel = room.events.on<DataReceivedEvent>(_onDataReceived);
   }
 
   final void Function(String emotion, double intensity) _onEmotion;
+  final void Function(int secondsRemaining) _onHangUpWarning;
+  final void Function(String reason, Map<String, dynamic> data) _onCallEnd;
+  final void Function() _onBotSpeakingEnded;
   CancelListenFunc? _cancel;
 
   Future<void> _onDataReceived(DataReceivedEvent event) async {
@@ -65,11 +74,62 @@ class DataChannelHandler {
           final i = (intensity is num) ? intensity.toDouble() : 0.0;
           _onEmotion(emotion, i);
         }
+      case 'hang_up_warning':
+        // Story 6.4 — server signals an imminent hang-up so the client
+        // can prepare (no UI in 6.4; future stories may wire a visual
+        // countdown). Defensive default of 5 s mirrors the server-side
+        // emit shape (`seconds_remaining: 5`).
+        final seconds = data['seconds_remaining'];
+        if (seconds is! num) {
+          // Defaulting silently here hid a wire-protocol regression
+          // during the smoke loop: log the fall-back so a future
+          // server-side envelope shape drift surfaces in the diagnostic
+          // tail without the client misrendering a countdown.
+          dev.log(
+            'DataChannelHandler: hang_up_warning missing/invalid '
+            'seconds_remaining (got ${seconds.runtimeType}); defaulting to 5',
+            name: 'call.data',
+            level: 700,
+          );
+        }
+        final n = (seconds is num) ? seconds.toInt() : 5;
+        _onHangUpWarning(n);
+      case 'call_end':
+        // Story 6.4 — character-driven end of call. Carries the reason
+        // (`character_hung_up` / `inappropriate_content`) plus the
+        // `survival_pct` + checkpoint counters consumers may render in
+        // a future debrief screen. Missing `reason` falls back to
+        // `unknown` so the bloc still treats this as a clean end.
+        final reason = data['reason'];
+        if (reason is! String) {
+          // Same posture as `hang_up_warning`: a regressed server-side
+          // emit (reason as int, null, missing entirely) defaults the
+          // client to `unknown` instead of crashing — log so the
+          // diagnostic tail surfaces the drift.
+          dev.log(
+            'DataChannelHandler: call_end missing/invalid reason '
+            '(got ${reason.runtimeType}); defaulting to "unknown"',
+            name: 'call.data',
+            level: 700,
+          );
+        }
+        final reasonStr = reason is String ? reason : 'unknown';
+        _onCallEnd(reasonStr, data);
+      case 'bot_speaking_ended':
+        // Story 6.4 — server signals that THIS bot turn is over (its
+        // outbound audio buffer drained). The screen uses this as
+        // the arming gate for the next `playback_idle` upstream
+        // publish: only AFTER `bot_speaking_ended` does the next
+        // confirmed silence count as "user's speaker drained".
+        // Without this gate, intra-utterance Cartesia pauses (~600 ms
+        // between sentences in a multi-sentence greeting) would be
+        // mis-classified as "bot turn over" and trigger a premature
+        // ladder start.
+        _onBotSpeakingEnded();
       default:
-        // Owned by Stories 6.4 (`hang_up_warning`, `call_end`) / 6.7
-        // (`checkpoint_advanced`). Additive routing — silently ignore
-        // unknown types so a server-side rollout can land emitters before
-        // the matching client handler ships.
+        // Owned by Story 6.7 (`checkpoint_advanced`). Additive routing
+        // — silently ignore unknown types so a server-side rollout can
+        // land emitters before the matching client handler ships.
         dev.log(
           'DataChannelHandler: ignoring unknown type=$type',
           name: 'call.data',

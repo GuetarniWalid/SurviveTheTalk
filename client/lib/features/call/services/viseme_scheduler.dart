@@ -29,11 +29,30 @@ import 'package:flutter/services.dart';
 /// **Tests** inject an explicit `Stream<int>` via the optional
 /// [eventStream] constructor parameter; production wires the real
 /// EventChannel.
+/// Default sustained-silence window before [VisemeScheduler] fires its
+/// `onSilenceConfirmed` callback. Tuned for TTS exit lines:
+///   - Cartesia pauses between words are typically 150-300 ms.
+///   - Pauses between sentences (a period followed by a new clause)
+///     can reach ~400 ms in the same utterance.
+///   - 600 ms is past the longest natural intra-utterance pause but
+///     well under any "speech truly ended" gap.
+const Duration _kDefaultSilenceConfirmation = Duration(milliseconds: 600);
+
+/// REST is the Rive viseme id emitted by [FormantVisemeAnalyzer] when
+/// the chunk's RMS falls below the silence threshold. Hardcoded here
+/// (and in `FormantVisemeAnalyzer.kt`) — the two sides agree by enum
+/// value, not by import.
+const int _kRestVisemeId = 0;
+
 class VisemeScheduler {
   VisemeScheduler({
     required void Function(int visemeId) applyViseme,
+    void Function()? onSilenceConfirmed,
+    Duration silenceConfirmation = _kDefaultSilenceConfirmation,
     Stream<int>? eventStream,
-  }) : _applyViseme = applyViseme {
+  }) : _applyViseme = applyViseme,
+       _onSilenceConfirmed = onSilenceConfirmed,
+       _silenceConfirmation = silenceConfirmation {
     // Defensive cast: a non-int payload (future protocol drift, ME
     // upgrade to a richer envelope) would throw inside `map` and
     // propagate as a stream error — broadcast streams may stop
@@ -60,6 +79,33 @@ class VisemeScheduler {
   }
 
   final void Function(int visemeId) _applyViseme;
+
+  /// Story 6.4 — fires whenever the viseme stream has stayed at REST
+  /// for [_silenceConfirmation] without any non-REST event in between.
+  /// Used by `CallBloc` to know when the local speaker has actually
+  /// finished playing the server's hang-up exit line, so the room
+  /// disconnect can be scheduled without cutting audio mid-sentence.
+  ///
+  /// Fires once per silence window. Re-fires on subsequent silence
+  /// windows if speech resumes (e.g. between user turns). Consumers
+  /// MUST gate on their own "is this end-of-call?" state — the
+  /// callback is naive about call lifecycle.
+  final void Function()? _onSilenceConfirmed;
+
+  final Duration _silenceConfirmation;
+  Timer? _silenceTimer;
+
+  /// Tracks the previously-emitted viseme id so we can defensively
+  /// dedupe at the Dart layer. The native analyzer is supposed to
+  /// emit each viseme only on transition, but a future native build
+  /// or sample-rate change could regress to per-chunk emit — in
+  /// which case every REST chunk would re-cancel + re-arm the
+  /// silence timer, and `_onSilenceConfirmed` would NEVER fire (the
+  /// timer is reset 50× a second). Dart-side dedup is a cheap
+  /// belt-and-braces: only changes in viseme id reset the timer.
+  /// `null` sentinel = no prior event observed.
+  int? _lastVisemeId;
+
   // The analyzer can't see through the explicit `await sub.cancel()` in
   // [dispose], so the lint is a false positive — silence with rationale.
   // ignore: cancel_subscriptions
@@ -69,11 +115,38 @@ class VisemeScheduler {
   void _onNativeViseme(int visemeId) {
     if (_disposed) return;
     _applyViseme(visemeId);
+
+    // Defensive Dart-side dedup: if the native side regresses and
+    // emits the same viseme id on consecutive chunks, ignore the
+    // duplicate so the silence timer below isn't continually
+    // re-armed and never fires. Identity-of-transition is preserved
+    // regardless of native-side behavior.
+    if (_lastVisemeId == visemeId) return;
+    _lastVisemeId = visemeId;
+
+    // Silence tracking: REST starts/restarts the silence timer; any
+    // non-REST event cancels it. The native analyzer emits each
+    // viseme only on transition (it dedupes consecutive same-value
+    // chunks), so receiving REST means "the stream just transitioned
+    // into silence". If no further events arrive within
+    // [_silenceConfirmation], the speaker has been silent the whole
+    // window → fire the callback.
+    _silenceTimer?.cancel();
+    if (visemeId == _kRestVisemeId) {
+      _silenceTimer = Timer(_silenceConfirmation, () {
+        if (_disposed) return;
+        _onSilenceConfirmed?.call();
+      });
+    } else {
+      _silenceTimer = null;
+    }
   }
 
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _silenceTimer?.cancel();
+    _silenceTimer = null;
     final sub = _subscription;
     _subscription = null;
     if (sub != null) {

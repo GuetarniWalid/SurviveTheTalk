@@ -517,6 +517,9 @@ void main() {
               debugHandlerBuilder: ({
                 required room,
                 required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
               }) {
                 builderCalls.add(room);
                 return mock;
@@ -540,6 +543,129 @@ void main() {
     );
 
     testWidgets(
+      'Story 6.4 — onCallEnd dispatches RemoteCallEnded to the bloc',
+      (tester) async {
+        // The DataChannelHandler builder captures the onCallEnd callback;
+        // invoking it should dispatch a RemoteCallEnded(reason, data)
+        // event to the bloc. The bloc parks the call in remote-end-
+        // pending state until a follow-up PlaybackDrained arrives —
+        // this test only verifies the dispatch wiring; the bloc-side
+        // two-phase end is exercised in `call_bloc_test.dart`.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+        CallBloc? capturedBloc;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (context) {
+                return CallScreen(
+                  scenario: _scenario,
+                  callSession: _session,
+                  room: fixture.room,
+                  debugCanvasFallback: false,
+                  debugPlaybackDrainBuffer: Duration.zero,
+                  debugHandlerBuilder: ({
+                    required room,
+                    required onEmotion,
+                    required onHangUpWarning,
+                    required onCallEnd,
+                    required onBotSpeakingEnded,
+                  }) {
+                    capturedOnCallEnd = onCallEnd;
+                    return mock;
+                  },
+                );
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        // Capture the bloc instance the screen built so we can observe
+        // its state after the callback fires. Read from a descendant of
+        // CallScreen (the Scaffold is below the BlocProvider scope; the
+        // CallScreen element itself is above it).
+        capturedBloc =
+            tester.element(find.byType(Scaffold).first).read<CallBloc>();
+
+        expect(capturedOnCallEnd, isNotNull);
+        expect(capturedBloc.state, isA<CallConnected>());
+
+        // Fire the simulated `call_end` envelope. The bloc parks in
+        // remote-end-pending — still CallConnected externally.
+        capturedOnCallEnd!('character_hung_up', <String, dynamic>{
+          'survival_pct': 40,
+        });
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(capturedBloc.state, isA<CallConnected>());
+
+        // Simulate the local playback-drain signal (the real wiring is
+        // through `VisemeScheduler.onSilenceConfirmed`).
+        capturedBloc.add(const PlaybackDrained());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(capturedBloc.state, isA<CallEnded>());
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'Story 6.4 — onHangUpWarning callback is a no-op (no bloc event)',
+      (tester) async {
+        // Invoking the warning hook must NOT dispatch any event to the
+        // bloc and must NOT crash the widget tree. This is the regression
+        // guard for the deliberate no-op wiring documented in AC6.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(int)? capturedOnHangUpWarning;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+              }) {
+                capturedOnHangUpWarning = onHangUpWarning;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        expect(capturedOnHangUpWarning, isNotNull);
+
+        // Fire the warning — must NOT throw, must NOT pop the screen.
+        capturedOnHangUpWarning!(5);
+        await tester.pump();
+
+        // Sanity: the CallScreen is still mounted (a regression that
+        // wired the warning to a bloc event would have popped it).
+        expect(find.byType(RiveCharacterCanvas), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
       'disposes the handler when CallScreen unmounts',
       (tester) async {
         final mock = MockDataChannelHandler();
@@ -556,6 +682,9 @@ void main() {
               debugHandlerBuilder: ({
                 required room,
                 required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
               }) {
                 return mock;
               },

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import time
 
@@ -27,7 +28,9 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
 from pipeline.emotion_emitter import EmotionEmitter
+from pipeline.patience_tracker import PatienceTracker
 from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
+from pipeline.scenarios import TUTORIAL_SCENARIO_ID, resolve_patience_config
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
 
 
@@ -47,6 +50,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # `/connect` path doesn't set it, so default to "waiter" to keep the
     # PoC entry alive.
     scenario_character = os.environ.get("SCENARIO_CHARACTER") or "waiter"
+    # Story 6.4 — `SCENARIO_ID` lets the bot resolve the PatienceTracker
+    # config (silence ladder timing, patience meter, etc.) from the
+    # scenario YAML + difficulty preset. Same fallback shape as the env
+    # vars above: the legacy `/connect` path doesn't set it, so default
+    # to the tutorial scenario.
+    scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
+    patience_config = resolve_patience_config(scenario_id)
 
     transport = LiveKitTransport(
         url=url,
@@ -129,6 +139,35 @@ async def run_bot(url: str, room: str, token: str) -> None:
         openrouter_api_key=settings.openrouter_api_key,
     )
 
+    # Story 6.4 — server-side silence escalation + character hang-up.
+    # PatienceTracker sits between `context_aggregator.user()` and `llm`
+    # so it observes the user's finalized transcription frames and can
+    # cancel its silence ladder the moment the aggregator publishes a
+    # turn. Production wiring passes `abuse_classifier=None`; the
+    # `inappropriate_content` reason path is only exercised by the
+    # unit test until Story 6.6's ExchangeClassifier lands
+    # (Deviation #1).
+    #
+    # `resolve_patience_config` returns the full scenario-metadata dict
+    # (7 difficulty fields + `total_checkpoints`); all 8 are accepted by
+    # PatienceTracker's constructor. `silence_penalty` /
+    # `silence_prompt_seconds` / `initial_patience` / `total_checkpoints`
+    # are applied by the Story 6.4 behavior; `fail_penalty` /
+    # `recovery_bonus` / `silence_hangup_seconds` /
+    # `escalation_thresholds` are stored dormant for Stories 6.6 / 6.7 /
+    # DW1 consumption. Wired explicitly so a future preset-key rename
+    # surfaces here as a KeyError instead of silently dropping a field.
+    patience_tracker = PatienceTracker(
+        initial_patience=patience_config["initial_patience"],
+        fail_penalty=patience_config["fail_penalty"],
+        silence_penalty=patience_config["silence_penalty"],
+        recovery_bonus=patience_config["recovery_bonus"],
+        silence_prompt_seconds=patience_config["silence_prompt_seconds"],
+        silence_hangup_seconds=patience_config["silence_hangup_seconds"],
+        escalation_thresholds=patience_config["escalation_thresholds"],
+        total_checkpoints=patience_config["total_checkpoints"],
+    )
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -136,6 +175,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
             transcript_user,
             emotion_emitter,
             context_aggregator.user(),
+            patience_tracker,
             llm,
             transcript_character,
             tts,
@@ -170,6 +210,40 @@ async def run_bot(url: str, room: str, token: str) -> None:
     ) -> None:
         logger.info(f"Participant left: {participant_id} (reason: {reason})")
         await task.queue_frames([EndFrame()])
+
+    @transport.event_handler("on_data_received")
+    async def on_data_received(
+        transport: LiveKitTransport, data: bytes, participant_id: str
+    ) -> None:
+        """Route client-originated data-channel envelopes.
+
+        Story 6.4 — the client publishes `{"type":"playback_idle"}` via
+        `room.localParticipant?.publishData(...)` whenever its
+        speaker-side PCM stream confirms 600 ms of post-bot-speech
+        silence (`VisemeScheduler.onSilenceConfirmed`). That signal is
+        the canonical "the user has finished hearing the bot, the
+        silence-clock starts now" trigger for `PatienceTracker`,
+        replacing the server-side `BotStoppedSpeakingFrame` (which
+        fired ~1 s ahead of the user's ear due to WebRTC jitter
+        buffering).
+
+        Malformed payloads / unknown types are silently ignored — a
+        malformed envelope must NEVER crash the bot process.
+        """
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                f"on_data_received: malformed envelope from {participant_id}: {exc}"
+            )
+            return
+        if not isinstance(payload, dict):
+            return
+        envelope_type = payload.get("type")
+        if envelope_type == "playback_idle":
+            patience_tracker.handle_playback_idle()
+        # Unknown types: silently ignore so future client-side
+        # additions can land before the matching server handler ships.
 
     runner = PipelineRunner()
     await runner.run(task)

@@ -50,6 +50,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     // Emit ONE envelope; if the handler subscribed twice (or zero times)
@@ -77,6 +80,9 @@ void main() {
     final handler = DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(
@@ -104,6 +110,9 @@ void main() {
     final handler = DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     await handler.dispose();
@@ -117,6 +126,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (e, i) => received.add((e, i)),
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(
@@ -144,6 +156,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(
@@ -177,6 +192,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(
@@ -196,6 +214,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(_rawEnvelope(utf8.encode('not-json')));
@@ -210,6 +231,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (_, _) => emotionCalls++,
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'emotion', 'data': {}}));
@@ -224,6 +248,9 @@ void main() {
     DataChannelHandler(
       room: fixture.room,
       onEmotion: (e, i) => received.add((e, i)),
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
     );
 
     fixture.emitter.emit(
@@ -235,5 +262,130 @@ void main() {
     await _flush();
 
     expect(received, [('smirk', 0.0)]);
+  });
+
+  // ----- Story 6.4 — hang_up_warning + call_end routing -----
+
+  test('hang_up_warning envelope routes seconds_remaining to onHangUpWarning',
+      () async {
+    final fixture = _buildRoom();
+    final warnings = <int>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: warnings.add,
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'hang_up_warning',
+        'data': {'seconds_remaining': 5},
+      }),
+    );
+    await _flush();
+
+    expect(warnings, [5]);
+  });
+
+  test('hang_up_warning missing data field does not invoke callback',
+      () async {
+    final fixture = _buildRoom();
+    var warnings = 0;
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) => warnings++,
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+    );
+
+    // Missing top-level `data` field: the outer guard rejects the
+    // envelope before reaching the switch, so the callback is never
+    // invoked. The trip-wire emit afterwards proves the subscription
+    // is still alive.
+    fixture.emitter.emit(_envelope({'type': 'hang_up_warning'}));
+    await _flush();
+    expect(warnings, 0);
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'hang_up_warning',
+        'data': {'seconds_remaining': 3},
+      }),
+    );
+    await _flush();
+    expect(warnings, 1, reason: 'subscription must still be alive after drop');
+  });
+
+  test('call_end envelope routes reason + full data map to onCallEnd',
+      () async {
+    final fixture = _buildRoom();
+    final received = <(String, Map<String, dynamic>)>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (r, d) => received.add((r, d)),
+      onBotSpeakingEnded: () {},
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'call_end',
+        'data': {
+          'reason': 'character_hung_up',
+          'survival_pct': 40,
+          'checkpoints_passed': 2,
+          'total_checkpoints': 5,
+        },
+      }),
+    );
+    await _flush();
+
+    expect(received, hasLength(1));
+    expect(received.first.$1, 'character_hung_up');
+    expect(received.first.$2['survival_pct'], 40);
+    expect(received.first.$2['checkpoints_passed'], 2);
+    expect(received.first.$2['total_checkpoints'], 5);
+  });
+
+  test('call_end missing reason falls back to "unknown"', () async {
+    final fixture = _buildRoom();
+    final received = <(String, Map<String, dynamic>)>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (r, d) => received.add((r, d)),
+      onBotSpeakingEnded: () {},
+    );
+
+    fixture.emitter.emit(_envelope({'type': 'call_end', 'data': <String, dynamic>{}}));
+    await _flush();
+
+    expect(received, hasLength(1));
+    expect(received.first.$1, 'unknown');
+    expect(received.first.$2, <String, dynamic>{});
+  });
+
+  test('bot_speaking_ended envelope invokes onBotSpeakingEnded', () async {
+    final fixture = _buildRoom();
+    var endedCount = 0;
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () => endedCount++,
+    );
+
+    fixture.emitter.emit(
+      _envelope({'type': 'bot_speaking_ended', 'data': <String, dynamic>{}}),
+    );
+    await _flush();
+
+    expect(endedCount, 1);
   });
 }

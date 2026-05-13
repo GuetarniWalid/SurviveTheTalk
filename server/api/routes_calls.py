@@ -182,6 +182,7 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
         **os.environ,
         "SYSTEM_PROMPT": system_prompt,
         "SCENARIO_CHARACTER": rive_character,
+        "SCENARIO_ID": scenario_id,
     }
     try:
         subprocess.Popen(
