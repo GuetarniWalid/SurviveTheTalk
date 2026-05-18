@@ -83,7 +83,20 @@ def _patch_database_path(path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", path)
     seen: set[int] = set()
     for mod in list(sys.modules.values()):
-        s = getattr(mod, "settings", None)
+        # Some packages (e.g. `transformers`) define a lazy module-level
+        # `__getattr__` that raises a propagating exception for unknown
+        # attributes. The default `None` of `getattr` only catches
+        # `AttributeError`, so a bare access would crash the whole
+        # sweep on those packages.
+        # Review patch — narrow the catch to the specific exception
+        # classes the lazy-import machinery raises. A bare `except
+        # Exception` would silently swallow legitimate import bugs
+        # in our own modules (e.g. a syntax-error-in-conditional-
+        # import that surfaces only on `getattr`).
+        try:
+            s = getattr(mod, "settings", None)
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            continue
         if s is None or not hasattr(s, "database_path") or id(s) in seen:
             continue
         seen.add(id(s))

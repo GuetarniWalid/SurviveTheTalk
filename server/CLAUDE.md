@@ -68,6 +68,29 @@ pass.
    the test observes the outcome. Higher setup cost than direct calls but
    the only way to truly catch direction drift.
 
+#### Asymmetric `TranscriptionFrame.finalized` defaults — intentional
+
+`CheckpointManager` and `PatienceTracker` both observe
+`TranscriptionFrame`, and both check `getattr(frame, "finalized", X)` with
+DIFFERENT defaults — this is intentional, not a bug:
+
+- **CheckpointManager** — `getattr(frame, "finalized", False)`. Conservative:
+  a future pipecat that drops the field stops firing the classifier on every
+  interim transcription. A false-positive (classifier fires on a half-word)
+  would advance a checkpoint on noise; the cost asymmetry favors the
+  conservative default.
+- **PatienceTracker** — `getattr(frame, "finalized", True)`. Aggressive:
+  matches the current pipecat 0.0.108 behavior where `finalized` is always
+  emitted. A false-positive (silence ladder cancelled on an interim TF)
+  defers a hangup by one ladder tick — recoverable. A false-negative
+  (ladder NOT cancelled when user spoke) escalates impatience while the
+  user is talking — worse UX.
+
+If pipecat ever drops the `finalized` field, the asymmetry surfaces:
+CheckpointManager goes silent (classifier never fires); PatienceTracker
+fires on every interim. Re-evaluate both defaults together at upgrade
+time. Cross-references live in inline comments at both call sites.
+
 ### 2. Migrations must replay against the prod snapshot
 
 A test that passes on an empty DB says nothing about production. Any new

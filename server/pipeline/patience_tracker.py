@@ -5,6 +5,37 @@ hang-up sequence. Sits between `context_aggregator.user()` and `llm` so
 it observes user `TranscriptionFrame`s after the aggregator finalizes a
 turn (see `difficulty-calibration.md` AD-2).
 
+Story 6.6 extensions:
+  - New public method `apply_exchange_outcome(success: bool)`. Called
+    by `CheckpointManager` after each `ExchangeClassifier` verdict.
+    Adds `recovery_bonus` to the meter on success; adds `fail_penalty`
+    (a non-positive int) on failure. Bounded to `[0, initial_patience]`.
+    Wires the previously-dormant `fail_penalty` / `recovery_bonus`
+    constructor kwargs (Story 6.4 stored them but did not consume them).
+    Story 6.6 post-deploy follow-up (2026-05-18, Deviation #6): when
+    the meter falls into the warning band (`<= _PATIENCE_WARNING_THRESHOLD`,
+    default 25) on a failed exchange, push a one-shot `patience_warning_line`
+    TTSSpeakFrame ("last chance" warning). When the meter reaches 0,
+    schedule `character_hung_up` directly with the silence exit line —
+    NOT only the silence ladder ends the call; an actively-speaking
+    user who burns through every try also gets cut off. The warning is
+    spent permanently once emitted (recovery via `recovery_bonus` does
+    NOT re-arm it).
+  - New public method `schedule_completion(survival_pct: int)`. Called
+    by `CheckpointManager` when the FINAL checkpoint passes. Routes
+    through the existing hang-up coroutine with `reason='survived'`
+    and `hang_up_line_survived` as the spoken exit line.
+  - New constructor kwarg `hang_up_line_survived` — the YAML
+    `exit_lines.completion` line, wired through `resolve_patience_config`.
+  - **Deviation #1 — two distinct survival_pct formulas.** When the
+    completion path fires (`reason='survived'`), `survival_pct` is
+    **100 by definition** (the user passed every checkpoint). When the
+    silence-ladder or abuse-classifier path fires
+    (`reason='character_hung_up'` / `'inappropriate_content'`),
+    `survival_pct` is the patience-meter ratio:
+    `int(self._patience / self._initial_patience * 100)`.
+    Two paths, two formulas — do not unify.
+
 The silence timer is **driven by the client**, not by
 `BotStoppedSpeakingFrame`. The bot's "I have finished speaking" event
 fires when the LiveKit outbound buffer is flushed — but the client's
@@ -86,6 +117,10 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+# ============================================================
+# Silence-ladder timing anchors (Story 6.4)
+# ============================================================
+
 # Stage 1 anchor (impatience face emit) — measured from the start
 # of the ladder, which itself starts on client-confirmed
 # `playback_idle` (= user's ear heard the bot finish speaking).
@@ -107,6 +142,11 @@ _POST_ANGER_HANGUP_DELAY = 2.0
 # prompt audio still fits. If the signal is lost, we proceed anyway
 # so the ladder doesn't wedge forever.
 _PROMPT_PLAYBACK_TIMEOUT_SECONDS = 10.0
+
+
+# ============================================================
+# Hang-up sequence timing + safety bounds (Story 6.4)
+# ============================================================
 
 # Safety cap so a stuck TTS during the hang-up exit line cannot wedge
 # the call indefinitely. 6.0 s is generous for a 2-sentence line.
@@ -132,8 +172,23 @@ _HANG_UP_PRE_TTS_DELAY = 0.5
 # server force-terminates.
 _HANG_UP_CLIENT_DRAIN_TIMEOUT_SECONDS = 8.0
 
+
+# ============================================================
+# Reason whitelist + warning band (Story 6.6 + Deviation #6)
+# ============================================================
+
+# The meter band at or below which a one-shot "last chance" warning
+# fires on the next failed exchange. Hardcoded for MVP; could be
+# per-difficulty later if the calibration data warrants it.
+_PATIENCE_WARNING_THRESHOLD = 25
+
+# `EndCallIn.reason` Literal whitelist (server-side wire format).
+# Aligns with Story 6.5 D4 — the epic spec said "completed" but the
+# wire format is "survived". Story 6.6 ships the wire token.
 _REASON_SILENCE = "character_hung_up"
 _REASON_INAPPROPRIATE = "inappropriate_content"
+_REASON_SURVIVED = "survived"
+_VALID_REASONS = frozenset({_REASON_SILENCE, _REASON_INAPPROPRIATE, _REASON_SURVIVED})
 
 
 class PatienceTracker(FrameProcessor):
@@ -201,12 +256,32 @@ class PatienceTracker(FrameProcessor):
         silence_prompt_line: str = "Hello? Are you still there?",
         hang_up_line_silence: str = "I don't have time for this. Goodbye.",
         hang_up_line_inappropriate: str = "I'm done with this. Goodbye.",
+        hang_up_line_survived: str = ("Looks like you got what you came for. Goodbye."),
+        patience_warning_line: str = (
+            "*sighs* Look, are you ordering or not? Last chance."
+        ),
         abuse_classifier: Callable[[str], bool] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         if initial_patience <= 0:
             raise ValueError(f"initial_patience must be > 0, got {initial_patience!r}")
+        # Story 6.6 review patch — defensive type guards on the kwargs
+        # that Story 6.6 newly consumes via `apply_exchange_outcome` and
+        # `CheckpointManager.is_terminal_turn`. In production these
+        # values flow from `resolve_patience_config`, which already
+        # type-checks them; but tests that bypass the resolver MUST get
+        # a loud `TypeError` instead of an `unsupported operand` mid-
+        # call when `self._patience + self._fail_penalty` runs. Reject
+        # bool explicitly — `isinstance(True, int)` is True in Python.
+        if not isinstance(fail_penalty, int) or isinstance(fail_penalty, bool):
+            raise TypeError(
+                f"fail_penalty must be an int (not bool), got {fail_penalty!r}"
+            )
+        if not isinstance(recovery_bonus, int) or isinstance(recovery_bonus, bool):
+            raise TypeError(
+                f"recovery_bonus must be an int (not bool), got {recovery_bonus!r}"
+            )
         self._initial_patience = initial_patience
         self._patience = initial_patience
         self._silence_penalty = silence_penalty
@@ -215,7 +290,29 @@ class PatienceTracker(FrameProcessor):
         self._silence_prompt_line = silence_prompt_line
         self._hang_up_line_silence = hang_up_line_silence
         self._hang_up_line_inappropriate = hang_up_line_inappropriate
+        # Story 6.6 — exit line for the completion path. Sourced from
+        # YAML `exit_lines.completion` via `resolve_patience_config`.
+        self._hang_up_line_survived = hang_up_line_survived
+        # Story 6.6 post-deploy (2026-05-18, Deviation #6) — the "last
+        # chance" warning line fired once per call when the meter falls
+        # into the warning band on a failed exchange.
+        self._patience_warning_line = patience_warning_line
+        # One-shot flag: True once the warning has been emitted in this
+        # call. `recovery_bonus` pulling the meter back above the
+        # threshold does NOT clear it — the user's one warning is spent.
+        self._warning_emitted = False
+        # Story 6.6 — track the fire-and-forget warning push task so
+        # `cleanup()` can drain it on shutdown. Without this the task
+        # would be GC'd while pending → "Task was destroyed but it is
+        # pending!" log noise (same hygiene as `_silence_task` /
+        # `_hang_up_task`).
+        self._warning_task: asyncio.Task[None] | None = None
         self._abuse_classifier = abuse_classifier
+        # Story 6.6 — survival_pct override threaded by
+        # `schedule_completion` so the `_run_hang_up` arithmetic
+        # produces 100 (checkpoints-passed) instead of the meter
+        # ratio. None on the silence/abuse paths (meter ratio wins).
+        self._pending_survival_pct: int | None = None
 
         # Dormant fields — wired for forward-compat with Stories 6.6
         # / 6.7 / DW1. Stored on the instance so the constructor
@@ -278,6 +375,28 @@ class PatienceTracker(FrameProcessor):
             total_checkpoints,
         )
 
+    # ---------- Public read-only properties (Story 6.6 Deviation #7) ----------
+    # `CheckpointManager` needs to read the meter + fail_penalty + hangup
+    # status to decide whether a turn is terminal (preemptive sync path).
+    # Exposing these via properties keeps the coupling explicit but
+    # disciplined: read access is sanctioned, direct mutation is not.
+
+    @property
+    def patience(self) -> int:
+        """Current patience meter value, bounded `[0, initial_patience]`."""
+        return self._patience
+
+    @property
+    def fail_penalty(self) -> int:
+        """Configured per-fail meter delta (a non-positive int)."""
+        return self._fail_penalty
+
+    @property
+    def is_hanging_up(self) -> bool:
+        """True once a hang-up sequence has been scheduled (set
+        synchronously by `_schedule_hang_up` / `schedule_completion`)."""
+        return self._hang_up_in_progress
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
@@ -335,6 +454,11 @@ class PatienceTracker(FrameProcessor):
             # finalized text confirms the user actually completed a
             # turn. `finalized` defaults to True if absent so STTs that
             # don't carry the field (older pipecat) keep working.
+            # NOTE — intentional asymmetry with
+            # `checkpoint_manager.py::process_frame` which defaults to
+            # False (conservative — avoid firing on every interim).
+            # The asymmetry is documented in server/CLAUDE.md §1 and
+            # reflects different cost calculus for false positives.
             if not getattr(frame, "finalized", True):
                 return
             # Cancel BEFORE the empty-text early-return: an artifact
@@ -441,6 +565,152 @@ class PatienceTracker(FrameProcessor):
             prior_hang_up.cancel()
             await asyncio.gather(prior_hang_up, return_exceptions=True)
         self._hang_up_task = None
+        # Story 6.6 Deviation #6 — drain the warning push task too.
+        prior_warning = self._warning_task
+        if prior_warning is not None and not prior_warning.done():
+            prior_warning.cancel()
+            await asyncio.gather(prior_warning, return_exceptions=True)
+        self._warning_task = None
+
+    # ---------- Story 6.6 — checkpoint outcome + completion ----------
+
+    def apply_exchange_outcome(self, success: bool) -> None:
+        """Apply `fail_penalty` (failure) or `recovery_bonus` (success) to the meter.
+
+        Called by `CheckpointManager` after each `ExchangeClassifier`
+        verdict. The meter is bounded `[0, initial_patience]`.
+
+        On a failed exchange (`success=False`):
+          - If the meter drops to **zero**: schedule `character_hung_up`
+            with the silence exit line ("I don't have time for this.
+            Goodbye."). An actively-speaking user who burned through
+            every try gets cut off — same outcome as a silent user,
+            different trigger.
+          - Else if the meter drops into the **warning band**
+            (`<= _PATIENCE_WARNING_THRESHOLD`, default 25): push the
+            `patience_warning_line` as a TTSSpeakFrame ("last chance"
+            warning). One-shot per call — `recovery_bonus` pulling the
+            meter back above the threshold does NOT re-arm the warning.
+
+        Recovery is additive (positive `recovery_bonus`); penalty is
+        additive (`fail_penalty` is non-positive). Idempotent w.r.t.
+        concurrent calls — single event loop, no locks needed.
+        """
+        if self._hang_up_in_progress:
+            # The call is ending; further outcome events from a stale
+            # in-flight classifier task MUST NOT mutate the meter.
+            return
+        if success:
+            self._patience = min(
+                self._initial_patience, self._patience + self._recovery_bonus
+            )
+        else:
+            # `_fail_penalty` is a non-positive int; addition floors at 0.
+            self._patience = max(0, self._patience + self._fail_penalty)
+        logger.info(
+            "patience_outcome success={} patience={}/{}",
+            success,
+            self._patience,
+            self._initial_patience,
+        )
+
+        # Story 6.6 post-deploy (Deviation #6) — meter-driven hangup and
+        # last-chance warning ladder. Only checked on failed exchanges;
+        # a successful exchange that crosses a threshold downward
+        # (impossible by construction since recovery_bonus >= 0) would
+        # not need to trigger anything.
+        if not success:
+            if self._patience == 0:
+                # Meter depleted while user was actively trying. Same
+                # exit line as silence-driven hangup ("I don't have
+                # time for this. Goodbye.") — semantically the same
+                # outcome from the user's POV.
+                logger.info("patience_meter_zero — scheduling hang-up")
+                self._schedule_hang_up(_REASON_SILENCE)
+                return
+            if (
+                self._patience <= _PATIENCE_WARNING_THRESHOLD
+                and not self._warning_emitted
+                and (self._warning_task is None or self._warning_task.done())
+            ):
+                logger.info(
+                    "patience_warning emitting at patience={}/{}",
+                    self._patience,
+                    self._initial_patience,
+                )
+                # Fire-and-forget the TTSSpeakFrame push so this sync
+                # method stays sync (matches `_schedule_hang_up`
+                # pattern). The caller is already in an event loop
+                # context (CheckpointManager._classify_and_advance).
+                # Store the task so `cleanup()` can drain it on
+                # shutdown — otherwise a pending push at teardown
+                # produces `Task was destroyed but it is pending!`
+                # log noise.
+                #
+                # Review patch — `_warning_emitted = True` is set INSIDE
+                # `_emit_patience_warning` AFTER a successful push, not
+                # before task creation. Setting it pre-spawn would burn
+                # the one-shot even if the push synchronously failed
+                # (transport down, pipeline mid-teardown), leaving the
+                # user on "last chance" with no audible warning. The
+                # `_warning_task is None or done()` check on the line
+                # above prevents duplicate spawns in the gap between
+                # spawn and successful push — single-event-loop
+                # guarantees a second `apply_exchange_outcome` cannot
+                # run between `create_task` and the next yield point.
+                self._warning_task = asyncio.create_task(self._emit_patience_warning())
+
+    async def _emit_patience_warning(self) -> None:
+        """Push the patience-warning TTSSpeakFrame downstream.
+
+        Spawned as a fire-and-forget task from `apply_exchange_outcome`
+        so the sync API stays sync. The push targets the LLM/TTS
+        downstream path — same lane used by `_run_silence_ladder` for
+        its stage-2 verbal prompt. Defensive try/except so a transient
+        push failure (TTS down, transport error) is logged and
+        swallowed instead of dying silently inside the spawned task.
+
+        Review patch — `_warning_emitted` flips to True only AFTER the
+        push lands successfully. If the push raises synchronously
+        (transport closed during pipeline teardown), the flag stays
+        False so a future failed exchange in the warning band can re-
+        attempt the warning. The `_warning_task is None or done()`
+        guard in the caller blocks duplicate concurrent spawns, so
+        post-success vs. post-failure semantics never produce two
+        in-flight warnings.
+        """
+        try:
+            await self.push_frame(
+                TTSSpeakFrame(text=self._patience_warning_line),
+                FrameDirection.DOWNSTREAM,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("patience_warning push failed (warning NOT delivered)")
+            return
+        self._warning_emitted = True
+
+    def schedule_completion(self, survival_pct: int) -> None:
+        """Route to `_run_hang_up` with `reason='survived'` and the YAML's
+        `exit_lines.completion` line. Idempotent re-call swallowed.
+
+        Args:
+            survival_pct: 100 from `CheckpointManager` today (all
+                checkpoints passed). Threaded explicitly so a future
+                tuned-rubric story can dampen the value (e.g. 80 when
+                the user passed but with multiple `fail_penalty`
+                hits along the way). Bounded to `[0, 100]` inside
+                `_run_hang_up` before being emitted.
+        """
+        if self._hang_up_in_progress:
+            return
+        # Stash the override BEFORE scheduling so `_run_hang_up` sees
+        # it when it reaches the `call_end` emit. Set conditionally
+        # only on the survived path; other paths leave it None and
+        # use the meter-ratio calculation.
+        self._pending_survival_pct = survival_pct
+        self._schedule_hang_up(_REASON_SURVIVED)
 
     # ---------- silence ladder ----------
 
@@ -555,6 +825,13 @@ class PatienceTracker(FrameProcessor):
     # ---------- hang-up sequence ----------
 
     def _schedule_hang_up(self, reason: str) -> None:
+        if reason not in _VALID_REASONS:
+            # Defensive: a future caller passing a typo should fail loud
+            # here, not silently fall through to a wrong exit line.
+            raise ValueError(
+                f"PatienceTracker._schedule_hang_up: unknown reason {reason!r}; "
+                f"expected one of {sorted(_VALID_REASONS)}"
+            )
         if self._hang_up_in_progress:
             return
         logger.info("PatienceTracker: scheduling hang-up reason={}", reason)
@@ -565,11 +842,16 @@ class PatienceTracker(FrameProcessor):
         self._hang_up_task = asyncio.create_task(self._run_hang_up(reason))
 
     async def _run_hang_up(self, reason: str) -> None:
-        line = (
-            self._hang_up_line_silence
-            if reason == _REASON_SILENCE
-            else self._hang_up_line_inappropriate
-        )
+        # 3-way exit-line selection. Deviation #1 from Story 6.6: the
+        # completion path speaks its own line (YAML `exit_lines.completion`
+        # via `_hang_up_line_survived`). silence + inappropriate paths
+        # remain on their respective lines.
+        if reason == _REASON_SILENCE:
+            line = self._hang_up_line_silence
+        elif reason == _REASON_INAPPROPRIATE:
+            line = self._hang_up_line_inappropriate
+        else:  # _REASON_SURVIVED — validated by _schedule_hang_up
+            line = self._hang_up_line_survived
         try:
             await self.push_frame(
                 OutputTransportMessageFrame(
@@ -608,13 +890,32 @@ class PatienceTracker(FrameProcessor):
             # buffer here means the timing is adaptive: a fast WiFi
             # client disconnects in ~100 ms after `call_end`, a slow
             # cellular client takes 1-2 s. The audio is never cut.
-            survival_pct = max(
-                0,
-                min(
-                    100,
-                    int(max(0, self._patience) / self._initial_patience * 100),
-                ),
-            )
+            #
+            # Survival-pct sourcing (Deviation #1 from Story 6.6):
+            #   reason='survived'   → 100 (passed every checkpoint —
+            #                         override threaded by
+            #                         `schedule_completion`).
+            #   reason='character_hung_up' / 'inappropriate_content'
+            #                       → patience-meter ratio (the user
+            #                         got dropped before completing).
+            if reason == _REASON_SURVIVED and self._pending_survival_pct is not None:
+                survival_pct = max(0, min(100, self._pending_survival_pct))
+                # Review patch — clear the override after consumption.
+                # `_hang_up_in_progress` already prevents a second
+                # `_run_hang_up` from firing today, but a future caller
+                # that loosens that invariant (e.g. retry-on-error)
+                # would otherwise read stale 100 on a non-survived path.
+                # Defensive reset keeps the field's lifetime scoped to
+                # one schedule_completion → _run_hang_up cycle.
+                self._pending_survival_pct = None
+            else:
+                survival_pct = max(
+                    0,
+                    min(
+                        100,
+                        int(max(0, self._patience) / self._initial_patience * 100),
+                    ),
+                )
             await self.push_frame(
                 OutputTransportMessageFrame(
                     message={

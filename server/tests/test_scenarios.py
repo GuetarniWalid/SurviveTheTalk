@@ -507,3 +507,570 @@ checkpoints:
 
     with pytest.raises(RuntimeError, match="trivial"):
         scenarios_mod.resolve_patience_config("synthetic_trivial_01")
+
+
+# ============================================================
+# Story 6.6 — deepcopy + validation + exit_lines + new helpers
+# ============================================================
+
+
+def _write_synthetic_yaml(
+    tmp_path,
+    monkeypatch,
+    yaml_body: str,
+    *,
+    scenario_id: str,
+) -> None:
+    """Helper that drops a synthetic YAML into `_SCENARIO_INDEX` for the
+    duration of a single test."""
+    from pipeline import scenarios as scenarios_mod
+
+    fake_yaml = tmp_path / f"{scenario_id}.yaml"
+    fake_yaml.write_text(yaml_body, encoding="utf-8")
+    patched_index = dict(scenarios_mod._SCENARIO_INDEX)
+    patched_index[scenario_id] = fake_yaml
+    monkeypatch.setattr(scenarios_mod, "_SCENARIO_INDEX", patched_index)
+
+
+_BASE_YAML = """
+metadata:
+  id: {scenario_id}
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  patience_start: null
+  fail_penalty: {fail_penalty}
+  silence_penalty: null
+  recovery_bonus: {recovery_bonus}
+  silence_prompt_seconds: null
+  silence_hangup_seconds: {silence_hangup_seconds}
+  escalation_thresholds: {escalation_thresholds}
+base_prompt: |
+  base test prompt
+checkpoints:
+  - id: a
+    hint_text: a-hint
+    prompt_segment: a-segment
+    success_criteria: a-success
+  - id: b
+    hint_text: b-hint
+    prompt_segment: b-segment
+    success_criteria: b-success
+exit_lines:
+  hangup: "Synth hangup."
+  completion: "Synth completion."
+"""
+
+
+def test_resolve_patience_config_uses_deepcopy_so_overrides_dont_mutate_preset() -> (
+    None
+):
+    """Deferred-work line 357 regression net: a downstream mutation of
+    `escalation_thresholds` on one returned config MUST NOT corrupt the
+    shared preset row that subsequent calls read from. Story 6.6 makes
+    multiple `CheckpointManager` instances coexist on a single VPS, so a
+    future bug that appends to the list (e.g. as part of a per-call
+    rolling-window) would leak globally without this guard."""
+    from pipeline.scenarios import _DIFFICULTY_PRESETS, resolve_patience_config
+
+    original_easy = list(_DIFFICULTY_PRESETS["easy"]["escalation_thresholds"])
+
+    config_a = resolve_patience_config("waiter_easy_01")
+    config_a["escalation_thresholds"].append(999)
+
+    config_b = resolve_patience_config("waiter_easy_01")
+    assert config_b["escalation_thresholds"] == original_easy, (
+        "mutating one returned config must not corrupt the preset row"
+    )
+    # And the preset row itself stays clean.
+    assert _DIFFICULTY_PRESETS["easy"]["escalation_thresholds"] == original_easy
+
+
+def test_resolve_patience_config_validates_fail_penalty_must_be_non_positive(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML `fail_penalty: 5` would APPLY a positive offset to the
+    meter on a failed exchange — the user would get rewarded for failing.
+    Fail loud at resolve time."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bad_fail",
+            fail_penalty=5,
+            recovery_bonus="null",
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_bad_fail",
+    )
+    with pytest.raises(RuntimeError, match="fail_penalty"):
+        scenarios_mod.resolve_patience_config("synth_bad_fail")
+
+
+def test_resolve_patience_config_validates_recovery_bonus_must_be_non_negative(
+    tmp_path, monkeypatch
+) -> None:
+    """A negative `recovery_bonus` would PENALIZE the user on a successful
+    exchange — fail loud."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bad_rec",
+            fail_penalty="null",
+            recovery_bonus=-1,
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_bad_rec",
+    )
+    with pytest.raises(RuntimeError, match="recovery_bonus"):
+        scenarios_mod.resolve_patience_config("synth_bad_rec")
+
+
+def test_resolve_patience_config_validates_escalation_thresholds_must_be_list_of_int(
+    tmp_path, monkeypatch
+) -> None:
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bad_thr",
+            fail_penalty="null",
+            recovery_bonus="null",
+            silence_hangup_seconds="null",
+            escalation_thresholds='"75,50"',
+        ),
+        scenario_id="synth_bad_thr",
+    )
+    with pytest.raises(RuntimeError, match="escalation_thresholds"):
+        scenarios_mod.resolve_patience_config("synth_bad_thr")
+
+
+def test_resolve_patience_config_validates_silence_hangup_seconds_must_be_positive(
+    tmp_path, monkeypatch
+) -> None:
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bad_sh",
+            fail_penalty="null",
+            recovery_bonus="null",
+            silence_hangup_seconds=0,
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_bad_sh",
+    )
+    with pytest.raises(RuntimeError, match="silence_hangup_seconds"):
+        scenarios_mod.resolve_patience_config("synth_bad_sh")
+
+
+def test_resolve_patience_config_loads_exit_lines_from_yaml(
+    tmp_path, monkeypatch
+) -> None:
+    """`exit_lines.hangup` flows into BOTH `hang_up_line_silence` and
+    `hang_up_line_inappropriate` (single source of truth per Deviation #3);
+    `exit_lines.completion` flows into `hang_up_line_survived`."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_lines",
+            fail_penalty="null",
+            recovery_bonus="null",
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_lines",
+    )
+    config = scenarios_mod.resolve_patience_config("synth_lines")
+    assert config["hang_up_line_silence"] == "Synth hangup."
+    assert config["hang_up_line_inappropriate"] == "Synth hangup."
+    assert config["hang_up_line_survived"] == "Synth completion."
+
+
+def test_resolve_patience_config_loads_waiter_exit_lines() -> None:
+    """End-to-end against the real `the-waiter.yaml`: the tutorial
+    completion line is the documented one."""
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert config["hang_up_line_silence"] == "*heavy sigh* I'm done. Next customer."
+    assert config["hang_up_line_inappropriate"] == (
+        "*heavy sigh* I'm done. Next customer."
+    )
+    assert config["hang_up_line_survived"] == (
+        "Huh. You actually knew what you wanted. That's a first."
+    )
+
+
+def test_resolve_patience_config_loads_patience_warning_line_from_yaml(
+    tmp_path, monkeypatch
+) -> None:
+    """`exit_lines.patience_warning` flows into the `patience_warning_line`
+    config key consumed by PatienceTracker (Deviation #6)."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_warning
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "Done."
+  completion: "Wow."
+  patience_warning: "Custom last-chance line for this scenario."
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_warning")
+    config = scenarios_mod.resolve_patience_config("synth_warning")
+    assert (
+        config["patience_warning_line"] == "Custom last-chance line for this scenario."
+    )
+
+
+def test_resolve_patience_config_patience_warning_falls_back_when_yaml_omits_it(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML without `exit_lines.patience_warning` falls back to the
+    generic default — backward-compat for scenarios that haven't been
+    edited yet."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_no_warn
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "Done."
+  completion: "Wow."
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_no_warn")
+    config = scenarios_mod.resolve_patience_config("synth_no_warn")
+    assert "Last chance" in config["patience_warning_line"]
+
+
+def test_waiter_yaml_loads_patience_warning_line_end_to_end() -> None:
+    """The shipping `the-waiter.yaml` carries the scenario-tailored
+    warning line (sighs + "wasting my time here")."""
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert "wasting my time" in config["patience_warning_line"].lower()
+
+
+def test_load_scenario_checkpoints_returns_full_ordered_list() -> None:
+    """`waiter_easy_01` has 6 checkpoints in order: greet → main_course →
+    clarify → drink → confirm → close."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    checkpoints = load_scenario_checkpoints("waiter_easy_01")
+    ids = [c["id"] for c in checkpoints]
+    assert ids == ["greet", "main_course", "clarify", "drink", "confirm", "close"]
+    # Each entry has the required fields.
+    for entry in checkpoints:
+        for field in ("id", "hint_text", "prompt_segment", "success_criteria"):
+            assert field in entry
+            assert isinstance(entry[field], str)
+            assert entry[field].strip()
+
+
+def test_load_scenario_checkpoints_raises_FileNotFoundError_on_unknown_id() -> None:
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    with pytest.raises(FileNotFoundError):
+        load_scenario_checkpoints("does_not_exist")
+
+
+def test_load_scenario_checkpoints_rejects_malformed_entry(
+    tmp_path, monkeypatch
+) -> None:
+    """A checkpoint entry missing a required field must raise at load
+    time, not silently produce a degenerate prompt at call init."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_malformed
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    # missing success_criteria
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path, monkeypatch, yaml_body, scenario_id="synth_malformed"
+    )
+    with pytest.raises(RuntimeError, match="success_criteria"):
+        scenarios_mod.load_scenario_checkpoints("synth_malformed")
+
+
+def test_load_scenario_base_prompt_does_not_include_SPEAK_FIRST_directive() -> None:
+    """The CheckpointManager composes the live system message from
+    `base_prompt + checkpoint.prompt_segment` after every advance. The
+    `_SPEAK_FIRST_DIRECTIVE` ("You will speak first when the call
+    begins…") applies ONLY to the very first turn — re-injecting it on
+    checkpoint 2+ would corrupt the system prompt."""
+    from pipeline.scenarios import (
+        _SPEAK_FIRST_DIRECTIVE,
+        load_scenario_base_prompt,
+    )
+
+    base = load_scenario_base_prompt("waiter_easy_01")
+    assert _SPEAK_FIRST_DIRECTIVE.strip() not in base
+    assert "speak first" not in base.lower()
+    # And it IS the rstrip'd base prompt — should mention "Tina".
+    assert "Tina" in base
+
+
+def test_load_scenario_base_prompt_raises_FileNotFoundError_on_unknown_id() -> None:
+    from pipeline.scenarios import load_scenario_base_prompt
+
+    with pytest.raises(FileNotFoundError):
+        load_scenario_base_prompt("does_not_exist")
+
+
+# ============================================================
+# Story 6.6 review patches — defensive validators added 2026-05-18
+# ============================================================
+
+
+def test_resolve_patience_config_rejects_fail_penalty_bool(
+    tmp_path, monkeypatch
+) -> None:
+    """`isinstance(False, int)` is True in Python — without the explicit
+    bool check, a YAML `fail_penalty: false` would silently be accepted
+    as `0` (the warning band would never trigger because terminal-turn
+    detection requires `patience + fail_penalty <= 0` to advance toward
+    0; with fail_penalty=0 it can only fire when meter is already 0,
+    short-circuiting the preemptive path)."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bool_fp",
+            fail_penalty="false",
+            recovery_bonus="null",
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_bool_fp",
+    )
+    with pytest.raises(RuntimeError, match="fail_penalty"):
+        scenarios_mod.resolve_patience_config("synth_bool_fp")
+
+
+def test_resolve_patience_config_rejects_recovery_bonus_bool(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML `recovery_bonus: true` would silently coerce to `1` —
+    forbid bool explicitly to avoid silent type-coercion bugs."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_bool_rb",
+            fail_penalty="null",
+            recovery_bonus="true",
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_bool_rb",
+    )
+    with pytest.raises(RuntimeError, match="recovery_bonus"):
+        scenarios_mod.resolve_patience_config("synth_bool_rb")
+
+
+def test_resolve_patience_config_rejects_exit_lines_list(tmp_path, monkeypatch) -> None:
+    """A YAML `exit_lines: []` (list, not dict) used to slip past the
+    type check because `data.get('exit_lines') or {}` falsy-coerced the
+    empty list to an empty dict — the malformed-shape error never fired.
+    The patched code type-checks the raw value BEFORE the fallback."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_exit_list
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines: []
+"""
+    _write_synthetic_yaml(
+        tmp_path, monkeypatch, yaml_body, scenario_id="synth_exit_list"
+    )
+    with pytest.raises(RuntimeError, match="exit_lines"):
+        scenarios_mod.resolve_patience_config("synth_exit_list")
+
+
+def test_resolve_patience_config_validates_silence_prompt_seconds_positive(
+    tmp_path, monkeypatch
+) -> None:
+    """A negative or zero `silence_prompt_seconds` would `asyncio.sleep(<=0)`
+    and skip ladder stages instantly, silently disabling impatience
+    escalation. Reject at resolve time."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_sps_neg
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  silence_prompt_seconds: -1.0
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_sps_neg")
+    with pytest.raises(RuntimeError, match="silence_prompt_seconds"):
+        scenarios_mod.resolve_patience_config("synth_sps_neg")
+
+
+def test_resolve_patience_config_validates_silence_penalty_non_positive(
+    tmp_path, monkeypatch
+) -> None:
+    """`silence_penalty` is added to the meter at ladder stage 4 — must
+    be non-positive (or it would REWARD silence). Reject at resolve."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_sp_pos
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  silence_penalty: 5
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_sp_pos")
+    with pytest.raises(RuntimeError, match="silence_penalty"):
+        scenarios_mod.resolve_patience_config("synth_sp_pos")
+
+
+def test_load_scenario_base_prompt_rejects_speak_first_directive(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML author who pastes the composed prompt (with the speak-first
+    directive baked in) into `base_prompt` would otherwise have the bot
+    re-deliver the canned opening line on EVERY checkpoint advance.
+    Reject at load time so the mistake surfaces at boot, not mid-call."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_speak_first_in_base
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  You are Tina. You will speak first when the call begins.
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path, monkeypatch, yaml_body, scenario_id="synth_speak_first_in_base"
+    )
+    with pytest.raises(RuntimeError, match="speak-first directive"):
+        scenarios_mod.load_scenario_base_prompt("synth_speak_first_in_base")

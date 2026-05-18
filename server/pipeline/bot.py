@@ -27,10 +27,18 @@ from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
+from pipeline.checkpoint_manager import CheckpointManager
 from pipeline.emotion_emitter import EmotionEmitter
+from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
-from pipeline.scenarios import TUTORIAL_SCENARIO_ID, resolve_patience_config
+from pipeline.scenarios import (
+    TUTORIAL_SCENARIO_ID,
+    load_scenario_base_prompt,
+    load_scenario_checkpoints,
+    load_scenario_metadata,
+    resolve_patience_config,
+)
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
 
 
@@ -166,6 +174,34 @@ async def run_bot(url: str, room: str, token: str) -> None:
         silence_hangup_seconds=patience_config["silence_hangup_seconds"],
         escalation_thresholds=patience_config["escalation_thresholds"],
         total_checkpoints=patience_config["total_checkpoints"],
+        hang_up_line_silence=patience_config["hang_up_line_silence"],
+        hang_up_line_inappropriate=patience_config["hang_up_line_inappropriate"],
+        hang_up_line_survived=patience_config["hang_up_line_survived"],
+        patience_warning_line=patience_config["patience_warning_line"],
+    )
+
+    # Story 6.6 — checkpoint progression brain. ExchangeClassifier is
+    # fire-and-forget (asyncio.create_task, 2.0 s timeout per call). The
+    # manager swaps the live LLM system instruction in-place on advance
+    # (Deviation #2 — `llm._settings.system_instruction` is the single
+    # point of truth; the OpenAI adapter prepends it at every invocation,
+    # the LLMContext is created empty so mutating it would add a second
+    # system message) and routes the all-passed completion path through
+    # `PatienceTracker.schedule_completion(survival_pct=100)`.
+    scenario_metadata = load_scenario_metadata(scenario_id)
+    scenario_checkpoints = load_scenario_checkpoints(scenario_id)
+    scenario_base_prompt = load_scenario_base_prompt(scenario_id)
+    exchange_classifier = ExchangeClassifier(
+        openrouter_api_key=settings.openrouter_api_key,
+    )
+    checkpoint_manager = CheckpointManager(
+        base_prompt=scenario_base_prompt,
+        checkpoints=scenario_checkpoints,
+        llm=llm,
+        llm_context=context,
+        classifier=exchange_classifier,
+        patience_tracker=patience_tracker,
+        scenario_description=scenario_metadata.get("title", scenario_id),
     )
 
     pipeline = Pipeline(
@@ -174,8 +210,42 @@ async def run_bot(url: str, room: str, token: str) -> None:
             stt,
             transcript_user,
             emotion_emitter,
-            context_aggregator.user(),
+            # Story 6.6 Deviation #5 — CheckpointManager sits BEFORE the
+            # user aggregator, NOT after. The user-aggregator (see
+            # `pipecat.processors.aggregators.llm_response_universal`
+            # line 509-510) CONSUMES TranscriptionFrames and does NOT
+            # push them downstream. Placing the manager after the
+            # aggregator (as the original spec said) made it inert in
+            # prod for the first deploy — same class of bug as
+            # Déviation #28 (test and code mutually wrong on frame
+            # routing). Mirroring EmotionEmitter position is the correct
+            # fix: both observe finalized TranscriptionFrames straight
+            # from STT, before the aggregator absorbs them.
+            checkpoint_manager,
+            # Story 6.6 Deviation #29 (post-deploy 2026-05-18) — same
+            # root cause as Dev #5 applied to PatienceTracker. Story 6.4
+            # placed PatienceTracker AFTER `context_aggregator.user()`
+            # per AD-2 ("observe the aggregator-blessed finalized
+            # transcription"), but pipecat 0.0.108's LLMUserAggregator
+            # `_handle_transcription` consumes the TranscriptionFrame
+            # without pushing it downstream — so the tracker's
+            # `_cancel_silence_timer()` path on TranscriptionFrame was
+            # dead in prod since Story 6.4. The bug stayed dormant
+            # because Story 6.4 / 6.5 smoke gates never exercised
+            # "user speaks during the silence ladder" (Test 2 = user
+            # silent → hangup expected; Tests 3/4/5 = network/user
+            # hangup paths that don't trigger the ladder). Story 6.6
+            # surfaced it on the very first call: the user MUST speak
+            # mid-ladder to advance checkpoints, the ladder kept
+            # running through stages 1→2→3→4, hangup fired even after
+            # a successful checkpoint advance. Fix: move PatienceTracker
+            # upstream of the aggregator so it observes TranscriptionFrames
+            # directly from STT (same mechanism as CheckpointManager).
+            # BSF UPSTREAM observation is unaffected — UPSTREAM frames
+            # traverse every processor on the way back from
+            # transport.output().
             patience_tracker,
+            context_aggregator.user(),
             llm,
             transcript_character,
             tts,

@@ -18,6 +18,7 @@ stay in sync.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import yaml
@@ -190,7 +191,15 @@ def resolve_patience_config(scenario_id: str) -> dict:
         )
 
     preset = _DIFFICULTY_PRESETS[difficulty]
-    config: dict = dict(preset)
+    # Story 6.6 / deferred-work line 357 — switch to deepcopy so a
+    # downstream mutation of `escalation_thresholds` (or any future
+    # nested override) cannot corrupt the shared preset row across
+    # concurrent calls. The shallow `dict(preset)` was safe in Story
+    # 6.4 because no caller mutated the list, but Story 6.6 now spawns
+    # one `CheckpointManager` per call (multiple instances coexisting
+    # on the VPS) and a future bug that appends to the list would leak
+    # globally.
+    config: dict = copy.deepcopy(preset)
 
     # The YAML names the starting meter `patience_start`; the
     # PatienceTracker constructor names it `initial_patience`. Map
@@ -209,6 +218,44 @@ def resolve_patience_config(scenario_id: str) -> dict:
         )
     config["total_checkpoints"] = len(checkpoints)
 
+    # Story 6.6 — load exit_lines from YAML into the config. Single
+    # source of truth: `exit_lines.hangup` is shared by both silence
+    # and inappropriate paths today (Deviation #3); `exit_lines.completion`
+    # wires the new `hang_up_line_survived` constructor kwarg.
+    # A future story that wants per-reason silence/inappropriate lines
+    # can extend the YAML schema (`exit_lines.silence`,
+    # `exit_lines.inappropriate`) without breaking this contract.
+    #
+    # Type-check the raw value BEFORE the falsy-coalesce: an
+    # `exit_lines: []` (list) YAML override would otherwise silently
+    # collapse to `{}` via `or {}` and the malformed-shape check
+    # would never fire.
+    raw_exit_lines = data.get("exit_lines")
+    if raw_exit_lines is None:
+        exit_lines: dict = {}
+    elif not isinstance(raw_exit_lines, dict):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has malformed `exit_lines` (not a dict)."
+        )
+    else:
+        exit_lines = raw_exit_lines
+    hangup_line = exit_lines.get("hangup") or "I don't have time for this. Goodbye."
+    completion_line = (
+        exit_lines.get("completion") or "Looks like you got what you came for. Goodbye."
+    )
+    # Story 6.6 post-deploy (Deviation #6) — `exit_lines.patience_warning`
+    # is the one-shot "last chance" line spoken when the patience meter
+    # falls into the warning band on a failed exchange. Optional in YAML;
+    # falls back to a generic in-character line if absent.
+    patience_warning_line = (
+        exit_lines.get("patience_warning")
+        or "*sighs* Look, are you ordering or not? Last chance."
+    )
+    config["hang_up_line_silence"] = hangup_line
+    config["hang_up_line_inappropriate"] = hangup_line
+    config["hang_up_line_survived"] = completion_line
+    config["patience_warning_line"] = patience_warning_line
+
     # Defensive: a YAML `patience_start: 0` override would silently
     # produce a `survival_pct` denominator of zero in PatienceTracker's
     # arithmetic. Fail loud at config-resolution time so the bug
@@ -222,7 +269,170 @@ def resolve_patience_config(scenario_id: str) -> dict:
             f"initial_patience={config['initial_patience']!r}; must be a positive int."
         )
 
+    # Story 6.6 / deferred-work line 350 — type/range validation for
+    # the previously-dormant override fields. Story 6.4 stored these
+    # without validating them because nothing consumed them; Story 6.6
+    # is the consumer (`PatienceTracker.apply_exchange_outcome` wires
+    # `fail_penalty` and `recovery_bonus` into the meter), so a wrong
+    # type or sign would now mutate runtime state.
+    #
+    # `not isinstance(x, bool)` belt-and-braces every int check —
+    # Python's `bool` is a subclass of `int`, so a YAML `fail_penalty:
+    # false` (= 0) or `recovery_bonus: true` (= 1) would otherwise pass
+    # the `isinstance(x, int)` check silently. Reject explicitly so a
+    # YAML author who mistypes a bool sees the error at process start
+    # rather than getting silent integer coercion.
+    if (
+        not isinstance(config["fail_penalty"], int)
+        or isinstance(config["fail_penalty"], bool)
+        or config["fail_penalty"] > 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: fail_penalty must be a non-positive int, "
+            f"got {config['fail_penalty']!r}"
+        )
+    if (
+        not isinstance(config["recovery_bonus"], int)
+        or isinstance(config["recovery_bonus"], bool)
+        or config["recovery_bonus"] < 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: recovery_bonus must be a non-negative int, "
+            f"got {config['recovery_bonus']!r}"
+        )
+    if not isinstance(config["escalation_thresholds"], list) or not all(
+        isinstance(x, int) and not isinstance(x, bool)
+        for x in config["escalation_thresholds"]
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: escalation_thresholds must be a "
+            f"list[int], got {config['escalation_thresholds']!r}"
+        )
+    if (
+        not isinstance(config["silence_hangup_seconds"], (int, float))
+        or isinstance(config["silence_hangup_seconds"], bool)
+        or config["silence_hangup_seconds"] <= 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: silence_hangup_seconds must be a "
+            f"positive number, got {config['silence_hangup_seconds']!r}"
+        )
+    # Story 6.6 review patch — extend coverage to the two remaining
+    # numeric fields (`silence_prompt_seconds` is the ladder-stage-2
+    # anchor; `silence_penalty` is the meter deduction at ladder stage
+    # 4). Story 6.4 left them un-validated; Story 6.6's preemptive path
+    # is now the primary consumer (`PatienceTracker.patience` /
+    # `fail_penalty` read via property; a negative `silence_prompt_seconds`
+    # would `asyncio.sleep(-x)` and immediately skip stages, silently
+    # disabling the ladder).
+    if (
+        not isinstance(config["silence_prompt_seconds"], (int, float))
+        or isinstance(config["silence_prompt_seconds"], bool)
+        or config["silence_prompt_seconds"] <= 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: silence_prompt_seconds must be a "
+            f"positive number, got {config['silence_prompt_seconds']!r}"
+        )
+    if (
+        not isinstance(config["silence_penalty"], int)
+        or isinstance(config["silence_penalty"], bool)
+        or config["silence_penalty"] > 0
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: silence_penalty must be a non-positive int, "
+            f"got {config['silence_penalty']!r}"
+        )
+
     return config
+
+
+def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
+    """Return the ordered checkpoints list for `scenario_id`.
+
+    Story 6.6 — `CheckpointManager` needs the full ordered list (not just
+    the first entry that `load_scenario_prompt` consumes). Each entry is
+    a dict with at minimum: `id`, `hint_text`, `prompt_segment`,
+    `success_criteria`. Shape-validated so a malformed entry surfaces at
+    call init, not mid-call.
+
+    Raises:
+        FileNotFoundError: Unknown scenario id (parity with the rest of
+            this module).
+        RuntimeError: `checkpoints` is missing/empty or any entry has a
+            missing or non-string required field.
+    """
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    checkpoints = data.get("checkpoints")
+    if not isinstance(checkpoints, list) or not checkpoints:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: `checkpoints` must be a non-empty list."
+        )
+    required = ("id", "hint_text", "prompt_segment", "success_criteria")
+    for idx, entry in enumerate(checkpoints):
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] is not a dict."
+            )
+        for field in required:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise RuntimeError(
+                    f"Scenario {scenario_id!r}: checkpoint[{idx}] missing/empty "
+                    f"required string field {field!r}."
+                )
+    return checkpoints
+
+
+def load_scenario_base_prompt(scenario_id: str) -> str:
+    """Return the raw `base_prompt` (rstrip'd, NO `_SPEAK_FIRST_DIRECTIVE` suffix).
+
+    Story 6.6 — `CheckpointManager` composes the live system message as
+    `base_prompt + "\\n\\n" + checkpoints[index].prompt_segment` after
+    each advance. The `_SPEAK_FIRST_DIRECTIVE` is intentionally NOT
+    included here — it applies only to the very first turn (composed
+    once by `load_scenario_prompt`); the second checkpoint onwards must
+    NOT re-instruct the bot to deliver the canned opening line.
+
+    Raises:
+        FileNotFoundError: Unknown scenario id.
+        RuntimeError: `base_prompt` is missing or not a string.
+    """
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    base_prompt = data.get("base_prompt")
+    if not isinstance(base_prompt, str) or not base_prompt.strip():
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: `base_prompt` must be a non-empty string."
+        )
+    # Story 6.6 review patch — guard against a YAML author pasting the
+    # composed prompt (which includes `_SPEAK_FIRST_DIRECTIVE`) into the
+    # `base_prompt` field. Every checkpoint advance re-uses this string
+    # as the new system instruction; if it contains the speak-first
+    # directive, the bot would re-deliver the canned opening line on
+    # every advance — a bug that would surface mid-call, not at boot.
+    if "You will speak first when the call begins" in base_prompt:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: `base_prompt` must NOT include the "
+            f"speak-first directive. It is composed exactly once for the "
+            f"initial call setup by `load_scenario_prompt`; checkpoint "
+            f"advances re-use the raw `base_prompt` and must not re-issue "
+            f"the canned opening line."
+        )
+    return base_prompt.rstrip()
 
 
 def load_scenario_prompt(scenario_id: str) -> str:

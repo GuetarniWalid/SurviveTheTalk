@@ -982,3 +982,471 @@ def test_BSF_direction_matches_pipecat_emission_routing():
         "prod (the original Story 6.4 regression). Re-apply UPSTREAM "
         "or update this test if pipecat routing genuinely changed."
     )
+
+
+# ============================================================
+# Story 6.6 — apply_exchange_outcome + schedule_completion
+# ============================================================
+
+
+def test_apply_exchange_outcome_True_recovers_meter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """initial=100, recovery=+5, current=80 → meter==85."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(initial_patience=100, recovery_bonus=5))
+    tracker._patience = 80
+    tracker.apply_exchange_outcome(True)
+    assert tracker._patience == 85
+
+
+def test_apply_exchange_outcome_True_bounded_at_initial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recovery cannot overshoot the initial meter ceiling."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(initial_patience=100, recovery_bonus=20))
+    tracker._patience = 95
+    tracker.apply_exchange_outcome(True)
+    assert tracker._patience == 100
+
+
+def test_apply_exchange_outcome_False_applies_fail_penalty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """initial=100, fail=-15, current=80 → meter==65."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(initial_patience=100, fail_penalty=-15))
+    tracker._patience = 80
+    tracker.apply_exchange_outcome(False)
+    assert tracker._patience == 65
+
+
+def test_apply_exchange_outcome_False_floored_at_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fail_penalty cannot push the meter below zero.
+
+    Note: as of Deviation #6 (2026-05-18), reaching zero ALSO schedules
+    a `character_hung_up` hangup — drain the spawned task to keep the
+    event loop clean. The meter floor assertion is independent of the
+    hangup-on-zero behavior (which has its own dedicated test below).
+    """
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(initial_patience=100, fail_penalty=-20))
+    _capture_pushed(tracker)
+    tracker._patience = 10
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        assert tracker._patience == 0
+        # Drain the hang-up task scheduled by the meter-zero trigger so
+        # we don't leak `coroutine was never awaited` warnings.
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_apply_exchange_outcome_noops_during_hangup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the hang-up sequence is running, exchange outcomes from a
+    stale in-flight classifier MUST NOT mutate the meter — the call is
+    ending and the meter is no longer authoritative."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    tracker._hang_up_in_progress = True
+    tracker._patience = 50
+    tracker.apply_exchange_outcome(True)
+    assert tracker._patience == 50
+    tracker.apply_exchange_outcome(False)
+    assert tracker._patience == 50
+
+
+def test_schedule_completion_speaks_survived_line_and_emits_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`schedule_completion(survival_pct=100)` runs the hang-up coroutine
+    with the survived exit line + `reason='survived'` + `survival_pct=100`
+    regardless of the current `_patience` value."""
+    _shrink_timers(monkeypatch)
+    # Deliberate: low _patience to prove the meter-ratio formula is NOT
+    # used on the survived path (Deviation #1).
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_survived="Goodbye, surviving customer.",
+        )
+    )
+    tracker._patience = 5  # would yield survival_pct=5 under the meter ratio
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_completion(survival_pct=100)
+        await asyncio.sleep(0.02)
+        # Release the exit-line wait.
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts_speak = [
+        f
+        for f in captured
+        if isinstance(f, TTSSpeakFrame) and f.text == "Goodbye, surviving customer."
+    ]
+    assert len(tts_speak) == 1, "must speak the survived exit line"
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    data = call_end[0].message["data"]
+    assert data["reason"] == "survived"
+    assert data["survival_pct"] == 100, (
+        "Deviation #1 — survival_pct on the survived path is 100 by "
+        "definition, not the meter ratio"
+    )
+
+
+def test_schedule_completion_idempotent_when_hangup_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second `schedule_completion` call while a hang-up is already
+    running is swallowed — exactly ONE EndFrame."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_completion(survival_pct=100)
+        # Second call while the first hang-up coroutine is still running.
+        tracker.schedule_completion(survival_pct=100)
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    end_frames = [f for f in captured if isinstance(f, EndFrame)]
+    assert len(end_frames) == 1, "second schedule_completion must be a no-op"
+
+
+def test_schedule_hang_up_rejects_unknown_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A future caller passing a typo for `reason` should fail loud, not
+    silently fall through to a wrong exit line."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    with pytest.raises(ValueError, match="unknown reason"):
+        tracker._schedule_hang_up("not_a_real_reason")
+
+
+# ============================================================
+# Story 6.6 Deviation #6 — meter-at-zero hangup + warning band
+# ============================================================
+
+
+def test_apply_exchange_outcome_emits_warning_at_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the meter falls into the warning band (≤ 25) on a failed
+    exchange, a one-shot TTSSpeakFrame is pushed with the
+    `patience_warning_line`."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            fail_penalty=-20,
+            patience_warning_line="Hey, last chance, buddy.",
+        )
+    )
+    tracker._patience = 30  # one fail away from the threshold
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        assert tracker._patience == 10
+        # `_warning_emitted` flips to True AFTER the push lands (review
+        # patch — pre-spawn was the wrong moment because a failed push
+        # would otherwise burn the one-shot). Drain the spawned task
+        # before asserting.
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+        assert tracker._warning_emitted is True
+
+    _run(_drive())
+
+    warning_frames = [
+        f
+        for f in captured
+        if isinstance(f, TTSSpeakFrame) and f.text == "Hey, last chance, buddy."
+    ]
+    assert len(warning_frames) == 1, "warning TTSSpeakFrame must be pushed once"
+
+
+def test_warning_is_one_shot_within_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two failed exchanges in the warning band → exactly ONE warning
+    push. The flag persists for the call lifetime."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=100, fail_penalty=-10))
+    tracker._patience = 30
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)  # 30 → 20 (enters band)
+        await asyncio.sleep(0.02)
+        tracker.apply_exchange_outcome(False)  # 20 → 10 (still in band)
+        await asyncio.sleep(0.02)
+
+    _run(_drive())
+
+    warning_frames = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(warning_frames) == 1, "warning must fire once, not twice"
+
+
+def test_recovery_after_warning_does_not_re_arm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recovery_bonus pulling the meter back above the threshold does
+    NOT clear `_warning_emitted` — a subsequent dip below the threshold
+    must NOT re-fire the warning."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(initial_patience=100, fail_penalty=-10, recovery_bonus=20)
+    )
+    tracker._patience = 30
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)  # 30 → 20 — warning fires
+        # Drain the warning task so the post-push flag-flip lands.
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+        assert tracker._warning_emitted is True
+        tracker.apply_exchange_outcome(True)  # 20 → 40 — back above
+        assert tracker._warning_emitted is True, "must NOT clear on recovery"
+        tracker.apply_exchange_outcome(False)  # 40 → 30
+        tracker.apply_exchange_outcome(False)  # 30 → 20 — back in band
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+
+    _run(_drive())
+
+    warning_frames = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(warning_frames) == 1, (
+        "warning is one-shot per call; recovery must not re-arm it"
+    )
+
+
+def test_apply_exchange_outcome_schedules_hangup_at_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the meter hits zero on a failed exchange, schedule
+    character_hung_up with the silence exit line. NO warning fires on
+    the same call (the hangup supersedes it)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            fail_penalty=-100,  # one shot to zero
+            hang_up_line_silence="OK that's it, goodbye.",
+            patience_warning_line="Last chance.",
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        assert tracker._patience == 0
+        assert tracker._hang_up_in_progress is True
+        await asyncio.sleep(0.02)
+        # Release the exit-line wait so the hang-up coroutine can
+        # finish and emit call_end.
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    # No warning was pushed — the hangup-at-zero branch returned early
+    # before the warning band check.
+    warning_frames = [
+        f for f in captured if isinstance(f, TTSSpeakFrame) and "Last chance" in f.text
+    ]
+    assert warning_frames == [], "warning must NOT fire when meter zeroes in one step"
+
+    # The hangup spoke the silence exit line, not the survived one.
+    exit_frames = [
+        f
+        for f in captured
+        if isinstance(f, TTSSpeakFrame) and f.text == "OK that's it, goodbye."
+    ]
+    assert len(exit_frames) == 1, "silence exit line must play on meter-zero hangup"
+
+    # call_end envelope with reason character_hung_up.
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    assert call_end[0].message["data"]["reason"] == "character_hung_up"
+
+
+def test_warning_does_NOT_fire_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful exchange that keeps the meter inside the warning
+    band (e.g. user is at 20, recovery=+0) must NOT fire the warning —
+    only failures trigger the band check."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=100, recovery_bonus=0))
+    tracker._patience = 20
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(True)  # success, meter stays at 20
+        await asyncio.sleep(0.02)
+
+    _run(_drive())
+
+    warning_frames = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert warning_frames == [], "warning must not fire on success path"
+    assert tracker._warning_emitted is False
+
+
+def test_meter_zero_hangup_idempotent_with_in_progress_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the meter-zero hangup is scheduled, a second failed
+    exchange (e.g. a stale in-flight classifier verdict landing late)
+    must be swallowed — `_hang_up_in_progress` guards both the meter
+    mutation AND the hangup scheduling."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=100, fail_penalty=-100))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)  # meter → 0, hangup scheduled
+        assert tracker._hang_up_in_progress is True
+        # Second call while hangup is running — must be a no-op.
+        tracker.apply_exchange_outcome(False)
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    end_frames = [f for f in captured if isinstance(f, EndFrame)]
+    assert len(end_frames) == 1, "duplicate apply_exchange_outcome must NOT re-trigger"
+
+
+# ============================================================
+# Story 6.6 review patches — added 2026-05-18
+# ============================================================
+
+
+def test_constructor_rejects_bool_fail_penalty() -> None:
+    """`isinstance(True, int) is True` in Python — without the explicit
+    bool reject, a test or future caller could pass `fail_penalty=False`
+    and get silent coercion to `0`. Constructor must `TypeError`."""
+    with pytest.raises(TypeError, match="fail_penalty"):
+        PatienceTracker(**_easy_kwargs(fail_penalty=False))
+
+
+def test_constructor_rejects_bool_recovery_bonus() -> None:
+    with pytest.raises(TypeError, match="recovery_bonus"):
+        PatienceTracker(**_easy_kwargs(recovery_bonus=True))
+
+
+def test_constructor_rejects_none_fail_penalty() -> None:
+    """A None `fail_penalty` would raise `TypeError` mid-call when
+    `self._patience + self._fail_penalty` runs in
+    `apply_exchange_outcome`. Fail loud at construction instead."""
+    with pytest.raises(TypeError, match="fail_penalty"):
+        PatienceTracker(**_easy_kwargs(fail_penalty=None))
+
+
+def test_warning_flag_stays_false_when_push_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the patience-warning push raises (transport mid-teardown,
+    TTS service down), `_warning_emitted` must stay False so a later
+    failed exchange in the warning band can re-attempt the warning.
+    Before the review patch, the flag was set BEFORE the push so a
+    failed push permanently disabled warnings for the call."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=100, fail_penalty=-80))
+
+    async def _failing_push(frame: Frame, direction: FrameDirection) -> None:
+        raise RuntimeError("simulated transport failure")
+
+    tracker.push_frame = _failing_push  # type: ignore[assignment]
+
+    async def _drive() -> None:
+        # First failed exchange: meter → 20 (in warning band), warning task spawned.
+        tracker.apply_exchange_outcome(False)
+        # Let the warning task run to completion (it raises, gets caught).
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+
+    _run(_drive())
+
+    # Push failed → flag MUST stay False so a future failed exchange
+    # can retry the warning.
+    assert tracker._warning_emitted is False
+
+
+def test_warning_flag_true_after_successful_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: a successful warning push sets `_warning_emitted=True`
+    so a subsequent failed exchange in the same warning band does NOT
+    re-emit (one-shot semantics)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=100, fail_penalty=-80))
+    _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+
+    _run(_drive())
+
+    assert tracker._warning_emitted is True
+
+
+def test_pending_survival_pct_cleared_after_run_hang_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_pending_survival_pct` must be reset to None after `_run_hang_up`
+    consumes it on the survived path. Defensive cleanup so a future
+    refactor that loosens `_hang_up_in_progress` semantics doesn't read
+    stale 100 on a non-survived path."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_completion(survival_pct=100)
+        assert tracker._pending_survival_pct == 100
+        # Drive the hang-up sequence to completion.
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert tracker._pending_survival_pct is None, (
+        "_pending_survival_pct must be cleared after _run_hang_up consumes it"
+    )

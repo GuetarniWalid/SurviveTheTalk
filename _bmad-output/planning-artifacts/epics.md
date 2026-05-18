@@ -1190,7 +1190,7 @@ So that the conversation has structured goals and my performance is evaluated on
 
 **Given** all checkpoints are passed (index reaches total_checkpoints)
 **When** the last checkpoint is validated
-**Then** the character delivers its completion exit line and the pipeline sends a call_end event with reason "completed" and survival_pct 100
+**Then** the character delivers its completion exit line and the pipeline sends a call_end event with reason "survived" and survival_pct 100 <!-- 2026-05-15 Story 6.6: amended "completed" → "survived" to match the wire format already shipped in Story 6.5 review D4 (`EndCallIn.reason` Literal whitelist). The wire is the single source of truth — planning artifact realigned. -->
 
 **Given** the classifier fails or times out (>2s)
 **When** the fallback triggers

@@ -149,6 +149,7 @@ checkpoints:
 exit_lines:
   hangup: "*heavy sigh* I'm done. Next customer."
   completion: "Huh. You actually knew what you wanted. That's a first."
+  patience_warning: "*sighs heavily* Look, are you actually ordering food, or am I wasting my time here? Last chance."
 
 # ============================================================
 # BRIEFING — shown before the call
