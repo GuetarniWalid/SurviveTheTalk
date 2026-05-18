@@ -174,6 +174,22 @@ class CheckpointManager(FrameProcessor):
         # cancellation point in pipecat.
         self._in_flight: asyncio.Task[None] | None = None
         self._generation = 0
+        # Story 6.7 Phase 2 retouche #5 (2026-05-19) — defer the
+        # initial-state emit until this processor has seen its
+        # first frame (i.e. `_started=True`). `bot.py::
+        # on_first_participant_joined` calls `schedule_initial_emit()`
+        # which only sets this flag; the actual `push_frame` happens
+        # inside `process_frame` AFTER `super().process_frame(...)`
+        # has flipped `_started=True`. This routes the initial
+        # envelope through EXACTLY the same downstream chain
+        # (patience_tracker → context_aggregator.user() → ... →
+        # transport.output()) as the working advance envelopes,
+        # rather than via `task.queue_frames` which would inject
+        # the frame at the SOURCE of the pipeline (before
+        # transport.input(), stt, etc.) — that source-side path
+        # risks intermediate consumers (e.g. user aggregator) eating
+        # OutputTransportMessageFrame before it reaches the output.
+        self._initial_emit_pending = False
         # Story 6.6 review patch (D1) — serialize concurrent terminal-
         # turn invocations. Without this lock, a second finalized
         # `TranscriptionFrame` arriving while the first turn awaits
@@ -199,8 +215,38 @@ class CheckpointManager(FrameProcessor):
             checkpoints[0]["id"],
         )
 
+    def schedule_initial_emit(self) -> None:
+        """Story 6.7 Phase 2 retouche #5 — flag the initial-state
+        envelope for emission as soon as this processor's first frame
+        has propagated (`_started=True`). Called by
+        `bot.py::on_first_participant_joined`. The actual `push_frame`
+        runs inside `process_frame` once `super().process_frame(...)`
+        has flipped `_started=True`, ensuring the envelope rides the
+        SAME downstream chain as the working `_classify_and_advance`
+        envelopes (rather than entering at the pipeline source via
+        `task.queue_frames`, which can be intercepted by upstream
+        processors like the user aggregator).
+        """
+        self._initial_emit_pending = True
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
+
+        # Story 6.7 Phase 2 retouche #5 — emit the initial-state
+        # envelope on the FIRST frame seen post-start. `super(
+        # ).process_frame(...)` above has already set `_started=True`,
+        # so `push_frame` is safe. Idempotent via the flag.
+        if self._initial_emit_pending:
+            self._initial_emit_pending = False
+            await self.push_frame(
+                self.build_initial_envelope(),
+                FrameDirection.DOWNSTREAM,
+            )
+            logger.info(
+                "checkpoint_initial_state total={} first_id={}",
+                len(self._checkpoints),
+                self._checkpoints[0]["id"],
+            )
 
         # Pass-through MANDATORY for non-terminal turns. The terminal
         # turn path (Deviation #7) deliberately SUPPRESSES the user
@@ -320,6 +366,64 @@ class CheckpointManager(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
+    def build_initial_envelope(self) -> OutputTransportMessageFrame:
+        """Story 6.7 AC1 — build the informational `checkpoint_advanced`
+        envelope describing the FIRST checkpoint (index=0).
+
+        Re-uses the existing `checkpoint_advanced` envelope shape
+        (Story 6.7 Deviation #1 — no `v: 1` schema version; additive
+        evolution under `data.{}`); the client treats this initial
+        envelope identically to a real advance.
+
+        **Important — Phase 2 retouche #4 (2026-05-19).** This method
+        ONLY builds the frame. The caller (typically
+        `bot.py::on_first_participant_joined`) MUST queue it via
+        `task.queue_frames([...])` — NOT push via this processor —
+        because `on_first_participant_joined` fires BEFORE the
+        pipeline's `StartFrame` has propagated to this processor
+        (`_started=False`). A `push_frame` call from that callback
+        is silently rejected by pipecat with
+        `"Trying to process OutputTransportMessageFrame but
+        StartFrame not received yet"` (logged ERROR) — the envelope
+        never reaches `transport.output()` and the client stepper
+        stays blank until the first real checkpoint advance. Going
+        through `task.queue_frames` adds the frame to the task's
+        source queue, which is drained AFTER `StartFrame` propagation
+        completes.
+        """
+        first = self._checkpoints[0]
+        return OutputTransportMessageFrame(
+            message={
+                "type": "checkpoint_advanced",
+                "data": {
+                    "checkpoint_id": first["id"],
+                    "index": 0,
+                    "total": len(self._checkpoints),
+                    "next_hint": first["hint_text"],
+                },
+            }
+        )
+
+    async def emit_initial_state(self) -> None:
+        """**Legacy path — kept for unit-test coverage of the push
+        mechanism**. In production, call sites MUST use
+        `build_initial_envelope()` + `task.queue_frames(...)` instead
+        (see [build_initial_envelope]'s docstring for the StartFrame
+        race). Calling this method directly from
+        `on_first_participant_joined` will fail silently because
+        pipecat's `_check_started` rejects the push before `StartFrame`
+        has propagated to this processor.
+        """
+        await self.push_frame(
+            self.build_initial_envelope(),
+            FrameDirection.DOWNSTREAM,
+        )
+        logger.info(
+            "checkpoint_initial_state total={} first_id={}",
+            len(self._checkpoints),
+            self._checkpoints[0]["id"],
+        )
+
     async def cleanup(self) -> None:
         """Drain any in-flight classifier task on pipeline shutdown.
 
@@ -428,12 +532,22 @@ class CheckpointManager(FrameProcessor):
             # envelope emitted by PatienceTracker._run_hang_up is the
             # client-visible signal.
             logger.info("checkpoint_completion all_passed total={}", self._index + 1)
+            # Story 6.7 review (2026-05-20) — push the final count to
+            # PatienceTracker so `call_end.checkpoints_passed` reflects
+            # full survival (= len(self._checkpoints)) instead of the
+            # legacy hardcoded 0. Drives the client-side reconcile
+            # path (Deviation #2) to its terminal frame.
+            self._patience_tracker.set_checkpoints_passed(len(self._checkpoints))
             self._patience_tracker.schedule_completion(survival_pct=100)
             return
 
         # Intermediate checkpoint passed → advance.
         self._index += 1
         next_checkpoint = self._checkpoints[self._index]
+        # Story 6.7 review (2026-05-20) — keep PatienceTracker in sync
+        # so a mid-flight character_hung_up emits the real passed count
+        # in `call_end`, not the legacy 0.
+        self._patience_tracker.set_checkpoints_passed(self._index)
 
         # Deviation #2 — swap the live system instruction so the LLM's
         # NEXT turn replies under the new checkpoint's prompt_segment.

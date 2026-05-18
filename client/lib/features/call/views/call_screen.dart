@@ -20,12 +20,16 @@ import '../bloc/call_event.dart';
 import '../bloc/call_state.dart';
 import '../models/call_session.dart';
 import '../repositories/call_repository.dart';
+import '../services/checkpoint_advanced_payload.dart';
 import '../services/data_channel_handler.dart';
 import '../services/viseme_scheduler.dart';
 import 'call_ended_notice_screen.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
+import 'widgets/checkpoint_hint_bubble.dart';
+import 'widgets/checkpoint_snapshot.dart';
+import 'widgets/checkpoint_stepper_canvas.dart';
 import 'widgets/rive_character_canvas.dart';
 
 /// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
@@ -36,6 +40,11 @@ import 'widgets/rive_character_canvas.dart';
 /// Story 6.4 widened the signature with `onHangUpWarning`, `onCallEnd`,
 /// and `onBotSpeakingEnded` so the handler can route server-driven
 /// envelopes back to the screen / bloc.
+///
+/// Story 6.7 widened it again with `onCheckpointAdvanced` so the
+/// `checkpoint_advanced` envelope (emitted on call connect AND on every
+/// successful checkpoint advance) lands on the screen's
+/// `_checkpointNotifier`.
 typedef DataChannelHandlerBuilder =
     DataChannelHandler Function({
       required Room room,
@@ -44,6 +53,8 @@ typedef DataChannelHandlerBuilder =
       required void Function(String reason, Map<String, dynamic> data)
       onCallEnd,
       required void Function() onBotSpeakingEnded,
+      required void Function(CheckpointAdvancedPayload payload)
+      onCheckpointAdvanced,
     });
 
 // Layout constants — mirrored from `IncomingCallScreen` so the outgoing
@@ -222,6 +233,33 @@ class _CallScreenState extends State<CallScreen> {
   /// during the hang-up sequence (e.g. the envelope is lost).
   bool _awaitingPlaybackIdle = false;
 
+  /// Story 6.7 — UI-only state for the checkpoint stepper HUD. Null
+  /// until the FIRST `checkpoint_advanced` envelope arrives (server
+  /// emits one with index=0 from `on_first_participant_joined` AFTER
+  /// the greeting `TTSSpeakFrame`). Non-null thereafter for the rest
+  /// of the call.
+  ///
+  /// Lives on the State (NOT the bloc) because:
+  ///   - bloc state is the *call lifecycle* (connecting / connected /
+  ///     error / ended) — checkpoint progression is *mid-call UI*
+  ///     and would force every BlocConsumer.builder to rebuild on
+  ///     every advance (including the expensive Rive character canvas).
+  ///   - Precedent: `_canvasInFallback` (Story 6.2), `_awaitingPlaybackIdle`
+  ///     (Story 6.4) — both UI-only flags on the State.
+  ///   - Scoped ValueNotifier means only the stepper subtree
+  ///     ValueListenableBuilder rebuilds (Phase 2).
+  final ValueNotifier<CheckpointSnapshot?> _checkpointNotifier =
+      ValueNotifier<CheckpointSnapshot?>(null);
+
+  /// Story 6.7 — exposed under `@visibleForTesting` so the Phase 1
+  /// integration tests can drill in and assert "envelope arrives →
+  /// notifier value updated correctly" + "call_end reconciles" without
+  /// needing to pump the full Rive subtree (which AC8 dictates is
+  /// covered by widget tests on the stepper canvas itself).
+  @visibleForTesting
+  ValueNotifier<CheckpointSnapshot?> get checkpointNotifierForTest =>
+      _checkpointNotifier;
+
   @override
   void initState() {
     super.initState();
@@ -337,6 +375,10 @@ class _CallScreenState extends State<CallScreen> {
     if (scheduler != null) {
       unawaited(scheduler.dispose());
     }
+    // Story 6.7 — dispose the checkpoint notifier BEFORE super.dispose()
+    // so any rebuild-during-teardown can't read a disposed ValueNotifier
+    // (would throw on `.value` access).
+    _checkpointNotifier.dispose();
     if (!_blocCreated) {
       // Safety net: the bloc never ran, so `CallBloc.close()` will not.
       // Drop the Room ourselves so we don't leak background timers (TTLMap
@@ -439,8 +481,34 @@ class _CallScreenState extends State<CallScreen> {
               // `RemoteCallEnded`; the bloc handles room teardown and
               // emits CallEnded, which the BlocConsumer.listener above
               // pops back to /scenarios.
+              //
+              // Story 6.7 Deviation #2 — BEFORE dispatching the bloc
+              // event, reconcile the stepper UP to the server-authoritative
+              // checkpoints_passed count. Closes the "cancel-mid-flight
+              // envelope-lost race" (Story 6.6 deferred-work line 406):
+              // if N `checkpoint_advanced` pushes succeeded but the
+              // final one was cancelled by the pipeline shutdown, the
+              // local stepper would lag behind the server's count. The
+              // call_end envelope carries the authoritative count, so
+              // reconcile silently before the call-ended overlay
+              // appears. Only walk UP — never back, that would mask a
+              // genuine future server-side regression.
               onCallEnd: (reason, data) {
                 if (!context.mounted) return;
+                final passed = data['checkpoints_passed'];
+                final total = data['total_checkpoints'];
+                final current = _checkpointNotifier.value;
+                if (passed is num && total is num && current != null) {
+                  final pi = passed.toInt();
+                  final ti = total.toInt();
+                  if (pi > current.currentIndex && ti > 0 && pi <= ti) {
+                    _checkpointNotifier.value = CheckpointSnapshot(
+                      currentIndex: pi,
+                      total: ti,
+                      hintText: current.hintText,
+                    );
+                  }
+                }
                 context.read<CallBloc>().add(RemoteCallEnded(reason, data));
               },
               // Story 6.4 — server signals end-of-bot-turn (outbound
@@ -452,6 +520,20 @@ class _CallScreenState extends State<CallScreen> {
               // time for the post-utterance silence.
               onBotSpeakingEnded: () {
                 _awaitingPlaybackIdle = true;
+              },
+              // Story 6.7 — `checkpoint_advanced` envelope (emitted on
+              // call connect with index=0 AND on every successful
+              // checkpoint advance) updates the UI-only stepper state.
+              // ValueNotifier dispatches a rebuild to the
+              // ValueListenableBuilder around CheckpointStepperCanvas
+              // (Phase 2) without disturbing the bloc state.
+              onCheckpointAdvanced: (payload) {
+                if (!context.mounted) return;
+                _checkpointNotifier.value = CheckpointSnapshot(
+                  currentIndex: payload.index,
+                  total: payload.total,
+                  hintText: payload.hintText,
+                );
               },
             );
           }
@@ -724,6 +806,46 @@ class _CallScreenState extends State<CallScreen> {
                 if (widget.debugCanvasFallback != null) return;
                 if (mounted) setState(() => _canvasInFallback = true);
               },
+            ),
+          ),
+        ),
+        // Layer 4 — Checkpoint HUD (Story 6.7). Composite: Rive
+        // stepper row (edge-to-edge) above a Flutter hint bubble
+        // (16px horizontal margin, 8px gap). `IgnorePointer` lets
+        // taps fall through to the character canvas underneath.
+        // Both children render `SizedBox.shrink()` when the
+        // snapshot is null. See story file Dev Agent Record for
+        // why the bubble is Flutter and the stepper is Rive.
+        Positioned.fill(
+          child: SafeArea(
+            bottom: false,
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: IgnorePointer(
+                ignoring: true,
+                child: ValueListenableBuilder<CheckpointSnapshot?>(
+                  valueListenable: _checkpointNotifier,
+                  builder: (context, snap, _) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Force edge-to-edge width so AspectRatio sizes
+                      // from the screen width regardless of the
+                      // artboard's intrinsic ratio. Without this wrap,
+                      // a tall/narrow artboard would silently shrink
+                      // the stepper to centered-content width.
+                      SizedBox(
+                        width: double.infinity,
+                        child: CheckpointStepperCanvas(snapshot: snap),
+                      ),
+                      const SizedBox(height: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: CheckpointHintBubble(snapshot: snap),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         ),

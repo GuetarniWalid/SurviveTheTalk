@@ -273,6 +273,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
                 )
             ]
         )
+        # Story 6.7 AC1 + Phase 2 retouche #5 (2026-05-19) — schedule
+        # the initial `checkpoint_advanced(index=0)` envelope to be
+        # emitted by CheckpointManager itself on its first
+        # post-StartFrame `process_frame` tick. This routes the
+        # envelope through the SAME downstream chain (patience_tracker
+        # → context_aggregator.user() → ... → transport.output()) as
+        # the working `_classify_and_advance` envelopes, instead of
+        # the source-side `task.queue_frames` path which is at risk
+        # of being intercepted by an upstream processor (e.g. the
+        # user aggregator). `schedule_initial_emit` only sets a
+        # flag; the actual `push_frame` runs once the StartFrame
+        # propagation reaches CheckpointManager.
+        checkpoint_manager.schedule_initial_emit()
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(

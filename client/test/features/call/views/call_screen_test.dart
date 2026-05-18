@@ -5,10 +5,12 @@ import 'package:client/features/call/bloc/call_bloc.dart';
 import 'package:client/features/call/bloc/call_event.dart';
 import 'package:client/features/call/bloc/call_state.dart';
 import 'package:client/features/call/models/call_session.dart';
+import 'package:client/features/call/services/checkpoint_advanced_payload.dart';
 import 'package:client/features/call/services/data_channel_handler.dart';
 import 'package:client/features/call/views/call_screen.dart';
 import 'package:client/features/call/views/widgets/animated_calling_text.dart';
 import 'package:client/features/call/views/widgets/character_avatar.dart';
+import 'package:client/features/call/views/widgets/checkpoint_snapshot.dart';
 import 'package:client/features/call/views/widgets/rive_character_canvas.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:flutter/material.dart';
@@ -527,6 +529,7 @@ void main() {
                 required onHangUpWarning,
                 required onCallEnd,
                 required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
               }) {
                 builderCalls.add(room);
                 return mock;
@@ -582,6 +585,7 @@ void main() {
                     required onHangUpWarning,
                     required onCallEnd,
                     required onBotSpeakingEnded,
+                    required onCheckpointAdvanced,
                   }) {
                     capturedOnCallEnd = onCallEnd;
                     return mock;
@@ -650,6 +654,7 @@ void main() {
                 required onHangUpWarning,
                 required onCallEnd,
                 required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
               }) {
                 capturedOnHangUpWarning = onHangUpWarning;
                 return mock;
@@ -695,6 +700,7 @@ void main() {
                 required onHangUpWarning,
                 required onCallEnd,
                 required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
               }) {
                 return mock;
               },
@@ -714,6 +720,279 @@ void main() {
         await tester.pump();
 
         verify(() => mock.dispose()).called(1);
+      },
+    );
+  });
+
+  // ---------- Story 6.7 — CheckpointSnapshot notifier plumbing ----------
+
+  group('CallScreen — checkpoint stepper plumbing (Story 6.7)', () {
+    testWidgets(
+      'checkpoint_advanced envelope updates _checkpointNotifier with typed snapshot',
+      (tester) async {
+        // AC5 #1 — pump `CallScreen` with a debugHandlerBuilder that
+        // captures `onCheckpointAdvanced`; invoke it with a typed
+        // payload; assert the State's notifier reflects the new
+        // snapshot. Drills into the `@visibleForTesting` getter so
+        // the test does not depend on the Phase-2 Rive subtree.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        expect(capturedOnCheckpointAdvanced, isNotNull);
+
+        // The Phase-1 notifier starts null (no envelope received yet).
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(notifier.value, isNull);
+
+        // Fire a server-side advance.
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'order_item',
+            index: 2,
+            total: 6,
+            hintText: 'Tell the waiter what you want to drink.',
+          ),
+        );
+        await tester.pump();
+
+        expect(notifier.value, isNotNull);
+        expect(notifier.value!.currentIndex, 2);
+        expect(notifier.value!.total, 6);
+        expect(
+          notifier.value!.hintText,
+          'Tell the waiter what you want to drink.',
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'call_end reconciles _checkpointNotifier UP to server-authoritative checkpoints_passed',
+      (tester) async {
+        // AC5 #2 / Deviation #2 — if the local stepper lags the server
+        // by N checkpoints because one `checkpoint_advanced` push was
+        // cancelled mid-flight (Story 6.6 deferred-work line 406), the
+        // call_end envelope's `checkpoints_passed` reconciles the
+        // notifier BEFORE the bloc receives RemoteCallEnded.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+        void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugPlaybackDrainBuffer: Duration.zero,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                capturedOnCallEnd = onCallEnd;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        // Bring the local stepper to "index 2 of 6" by simulating two
+        // advances arriving via the data-channel.
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'greet',
+            index: 0,
+            total: 6,
+            hintText: 'Tell the waitress you want to order.',
+          ),
+        );
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'order_item',
+            index: 2,
+            total: 6,
+            hintText: 'Tell the waitress what you want to drink.',
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(notifier.value?.currentIndex, 2);
+
+        // Simulate the server's call_end envelope carrying the
+        // authoritative count "checkpoints_passed: 6" — i.e. user
+        // survived but the final advance envelope was lost in the
+        // pipeline-shutdown race.
+        expect(capturedOnCallEnd, isNotNull);
+        capturedOnCallEnd!('survived', <String, dynamic>{
+          'reason': 'survived',
+          'survival_pct': 100,
+          'checkpoints_passed': 6,
+          'total_checkpoints': 6,
+        });
+        await tester.pump();
+
+        // The notifier MUST have walked UP to 6 before the bloc was
+        // told the call ended.
+        expect(
+          notifier.value?.currentIndex,
+          6,
+          reason: 'Deviation #2 — stepper must reconcile UP to '
+              'server-authoritative checkpoints_passed on call_end',
+        );
+        expect(notifier.value?.total, 6);
+        // Last known hint stays — the server doesn't re-send hint
+        // text in call_end.
+        expect(
+          notifier.value?.hintText,
+          'Tell the waitress what you want to drink.',
+        );
+
+        // Drain the bloc's pending playback-drain timer (the
+        // RemoteCallEnded path arms it via the screen's onCallEnd →
+        // bloc dispatch); without firing PlaybackDrained the bloc
+        // keeps a Timer pending and the test framework asserts
+        // !timersPending at teardown.
+        final bloc =
+            tester.element(find.byType(Scaffold).first).read<CallBloc>();
+        bloc.add(const PlaybackDrained());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'call_end with checkpoints_passed LOWER than current does NOT walk back',
+      (tester) async {
+        // Defensive: never reconcile DOWN — that would mask a genuine
+        // server-side regression.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+        void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugPlaybackDrainBuffer: Duration.zero,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                capturedOnCallEnd = onCallEnd;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'late',
+            index: 4,
+            total: 6,
+            hintText: 'late hint',
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(notifier.value?.currentIndex, 4);
+
+        // Server reports a LOWER count — must not walk back.
+        capturedOnCallEnd!('character_hung_up', <String, dynamic>{
+          'reason': 'character_hung_up',
+          'survival_pct': 30,
+          'checkpoints_passed': 2,
+          'total_checkpoints': 6,
+        });
+        await tester.pump();
+
+        expect(
+          notifier.value?.currentIndex,
+          4,
+          reason: 'reconcile must walk UP only — backward steps would mask '
+              'a real server-side regression',
+        );
+
+        // Drain the bloc's pending playback-drain timer — same
+        // teardown discipline as the reconcile-up test above.
+        final bloc =
+            tester.element(find.byType(Scaffold).first).read<CallBloc>();
+        bloc.add(const PlaybackDrained());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.pumpWidget(const SizedBox.shrink());
       },
     );
   });

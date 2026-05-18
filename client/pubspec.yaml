@@ -71,9 +71,10 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/rive/characters.riv
-    - assets/rive/email_character.riv
     - assets/rive/ai_consent.riv
+    - assets/rive/characters.riv
+    - assets/rive/checkpoint_stepper.riv
+    - assets/rive/email_character.riv
     - assets/rive/mic_consent.riv
     - assets/images/whirlwind.svg
     - assets/images/diamond.png

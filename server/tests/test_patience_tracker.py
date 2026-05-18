@@ -1084,6 +1084,11 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
     captured = _capture_pushed(tracker)
 
     async def _drive() -> None:
+        # Story 6.7 review (2026-05-20) — CheckpointManager calls
+        # `set_checkpoints_passed(total)` immediately before
+        # `schedule_completion` on the terminal path. Mirror it here so
+        # the envelope assertion below reflects production wiring.
+        tracker.set_checkpoints_passed(6)
         tracker.schedule_completion(survival_pct=100)
         await asyncio.sleep(0.02)
         # Release the exit-line wait.
@@ -1112,6 +1117,52 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
         "Deviation #1 — survival_pct on the survived path is 100 by "
         "definition, not the meter ratio"
     )
+    assert data["checkpoints_passed"] == 6, (
+        "Story 6.7 review — survived path must emit the live count "
+        "(set by CheckpointManager.set_checkpoints_passed), not the "
+        "legacy hardcoded 0 retired 2026-05-20."
+    )
+    assert data["total_checkpoints"] == 6
+
+
+def test_set_checkpoints_passed_threads_through_character_hung_up_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `character_hung_up` mid-call must carry the live passed count
+    in `call_end.checkpoints_passed`. Drives the bug discovered in
+    Story 6.7 smoke test 2026-05-20 where the legacy hardcoded `0`
+    masked partial progress on every non-survived path."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(initial_patience=10))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        # Simulate two checkpoint passes before the meter drains.
+        tracker.set_checkpoints_passed(1)
+        tracker.set_checkpoints_passed(2)
+        # Drain the meter to trigger the character_hung_up path.
+        tracker._patience = 0
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    data = call_end[0].message["data"]
+    assert data["reason"] == "character_hung_up"
+    assert data["checkpoints_passed"] == 2, (
+        "character_hung_up path must reflect the live count from "
+        "set_checkpoints_passed, not the legacy hardcoded 0."
+    )
+    assert data["total_checkpoints"] == 6
 
 
 def test_schedule_completion_idempotent_when_hangup_in_progress(

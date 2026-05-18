@@ -3,6 +3,8 @@ import 'dart:developer' as dev;
 
 import 'package:livekit_client/livekit_client.dart';
 
+import 'checkpoint_advanced_payload.dart';
+
 /// Decodes Pipecat-side data-channel envelopes and forwards them to typed
 /// callbacks (Story 6.3).
 ///
@@ -34,10 +36,13 @@ class DataChannelHandler {
     required void Function(int secondsRemaining) onHangUpWarning,
     required void Function(String reason, Map<String, dynamic> data) onCallEnd,
     required void Function() onBotSpeakingEnded,
+    required void Function(CheckpointAdvancedPayload payload)
+    onCheckpointAdvanced,
   }) : _onEmotion = onEmotion,
        _onHangUpWarning = onHangUpWarning,
        _onCallEnd = onCallEnd,
-       _onBotSpeakingEnded = onBotSpeakingEnded {
+       _onBotSpeakingEnded = onBotSpeakingEnded,
+       _onCheckpointAdvanced = onCheckpointAdvanced {
     _cancel = room.events.on<DataReceivedEvent>(_onDataReceived);
   }
 
@@ -45,6 +50,7 @@ class DataChannelHandler {
   final void Function(int secondsRemaining) _onHangUpWarning;
   final void Function(String reason, Map<String, dynamic> data) _onCallEnd;
   final void Function() _onBotSpeakingEnded;
+  final void Function(CheckpointAdvancedPayload payload) _onCheckpointAdvanced;
   CancelListenFunc? _cancel;
 
   Future<void> _onDataReceived(DataReceivedEvent event) async {
@@ -115,6 +121,53 @@ class DataChannelHandler {
         }
         final reasonStr = reason is String ? reason : 'unknown';
         _onCallEnd(reasonStr, data);
+      case 'checkpoint_advanced':
+        // Story 6.7 — server emits this on initial-state (index=0 at
+        // bot startup; `bot.py::on_first_participant_joined` calls
+        // `CheckpointManager.emit_initial_state()` AFTER the canned
+        // greeting) AND on every checkpoint advance (index>0). Single
+        // envelope shape for both; the client treats them identically.
+        // Same defensive-parse posture as the other cases: validate
+        // every field's type, default on missing/wrong-type, log at
+        // FINE on drift, NEVER throw.
+        final id = data['checkpoint_id'];
+        final idx = data['index'];
+        final total = data['total'];
+        final hint = data['next_hint'];
+        if (id is! String ||
+            idx is! num ||
+            total is! num ||
+            hint is! String) {
+          dev.log(
+            'DataChannelHandler: checkpoint_advanced malformed payload: '
+            'id=${id.runtimeType} idx=${idx.runtimeType} '
+            'total=${total.runtimeType} hint=${hint.runtimeType}',
+            name: 'call.data',
+            level: 700,
+          );
+          return;
+        }
+        final idxInt = idx.toInt();
+        final totalInt = total.toInt();
+        // Defensive: a server-side bug or future spec drift that sends
+        // index > total-1, or total <= 0, must not crash the stepper.
+        if (totalInt <= 0 || idxInt < 0 || idxInt >= totalInt) {
+          dev.log(
+            'DataChannelHandler: checkpoint_advanced out-of-range: '
+            'idx=$idxInt total=$totalInt',
+            name: 'call.data',
+            level: 700,
+          );
+          return;
+        }
+        _onCheckpointAdvanced(
+          CheckpointAdvancedPayload(
+            checkpointId: id,
+            index: idxInt,
+            total: totalInt,
+            hintText: hint,
+          ),
+        );
       case 'bot_speaking_ended':
         // Story 6.4 — server signals that THIS bot turn is over (its
         // outbound audio buffer drained). The screen uses this as
@@ -127,9 +180,9 @@ class DataChannelHandler {
         // ladder start.
         _onBotSpeakingEnded();
       default:
-        // Owned by Story 6.7 (`checkpoint_advanced`). Additive routing
-        // — silently ignore unknown types so a server-side rollout can
-        // land emitters before the matching client handler ships.
+        // Additive routing — silently ignore unknown types so a
+        // server-side rollout can land emitters before the matching
+        // client handler ships.
         dev.log(
           'DataChannelHandler: ignoring unknown type=$type',
           name: 'call.data',

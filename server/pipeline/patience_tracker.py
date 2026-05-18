@@ -287,6 +287,13 @@ class PatienceTracker(FrameProcessor):
         self._silence_penalty = silence_penalty
         self._silence_prompt_seconds = silence_prompt_seconds
         self._total_checkpoints = total_checkpoints
+        # Story 6.7 review (2026-05-20) — CheckpointManager calls
+        # `set_checkpoints_passed` on every state change so the
+        # `call_end` envelope carries the live count. Retires the
+        # Story 6.4 hardcoded `checkpoints_passed=0` placeholder. Used
+        # by both the survived (count == total) and hang_up
+        # (count < total) paths in `_run_hang_up`.
+        self._checkpoints_passed: int = 0
         self._silence_prompt_line = silence_prompt_line
         self._hang_up_line_silence = hang_up_line_silence
         self._hang_up_line_inappropriate = hang_up_line_inappropriate
@@ -691,6 +698,18 @@ class PatienceTracker(FrameProcessor):
             return
         self._warning_emitted = True
 
+    def set_checkpoints_passed(self, count: int) -> None:
+        """Record the current passed-checkpoint count.
+
+        Called by CheckpointManager on every state change so the
+        `call_end` envelope's `checkpoints_passed` field reflects
+        live progress regardless of which exit path fires (survived /
+        character_hung_up / inappropriate / silence). Idempotent and
+        monotonic in practice — CheckpointManager only ever calls with
+        a non-decreasing value.
+        """
+        self._checkpoints_passed = count
+
     def schedule_completion(self, survival_pct: int) -> None:
         """Route to `_run_hang_up` with `reason='survived'` and the YAML's
         `exit_lines.completion` line. Idempotent re-call swallowed.
@@ -923,7 +942,7 @@ class PatienceTracker(FrameProcessor):
                         "data": {
                             "reason": reason,
                             "survival_pct": survival_pct,
-                            "checkpoints_passed": 0,
+                            "checkpoints_passed": self._checkpoints_passed,
                             "total_checkpoints": self._total_checkpoints,
                         },
                     }

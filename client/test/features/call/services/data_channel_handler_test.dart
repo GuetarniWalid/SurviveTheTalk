@@ -5,6 +5,7 @@
 // ignore_for_file: invalid_use_of_internal_member
 import 'dart:convert';
 
+import 'package:client/features/call/services/checkpoint_advanced_payload.dart';
 import 'package:client/features/call/services/data_channel_handler.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -53,6 +54,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     // Emit ONE envelope; if the handler subscribed twice (or zero times)
@@ -83,6 +85,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -113,6 +116,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     await handler.dispose();
@@ -129,6 +133,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -159,6 +164,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -195,12 +201,16 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
+    // Use a synthetic future-type so this test stays a true "unknown
+    // type drop" regression guard even after Story 6.7 routed
+    // `checkpoint_advanced` to its own typed callback.
     fixture.emitter.emit(
       _envelope({
-        'type': 'checkpoint_advanced',
-        'data': {'checkpoint_id': 1},
+        'type': 'future_unknown_type_v9',
+        'data': <String, dynamic>{'foo': 1},
       }),
     );
     await _flush();
@@ -217,6 +227,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(_rawEnvelope(utf8.encode('not-json')));
@@ -234,6 +245,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'emotion', 'data': {}}));
@@ -251,6 +263,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -276,6 +289,7 @@ void main() {
       onHangUpWarning: warnings.add,
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -299,6 +313,7 @@ void main() {
       onHangUpWarning: (_) => warnings++,
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     // Missing top-level `data` field: the outer guard rejects the
@@ -329,6 +344,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (r, d) => received.add((r, d)),
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(
@@ -360,6 +376,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (r, d) => received.add((r, d)),
       onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'call_end', 'data': <String, dynamic>{}}));
@@ -368,6 +385,145 @@ void main() {
     expect(received, hasLength(1));
     expect(received.first.$1, 'unknown');
     expect(received.first.$2, <String, dynamic>{});
+  });
+
+  // ----- Story 6.7 — checkpoint_advanced routing -----
+
+  test(
+    'checkpoint_advanced invokes onCheckpointAdvanced with typed payload',
+    () async {
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'order_item',
+            'index': 2,
+            'total': 6,
+            'next_hint': 'Tell the waiter what you want to drink.',
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.checkpointId, 'order_item');
+      expect(received.first.index, 2);
+      expect(received.first.total, 6);
+      expect(
+        received.first.hintText,
+        'Tell the waiter what you want to drink.',
+      );
+    },
+  );
+
+  test(
+    'checkpoint_advanced malformed payload (wrong field types) silently dropped',
+    () async {
+      // Server-side bug or wire-protocol drift sends a non-string id +
+      // a non-numeric index. The handler must drop the envelope silently
+      // — NEVER throw (would kill the LiveKit stream) and NEVER invoke
+      // the typed callback (would crash downstream consumers).
+      final fixture = _buildRoom();
+      var callbacks = 0;
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: (_) => callbacks++,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 42,
+            'index': 'abc',
+            'total': 6,
+            'next_hint': 'whatever',
+          },
+        }),
+      );
+      await _flush();
+
+      expect(callbacks, 0);
+    },
+  );
+
+  test(
+    'checkpoint_advanced out-of-range index (idx >= total) is dropped',
+    () async {
+      // Defensive: if the server's index counter drifts past `total - 1`,
+      // the client refuses to deliver — would otherwise advance the
+      // Rive stepper past its last step and trigger UB inside the .riv.
+      final fixture = _buildRoom();
+      var callbacks = 0;
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: (_) => callbacks++,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'overflow',
+            'index': 10,
+            'total': 5,
+            'next_hint': 'oops',
+          },
+        }),
+      );
+      await _flush();
+
+      expect(callbacks, 0);
+    },
+  );
+
+  test('checkpoint_advanced zero total is dropped', () async {
+    // total=0 would make every index out of range; defensive guard
+    // ensures the typed callback never sees a degenerate payload.
+    final fixture = _buildRoom();
+    var callbacks = 0;
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) => callbacks++,
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'checkpoint_advanced',
+        'data': {
+          'checkpoint_id': 'first',
+          'index': 0,
+          'total': 0,
+          'next_hint': 'huh',
+        },
+      }),
+    );
+    await _flush();
+
+    expect(callbacks, 0);
   });
 
   test('bot_speaking_ended envelope invokes onBotSpeakingEnded', () async {
@@ -379,6 +535,7 @@ void main() {
       onHangUpWarning: (_) {},
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () => endedCount++,
+      onCheckpointAdvanced: (_) {},
     );
 
     fixture.emitter.emit(

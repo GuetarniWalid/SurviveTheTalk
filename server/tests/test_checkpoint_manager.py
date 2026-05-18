@@ -290,6 +290,13 @@ def test_met_true_advances_index_swaps_prompt_emits_envelope() -> None:
     # PatienceTracker.apply_exchange_outcome(True) was called.
     tracker.apply_exchange_outcome.assert_called_with(success=True)
 
+    # Story 6.7 review (2026-05-20) — CheckpointManager must push the
+    # live passed-count to PatienceTracker on every advance so the
+    # `call_end` envelope reflects partial progress on non-survived
+    # exit paths (character_hung_up / inappropriate). Index 1 here
+    # = "one checkpoint passed (cp0)".
+    tracker.set_checkpoints_passed.assert_called_with(1)
+
 
 # ---------- Test 6: met=false does NOT advance, applies fail_penalty -----
 
@@ -400,6 +407,22 @@ def test_last_checkpoint_passed_routes_to_schedule_completion() -> None:
 
     # schedule_completion was called with survival_pct=100.
     tracker.schedule_completion.assert_called_with(survival_pct=100)
+
+    # Story 6.7 review (2026-05-20) — on terminal completion the
+    # passed count must equal len(checkpoints) so `call_end.checkpoints_passed`
+    # reflects full survival. CheckpointManager pushes `set_checkpoints_passed`
+    # BEFORE `schedule_completion` (the order matters because both end
+    # up in PatienceTracker._run_hang_up which reads the stored count).
+    tracker.set_checkpoints_passed.assert_any_call(len(checkpoints))
+    # The order matters: set_checkpoints_passed(N) before schedule_completion.
+    call_order = [call[0] for call in tracker.method_calls]
+    assert call_order.index("set_checkpoints_passed") < call_order.index(
+        "schedule_completion"
+    ), (
+        "set_checkpoints_passed must be called BEFORE schedule_completion "
+        "so PatienceTracker._run_hang_up reads the live count on the "
+        "survived path."
+    )
 
 
 # ---------- Test 9: stale verdict suppressed by generation guard ---------
@@ -845,6 +868,158 @@ def test_constructor_raises_when_llm_settings_system_instruction_missing() -> No
             patience_tracker=MagicMock(),
             scenario_description="bad-llm-test",
         )
+
+
+# ============================================================
+# Story 6.7 — AC1: emit_initial_state() method
+# ============================================================
+
+
+def test_build_initial_envelope_returns_index_zero_frame() -> None:
+    """Story 6.7 AC1 + Phase 2 retouche #4 — `build_initial_envelope`
+    returns ONE `OutputTransportMessageFrame` describing the FIRST
+    checkpoint (`index=0`, `total=N`, `checkpoint_id=<first>`,
+    `next_hint=<first>`). Pure builder — no `push_frame` side effect,
+    no `self._index` mutation. The caller (bot.py) queues it via
+    `task.queue_frames(...)` to avoid the StartFrame propagation race.
+    """
+    checkpoints = _make_checkpoints(6)
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints
+    )
+    captured = _capture_pushed(manager)
+
+    frame = manager.build_initial_envelope()
+
+    # Pure builder — must NOT have pushed anything.
+    assert captured == []
+    assert isinstance(frame, OutputTransportMessageFrame)
+    data = frame.message["data"]
+    assert frame.message["type"] == "checkpoint_advanced"
+    assert data["index"] == 0
+    assert data["total"] == 6
+    assert data["checkpoint_id"] == "cp0"
+    assert data["next_hint"] == "hint 0"
+    # Index MUST stay at 0 — informational, not an advance.
+    assert manager._index == 0
+
+
+def test_schedule_initial_emit_pushes_envelope_on_first_process_frame() -> None:
+    """Story 6.7 Phase 2 retouche #5 — `schedule_initial_emit` flags
+    the initial-state envelope for emission. The actual `push_frame`
+    runs inside `process_frame` on the FIRST frame seen after the
+    flag is set (by which time `super().process_frame(...)` has
+    flipped `_started=True`, so the push is valid).
+
+    Before the first `process_frame` tick: no envelope pushed.
+    After the first tick: exactly one `checkpoint_advanced(index=0)`
+    envelope was pushed, and the flag was cleared (idempotent —
+    subsequent ticks don't re-emit).
+    """
+    checkpoints = _make_checkpoints(6)
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints
+    )
+    captured = _capture_pushed(manager)
+
+    # Schedule the emit BUT don't drive any frame yet.
+    manager.schedule_initial_emit()
+    initial_envelopes = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert initial_envelopes == [], (
+        "schedule_initial_emit must only set a flag — no push yet"
+    )
+
+    # Drive any frame (e.g. an unrelated TextFrame) to trigger the
+    # deferred emit.
+    async def _drive() -> None:
+        await manager.process_frame(
+            TextFrame(text="ignored"), FrameDirection.DOWNSTREAM
+        )
+
+    _run(_drive())
+
+    envelopes = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert len(envelopes) == 1, (
+        f"expected exactly one initial envelope after first tick, got {len(envelopes)}"
+    )
+    data = envelopes[0].message["data"]
+    assert data["index"] == 0
+    assert data["total"] == 6
+    assert data["checkpoint_id"] == "cp0"
+
+    # Idempotent — driving more frames must NOT re-emit.
+
+    async def _drive_again() -> None:
+        await manager.process_frame(
+            TextFrame(text="ignored2"), FrameDirection.DOWNSTREAM
+        )
+        await manager.process_frame(
+            TextFrame(text="ignored3"), FrameDirection.DOWNSTREAM
+        )
+
+    _run(_drive_again())
+
+    envelopes_after = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert len(envelopes_after) == 1, (
+        "initial emit must be a one-shot — further ticks must not re-emit"
+    )
+
+
+def test_emit_initial_state_pushes_index_zero_envelope() -> None:
+    """Story 6.7 AC1 (legacy push path — retained for coverage). The
+    production wiring uses `build_initial_envelope` + `task.queue_frames`
+    (see bot.py), but this test guards the push-side mechanism in
+    isolation in case a future refactor needs to revive it. Calling
+    `emit_initial_state()` from `on_first_participant_joined` directly
+    is incorrect (the StartFrame hasn't propagated → pipecat
+    `_check_started` rejects the push with an ERROR log) — see
+    `build_initial_envelope`'s docstring for the full rationale.
+    """
+    checkpoints = _make_checkpoints(6)
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.emit_initial_state()
+
+    _run(_drive())
+
+    envelopes = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert len(envelopes) == 1
+    data = envelopes[0].message["data"]
+    assert data["index"] == 0
+    assert data["total"] == 6
+    assert data["checkpoint_id"] == "cp0"
+    assert data["next_hint"] == "hint 0"
+    # Index MUST stay at 0 — this is an informational push, not an advance.
+    assert manager._index == 0
+
+
+# ============================================================
+# Story 6.6 review patches — added 2026-05-18
+# ============================================================
 
 
 def test_terminal_turn_lock_serializes_concurrent_invocations() -> None:

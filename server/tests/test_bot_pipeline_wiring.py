@@ -140,6 +140,46 @@ def test_bot_reads_scenario_id_env_var() -> None:
     assert "resolve_patience_config(scenario_id)" in source
 
 
+def test_on_first_participant_joined_queues_initial_envelope_via_task() -> None:
+    """Story 6.7 AC1 + Phase 2 retouche #4 — `bot.py::
+    on_first_participant_joined` MUST queue the initial
+    `checkpoint_advanced(index=0)` envelope via
+    `task.queue_frames([...])` (alongside the canned greeting
+    `TTSSpeakFrame`), NOT via `checkpoint_manager.emit_initial_state()`.
+
+    Why: `emit_initial_state` calls `push_frame` from the
+    `CheckpointManager` processor, which pipecat's `_check_started`
+    silently rejects when `StartFrame` hasn't yet propagated to that
+    processor (`on_first_participant_joined` can fire BEFORE the
+    StartFrame reaches `CheckpointManager`). The reject is logged as
+    an ERROR but the frame is dropped — the client never sees the
+    initial state envelope and the CheckpointStepper stays blank
+    until the first real advance.
+
+    `task.queue_frames` puts both frames into the task's source
+    queue, which is drained AFTER StartFrame propagation. Both then
+    flow downstream in order, reach `transport.output()`, and ship.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    # Strip comment-only lines so a `# was using emit_initial_state()`
+    # docstring reference doesn't false-positive the regression-guard
+    # assertion below (mirrors `test_bot_pipeline_ordering`).
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert '@transport.event_handler("on_first_participant_joined")' in code
+    # Story 6.7 Phase 2 retouche #5 — the initial envelope is
+    # scheduled by the manager (`schedule_initial_emit`); the
+    # actual `push_frame` runs from inside `process_frame` on the
+    # first post-StartFrame tick, so the envelope rides the same
+    # downstream chain as the working `_classify_and_advance`
+    # envelopes (no source-side `task.queue_frames` injection).
+    assert "checkpoint_manager.schedule_initial_emit()" in code
+    # Make sure we did NOT regress to the broken
+    # `await checkpoint_manager.emit_initial_state()` pattern.
+    assert "checkpoint_manager.emit_initial_state()" not in code
+
+
 def test_bot_routes_playback_idle_to_patience_tracker() -> None:
     """Story 6.4 — the `on_data_received` event handler must route
     `{"type":"playback_idle"}` envelopes from the client onto
