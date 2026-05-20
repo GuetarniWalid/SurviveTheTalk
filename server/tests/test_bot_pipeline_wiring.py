@@ -22,8 +22,8 @@ _BOT_PATH = pathlib.Path(__file__).resolve().parent.parent / "pipeline" / "bot.p
 def test_bot_imports_emitter_classes() -> None:
     """`bot.py` imports `EmotionEmitter` + `PatienceTracker` +
     `CheckpointManager` + `ExchangeClassifier` (Story 6.6) +
-    `COHERENCE_CHARTER` (Story 6.8 Phase 2) and does NOT import the
-    removed `VisemeEmitter`."""
+    `COHERENCE_CHARTER` (Story 6.8 Phase 2) + `DTLNAudioFilter`
+    (Story 6.9), and does NOT import the removed `VisemeEmitter`."""
     source = _BOT_PATH.read_text(encoding="utf-8")
     assert "from pipeline.emotion_emitter import EmotionEmitter" in source
     assert "from pipeline.patience_tracker import PatienceTracker" in source
@@ -31,7 +31,34 @@ def test_bot_imports_emitter_classes() -> None:
     assert "from pipeline.exchange_classifier import ExchangeClassifier" in source
     # Story 6.8 Phase 2 AC8 — wiring assertion for the charter import.
     assert "COHERENCE_CHARTER" in source
+    # Story 6.9 — DTLN noise suppression must be imported AND wired into
+    # LiveKitParams(audio_in_filter=...).
+    assert "from pipeline.dtln_audio_filter import DTLNAudioFilter" in source
     assert "VisemeEmitter" not in source
+
+
+def test_bot_wires_dtln_audio_filter_into_livekit_params() -> None:
+    """Story 6.9 — the DTLN noise suppression filter MUST be passed to
+    `LiveKitParams(audio_in_filter=...)`. Pipecat applies `audio_in_filter`
+    BEFORE VAD + STT, so the entire downstream chain (Silero VAD, Soniox,
+    emotion + exchange classifiers, CheckpointManager, PatienceTracker)
+    sees denoised audio. A missing wiring would silently leave the call
+    on noisy audio — the smoke gate would catch it, but the wiring test
+    catches the regression at pre-commit time.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "DTLNAudioFilter(" in code, (
+        "bot.py must instantiate DTLNAudioFilter — found import but no "
+        "construction site"
+    )
+    assert "audio_in_filter=audio_in_filter" in code, (
+        "bot.py must pass the DTLNAudioFilter instance to "
+        "LiveKitParams(audio_in_filter=...) — otherwise the filter is "
+        "constructed but never wired into the audio path"
+    )
 
 
 def test_bot_instantiates_emitters() -> None:

@@ -9,6 +9,7 @@ dependencies = [
     "email-validator>=2.2.0,<3.0.0",
     "fastapi>=0.135.2",
     "httpx>=0.28.0,<1.0.0",
+    "livekit-plugins-dtln>=0.1.5,<0.2.0",
     "pipecat-ai[cartesia,livekit,openai,soniox]>=0.0.108",
     "pyjwt[crypto]>=2.10.0,<3.0.0",
     "pydantic-settings>=2.13.1",

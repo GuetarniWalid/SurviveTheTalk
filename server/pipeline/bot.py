@@ -33,6 +33,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
 from pipeline.checkpoint_manager import CheckpointManager
+from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.latency_probe import LatencyProbe
@@ -106,12 +107,23 @@ async def run_bot(url: str, room: str, token: str) -> None:
     else:
         initial_system_prompt = SARCASTIC_CHARACTER_PROMPT + "\n\n" + COHERENCE_CHARTER
 
+    # Story 6.9 — DTLN noise suppression on the input audio path. Wraps
+    # `livekit.plugins.dtln.DTLNNoiseSuppressor` (Aloware, MIT, ~4 MB ONNX
+    # bundle) behind Pipecat's `BaseAudioFilter` interface. Applied BEFORE
+    # VAD + STT so every downstream observer (Silero VAD, Soniox, emotion
+    # + exchange classifiers, CheckpointManager) sees clean speech. Failure
+    # at init falls back to passthrough — the call never crashes due to
+    # the filter. `strength=0.5` is the default wet/dry blend; tune toward
+    # 0.7-0.8 only after a café smoke test proves residual babble noise.
+    audio_in_filter = DTLNAudioFilter(strength=0.5)
+
     transport = LiveKitTransport(
         url=url,
         token=token,
         room_name=room,
         params=LiveKitParams(
             audio_in_enabled=True,
+            audio_in_filter=audio_in_filter,
             audio_out_enabled=True,
         ),
     )
