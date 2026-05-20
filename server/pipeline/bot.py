@@ -9,7 +9,12 @@ import time
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import EndFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    OutputAudioRawFrame,
+    TextFrame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -30,8 +35,13 @@ from config import Settings
 from pipeline.checkpoint_manager import CheckpointManager
 from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.exchange_classifier import ExchangeClassifier
+from pipeline.latency_probe import LatencyProbe
 from pipeline.patience_tracker import PatienceTracker
-from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
+from pipeline.prompts import (
+    CARTESIA_VOICE_ID,
+    COHERENCE_CHARTER,
+    SARCASTIC_CHARACTER_PROMPT,
+)
 from pipeline.scenarios import (
     TUTORIAL_SCENARIO_ID,
     load_scenario_base_prompt,
@@ -52,7 +62,6 @@ async def run_bot(url: str, room: str, token: str) -> None:
     sidestep platform-specific argv length limits on long prompts.
     """
     settings = Settings()
-    system_prompt = os.environ.get("SYSTEM_PROMPT") or SARCASTIC_CHARACTER_PROMPT
     # Story 6.3 — `SCENARIO_CHARACTER` is set by `routes_calls.initiate_call`
     # from the scenario YAML's `metadata.rive_character`. The legacy
     # `/connect` path doesn't set it, so default to "waiter" to keep the
@@ -65,6 +74,37 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # to the tutorial scenario.
     scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
     patience_config = resolve_patience_config(scenario_id)
+
+    # Story 6.8 Phase 2 — load scenario data NOW (before LLM construction)
+    # so we can compose the initial `system_instruction` with the
+    # `COHERENCE_CHARTER` slotted BETWEEN `base_prompt` and the first
+    # checkpoint's `prompt_segment`. This matches EXACTLY the position
+    # `CheckpointManager._classify_and_advance` uses on every subsequent
+    # swap (AC7) — the charter never moves around the prompt regardless
+    # of which checkpoint is active.
+    scenario_metadata = load_scenario_metadata(scenario_id)
+    scenario_checkpoints = load_scenario_checkpoints(scenario_id)
+    scenario_base_prompt = load_scenario_base_prompt(scenario_id)
+
+    # The legacy `SYSTEM_PROMPT` env var path (used historically by
+    # `/connect` and the original `/calls/initiate` route) is preserved
+    # as a defensive fallback in case the YAML loaders ever fail; even
+    # the env-var path appends the charter so legacy entry-points inherit
+    # coherence. In practice the env-var branch is dead since
+    # `scenario_id` always resolves (TUTORIAL_SCENARIO_ID fallback).
+    env_system_prompt = os.environ.get("SYSTEM_PROMPT")
+    if scenario_base_prompt and scenario_checkpoints:
+        initial_system_prompt = (
+            scenario_base_prompt
+            + "\n\n"
+            + COHERENCE_CHARTER
+            + "\n\n"
+            + scenario_checkpoints[0]["prompt_segment"].rstrip()
+        )
+    elif env_system_prompt:
+        initial_system_prompt = env_system_prompt + "\n\n" + COHERENCE_CHARTER
+    else:
+        initial_system_prompt = SARCASTIC_CHARACTER_PROMPT + "\n\n" + COHERENCE_CHARTER
 
     transport = LiveKitTransport(
         url=url,
@@ -86,7 +126,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
         settings=OpenRouterLLMService.Settings(
             model="qwen/qwen3.5-flash-02-23",
             extra={"extra_body": {"reasoning": {"enabled": False}}},
-            system_instruction=system_prompt,
+            system_instruction=initial_system_prompt,
             temperature=0.7,
             max_tokens=256,
         ),
@@ -100,6 +140,23 @@ async def run_bot(url: str, room: str, token: str) -> None:
         ),
     )
 
+    # Story 6.8 Phase 1 AC2 — VAD `stop_secs` audit. Pipecat 0.0.108's
+    # `SileroVADAnalyzer` consumes `stop_secs` independently of the
+    # `UserTurnStrategies` block below: `stop_secs` is the silence
+    # threshold the VAD uses to flip its internal speaking→silent state
+    # (`VADState.QUIET` event), which then triggers downstream
+    # `UserStoppedSpeakingFrame` emission. `SpeechTimeoutUserTurnStopStrategy.
+    # user_speech_timeout` is a SECOND timer that runs from the
+    # VAD-emitted stop signal until the turn is declared "done" and the
+    # LLM is invoked. The two STACK: net silence-to-turn-end ≈
+    # `stop_secs + user_speech_timeout`. With the AC1 tune below
+    # (`user_speech_timeout=0.6`), keeping `stop_secs=0.8` gives ~1.4 s
+    # net silence floor — comfortable under the PRD 2 s ceiling but
+    # leaves room for STT finalization + LLM TTFT + TTS TTFA + network
+    # jitter without spilling over. Reducing `stop_secs` below 0.5 risks
+    # the VAD flipping QUIET mid-utterance on slow B1 speakers (1-3 s
+    # thinking pauses); audit revisited if smoke-gate p95 exceeds 2 s.
+    # See `memory/feedback_latency_kill_criterion_exceeded.md` lever #2.
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
             confidence=0.7,
@@ -122,7 +179,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     ),
                 ],
                 stop=[
-                    SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=1.8),
+                    # Story 6.8 Phase 1 AC1 — was 1.8 s; PRD hard ceiling
+                    # is 2 s for perceived latency (">2 s consistently →
+                    # concept is dead"). 1.8 s already burned the entire
+                    # budget BEFORE any STT/LLM/TTS/RTT work. Dropped to
+                    # 0.6 s as the smoke-gate-tunable starting point;
+                    # bump to 0.7-0.8 s only if Pixel 9 Pro XL traces show
+                    # B1 learners getting their turns cut mid-sentence
+                    # (target speaker: 1-3 s thinking pauses between
+                    # phrases). Stacks ADDITIVELY with VAD `stop_secs`
+                    # above — net silence-to-turn-end ≈ 1.4 s. See
+                    # `memory/feedback_latency_kill_criterion_exceeded.md`
+                    # lever #1.
+                    SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6),
                 ],
             ),
         ),
@@ -181,16 +250,24 @@ async def run_bot(url: str, room: str, token: str) -> None:
     )
 
     # Story 6.6 — checkpoint progression brain. ExchangeClassifier is
-    # fire-and-forget (asyncio.create_task, 2.0 s timeout per call). The
-    # manager swaps the live LLM system instruction in-place on advance
-    # (Deviation #2 — `llm._settings.system_instruction` is the single
-    # point of truth; the OpenAI adapter prepends it at every invocation,
-    # the LLMContext is created empty so mutating it would add a second
-    # system message) and routes the all-passed completion path through
+    # fire-and-forget (asyncio.create_task, 1.0 s timeout per call —
+    # tightened from 2.0 s in Story 6.8 Phase 1 to keep terminal-zone
+    # latency under the PRD ceiling). The manager swaps the live LLM
+    # system instruction in-place on advance (Deviation #2 —
+    # `llm._settings.system_instruction` is the single point of truth;
+    # the OpenAI adapter prepends it at every invocation, the LLMContext
+    # is created empty so mutating it would add a second system message)
+    # and routes the all-passed completion path through
     # `PatienceTracker.schedule_completion(survival_pct=100)`.
-    scenario_metadata = load_scenario_metadata(scenario_id)
-    scenario_checkpoints = load_scenario_checkpoints(scenario_id)
-    scenario_base_prompt = load_scenario_base_prompt(scenario_id)
+    #
+    # Story 6.8 Phase 2 — `coherence_charter` is threaded explicitly
+    # (required kwarg, no default) so the manager composes the same
+    # `base + charter + segment` shape we use for the initial
+    # `system_instruction` above. The wiring test
+    # (`test_bot_pipeline_wiring.py::test_coherence_charter_threaded_
+    # to_checkpoint_manager_and_llm_settings`) source-text-asserts both
+    # the import and this call shape, so a future refactor that drops
+    # either breaks loud.
     exchange_classifier = ExchangeClassifier(
         openrouter_api_key=settings.openrouter_api_key,
     )
@@ -202,6 +279,25 @@ async def run_bot(url: str, room: str, token: str) -> None:
         classifier=exchange_classifier,
         patience_tracker=patience_tracker,
         scenario_description=scenario_metadata.get("title", scenario_id),
+        coherence_charter=COHERENCE_CHARTER,
+    )
+
+    # Story 6.8 Phase 1 AC3 — LLM→TTS streaming-overlap probe. Both
+    # probes are inert in production (the `LATENCY_PROBE` env var is
+    # unset by `routes_calls.initiate_call`); smoke-gate operators set
+    # `LATENCY_PROBE=1` on the VPS, run one calibrated Waiter call, and
+    # compute the gap from the journalctl tail:
+    #   (tts_first_audio.ts_ns - llm_first_text.ts_ns) / 1_000_000 ms
+    # Target: <500 ms (LLM is streaming tokens into TTS). >500 ms means
+    # TTS waits for the full LLM response — enable streaming flag on
+    # CartesiaTTSService.
+    llm_first_text_probe = LatencyProbe(
+        label="llm_first_text",
+        frame_type=TextFrame,
+    )
+    tts_first_audio_probe = LatencyProbe(
+        label="tts_first_audio",
+        frame_type=OutputAudioRawFrame,
     )
 
     pipeline = Pipeline(
@@ -247,8 +343,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
             patience_tracker,
             context_aggregator.user(),
             llm,
+            llm_first_text_probe,
             transcript_character,
             tts,
+            tts_first_audio_probe,
             transport.output(),
             context_aggregator.assistant(),
         ]

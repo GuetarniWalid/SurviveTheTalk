@@ -63,6 +63,51 @@ CARTESIA_VOICE_ID = (
 )
 
 
+# Story 6.8 Phase 2 — system-wide conversation-coherence charter. Appended
+# verbatim to EVERY system_instruction composed by CheckpointManager (both
+# at init and at every checkpoint advance — see Story 6.6 Deviation #2).
+# The charter is NOT scenario-specific: it encodes universal behaviors the
+# character must respect regardless of who they are or what scenario they
+# are in. Token cost: ~200 tokens per turn. The savings on coherence-
+# failure recoveries (re-asking confirmed items, hallucinated menus) far
+# exceed the per-turn cost.
+#
+# Sourced from `memory/feedback_coherence_must_be_system_wide.md` — Walid
+# (2026-05-19) explicit ask after Story 6.7 smoke test (call_id=118)
+# surfaced Tina re-asking the confirmed Coke order 70 s later and
+# hallucinating 3 different drink menus across turns.
+COHERENCE_CHARTER = """\
+Conversation memory rules (MUST FOLLOW, regardless of scenario):
+
+1. Track every item the customer has confirmed. Once you acknowledge
+   an item (saying "got it", "okay, <item>", "<item>, yes", or any
+   equivalent), that item is LOCKED. Do not re-ask. Do not re-list.
+   Do not contradict the prior acknowledgment.
+
+2. If the customer references something they said earlier ("I already
+   said X", "as I told you", "like I said"), assume they are correct
+   and integrate that into your current turn. Do NOT deny what they
+   claim — check your prior acknowledgments in the conversation
+   history and respond accordingly.
+
+3. When you list options (menu items, choices, drinks, etc.), the
+   list MUST come verbatim from the scenario's defined inventory.
+   Do NOT invent new options across turns. Do NOT change the list
+   between turns. If you listed options in an earlier turn, the same
+   options apply on later turns unless the customer explicitly
+   chose one and you must now offer remaining alternatives.
+
+4. Never claim an item is unavailable if it appeared in any prior
+   listing you yourself produced. If the customer requests an item
+   you did not list, that's the only valid time to say it's
+   unavailable.
+
+5. If you and the customer disagree about what was said, prefer the
+   conversation history over your current guess. Re-read the recent
+   exchanges before responding.
+"""
+
+
 # Story 6.3 — emotion classifier prompt template.
 #
 # Tight, single-shot classification prompt for the user's most-recent line.

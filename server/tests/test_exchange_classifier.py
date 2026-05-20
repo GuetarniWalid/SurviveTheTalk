@@ -92,7 +92,8 @@ def test_classify_returns_false_on_met_false_response(
 
 
 def test_classify_returns_None_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A slow classifier that exceeds the 2.0 s budget returns None.
+    """A slow classifier that exceeds the 1.0 s budget (Story 6.8 Phase 1
+    AC4 — was 2.0 s in Story 6.6) returns None.
 
     Patches the module-level constant to a short value so the test runs fast.
     """

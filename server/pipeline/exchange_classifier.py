@@ -13,15 +13,19 @@ Mirrors the `pipeline/emotion_emitter.py` HTTPX + OpenRouter pattern:
   - JSON-strict response with Markdown-fence + first-`{...}` fallbacks.
 
 Timing divergence from EmotionEmitter (epic AC6 line 1196): the
-classifier MUST resolve within 2.0 s or the manager treats the exchange
-as a failed turn ("conservative fallback — no free progression"). Emotion
-classification has no UX cost when slow (the character simply stays in
-its previous Rive emotion); exchange classification has direct UX cost
-(the user's turn either advances the checkpoint or doesn't, and the next
-bot reply runs under whichever system prompt is current). The HTTP
-timeout (1.8 s) sits just under the classifier timeout (2.0 s) so an
-HTTP-side abort surfaces a clean log line BEFORE the async wait_for
-raises `TimeoutError`.
+classifier MUST resolve within 1.0 s (Story 6.8 Phase 1 AC4 — was 2.0 s
+in Story 6.6) or the manager treats the exchange as a failed turn
+("conservative fallback — no free progression"). Emotion classification
+has no UX cost when slow (the character simply stays in its previous
+Rive emotion); exchange classification has direct UX cost (the user's
+turn either advances the checkpoint or doesn't, and the next bot reply
+runs under whichever system prompt is current). The 1.0 s bound is the
+half-life of the Story 6.6 2.0 s budget — chosen to keep the Deviation
+#7 preemptive terminal-turn path (which AWAITS this classifier
+blocking) under the PRD 2 s perceived-latency ceiling. The HTTP timeout
+(0.8 s) sits just under the classifier timeout (1.0 s) so an HTTP-side
+abort surfaces a clean log line BEFORE the async wait_for raises
+`TimeoutError`.
 
 Return contract:
   - `True`  — model said `{"met": true}` AND the response parsed cleanly.
@@ -48,12 +52,16 @@ from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _OPENROUTER_MODEL = "qwen/qwen3.5-flash-02-23"
 
-# Per epic AC6 line 1196: "fails or times out (>2s) → checkpoint is NOT
-# advanced (conservative — no free progression)". 2.0 s outer budget;
-# 1.8 s HTTP budget so the httpx abort lands first and we get a clean
-# HTTP error log line instead of an opaque asyncio.TimeoutError.
-_CLASSIFIER_TIMEOUT_SECONDS = 2.0
-_HTTP_TIMEOUT_SECONDS = 1.8
+# Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
+# advanced (conservative — no free progression)". Story 6.8 Phase 1 AC4
+# tightens the outer budget from 2.0 s → 1.0 s to keep the Deviation #7
+# preemptive terminal-turn path (which AWAITS this classifier blocking)
+# under the PRD 2 s perceived-latency ceiling. The HTTP budget is sized
+# slightly below the outer budget so the httpx abort lands first and
+# logs a clean HTTP error instead of an opaque asyncio.TimeoutError.
+# See `memory/feedback_latency_kill_criterion_exceeded.md` lever #4.
+_CLASSIFIER_TIMEOUT_SECONDS = 1.0
+_HTTP_TIMEOUT_SECONDS = 0.8
 
 
 _FENCE_RE = re.compile(

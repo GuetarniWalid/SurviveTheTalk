@@ -81,6 +81,7 @@ def _make_manager(
     classify_response: bool | None = True,
     classify_responses: list[bool | None] | None = None,
     classify_delay: float = 0.0,
+    coherence_charter: str = "CHARTER.",
 ) -> tuple[CheckpointManager, MagicMock, MagicMock, _StubLLM, LLMContext]:
     """Build a fully-mocked manager for testing.
 
@@ -130,6 +131,7 @@ def _make_manager(
         classifier=classifier,
         patience_tracker=patience_tracker,
         scenario_description=scenario_description,
+        coherence_charter=coherence_charter,
     )
 
     # Attach the captured-calls list to the classifier for inspection.
@@ -270,8 +272,13 @@ def test_met_true_advances_index_swaps_prompt_emits_envelope() -> None:
     # Index advanced 0 → 1.
     assert manager._index == 1
 
-    # System prompt was swapped in-place on _settings.
-    assert stub_llm._settings.system_instruction == ("BASE PROMPT.\n\nprompt segment 1")
+    # System prompt was swapped in-place on _settings. Story 6.8 Phase 2:
+    # the COHERENCE_CHARTER sits BETWEEN base_prompt and prompt_segment
+    # so its position never moves regardless of which checkpoint is
+    # active.
+    assert stub_llm._settings.system_instruction == (
+        "BASE PROMPT.\n\nCHARTER.\n\nprompt segment 1"
+    )
 
     # Envelope was pushed.
     envelopes = [
@@ -567,6 +574,7 @@ def test_constructor_rejects_empty_checkpoints() -> None:
             classifier=classifier,
             patience_tracker=MagicMock(),
             scenario_description="x",
+            coherence_charter="CHARTER.",
         )
 
 
@@ -688,7 +696,10 @@ def test_preemptive_path_forwards_frame_on_success_recovery() -> None:
     _run(_drive())
 
     assert manager._index == 1
-    assert stub_llm._settings.system_instruction == "BASE PROMPT.\n\nprompt segment 1"
+    # Story 6.8 Phase 2 — charter slotted between base_prompt and segment.
+    assert stub_llm._settings.system_instruction == (
+        "BASE PROMPT.\n\nCHARTER.\n\nprompt segment 1"
+    )
     tracker.apply_exchange_outcome.assert_called_with(success=True)
     forwarded_user_frames = [f for f in captured if isinstance(f, TranscriptionFrame)]
     assert len(forwarded_user_frames) == 1
@@ -806,6 +817,7 @@ def test_preemptive_path_falls_through_on_classifier_exception() -> None:
         classifier=failing_classifier,
         patience_tracker=tracker,
         scenario_description="exception-test",
+        coherence_charter="CHARTER.",
     )
     captured = _capture_pushed(manager)
 
@@ -856,6 +868,7 @@ def test_constructor_raises_when_llm_settings_system_instruction_missing() -> No
             classifier=ExchangeClassifier(openrouter_api_key="k"),
             patience_tracker=MagicMock(),
             scenario_description="bad-llm-test",
+            coherence_charter="CHARTER.",
         )
 
     with pytest.raises(RuntimeError, match="system_instruction"):
@@ -867,6 +880,7 @@ def test_constructor_raises_when_llm_settings_system_instruction_missing() -> No
             classifier=ExchangeClassifier(openrouter_api_key="k"),
             patience_tracker=MagicMock(),
             scenario_description="bad-llm-test",
+            coherence_charter="CHARTER.",
         )
 
 
@@ -1020,6 +1034,120 @@ def test_emit_initial_state_pushes_index_zero_envelope() -> None:
 # ============================================================
 # Story 6.6 review patches — added 2026-05-18
 # ============================================================
+
+
+# ============================================================
+# Story 6.8 Phase 2 — COHERENCE_CHARTER threaded through every swap
+# (AC6 + AC7 + AC8)
+# ============================================================
+
+
+def test_coherence_charter_appears_in_every_system_instruction_swap() -> None:
+    """Story 6.8 Phase 2 AC8 — the COHERENCE_CHARTER must appear:
+      - in the composed system_instruction after EVERY checkpoint advance
+      - EXACTLY ONCE per swap (no accidental duplication on subsequent advances)
+      - BETWEEN `base_prompt` and `prompt_segment` (positional ordering matters)
+
+    The init-time charter injection is owned by `bot.py` (the manager
+    only writes to `_settings.system_instruction` on the FIRST advance),
+    so the "after init" assertion is left to the bot-wiring test below.
+    """
+    # 4-checkpoint scenario → 3 advances available.
+    checkpoints = _make_checkpoints(4)
+    manager, _classifier, _tracker, stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        classify_responses=[True, True, True],
+        coherence_charter="CHARTER.",
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Advance 1: cp0 → cp1.
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        post_advance_1 = stub_llm._settings.system_instruction
+        assert "CHARTER." in post_advance_1
+        assert post_advance_1.count("CHARTER.") == 1
+        # Positional ordering — charter sits between base and segment.
+        base_idx = post_advance_1.index("BASE PROMPT.")
+        charter_idx = post_advance_1.index("CHARTER.")
+        segment_idx = post_advance_1.index("prompt segment 1")
+        assert base_idx < charter_idx < segment_idx, (
+            f"charter must sit BETWEEN base_prompt and prompt_segment; "
+            f"got base@{base_idx} charter@{charter_idx} segment@{segment_idx}"
+        )
+
+        # Advance 2: cp1 → cp2.
+        await manager.process_frame(
+            _make_user_frame("second."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        post_advance_2 = stub_llm._settings.system_instruction
+        assert "CHARTER." in post_advance_2
+        assert post_advance_2.count("CHARTER.") == 1, (
+            "charter must appear EXACTLY ONCE per swap — accidental "
+            "duplication would bloat the prompt by ~200 tokens per turn"
+        )
+        assert "prompt segment 2" in post_advance_2
+
+        # Advance 3: cp2 → cp3.
+        await manager.process_frame(
+            _make_user_frame("third."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        post_advance_3 = stub_llm._settings.system_instruction
+        assert "CHARTER." in post_advance_3
+        assert post_advance_3.count("CHARTER.") == 1
+        assert "prompt segment 3" in post_advance_3
+
+    _run(_drive())
+
+
+def test_warn_on_duplicate_charter_in_composed_prompt() -> None:
+    """Story 6.8 Phase 2 AC15 box 3 — if a future refactor accidentally
+    causes the charter to appear twice in the composed prompt (e.g. by
+    pre-pending it inside `base_prompt` AND letting the swap add it
+    again), the smoke-gate operator should see a `WARNING: prompt
+    contains duplicate COHERENCE_CHARTER` log line in journalctl.
+
+    Forge the duplication by pre-embedding the charter into base_prompt;
+    on the first advance, the swap appends another copy → guard fires.
+    """
+    from loguru import logger as loguru_logger
+
+    checkpoints = _make_checkpoints(3)
+    # Pre-embed charter in base_prompt → duplication after swap.
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        base_prompt="BASE PROMPT. Some text including CHARTER. here.",
+        coherence_charter="CHARTER.",
+        classify_response=True,
+    )
+    _capture_pushed(manager)
+
+    captured_logs: list[str] = []
+    sink_id = loguru_logger.add(captured_logs.append, level="WARNING")
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("trigger advance."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    try:
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    duplicate_warnings = [
+        entry for entry in captured_logs if "duplicate COHERENCE_CHARTER" in entry
+    ]
+    assert duplicate_warnings, (
+        "expected WARNING log line for duplicate COHERENCE_CHARTER; "
+        f"got: {captured_logs}"
+    )
 
 
 def test_terminal_turn_lock_serializes_concurrent_invocations() -> None:

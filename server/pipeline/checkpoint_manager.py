@@ -120,6 +120,17 @@ class CheckpointManager(FrameProcessor):
             `schedule_completion` after the final checkpoint passes.
         scenario_description: Short scenario context (e.g. metadata
             title "The Waiter") embedded in the classifier prompt.
+        coherence_charter: Story 6.8 Phase 2 — system-wide conversation
+            coherence rules (the `COHERENCE_CHARTER` constant from
+            `pipeline.prompts`). Threaded EXPLICITLY (no default) so a
+            future refactor that drops the import in `bot.py` surfaces
+            as a missing-kwarg `TypeError` at call init rather than
+            silently dropping the charter. Composed BETWEEN `base_prompt`
+            and the current checkpoint's `prompt_segment` on every
+            advance — same position as in `bot.py`'s initial
+            `OpenRouterLLMService.Settings(system_instruction=...)` so
+            the charter never moves around the prompt regardless of
+            which checkpoint is active.
     """
 
     def __init__(
@@ -132,6 +143,7 @@ class CheckpointManager(FrameProcessor):
         classifier: ExchangeClassifier,
         patience_tracker: PatienceTracker,
         scenario_description: str,
+        coherence_charter: str,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -166,6 +178,13 @@ class CheckpointManager(FrameProcessor):
         self._classifier = classifier
         self._patience_tracker = patience_tracker
         self._scenario_description = scenario_description
+        # Story 6.8 Phase 2 — see class docstring. Stored verbatim; the
+        # advance path slots it BETWEEN base_prompt and the next
+        # checkpoint's prompt_segment so the charter never moves around
+        # the prompt regardless of which checkpoint is active. No
+        # rstrip/lstrip — the YAML-author convention is that the
+        # constant ships with its own trailing newline.
+        self._coherence_charter = coherence_charter
         self._index = 0
         # Latest-line-wins: each new finalized TranscriptionFrame cancels
         # the prior classify before scheduling a fresh task. Same shape
@@ -557,9 +576,37 @@ class CheckpointManager(FrameProcessor):
         # context messages. The `LLMContext` itself stays untouched
         # (no system message lives inside it; mutating it would either
         # be ignored or trigger a "two system messages" warning).
+        #
+        # Story 6.8 Phase 2 — COHERENCE_CHARTER sits BETWEEN base_prompt
+        # and prompt_segment so the conversation-memory directives
+        # survive every checkpoint swap (Walid ask 2026-05-19:
+        # `feedback_coherence_must_be_system_wide.md`). The position is
+        # identical to bot.py's initial composition so the charter
+        # never moves around the prompt across the call's lifetime.
         new_system_prompt = (
-            self._base_prompt + "\n\n" + next_checkpoint["prompt_segment"].rstrip()
+            self._base_prompt
+            + "\n\n"
+            + self._coherence_charter
+            + "\n\n"
+            + next_checkpoint["prompt_segment"].rstrip()
         )
+        # Story 6.8 Phase 2 (AC15 box 3 / smoke-gate guard) — emit a
+        # WARNING if the composed prompt accidentally contains the
+        # charter twice. A future refactor that double-appends (e.g.
+        # by pre-pending it inside base_prompt AND letting this swap
+        # add it again) would produce a 400-token bloat and a
+        # potentially-confusing duplicate set of rules; surface that
+        # mistake LOUD in journalctl so the smoke-gate operator catches
+        # it immediately rather than chasing a silent latency regression.
+        charter_count = new_system_prompt.count(self._coherence_charter)
+        if charter_count > 1:
+            logger.warning(
+                "prompt contains duplicate COHERENCE_CHARTER count={} "
+                "checkpoint_id={} index={}",
+                charter_count,
+                next_checkpoint["id"],
+                self._index,
+            )
         self._llm._settings.system_instruction = new_system_prompt
 
         await self.push_frame(

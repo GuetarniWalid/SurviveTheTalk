@@ -21,13 +21,16 @@ _BOT_PATH = pathlib.Path(__file__).resolve().parent.parent / "pipeline" / "bot.p
 
 def test_bot_imports_emitter_classes() -> None:
     """`bot.py` imports `EmotionEmitter` + `PatienceTracker` +
-    `CheckpointManager` + `ExchangeClassifier` (Story 6.6) and does NOT
-    import the removed `VisemeEmitter`."""
+    `CheckpointManager` + `ExchangeClassifier` (Story 6.6) +
+    `COHERENCE_CHARTER` (Story 6.8 Phase 2) and does NOT import the
+    removed `VisemeEmitter`."""
     source = _BOT_PATH.read_text(encoding="utf-8")
     assert "from pipeline.emotion_emitter import EmotionEmitter" in source
     assert "from pipeline.patience_tracker import PatienceTracker" in source
     assert "from pipeline.checkpoint_manager import CheckpointManager" in source
     assert "from pipeline.exchange_classifier import ExchangeClassifier" in source
+    # Story 6.8 Phase 2 AC8 — wiring assertion for the charter import.
+    assert "COHERENCE_CHARTER" in source
     assert "VisemeEmitter" not in source
 
 
@@ -195,6 +198,72 @@ def test_bot_routes_playback_idle_to_patience_tracker() -> None:
 
 
 # ============================================================
+# Story 6.8 Phase 2 — COHERENCE_CHARTER wiring (AC8 second assertion)
+# ============================================================
+
+
+def test_coherence_charter_threaded_to_checkpoint_manager_and_llm_settings() -> None:
+    """Story 6.8 Phase 2 AC8 — source-text wiring assertions for the
+    charter. The charter MUST be:
+      - imported from `pipeline.prompts` (else `bot.py` would crash at
+        import after the constant is added);
+      - threaded into the `CheckpointManager(...)` constructor as the
+        `coherence_charter=COHERENCE_CHARTER` kwarg (else the manager
+        would refuse construction because the kwarg is required);
+      - composed into the initial `OpenRouterLLMService.Settings(
+        system_instruction=...)` call so the FIRST LLM turn already
+        has coherence rules (without this, the very first user turn
+        would be answered under a charter-less prompt and the smoke
+        gate's call_id=118 replay would fail).
+
+    Source-text matching is fragile (renames break it) — when bot.py
+    refactors, expect to re-verify the assertions.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+
+    # Import wiring.
+    assert "COHERENCE_CHARTER" in source, (
+        "bot.py must import COHERENCE_CHARTER from pipeline.prompts so "
+        "the symbol is in scope for the CheckpointManager kwarg + the "
+        "initial system_instruction composition"
+    )
+
+    # Manager kwarg wiring — strip comment-only lines so a docstring
+    # mention of the kwarg doesn't false-positive.
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "coherence_charter=COHERENCE_CHARTER" in code, (
+        "bot.py must thread coherence_charter=COHERENCE_CHARTER into "
+        "the CheckpointManager(...) constructor — the kwarg is required, "
+        "a missing thread would surface as TypeError at call init"
+    )
+
+    # Initial composition wiring — the charter must be slotted into the
+    # initial `system_instruction` so the first user turn already gets
+    # coherence. The composition uses string concatenation with
+    # COHERENCE_CHARTER as a substring; check the symbol appears near
+    # the OpenRouterLLMService construction site.
+    llm_start = code.find("OpenRouterLLMService(")
+    assert llm_start != -1, "OpenRouterLLMService construction not found"
+    llm_end = code.find(")", llm_start) + 1
+    # Walk back a bit to capture the `initial_system_prompt = (...)`
+    # block that's typically just above the LLM construction.
+    window_start = max(0, llm_start - 800)
+    composition_window = code[window_start:llm_end]
+    assert "COHERENCE_CHARTER" in composition_window, (
+        "the initial OpenRouterLLMService system_instruction must be "
+        "composed with COHERENCE_CHARTER so the first user turn already "
+        "gets coherence rules — without this, call_id=118 replay would "
+        "still see Tina forget the Coke 70 s later"
+    )
+    assert "initial_system_prompt" in composition_window, (
+        "expected the initial_system_prompt local to compose the charter "
+        "between base_prompt and the first checkpoint's prompt_segment"
+    )
+
+
+# ============================================================
 # Story 6.6 — Déviation-#28 pipeline-drive contract test
 # (deferred-work line 369)
 # ============================================================
@@ -285,6 +354,7 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
         classifier=classifier,
         patience_tracker=patience_tracker,
         scenario_description="contract-test",
+        coherence_charter="CHARTER.",
     )
 
     # Build a pipeline that mirrors `bot.py`'s production ordering for

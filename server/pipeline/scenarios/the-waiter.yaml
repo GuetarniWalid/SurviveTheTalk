@@ -63,6 +63,19 @@ base_prompt: |
   - Never break the fourth wall or acknowledge being an AI
   - If the customer says something inappropriate or abusive, deliver the hang-up line exactly as written in exit_lines.hangup and end the call: "*heavy sigh* I'm done. Next customer."
 
+  # Story 6.8 Phase 3 (AC9) — explicit Menu enumeration. The call_id=118
+  # smoke test (2026-05-19) hit a hallucinated drinks list 3 different
+  # ways across one call. The COHERENCE_CHARTER (Phase 2) requires
+  # menu listings to come "verbatim from the scenario's defined
+  # inventory" — this block IS the inventory. Do NOT change a token
+  # without re-running Pass A+B calibration.
+  Menu — exhaustive inventory (use these EXACT items only, never invent
+  alternatives):
+  - Main courses: grilled chicken, fried chicken, pasta, steak, fish and
+    chips, soup of the day (tomato).
+  - Drinks: water, juice, cola, coffee.
+  - Desserts: none tonight.
+
 # ============================================================
 # CHECKPOINTS — ordered sequence, one active at a time
 # ============================================================
@@ -103,10 +116,22 @@ checkpoints:
       For steak: "How do you want it cooked? And don't say 'medium
       rare' and then complain it's too pink." For other items, ask
       about a relevant detail. Wait for a clear answer.
+    # Story 6.8 Phase 3 (AC10) — leniency rewrite after call_id=118
+    # (2026-05-19) where user said "I already said pasta" and the
+    # classifier returned `checkpoint_unmet clarify`. The user is at
+    # the clarify stage; ANY direct or indirect response about their
+    # dish choice (cooking preference, variation, re-stating the dish,
+    # or even saying "as I said before") demonstrates engagement with
+    # the clarifying question — pass it. The classifier judges
+    # semantically; this prose tells it the wide net is intentional.
     success_criteria: >
-      User specifies the variation, cooking preference, or answers
-      the clarifying question about their dish. Any specific response
-      to the follow-up question counts.
+      User answers the clarifying question about their dish in any
+      coherent way. Specifying a variation (grilled / fried, rare /
+      medium / well done), a cooking preference, a side preference,
+      OR simply re-stating / re-confirming the dish they already
+      named (including phrases like "I already said pasta",
+      "the chicken, like I said") all count as a successful response
+      to the clarifier.
 
   - id: drink
     hint_text: "Order a drink."
@@ -115,10 +140,21 @@ checkpoints:
       minimal enthusiasm: "And to drink? We've got water, juice,
       cola, or coffee. That's it." If they ask for something you
       don't have, sigh and repeat the options.
+    # Story 6.8 Phase 3 (AC10) — leniency rewrite after call_id=118
+    # (2026-05-19) where the user said "Coke" and the classifier
+    # returned `checkpoint_unmet drink` 4 turns in a row. "Coke" is a
+    # household synonym for "cola" — the criteria below tells the
+    # classifier to accept the menu items AND common synonyms / brand
+    # names, AND any explicit refusal (which is also a valid response
+    # to the drink question).
     success_criteria: >
-      User orders a drink (water, juice, cola, coffee, or any
-      beverage they name). Saying "just water" or "nothing" also
-      counts as a valid response.
+      User names ANY beverage in response to the drinks question.
+      Accept the menu items (water, juice, cola, coffee) AND common
+      synonyms / brand names (Coke, Pepsi, Sprite, juice variants,
+      sparkling water, tap water, espresso). Also accept explicit
+      refusals ("just water", "nothing", "I'm fine", "no drink") as
+      a valid response. The user is engaging with the drink question
+      either way — pass it.
 
   - id: confirm
     hint_text: "Confirm your order is correct."
