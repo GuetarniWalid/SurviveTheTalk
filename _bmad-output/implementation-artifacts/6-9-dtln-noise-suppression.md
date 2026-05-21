@@ -41,6 +41,57 @@ so that users can practice in normal noisy environments (cafés, transit, open o
 
 4. **(Deviation #4) `livekit-plugins-dtln` upgraded `livekit` SDK 1.1.3 → 1.1.8 + `livekit-protocol` 1.1.3 → 1.1.9.** Pipecat 0.0.108 doesn't pin a specific livekit version (the extra is `livekit-agents` not `livekit`), so the upgrade went through cleanly. All 329 baseline pre-DTLN tests still pass post-upgrade; the new DTLN suite adds 11 tests = 340 total + 1 wiring test = 341.
 
+---
+
+### Post-Smoke-Test Amends (2026-05-21) — **CRITICAL READ FOR CODE REVIEW**
+
+The initial Story 6.9 commit (`0e1ba96`) shipped the 4 deviations above. The smoke test revealed **4 additional issues** that triggered the amends below. These were NOT in the original spec — every one is a reaction to a real failure observed in production logs during the 2026-05-21 smoke session. Reviewers should pay special attention to these because they touch concurrency, infra-fairness, and SDK-private APIs:
+
+5. **(Deviation #5) `verdict=None` is now patience-NEUTRAL, not patience-NEGATIVE.** Original Story 6.6 design treated classifier failure (HTTP error / timeout / parse error) as conservative `apply_exchange_outcome(success=False)` (drains -15 patience). The smoke test (2026-05-21, call 138 "Pasta. Pasta. Pasta.") proved this was wrong: a single OpenRouter HTTP timeout (821ms vs the 800ms budget) cost the user 15 patience for a turn they delivered perfectly. The fix in `checkpoint_manager.py::_classify_and_advance` — when `verdict is None`, log a WARNING but **DO NOT** call `apply_exchange_outcome`. The checkpoint still doesn't advance (no free progression). Patience stays unchanged. The next user turn gets another classification chance.
+   - **Adversarial review concern**: could an attacker DoS OpenRouter to keep the call alive indefinitely without patience drain? Answer: yes in theory, but they'd already be paying for STT + TTS minutes via Soniox/Cartesia — the call would time-cap naturally; and the silence ladder (Story 6.4) still fires on truly silent turns. The fix favors infra fairness over abuse-resistance — explicit trade-off.
+   - **Test 7 inversion**: `test_classifier_None_does_not_advance_applies_fail_penalty` was RENAMED + REWRITTEN to `test_classifier_None_does_not_advance_and_does_not_drain_patience`. The new test asserts `apply_exchange_outcome.assert_not_called()` — reviewers should verify this is the intended behavior and that the old contract isn't depended on elsewhere.
+
+6. **(Deviation #6) HTTP timeout `0.8s → 1.5s` + outer `1.0s → 2.0s` — partial revert of Story 6.8 AC4.** Story 6.8 had tightened the classifier budget from 2.0s/1.8s → 1.0s/0.8s for terminal-turn latency. The smoke test revealed this left zero margin for httpx cold-start (TCP + TLS handshake ~100-200ms paid on every classify because each call created a fresh `httpx.AsyncClient`). Combined with OpenRouter qwen-flash TTFT variance (300-1500ms), ~30% of calls hit timeout. The amend restores the original Story 6.6 budget (2.0s/1.5s) so the persistent-client savings (#7) PLUS the larger budget give comfortable margin. **Trade-off**: terminal-turn synchronous classifier (Deviation #7 from Story 6.6) may now block up to 2.0s on the very last user turn — adds ~1s to perceived end-of-call latency vs Story 6.8's tight 1.0s budget. Acceptable for MVP because terminal-turn latency is invisible compared to the spoken exit line (5-8s of TTS speech) AND the call has already ended functionally. Story 6.8 AC4 docstring inline updated to reflect the new values.
+
+7. **(Deviation #7) Persistent `httpx.AsyncClient` in `ExchangeClassifier` with `_get_client()` + `close()` lifecycle methods.** Original implementation opened a fresh client per classify call (idiomatic `async with httpx.AsyncClient() as client:` pattern, but wasteful at scale because TCP+TLS handshake repeats). The amend introduces:
+   - `__init__` adds `self._client: httpx.AsyncClient | None = None` + `self._client_lock = asyncio.Lock()`
+   - `_get_client()` async method does double-checked locking: first check WITHOUT lock for the fast path, take lock + recheck for the cold-start race (two classify() calls firing simultaneously at call boot)
+   - `close()` async method releases the connection pool via `await self._client.aclose()`; idempotent (safe to call twice)
+   - `CheckpointManager.cleanup()` now calls `self._classifier.close()` (guarded by `hasattr` for back-compat with test stubs)
+   - **Adversarial review concerns**:
+     - Double-checked locking pattern: is the `is None` check on first read safe across Python's memory model? Answer: yes — CPython's GIL ensures atomic read for object references; the only race is "two coroutines both see None and both create a client" which the lock+recheck handles.
+     - Connection pool stale-after-server-close: httpx 0.28+ handles this internally with `httpcore`'s connection-state tracking; broken connections trigger a new TCP connect on the next request transparently. We rely on httpx defaults.
+     - Idempotent close: tested in `test_close_releases_client_and_is_idempotent` — `await classifier.close()` twice without error.
+   - **Tests added**: `test_persistent_client_reused_across_classify_calls` (asserts client identity is stable across 3 classify calls) + `test_close_releases_client_and_is_idempotent`.
+
+8. **(Deviation #8) `SonioxSTTService(... vad_force_turn_endpoint=False, ...)` to fix the "interim TFs forever" freeze.** Original `bot.py` used the Pipecat default `vad_force_turn_endpoint=True` (Silero VAD declares user-stop → Pipecat sends finalize message to Soniox). The smoke test (2026-05-21, call 142 "Cola" lost) revealed that when Silero never declares stop (continuous low-level audio: breathing, AC hum, papers rustling), Soniox keeps streaming interim TranscriptionFrames indefinitely (22+ seconds observed) and the user's turn is never finalized. The amend sets `vad_force_turn_endpoint=False` which delegates endpoint detection to Soniox's own neural VAD (Soniox decides when speech ends based on its model). Much more robust against continuous low-level noise.
+   - **Adversarial review concern**: are there scenarios where Soniox's endpoint detection is WORSE than Silero's? Possibly with very long pauses mid-utterance (Soniox might finalize too early if user pauses mid-sentence to think). Mitigated by the intent-first classifier prompt (Story 6.8) which tolerates fragments and re-statements.
+   - **VAD tuning revert (sub-deviation)**: We had briefly experimented (2026-05-21) with `confidence=0.85`, `min_volume=0.7`, `DTLN strength=0.8` to fight the cocktail-party YouTube test. After the smoke test confirmed those params hurt soft-voice users without solving voice-isolation (a different DSP problem), we reverted all 3 back to the Story 6.9 baseline (`confidence=0.7`, `min_volume=0.5`, `strength=0.5`). The amend includes the revert with inline comments explaining the journey.
+
+9. **(Sub-deviation under #5/#6/#7) HTTP error log line now includes exception class name.** Original log was `logger.warning("exchange classifier HTTP error: {}", exc)`. Some httpx exceptions (notably `httpx.TimeoutException`) serialize to empty `str()` → operator saw `"HTTP error: "` with no content. The amend adds `({type(exc).__name__})` suffix → smoke-gate operator can disambiguate timeout vs connect vs response error without code-diving.
+
+### Cumulative Story 6.9 status post-amends (for reviewer scope-check):
+
+- **Original spec**: AC1-AC10 + 4 deviations + 11 unit tests + 1 wiring assertion = 12 net new tests
+- **Post-smoke-test amends**: +4 deviations + 2 new tests (`test_persistent_client_reused_across_classify_calls`, `test_close_releases_client_and_is_idempotent`) + 1 test inversion (test 7 rewrite) = 3 net delta
+- **Final test count**: 343 server (341 initial + 2 new) + 373 client (unchanged)
+- **Files touched post-`0e1ba96` commit**:
+  - `server/pipeline/bot.py` (VAD revert + Soniox endpoint flag)
+  - `server/pipeline/exchange_classifier.py` (persistent client + close() + timeout bump + log enhancement + docstring updates)
+  - `server/pipeline/checkpoint_manager.py` (verdict=None patience-neutral + classifier.close in cleanup)
+  - `server/tests/test_checkpoint_manager.py` (test 7 inverted)
+  - `server/tests/test_exchange_classifier.py` (2 new tests for persistent client)
+
+### What the code reviewer should focus on:
+
+1. **Concurrency**: `_get_client()` double-checked locking, `classifier.close()` idempotency, `CheckpointManager.cleanup()` ordering (drain in-flight task BEFORE close classifier — currently correct order in the diff).
+2. **Resource leaks**: Confirm `httpx.AsyncClient` is always closed on call teardown (no path that exits without calling cleanup).
+3. **Failure modes**: Is `verdict=None` neutrality the right call, or should patience drain very slightly (-1 instead of -15) to discourage upstream-DoS abuse? Currently we chose pure neutrality.
+4. **Backwards compat**: Test 7 was inverted — confirm no other test or production code path expects the old `apply_exchange_outcome(success=False)` on None verdict.
+5. **Soniox endpoint detection**: Validate the trade-off — does delegating to Soniox introduce edge cases on long mid-utterance pauses? Smoke test didn't cover this thoroughly.
+6. **VAD revert**: All 3 reverted params are documented with the journey ("we tried X then reverted because Y"). Reviewer can confirm we're back to baseline.
+7. **HTTP timeout 1.5s + outer 2.0s**: Does this cumulatively undo Story 6.8 AC4's latency goal? Yes for the worst-case terminal turn, no for the median (the persistent client saves ~150ms which compensates).
+
 ## Acceptance Criteria (BDD)
 
 **AC1 — DTLN ONNX dependency installed:**
@@ -255,4 +306,6 @@ Claude Opus 4.7 (1M context)
 
 ## Change Log
 
-- 2026-05-20 — Dev complete, all 6 pre-commit gates green. Story flipped `in-progress → review`. 11 new DTLN tests + 1 wiring test (server 329 → 341). 4 up-front deviations documented. Smoke gate (6 boxes incl. café-bondé real-noise test) reserved for Walid post-deploy.
+- 2026-05-20 — Dev complete, all 6 pre-commit gates green. Story flipped `in-progress → review`. 11 new DTLN tests + 1 wiring test (server 329 → 341). 4 up-front deviations documented. Smoke gate (6 boxes incl. café-bondé real-noise test) reserved for Walid post-deploy. Commit `0e1ba96`.
+
+- 2026-05-21 — **Post-smoke-test amends (uncommitted on this branch, pending code review)**. Smoke test on Pixel 9 Pro XL surfaced 2 production bugs that pre-existed in Story 6.8 but only became visible under DTLN's audio chain: (a) call 138 lost on "Pasta. Pasta. Pasta." — OpenRouter HTTP timeout (821ms vs 800ms budget) caused -15 patience drain for a perfectly-delivered turn; (b) call 142 lost on "Cola" — Soniox interim TFs kept the turn open 22s without finalizing because Silero VAD never detected stop. 4 reliability amends shipped: #5 `verdict=None` patience-neutral, #6 timeout `0.8s/1.0s → 1.5s/2.0s`, #7 persistent `httpx.AsyncClient` with `_get_client()` + `close()` lifecycle, #8 `vad_force_turn_endpoint=False` + revert of experimental VAD tuning. Test 7 inverted (`apply_exchange_outcome.assert_not_called()`); 2 new tests for persistent client lifecycle. Server tests 341 → 343 (+2 net). Café smoke test re-validated by Walid post-amends (2026-05-21) — DTLN noise suppression confirmed working in noisy environment. **Cocktail-party / parasitic-voice case acknowledged as out-of-scope** (different DSP problem — voice isolation vs noise suppression), deferred to Story 6.11 (Noisy Environment Detection — spec drafted same day). Pending: `/commit` of the 5 modified files + 2 new spec drafts (6-10, 6-11), `/bmad-code-review` of cumulative branch state, then `review → done` flip.

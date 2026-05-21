@@ -449,6 +449,13 @@ class CheckpointManager(FrameProcessor):
         Without this hook the asyncio task is GC'd while pending →
         `Task was destroyed but it is pending!` log noise. Same pattern
         as `EmotionEmitter.cleanup` / `PatienceTracker.cleanup`.
+
+        Story 6.9 reliability patch — also close the classifier's
+        persistent httpx client so the connection pool is drained
+        cleanly (no `Unclosed AsyncClient` warning + no leaked
+        sockets). Guarded by `hasattr` so older classifier instances
+        without `close()` still work — defensive in case the manager
+        is constructed with a non-standard classifier in tests.
         """
         await super().cleanup()
         prior = self._in_flight
@@ -456,6 +463,8 @@ class CheckpointManager(FrameProcessor):
             prior.cancel()
             await asyncio.gather(prior, return_exceptions=True)
         self._in_flight = None
+        if hasattr(self._classifier, "close"):
+            await self._classifier.close()
 
     async def _schedule_classification(self, user_text: str) -> None:
         """Cancel any in-flight task and schedule a fresh classifier."""
@@ -521,17 +530,25 @@ class CheckpointManager(FrameProcessor):
         current_id = current["id"]
 
         if verdict is None:
-            # Conservative fallback per epic AC6 line 1196: classifier
-            # failure / timeout / parse-error treats the exchange as a
-            # failed turn for the meter, BUT does NOT advance the
-            # checkpoint (no free progression). Log at warning level
-            # so a degraded classifier surfaces in journalctl.
+            # Story 6.9 reliability patch (2026-05-21) — classifier
+            # failure (HTTP error / timeout / parse-error) is an
+            # INFRASTRUCTURE problem on OUR side, NOT a user mistake.
+            # Pre-patch this drained patience by -fail_penalty (-15),
+            # punishing the user for an OpenRouter hiccup we caused
+            # (call 138 lost on "Pasta. Pasta. Pasta." because of an
+            # 821 ms HTTP request that hit the 800 ms timeout — full
+            # post-mortem in Story 6.9 dev notes). New behavior: log
+            # the inconclusive verdict at WARNING so degraded
+            # classifier surfaces in journalctl, but DO NOT call
+            # `apply_exchange_outcome` — patience is neutral. The
+            # checkpoint also doesn't advance (no free progression),
+            # so the next user turn gets another classification chance.
             logger.warning(
-                "checkpoint_classifier_inconclusive checkpoint_id={} text={!r}",
+                "checkpoint_classifier_inconclusive checkpoint_id={} text={!r} "
+                "(patience unchanged — infra failure)",
                 current_id,
                 trimmed,
             )
-            self._patience_tracker.apply_exchange_outcome(success=False)
             return
 
         if verdict is False:

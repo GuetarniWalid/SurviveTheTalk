@@ -113,8 +113,14 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # VAD + STT so every downstream observer (Silero VAD, Soniox, emotion
     # + exchange classifiers, CheckpointManager) sees clean speech. Failure
     # at init falls back to passthrough — the call never crashes due to
-    # the filter. `strength=0.5` is the default wet/dry blend; tune toward
-    # 0.7-0.8 only after a café smoke test proves residual babble noise.
+    # the filter. `strength=0.5` is the default wet/dry blend. We
+    # briefly tried 0.8 (Story 6.9 noise-rejection tuning 2026-05-21)
+    # but reverted after the smoke test showed it didn't help with
+    # the YouTube/babble case (voice-vs-voice = cocktail-party problem,
+    # needs voice-isolation not noise-suppression) AND slightly
+    # degraded the calm-room baseline. Cocktail-party fix deferred
+    # to a future paid voice-isolation Story OR client-side headphone
+    # recommendation in onboarding.
     audio_in_filter = DTLNAudioFilter(strength=0.5)
 
     transport = LiveKitTransport(
@@ -128,9 +134,24 @@ async def run_bot(url: str, room: str, token: str) -> None:
         ),
     )
 
+    # Story 6.9 reliability patch (2026-05-21) — `vad_force_turn_endpoint=False`
+    # delegates endpoint detection to Soniox's own neural VAD instead of
+    # waiting on Silero's `VADUserStoppedSpeakingFrame` (the default `True`
+    # bridges the two: Silero declares stop → Pipecat sends finalize to
+    # Soniox). Under `True`, if Silero never declares stop (continuous
+    # low-level audio: breathing, AC hum, papers rustling), Soniox keeps
+    # streaming interim TFs indefinitely and the user's turn is never
+    # finalized — Tina stays silent forever. Call 142 (2026-05-21,
+    # "Cola" attempt) failed exactly this way: 22 s of interim TFs with
+    # no finalize → user gave up and hung up.
+    #
+    # With `False`, Soniox uses its own endpoint-detection model trained
+    # on prosody + silence + speech-completion cues — much more robust
+    # to ambient noise than Silero's acoustic-energy threshold.
     stt = SonioxSTTService(
         api_key=settings.soniox_api_key,
         settings=SonioxSTTService.Settings(model="stt-rt-v4"),
+        vad_force_turn_endpoint=False,
     )
 
     llm = OpenRouterLLMService(
@@ -169,6 +190,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # the VAD flipping QUIET mid-utterance on slow B1 speakers (1-3 s
     # thinking pauses); audit revisited if smoke-gate p95 exceeds 2 s.
     # See `memory/feedback_latency_kill_criterion_exceeded.md` lever #2.
+    # Story 6.9 tuning revert (2026-05-21) — we briefly bumped
+    # `confidence` 0.7 → 0.85 and `min_volume` 0.5 → 0.7 to try to
+    # reject background voices, but the smoke test confirmed those
+    # params hurt soft-voice users (long interim TFs, fragmented
+    # finalizes) without solving the voice-isolation case. Reverted
+    # to lenient defaults. Real cocktail-party fix needs a voice
+    # isolation layer (paid: Krisp BVC, AI-coustics) — deferred.
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
             confidence=0.7,

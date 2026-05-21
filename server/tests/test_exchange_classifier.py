@@ -206,6 +206,66 @@ def test_markdown_fenced_response_parses(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out is True
 
 
+# ---------- Story 6.9 reliability — persistent client + close --------------
+
+
+def test_persistent_client_reused_across_classify_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.9 reliability patch — the underlying `httpx.AsyncClient` is
+    instantiated ONCE per classifier (lazy at first classify) and reused
+    across subsequent calls. Pre-patch each classify opened a new client
+    → paid TCP + TLS handshake (~100-200 ms) per call → ~30 % of calls
+    timed out against Story 6.8's tight 0.8 s HTTP budget.
+
+    Asserts the underlying client identity is stable across 3 classify
+    calls — proves the lazy-init + reuse pattern works."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"met": true}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+
+    async def _drive() -> tuple[Any, Any, Any]:
+        await classifier.classify(**_kwargs())
+        first = classifier._client
+        await classifier.classify(**_kwargs())
+        second = classifier._client
+        await classifier.classify(**_kwargs())
+        third = classifier._client
+        await classifier.close()
+        return first, second, third
+
+    first, second, third = _run(_drive())
+    assert first is not None, "first call must lazy-init the client"
+    assert first is second, "second call must reuse the same client (no cold start)"
+    assert second is third, "third call must reuse the same client"
+
+
+def test_close_releases_client_and_is_idempotent() -> None:
+    """`close()` must release the connection pool (set `_client` to None)
+    AND be idempotent — `CheckpointManager.cleanup()` may call it more
+    than once during teardown if the manager is reused across tests."""
+    classifier = _make_classifier()
+
+    async def _drive() -> None:
+        # Force-init a client by calling _get_client directly (avoids
+        # the round-trip to OpenRouter for the test)
+        await classifier._get_client()
+        assert classifier._client is not None
+        await classifier.close()
+        assert classifier._client is None
+        # Second close must be a no-op
+        await classifier.close()
+        assert classifier._client is None
+
+    _run(_drive())
+
+
 # ---------- Test 10: parser handles prose around JSON ---------------------
 
 

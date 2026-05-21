@@ -12,30 +12,42 @@ Mirrors the `pipeline/emotion_emitter.py` HTTPX + OpenRouter pattern:
     `extra_body`; that key is only respected by the OpenAI Python SDK).
   - JSON-strict response with Markdown-fence + first-`{...}` fallbacks.
 
-Timing divergence from EmotionEmitter (epic AC6 line 1196): the
-classifier MUST resolve within 1.0 s (Story 6.8 Phase 1 AC4 — was 2.0 s
-in Story 6.6) or the manager treats the exchange as a failed turn
-("conservative fallback — no free progression"). Emotion classification
-has no UX cost when slow (the character simply stays in its previous
-Rive emotion); exchange classification has direct UX cost (the user's
-turn either advances the checkpoint or doesn't, and the next bot reply
-runs under whichever system prompt is current). The 1.0 s bound is the
-half-life of the Story 6.6 2.0 s budget — chosen to keep the Deviation
-#7 preemptive terminal-turn path (which AWAITS this classifier
-blocking) under the PRD 2 s perceived-latency ceiling. The HTTP timeout
-(0.8 s) sits just under the classifier timeout (1.0 s) so an HTTP-side
-abort surfaces a clean log line BEFORE the async wait_for raises
-`TimeoutError`.
+Timing budget (post-Story 6.9 reliability incident, 2026-05-21): the
+classifier MUST resolve within 2.0 s or the conservative fallback path
+fires. Story 6.8 had tightened these to 1.0 s outer + 0.8 s HTTP for
+latency reasons, but the 0.8 s HTTP budget left zero margin for the
+~100-200 ms TLS+TCP cold-start cost paid on EVERY classify call (a new
+`httpx.AsyncClient` was instantiated per call — see persistent-client
+refactor below). OpenRouter qwen-flash TTFT variance (300-1500 ms)
+combined with the cold-start overhead caused ~30 % of classify calls to
+timeout, with each timeout incorrectly draining the user's patience
+meter — a classifier-side reliability bug that punished the user for
+our infra failures (Story 6.9 smoke-test 2026-05-21, call 138 lost on
+"Pasta" because of this exact cascade). Story 6.10 prep restores the
+2.0 s outer / 1.5 s HTTP budget AND adds persistent client reuse, so
+the cold-start cost is paid ONCE at first classify, and subsequent
+calls only pay the OpenRouter inference time.
+
+Emotion classification has no UX cost when slow (the character simply
+stays in its previous Rive emotion); exchange classification has
+direct UX cost (the user's turn either advances the checkpoint or
+doesn't, and the next bot reply runs under whichever system prompt is
+current). The HTTP timeout (1.5 s) sits under the classifier timeout
+(2.0 s) so an HTTP-side abort surfaces a clean log line BEFORE the
+async `wait_for` raises `TimeoutError`.
 
 Return contract:
   - `True`  — model said `{"met": true}` AND the response parsed cleanly.
   - `False` — model said `{"met": false}` AND the response parsed cleanly.
   - `None`  — anything else (timeout, HTTP error, malformed JSON, missing
-              key, non-bool `met`, unexpected shape). The caller
-              (CheckpointManager) treats `None` as "failed exchange for
-              the patience meter, but DON'T log the verdict noise" —
-              `False` means the model actively rejected the turn and
-              MUST be logged.
+              key, non-bool `met`, unexpected shape). Per Story 6.9
+              reliability patch (2026-05-21): the caller
+              (CheckpointManager) treats `None` as INFRA FAILURE — does
+              NOT advance the checkpoint AND does NOT drain patience
+              (the user's turn was lost to our infrastructure, not to
+              their performance). `False` means the model actively
+              rejected the turn — that IS a user-side failure, drains
+              patience, and MUST be logged.
 """
 
 from __future__ import annotations
@@ -53,15 +65,18 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _OPENROUTER_MODEL = "qwen/qwen3.5-flash-02-23"
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
-# advanced (conservative — no free progression)". Story 6.8 Phase 1 AC4
-# tightens the outer budget from 2.0 s → 1.0 s to keep the Deviation #7
-# preemptive terminal-turn path (which AWAITS this classifier blocking)
-# under the PRD 2 s perceived-latency ceiling. The HTTP budget is sized
-# slightly below the outer budget so the httpx abort lands first and
-# logs a clean HTTP error instead of an opaque asyncio.TimeoutError.
-# See `memory/feedback_latency_kill_criterion_exceeded.md` lever #4.
-_CLASSIFIER_TIMEOUT_SECONDS = 1.0
-_HTTP_TIMEOUT_SECONDS = 0.8
+# advanced (conservative — no free progression)". Story 6.9 reliability
+# patch (2026-05-21) restored these from Story 6.8's 1.0 s / 0.8 s back
+# to 2.0 s / 1.5 s after the "Pasta" classifier-cold-start incident
+# (call 138 lost 15 patience because the 0.8 s HTTP budget left zero
+# margin for TLS handshake + OpenRouter variance). Paired with the new
+# persistent `httpx.AsyncClient` reuse, the cold-start cost is paid
+# ONCE at first classify, and the 1.5 s budget comfortably covers the
+# OpenRouter qwen-flash 300-1500 ms TTFT variance. The HTTP budget is
+# sized below the outer budget so the httpx abort lands first and logs
+# a clean HTTP error instead of an opaque `asyncio.TimeoutError`.
+_CLASSIFIER_TIMEOUT_SECONDS = 2.0
+_HTTP_TIMEOUT_SECONDS = 1.5
 
 
 _FENCE_RE = re.compile(
@@ -90,6 +105,50 @@ class ExchangeClassifier:
                 "ExchangeClassifier requires a non-empty openrouter_api_key"
             )
         self._api_key = openrouter_api_key
+        # Story 6.9 reliability patch (2026-05-21) — persistent
+        # AsyncClient across classify calls. Pre-patch every classify()
+        # opened a brand-new client → paid TCP + TLS handshake (~100-200
+        # ms) per call → ~30 % of calls timed out against the tight
+        # Story 6.8 budget. Lazy-init on first call (deferred so module
+        # import doesn't require a running event loop) + protected by
+        # an asyncio.Lock so the double-check pattern handles concurrent
+        # cold-start races (two classify() calls firing simultaneously
+        # at call boot before the LSTM state is warm).
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return a shared `httpx.AsyncClient`, lazily instantiated on
+        first use (deferred from `__init__` because module construction
+        doesn't have a running event loop).
+
+        Story 6.9 reliability patch — double-checked locking handles
+        the concurrent cold-start race (two classify() calls firing
+        simultaneously at call boot). Without the lock both calls
+        could create a client each and one would leak.
+        """
+        if self._client is None:
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
+        return self._client
+
+    async def close(self) -> None:
+        """Release the underlying httpx connection pool.
+
+        Called by `CheckpointManager.cleanup()` on pipeline shutdown so
+        the connection pool is properly drained — without this httpx
+        emits `Unclosed AsyncClient` warnings at GC time + leaks the
+        underlying transport's sockets until the process exits.
+        Idempotent — safe to call multiple times.
+        """
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:  # pragma: no cover — defensive shutdown
+                logger.exception("ExchangeClassifier client close failed")
+            finally:
+                self._client = None
 
     async def classify(
         self,
@@ -164,12 +223,19 @@ class ExchangeClassifier:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    _OPENROUTER_URL, headers=headers, json=payload
-                )
+            client = await self._get_client()
+            response = await client.post(_OPENROUTER_URL, headers=headers, json=payload)
         except httpx.HTTPError as exc:
-            logger.warning("exchange classifier HTTP error: {}", exc)
+            # Story 6.9 reliability patch — surface the exception's
+            # qualified class name when the str() is empty (httpx
+            # TimeoutException sometimes serialises to ""). Without
+            # this, operator sees "HTTP error: " and can't tell if it
+            # was a timeout / connect failure / response error.
+            logger.warning(
+                "exchange classifier HTTP error: {} ({})",
+                exc or "<no message>",
+                type(exc).__name__,
+            )
             return None
 
         if response.status_code >= 300:

@@ -335,13 +335,23 @@ def test_met_false_does_not_advance_applies_fail_penalty() -> None:
     tracker.apply_exchange_outcome.assert_called_with(success=False)
 
 
-# ---------- Test 7: classifier=None acts as conservative fail ------------
+# ---------- Test 7: classifier=None is INFRA failure — patience neutral --
 
 
-def test_classifier_None_does_not_advance_applies_fail_penalty() -> None:
-    """Conservative fallback per AC2 #4 / epic AC6 line 1196 — a None
-    verdict (timeout / parse error / HTTP failure) is treated as a
-    failed exchange for the meter but the checkpoint does NOT advance."""
+def test_classifier_None_does_not_advance_and_does_not_drain_patience() -> None:
+    """Story 6.9 reliability patch (2026-05-21) — a None verdict (HTTP
+    error, classifier timeout, parse failure) is OUR infrastructure
+    failing, not a user mistake. The checkpoint MUST NOT advance
+    (no free progression) AND the patience meter MUST NOT drain
+    (don't punish the user for our infra).
+
+    Pre-patch this test asserted `apply_exchange_outcome(success=False)`
+    was called → drained -15 patience per inconclusive verdict. The
+    Story 6.9 smoke test (call 138, "Pasta. Pasta. Pasta.") proved this
+    was wrong: a single HTTP timeout against OpenRouter cost the user
+    15 patience for a turn they delivered perfectly. Post-patch the
+    classifier failure is silent on the patience side.
+    """
     manager, _classifier, tracker, stub_llm, _ctx = _make_manager(
         classify_response=None
     )
@@ -354,6 +364,7 @@ def test_classifier_None_does_not_advance_applies_fail_penalty() -> None:
 
     _run(_drive())
 
+    # Checkpoint still NOT advanced (conservative no-free-progression).
     assert manager._index == 0
     assert stub_llm._settings.system_instruction == initial_prompt
     envelopes = [
@@ -363,7 +374,9 @@ def test_classifier_None_does_not_advance_applies_fail_penalty() -> None:
         and f.message.get("type") == "checkpoint_advanced"
     ]
     assert envelopes == []
-    tracker.apply_exchange_outcome.assert_called_with(success=False)
+    # Patience MUST NOT have been touched. The infra failure is invisible
+    # to the meter — the next user turn gets another classification chance.
+    tracker.apply_exchange_outcome.assert_not_called()
 
 
 # ---------- Test 8: last checkpoint passing routes to schedule_completion -
