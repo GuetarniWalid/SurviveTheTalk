@@ -358,6 +358,12 @@ def test_classifier_None_does_not_advance_and_does_not_drain_patience() -> None:
     captured = _capture_pushed(manager)
     initial_prompt = stub_llm._settings.system_instruction
 
+    # Story 6.9 review patch — reset the mock BEFORE driving so the
+    # assertion that `apply_exchange_outcome` was never called can't
+    # pass for the wrong reason (e.g. if `_make_manager` setup ever
+    # incidentally touches the tracker mock during construction).
+    tracker.apply_exchange_outcome.reset_mock()
+
     async def _drive() -> None:
         await manager.process_frame(_make_user_frame("..."), FrameDirection.DOWNSTREAM)
         await _drain(manager)
@@ -377,6 +383,149 @@ def test_classifier_None_does_not_advance_and_does_not_drain_patience() -> None:
     # Patience MUST NOT have been touched. The infra failure is invisible
     # to the meter — the next user turn gets another classification chance.
     tracker.apply_exchange_outcome.assert_not_called()
+
+
+def test_consecutive_None_verdicts_force_fail_penalty_after_threshold() -> None:
+    """Story 6.9 review patch P16 (from D1) — `verdict=None` is
+    patience-neutral (Deviation #5) to avoid punishing the user for
+    OpenRouter hiccups. But unbounded neutrality opens a soft-lock
+    window: sustained classifier failure → user keeps talking, no
+    checkpoint advance, no patience drain, no hangup. After
+    `_MAX_CONSECUTIVE_NONE_VERDICTS` consecutive `None` verdicts the
+    manager MUST force `apply_exchange_outcome(success=False)` so the
+    call surfaces the degradation as normal patience drain instead of
+    spinning forever.
+
+    Drives 5 user frames against a stuck classifier; asserts
+    `apply_exchange_outcome` was called exactly once (on the 5th).
+    """
+    from pipeline.checkpoint_manager import _MAX_CONSECUTIVE_NONE_VERDICTS
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(classify_response=None)
+    tracker.apply_exchange_outcome.reset_mock()
+
+    async def _drive() -> None:
+        for i in range(_MAX_CONSECUTIVE_NONE_VERDICTS):
+            await manager.process_frame(
+                _make_user_frame(f"attempt {i}"), FrameDirection.DOWNSTREAM
+            )
+            await _drain(manager)
+
+    _run(_drive())
+
+    # After exactly N consecutive None verdicts, apply_exchange_outcome
+    # MUST have been called exactly once (on the Nth).
+    assert tracker.apply_exchange_outcome.call_count == 1, (
+        f"sustained classifier failure must trigger fail_penalty exactly "
+        f"once after {_MAX_CONSECUTIVE_NONE_VERDICTS} consecutive None "
+        f"verdicts; got {tracker.apply_exchange_outcome.call_count} calls"
+    )
+    # And it MUST have been called with success=False (the drain path).
+    tracker.apply_exchange_outcome.assert_called_with(success=False)
+    # Counter must reset after the forced drain so a 2nd burst of
+    # failures gets the same fresh N-attempt grace.
+    assert manager._consecutive_none_count == 0
+
+
+def test_consecutive_None_counter_resets_on_real_verdict() -> None:
+    """Story 6.9 review patch P16 — a transient classifier hiccup
+    must NOT compound across a long call. Counter resets to 0 on any
+    True or False verdict so 4 Nones followed by a True followed by 4
+    more Nones does NOT trigger the force (would otherwise reach the
+    5-Nones threshold on the cumulative count).
+    """
+    from pipeline.checkpoint_manager import _MAX_CONSECUTIVE_NONE_VERDICTS
+
+    # 4 Nones, then 1 True, then 4 more Nones.
+    classify_responses = (
+        [None] * (_MAX_CONSECUTIVE_NONE_VERDICTS - 1)
+        + [True]
+        + [None] * (_MAX_CONSECUTIVE_NONE_VERDICTS - 1)
+    )
+    # Enough checkpoints to absorb the True without overflowing.
+    checkpoints = _make_checkpoints(5)
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        classify_responses=classify_responses,
+    )
+    tracker.apply_exchange_outcome.reset_mock()
+
+    async def _drive() -> None:
+        for i in range(len(classify_responses)):
+            await manager.process_frame(
+                _make_user_frame(f"attempt {i}"), FrameDirection.DOWNSTREAM
+            )
+            await _drain(manager)
+
+    _run(_drive())
+
+    # The True verdict at index 4 calls `apply_exchange_outcome(
+    # success=True)` as part of checkpoint advance — that's expected
+    # and unrelated to the consecutive-None backstop. What MUST NOT
+    # happen is a `success=False` call from the force-drain: neither
+    # burst (4 then 4) crossed the threshold because the True verdict
+    # reset the counter in between.
+    success_false_calls = [
+        c
+        for c in tracker.apply_exchange_outcome.call_args_list
+        if c.kwargs.get("success") is False
+    ]
+    assert len(success_false_calls) == 0, (
+        f"transient hiccup followed by a real verdict must NOT trigger "
+        f"the force-drain (success=False); got {len(success_false_calls)} "
+        f"such calls. All calls: {tracker.apply_exchange_outcome.call_args_list}"
+    )
+
+
+def test_terminal_turn_classifier_blocking_bounded_under_3s() -> None:
+    """Story 6.9 review patch P18 (from D2) — Deviation #6 widened the
+    classifier budget to 2.0s; on the terminal-turn preemptive sync
+    path (Deviation #7 from 6.6), the elapsed wall-clock for
+    `_run_classifier_blocking` MUST stay bounded ≤3000ms even on a
+    slow classifier. Without this regression net, a future widening
+    of `_CLASSIFIER_TIMEOUT_SECONDS` (e.g. to 5s) would silently push
+    terminal-turn latency well past the PRD ceiling.
+
+    Mocks a deliberately slow classifier (sleeps 1.8s) and drives a
+    terminal turn; asserts the total `_run_classifier_blocking`
+    elapsed is under the documented 3000ms bound.
+    """
+    import time
+
+    # 1-checkpoint scenario (already terminal). Real classifier sleeps
+    # 1.8 s before returning True.
+    checkpoints = _make_checkpoints(1)
+
+    async def _slow_classify(**kwargs: Any) -> bool:
+        await asyncio.sleep(1.8)
+        return True
+
+    # Use the regular _make_manager but swap the classifier's classify.
+    manager, classifier, tracker, _llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        classify_responses=[True],
+    )
+    classifier.classify = _slow_classify  # type: ignore[method-assign]
+    # Tracker reports we ARE on the terminal turn (last checkpoint OR
+    # next-fail-zeros-meter). For a 1-checkpoint scenario the
+    # last-checkpoint branch handles it via self._index + 1 >= len.
+    tracker.is_hanging_up = False
+    tracker.patience = 100
+    tracker.fail_penalty = -15
+
+    async def _drive() -> float:
+        start = time.monotonic()
+        await manager._run_classifier_blocking("final attempt")
+        return time.monotonic() - start
+
+    elapsed = _run(_drive())
+
+    assert elapsed <= 3.0, (
+        f"terminal-turn _run_classifier_blocking elapsed {elapsed:.2f}s "
+        f"exceeds the 3.0s bound (Deviation #6 documented in spec). "
+        "Story 6.8 AC5 p95 ≤2000ms is explicitly retracted for the "
+        "terminal-turn path; this is the new ceiling."
+    )
 
 
 # ---------- Test 8: last checkpoint passing routes to schedule_completion -

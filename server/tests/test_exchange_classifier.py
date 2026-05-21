@@ -219,7 +219,14 @@ def test_persistent_client_reused_across_classify_calls(
     timed out against Story 6.8's tight 0.8 s HTTP budget.
 
     Asserts the underlying client identity is stable across 3 classify
-    calls — proves the lazy-init + reuse pattern works."""
+    calls — proves the lazy-init + reuse pattern works.
+
+    Story 6.9 review patch — strengthen: also count how many times
+    `httpx.AsyncClient` was instantiated and assert it equals exactly 1.
+    Object-identity alone is satisfied trivially if the factory always
+    returns the same shared mock; tracking instantiation count proves
+    the lazy-init didn't accidentally re-fire on subsequent classifies.
+    """
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -227,7 +234,20 @@ def test_persistent_client_reused_across_classify_calls(
             json={"choices": [{"message": {"content": '{"met": true}'}}]},
         )
 
-    _mock_http(monkeypatch, handler=_handler)
+    # Custom factory that increments a counter on every construction.
+    instantiation_count = {"n": 0}
+    transport = httpx.MockTransport(_handler)
+    real_client = httpx.AsyncClient
+
+    def _counting_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        instantiation_count["n"] += 1
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "pipeline.exchange_classifier.httpx.AsyncClient", _counting_factory
+    )
+
     classifier = _make_classifier()
 
     async def _drive() -> tuple[Any, Any, Any]:
@@ -244,6 +264,10 @@ def test_persistent_client_reused_across_classify_calls(
     assert first is not None, "first call must lazy-init the client"
     assert first is second, "second call must reuse the same client (no cold start)"
     assert second is third, "third call must reuse the same client"
+    assert instantiation_count["n"] == 1, (
+        f"AsyncClient must be constructed exactly once across 3 classifies; "
+        f"got {instantiation_count['n']} — handshake-cost savings broken"
+    )
 
 
 def test_close_releases_client_and_is_idempotent() -> None:
@@ -308,3 +332,126 @@ def test_classify_uses_httpx_post_with_reasoning_top_level(
     _mock_http(monkeypatch, handler=_handler)
     out = _run(_make_classifier().classify(**_kwargs()))
     assert out is True
+
+
+# ---------- Story 6.9 review patches: closed-state + lifecycle ------------
+
+
+def test_classify_after_close_returns_None(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Story 6.9 review patch — once `close()` has been called, any
+    subsequent `classify()` must return None (treated as infra failure
+    by CheckpointManager) rather than spawning a fresh AsyncClient that
+    would leak. The lifecycle error surfaces as a WARNING log and a
+    clean None return, not a `RuntimeError` propagated to the caller.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"met": true}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+
+    async def _drive() -> bool | None:
+        await classifier.close()
+        # Now try to classify after close — should return None not raise.
+        return await classifier.classify(**_kwargs())
+
+    out = _run(_drive())
+    assert out is None, (
+        f"classify after close must return None (lifecycle error path), got {out!r}"
+    )
+    # And no client should have been re-created.
+    assert classifier._client is None
+
+
+def test_close_during_in_flight_classify_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.9 review patch — `close()` racing with an in-flight
+    classify must (a) not raise, (b) leave no client behind, (c) the
+    in-flight task is allowed to complete or fail cleanly. Mirrors
+    `CheckpointManager.cleanup()` ordering (cancel in-flight task →
+    close classifier) — this test verifies the classifier-side half of
+    that contract.
+    """
+
+    arrived_at_handler = asyncio.Event()
+    proceed_handler = asyncio.Event()
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        # Block here until the test signals to proceed. We can't await
+        # asyncio events from a sync MockTransport handler, so use a
+        # small busy-wait via run_coroutine_threadsafe alternative —
+        # the simpler path is to return immediately and rely on close
+        # racing with the post-classify cleanup of _client.
+        arrived_at_handler.set()
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"met": true}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+
+    async def _drive() -> tuple[bool | None, bool | None]:
+        # Race close() against a fresh classify(). Both should complete
+        # without raising; classify may return True (if it won the
+        # race) or None (if close blocked it).
+        proceed_handler.set()
+        verdict_task = asyncio.create_task(classifier.classify(**_kwargs()))
+        # Give the classify task a tick to acquire the client, then
+        # close while it might still be in-flight.
+        await asyncio.sleep(0)
+        await classifier.close()
+        verdict = await verdict_task
+        return verdict, classifier._client
+
+    verdict, client_after = _run(_drive())
+    # Whatever the race outcome, the classifier MUST be in a clean
+    # closed state with no leaked client.
+    assert client_after is None, (
+        f"after close() the persistent client must be released; got {client_after!r}"
+    )
+    # Verdict is either True (classify won) or None (close won); both
+    # are acceptable outcomes — what matters is no exception.
+    assert verdict in (True, None), (
+        f"race outcome must be True or None, got {verdict!r}"
+    )
+
+
+# ---------- Story 6.9 review patch P21 — default-to-MET regression net ----
+
+
+def test_classifier_defaults_to_met_on_borderline_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.9 review patch P21 (from D4) — the EXCHANGE_CLASSIFIER_PROMPT
+    rewrite added "Default to MET when uncertain" as a guiding principle.
+    Lock in this behavior so a future prompt-tightening (e.g. someone
+    re-introducing strict matching) would surface as a failed test.
+
+    We test by asserting the prompt text itself contains the
+    default-to-MET principle. We can't directly assert the model's
+    behavior without hitting OpenRouter; the prompt is the authoritative
+    contract that the model is asked to follow. If the principle is
+    removed from the prompt, the LLM's default-to-MET behavior would
+    silently regress.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    # The prompt MUST contain the default-to-MET guidance — this is the
+    # behavior change documented in Deviation #10. Phrasing may evolve
+    # but the SEMANTIC contract (favour MET when uncertain) must remain
+    # explicit.
+    assert "Default to MET" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "EXCHANGE_CLASSIFIER_PROMPT must retain the 'Default to MET when "
+        "uncertain' guidance from Deviation #10 — removing it silently "
+        "tightens the classifier and breaks the calibration baseline"
+    )
+    assert "False positives" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "the default-to-MET rationale (false positives cost nothing) "
+        "must remain in the prompt — the model needs the WHY"
+    )

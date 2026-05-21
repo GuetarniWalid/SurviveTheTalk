@@ -37,9 +37,20 @@ Better to ship slightly-noisier audio than crash the call.
 
 from __future__ import annotations
 
+import asyncio
+import math
+
 from loguru import logger
 from pipecat.audio.filters.base_audio_filter import BaseAudioFilter
 from pipecat.frames.frames import FilterControlFrame, FilterEnableFrame
+
+# Story 6.9 review patch — disable the filter after this many consecutive
+# `_process` failures so a corrupt ONNX session doesn't flood journalctl
+# with per-chunk `logger.exception` lines. Tuned conservatively (~250 ms
+# of audio at 24 ms per block) — long enough to ride out a transient hiccup
+# but short enough that a truly broken session degrades to passthrough
+# before logs blow up.
+_MAX_CONSECUTIVE_FILTER_FAILURES = 10
 
 
 class DTLNAudioFilter(BaseAudioFilter):
@@ -67,6 +78,18 @@ class DTLNAudioFilter(BaseAudioFilter):
         strength: float = 0.5,
         debug_logging: bool = False,
     ) -> None:
+        # Story 6.9 review patch — reject NaN/Inf BEFORE the clamp.
+        # `max(0.0, min(1.0, NaN))` returns NaN because every comparison
+        # with NaN evaluates False; passing NaN to the underlying
+        # suppressor would break ONNX inference silently. Fall back to
+        # the documented default rather than raising — invalid configs
+        # in production should degrade gracefully.
+        if math.isnan(strength) or math.isinf(strength):
+            logger.warning(
+                "DTLNAudioFilter: invalid strength={!r}, falling back to 0.5",
+                strength,
+            )
+            strength = 0.5
         self._strength = max(0.0, min(1.0, strength))
         self._debug_logging = debug_logging
         self._suppressor = None
@@ -77,6 +100,12 @@ class DTLNAudioFilter(BaseAudioFilter):
         # missing `livekit-plugins-dtln` install only fails when the filter
         # is actually used, not at module import time).
         self._rtc = None
+        # Story 6.9 review patch — count consecutive `_process` failures
+        # so a corrupt ONNX session degrades to passthrough after
+        # `_MAX_CONSECUTIVE_FILTER_FAILURES` (avoids per-chunk
+        # `logger.exception` flooding journalctl). Reset on any
+        # successful filter call.
+        self._consecutive_filter_failures: int = 0
 
     async def start(self, sample_rate: int) -> None:
         """Pipecat hook — called by the input transport when the call starts.
@@ -90,6 +119,19 @@ class DTLNAudioFilter(BaseAudioFilter):
         passthrough audio rather than crashing.
         """
         self._sample_rate = sample_rate
+        # Story 6.9 review patch — idempotent re-start. If `start()` is
+        # called a second time (transport reconnect) without an
+        # intervening `stop()`, release the existing suppressor first so
+        # we don't leak the previous ONNX session (~4 MB of model weights).
+        if self._suppressor is not None:
+            try:
+                self._suppressor._close()
+            except Exception:
+                logger.exception("DTLNAudioFilter re-start cleanup failed")
+            self._suppressor = None
+        # Reset the failure counter so a fresh start gets full N attempts
+        # before degrading to passthrough.
+        self._consecutive_filter_failures = 0
         try:
             from livekit import rtc  # noqa: F401 — imported for AudioFrame builder
             from livekit.plugins.dtln import DTLNNoiseSuppressor
@@ -104,6 +146,14 @@ class DTLNAudioFilter(BaseAudioFilter):
                 sample_rate,
                 self._strength,
             )
+        except asyncio.CancelledError:
+            # Story 6.9 review patch — bare `except Exception` previously
+            # swallowed CancelledError, leaving the filter in an
+            # inconsistent state (`_enabled=True` with `_suppressor=None`).
+            # Clean up + re-raise so cancellation propagates correctly.
+            self._suppressor = None
+            self._enabled = False
+            raise
         except Exception as exc:
             logger.exception("DTLNAudioFilter init failed; passthrough mode: {}", exc)
             self._suppressor = None
@@ -140,6 +190,14 @@ class DTLNAudioFilter(BaseAudioFilter):
         """
         if not self._enabled or self._suppressor is None or self._rtc is None:
             return audio
+        # Story 6.9 review patch — guard against empty or odd-length
+        # buffers BEFORE constructing the AudioFrame. int16 PCM is 2
+        # bytes per sample; an odd-length buffer would make `_process`
+        # raise on every chunk and flood journalctl with
+        # `logger.exception` lines. Pipecat shouldn't emit such frames
+        # but a future transport bug or test fixture could.
+        if len(audio) < 2 or len(audio) % 2 != 0:
+            return audio
         try:
             # int16 PCM mono → 2 bytes per sample
             samples_per_channel = len(audio) // 2
@@ -155,7 +213,29 @@ class DTLNAudioFilter(BaseAudioFilter):
             # FrameProcessor implements, and room I/O calls `_process` directly
             # when wiring `AudioInputOptions(noise_cancellation=...)`.
             out_frame = self._suppressor._process(in_frame)
+            # Story 6.9 review patch — reset the failure counter on
+            # success so a single transient hiccup doesn't accumulate
+            # across long calls.
+            self._consecutive_filter_failures = 0
             return bytes(out_frame.data)
         except Exception:
-            logger.exception("DTLNAudioFilter filter failed; passthrough this chunk")
+            # Story 6.9 review patch — bound the log spam from a corrupt
+            # ONNX session. Log the first failure with traceback, count
+            # subsequent failures, and disable the filter entirely once
+            # we cross `_MAX_CONSECUTIVE_FILTER_FAILURES`. After that,
+            # `filter()` short-circuits to passthrough via the `_enabled`
+            # guard above with no further logging.
+            self._consecutive_filter_failures += 1
+            if self._consecutive_filter_failures == 1:
+                logger.exception(
+                    "DTLNAudioFilter filter failed; passthrough this chunk"
+                )
+            elif self._consecutive_filter_failures == _MAX_CONSECUTIVE_FILTER_FAILURES:
+                logger.error(
+                    "DTLNAudioFilter disabled after {} consecutive filter "
+                    "failures — degrading to passthrough for the rest of "
+                    "the call",
+                    _MAX_CONSECUTIVE_FILTER_FAILURES,
+                )
+                self._enabled = False
             return audio

@@ -60,6 +60,90 @@ def test_filter_round_trip_returns_bytes_of_same_length() -> None:
     )
 
 
+def test_filter_steady_state_denoises_audio() -> None:
+    """Story 6.9 review patch (D5) — feed many chunks of non-stationary
+    noise + tone so DTLN's internal block buffer fills and starts
+    emitting actual ONNX-inference output (not the warm-up
+    passthrough). Without this, the test above only exercises the
+    startup-passthrough branch and gives a false sense of coverage on
+    real noise suppression.
+
+    The assertion is deliberately loose: we don't require a specific
+    SNR improvement (varies with model, sample rate, strength) — we
+    only assert (a) output length is preserved AND (b) at least one
+    chunk's output content differs from its input AFTER the warm-up
+    block buffer is flushed. That's enough to catch a future regression
+    where DTLN is silently bypassed across all chunks.
+
+    Strength is bumped to 1.0 (full suppression) to maximise the
+    audible delta vs the 50/50 wet/dry blend used at runtime — a
+    50/50 blend on a single chunk can occasionally yield bytes that
+    quantise identical to the input.
+    """
+    import math as _math
+    import struct
+
+    f = DTLNAudioFilter(strength=1.0)
+
+    # 20 chunks of 480 samples each (10 ms per chunk at 48 kHz) =
+    # 9600 samples / ~200 ms total — well past DTLN's internal block
+    # buffer fill. Drive them sequentially so the LSTM state has time
+    # to warm up.
+    sample_rate = 48_000
+    samples_per_chunk = 480
+    n_chunks = 20
+
+    def _make_chunk(chunk_idx: int) -> bytes:
+        samples: list[int] = []
+        for s in range(samples_per_chunk):
+            t = chunk_idx * samples_per_chunk + s
+            # 220 Hz tone (rough male f0) + deterministic pseudo-noise.
+            tone = 0.3 * _math.sin(2 * _math.pi * 220 * t / sample_rate)
+            noise = 0.2 * (((t * 12347) % 65521) / 65521 - 0.5) * 2
+            val = max(-32768, min(32767, int((tone + noise) * 32767)))
+            samples.append(val)
+        return struct.pack(f"<{samples_per_chunk}h", *samples)
+
+    chunks_in = [_make_chunk(i) for i in range(n_chunks)]
+
+    async def _drive() -> list[bytes]:
+        await f.start(sample_rate=sample_rate)
+        try:
+            return [await f.filter(c) for c in chunks_in]
+        finally:
+            await f.stop()
+
+    chunks_out = _run(_drive())
+
+    # Length preservation on every chunk.
+    for i, (cin, cout) in enumerate(zip(chunks_in, chunks_out, strict=True)):
+        assert isinstance(cout, bytes), (
+            f"chunk {i} filter output must be bytes; got {type(cout)}"
+        )
+        assert len(cout) == len(cin), (
+            f"chunk {i} length mismatch: in={len(cin)} out={len(cout)}"
+        )
+
+    # The real validation: at least one chunk after the warm-up window
+    # MUST mutate its input. We don't require ALL chunks to differ
+    # (DTLN's block buffer may still align with chunk boundaries
+    # producing identical bytes early on), only that the suppressor
+    # produces SOME non-passthrough output during the run. Bypass /
+    # disabled-suppressor regressions would leave every chunk
+    # byte-identical.
+    differed = [
+        i
+        for i, (cin, cout) in enumerate(zip(chunks_in, chunks_out, strict=True))
+        if cin != cout
+    ]
+    assert differed, (
+        "DTLN appears bypassed: ALL 20 chunks returned input bytes "
+        "unchanged. Either _suppressor is None / disabled, or strength=1.0 "
+        "didn't trigger inference. Regression vs the documented "
+        "denoising contract."
+    )
+
+
 # ---------- Test 2: enabled=False is a passthrough ----------------------
 
 
@@ -120,7 +204,13 @@ def test_init_failure_disables_filter_passthrough() -> None:
 def test_filter_enable_frame_toggles_enabled_flag() -> None:
     """Pipecat ships a `FilterEnableFrame(enable: bool)` control frame for
     runtime toggling. The filter must apply it without going through the
-    audio path — operators can disable mid-call for A/B testing."""
+    audio path — operators can disable mid-call for A/B testing.
+
+    Story 6.9 review patch (AC5 partial) — also exercise the symmetric
+    re-enable direction (`enable=True` after `enable=False`). The spec
+    says "the symmetric `enable=True` re-enables the suppression chain"
+    but the previous test only covered the disable direction.
+    """
     from pipecat.frames.frames import FilterEnableFrame
 
     f = DTLNAudioFilter()
@@ -130,6 +220,7 @@ def test_filter_enable_frame_toggles_enabled_flag() -> None:
     f._enabled = True
 
     async def _drive() -> None:
+        # Disable.
         await f.process_frame(FilterEnableFrame(enable=False))
 
     _run(_drive())
@@ -138,6 +229,19 @@ def test_filter_enable_frame_toggles_enabled_flag() -> None:
     assert f._suppressor.enabled is False, (
         "the enable flag must propagate to the underlying suppressor so "
         "downstream `_process` calls also short-circuit"
+    )
+
+    # Symmetric re-enable.
+    async def _drive_reenable() -> None:
+        await f.process_frame(FilterEnableFrame(enable=True))
+
+    _run(_drive_reenable())
+
+    assert f._enabled is True, (
+        "FilterEnableFrame(enable=True) must flip _enabled back to True"
+    )
+    assert f._suppressor.enabled is True, (
+        "the re-enable must propagate to the underlying suppressor"
     )
 
 
@@ -214,3 +318,158 @@ def test_strength_clamped(input_strength: float, expected_strength: float) -> No
     invalid configs in unit tests rather than at first ONNX inference."""
     f = DTLNAudioFilter(strength=input_strength)
     assert f._strength == expected_strength
+
+
+# ---------- Story 6.9 review patches ------------------------------------
+
+
+@pytest.mark.parametrize("bad_strength", [float("nan"), float("inf"), float("-inf")])
+def test_strength_nan_or_inf_falls_back_to_default(bad_strength: float) -> None:
+    """Story 6.9 review patch — `max(0.0, min(1.0, NaN))` returns NaN
+    because every comparison with NaN evaluates False. Passing NaN to
+    the suppressor would break ONNX silently. Confirm the constructor
+    rejects NaN/Inf and falls back to the documented 0.5 default."""
+    f = DTLNAudioFilter(strength=bad_strength)
+    assert f._strength == 0.5
+
+
+def test_filter_short_circuits_on_empty_or_odd_length_bytes() -> None:
+    """Story 6.9 review patch — empty buffers or odd-length buffers
+    (int16 PCM expects 2 bytes per sample) would make `_process` raise
+    on every chunk, flooding journalctl. `filter()` must guard the
+    input length BEFORE wrapping into an AudioFrame.
+    """
+    f = DTLNAudioFilter()
+    f._sample_rate = 48_000
+    f._enabled = True
+    f._suppressor = MagicMock()
+    f._rtc = MagicMock()
+
+    async def _drive_empty() -> bytes:
+        return await f.filter(b"")
+
+    async def _drive_odd() -> bytes:
+        return await f.filter(b"\x00\x00\x00")  # 3 bytes — odd
+
+    assert _run(_drive_empty()) == b""
+    assert _run(_drive_odd()) == b"\x00\x00\x00"
+    # And critically — `_process` must NOT have been called for either.
+    f._suppressor._process.assert_not_called()
+
+
+def test_start_idempotent_releases_prior_suppressor() -> None:
+    """Story 6.9 review patch — calling `start()` twice (transport
+    reconnect without intervening `stop()`) must release the previous
+    suppressor before instantiating a new one. Otherwise the old ONNX
+    session (~4 MB of model weights) leaks.
+    """
+    f = DTLNAudioFilter()
+    # Pre-populate a fake suppressor as if start() had already run once.
+    fake_old = MagicMock()
+    f._suppressor = fake_old
+    f._rtc = MagicMock()
+
+    async def _drive() -> None:
+        # Patch DTLNNoiseSuppressor so we don't pay the ONNX init cost.
+        import livekit.plugins.dtln as dtln_mod
+
+        original = dtln_mod.DTLNNoiseSuppressor
+        dtln_mod.DTLNNoiseSuppressor = MagicMock(return_value=MagicMock())  # type: ignore[assignment]
+        try:
+            await f.start(sample_rate=48_000)
+        finally:
+            dtln_mod.DTLNNoiseSuppressor = original
+
+    _run(_drive())
+
+    # The old suppressor MUST have been closed before being replaced.
+    fake_old._close.assert_called_once()
+    # And the new suppressor must be different from the old one.
+    assert f._suppressor is not fake_old
+
+
+def test_filter_disables_after_N_consecutive_failures() -> None:
+    """Story 6.9 review patch — a corrupt ONNX session whose `_process`
+    raises every chunk would flood journalctl with `logger.exception`
+    on every call. After `_MAX_CONSECUTIVE_FILTER_FAILURES` consecutive
+    failures, the filter must flip `_enabled=False` and degrade to
+    passthrough for the rest of the call.
+    """
+    from pipeline.dtln_audio_filter import _MAX_CONSECUTIVE_FILTER_FAILURES
+
+    f = DTLNAudioFilter()
+    f._sample_rate = 48_000
+    f._enabled = True
+    fake_rtc = MagicMock()
+    fake_rtc.AudioFrame.return_value = MagicMock()
+    f._rtc = fake_rtc
+    f._suppressor = MagicMock()
+    f._suppressor._process.side_effect = RuntimeError("simulated ONNX crash")
+
+    audio = b"\x12\x34" * 100
+
+    async def _drive() -> None:
+        # Drive enough failures to cross the threshold.
+        for _ in range(_MAX_CONSECUTIVE_FILTER_FAILURES + 1):
+            out = await f.filter(audio)
+            assert out == audio  # always passthrough on failure
+
+    _run(_drive())
+
+    assert f._enabled is False, (
+        f"filter must disable itself after {_MAX_CONSECUTIVE_FILTER_FAILURES} "
+        "consecutive failures to bound log spam"
+    )
+    # And subsequent filter calls must NOT invoke `_process` (the
+    # `_enabled=False` short-circuit takes over).
+    call_count_before = f._suppressor._process.call_count
+
+    async def _drive_after_disable() -> None:
+        await f.filter(audio)
+
+    _run(_drive_after_disable())
+    assert f._suppressor._process.call_count == call_count_before, (
+        "post-disable filter() must short-circuit BEFORE calling _process"
+    )
+
+
+def test_consecutive_failure_counter_resets_on_success() -> None:
+    """Story 6.9 review patch — a single transient failure must NOT
+    push the filter toward disable. The counter resets to 0 on any
+    successful filter call.
+    """
+    from pipeline.dtln_audio_filter import _MAX_CONSECUTIVE_FILTER_FAILURES
+
+    f = DTLNAudioFilter()
+    f._sample_rate = 48_000
+    f._enabled = True
+    fake_rtc = MagicMock()
+    fake_frame = MagicMock()
+    fake_frame.data = b"\xab\xcd" * 100
+    fake_rtc.AudioFrame.return_value = MagicMock()
+    f._rtc = fake_rtc
+
+    # Suppressor fails once, then succeeds.
+    f._suppressor = MagicMock()
+    f._suppressor._process.side_effect = [
+        RuntimeError("transient hiccup"),
+        fake_frame,  # success
+    ]
+
+    audio = b"\x12\x34" * 100
+
+    async def _drive() -> None:
+        await f.filter(audio)  # fail → counter = 1
+        await f.filter(audio)  # succeed → counter resets to 0
+
+    _run(_drive())
+
+    assert f._enabled is True, "transient failure must NOT disable the filter"
+    assert f._consecutive_filter_failures == 0, (
+        "successful filter call must reset the failure counter; got "
+        f"{f._consecutive_filter_failures}"
+    )
+    # And the limit-1 threshold must NOT have been crossed.
+    assert _MAX_CONSECUTIVE_FILTER_FAILURES > 1, (
+        "test assumes threshold > 1; bump if the constant changes"
+    )

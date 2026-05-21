@@ -34,6 +34,10 @@ def test_bot_imports_emitter_classes() -> None:
     # Story 6.9 — DTLN noise suppression must be imported AND wired into
     # LiveKitParams(audio_in_filter=...).
     assert "from pipeline.dtln_audio_filter import DTLNAudioFilter" in source
+    # Story 6.9 review patch (D3) — EndpointWatchdog backstop for Soniox
+    # endpoint detection. Imported AND positioned immediately after STT
+    # in the pipeline (see `test_bot_pipeline_ordering` below).
+    assert "from pipeline.endpoint_watchdog import EndpointWatchdog" in source
     assert "VisemeEmitter" not in source
 
 
@@ -143,7 +147,13 @@ def test_bot_pipeline_ordering() -> None:
     # while user was actively speaking, hangup fired even after
     # checkpoint advanced.
     assert (
-        _idx("transcript_user")
+        # Story 6.9 review patch (D3) — endpoint_watchdog sits
+        # immediately downstream of stt and BEFORE transcript_user so it
+        # observes Soniox's raw TF stream first. The synthesised
+        # finalized frame must propagate through transcript_user +
+        # emotion_emitter + checkpoint_manager + patience_tracker.
+        _idx("endpoint_watchdog")
+        < _idx("transcript_user")
         < _idx("emotion_emitter")
         < _idx("checkpoint_manager")
         < _idx("patience_tracker")

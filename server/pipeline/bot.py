@@ -35,6 +35,7 @@ from config import Settings
 from pipeline.checkpoint_manager import CheckpointManager
 from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.emotion_emitter import EmotionEmitter
+from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.latency_probe import LatencyProbe
 from pipeline.patience_tracker import PatienceTracker
@@ -153,6 +154,18 @@ async def run_bot(url: str, room: str, token: str) -> None:
         settings=SonioxSTTService.Settings(model="stt-rt-v4"),
         vad_force_turn_endpoint=False,
     )
+
+    # Story 6.9 review patch (D3) — wall-clock backstop for Soniox
+    # endpoint detection. `vad_force_turn_endpoint=False` above
+    # delegates endpoint detection entirely to Soniox's neural VAD;
+    # if Soniox itself never declares endpoint (long mid-utterance
+    # pause, network hiccup, neural-VAD misfire), every downstream
+    # observer hangs because they all gate on `finalized=True`.
+    # `EndpointWatchdog` watches the post-STT TranscriptionFrame
+    # stream and synthesises a `finalized=True` frame after 8 s of
+    # continuous interim activity — the user gets a slightly
+    # truncated turn but the call doesn't hang.
+    endpoint_watchdog = EndpointWatchdog()
 
     llm = OpenRouterLLMService(
         api_key=settings.openrouter_api_key,
@@ -344,6 +357,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
         [
             transport.input(),
             stt,
+            # Story 6.9 review patch (D3) — sit immediately downstream
+            # of STT so the watchdog observes Soniox's raw TF stream
+            # before any other processor (transcript_user, emotion,
+            # checkpoint, patience). On force-finalize the synthesised
+            # frame propagates through every observer that follows.
+            endpoint_watchdog,
             transcript_user,
             emotion_emitter,
             # Story 6.6 Deviation #5 — CheckpointManager sits BEFORE the

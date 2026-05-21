@@ -116,6 +116,15 @@ class ExchangeClassifier:
         # at call boot before the LSTM state is warm).
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
+        # Story 6.9 review patch — closed-flag refuses post-cleanup
+        # operations. Without this, a terminal-turn classify task that
+        # was already in-flight when `cleanup()` ran (or a stale task
+        # spawned after) could call `_get_client()` and create a fresh
+        # `httpx.AsyncClient` AFTER teardown, leaking sockets until the
+        # process exits. The flag is set inside `close()` under the same
+        # lock as the connection-pool release so both client races and
+        # post-close re-init races collapse to "raise RuntimeError".
+        self._closed: bool = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Return a shared `httpx.AsyncClient`, lazily instantiated on
@@ -126,9 +135,20 @@ class ExchangeClassifier:
         the concurrent cold-start race (two classify() calls firing
         simultaneously at call boot). Without the lock both calls
         could create a client each and one would leak.
+
+        Story 6.9 review patch — refuse to create a fresh client if
+        `close()` has flipped `_closed`. A terminal-turn classify task
+        that was racing with cleanup would otherwise spawn a new
+        socket-bound client AFTER the pool was drained.
         """
+        if self._closed:
+            raise RuntimeError("ExchangeClassifier is closed")
         if self._client is None:
             async with self._client_lock:
+                # Re-check post-acquire — `close()` may have flipped the
+                # flag while we waited on the lock.
+                if self._closed:
+                    raise RuntimeError("ExchangeClassifier is closed")
                 if self._client is None:
                     self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
         return self._client
@@ -141,14 +161,23 @@ class ExchangeClassifier:
         emits `Unclosed AsyncClient` warnings at GC time + leaks the
         underlying transport's sockets until the process exits.
         Idempotent — safe to call multiple times.
+
+        Story 6.9 review patch — acquire `_client_lock` so concurrent
+        `close()` calls (two cleanup paths racing) and concurrent
+        `_get_client()` calls (in-flight classify mid-shutdown) both
+        serialize on the same critical section. The `_closed` flag set
+        inside the lock blocks any subsequent `_get_client` from
+        spawning a fresh client.
         """
-        if self._client is not None:
-            try:
-                await self._client.aclose()
-            except Exception:  # pragma: no cover — defensive shutdown
-                logger.exception("ExchangeClassifier client close failed")
-            finally:
-                self._client = None
+        async with self._client_lock:
+            self._closed = True
+            if self._client is not None:
+                try:
+                    await self._client.aclose()
+                except Exception:  # pragma: no cover — defensive shutdown
+                    logger.exception("ExchangeClassifier client close failed")
+                finally:
+                    self._client = None
 
     async def classify(
         self,
@@ -234,6 +263,21 @@ class ExchangeClassifier:
             logger.warning(
                 "exchange classifier HTTP error: {} ({})",
                 exc or "<no message>",
+                type(exc).__name__,
+            )
+            return None
+        except RuntimeError as exc:
+            # Story 6.9 review patch — `_get_client()` raises
+            # RuntimeError when the classifier is closed (post-cleanup
+            # race). Without this branch the exception would bypass the
+            # `httpx.HTTPError` handler and propagate up to the
+            # `_classify_and_advance` task, killing it with a silent
+            # `Task exception was never retrieved` log. Surface it as a
+            # normal `None` verdict (the caller already treats `None`
+            # as infra failure).
+            logger.warning(
+                "exchange classifier lifecycle error: {} ({})",
+                exc,
                 type(exc).__name__,
             )
             return None

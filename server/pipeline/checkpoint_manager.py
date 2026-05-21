@@ -81,6 +81,7 @@ aggregator to this processor; we don't gate on direction (mirroring
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 from loguru import logger
@@ -94,6 +95,15 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
+
+# Story 6.9 review patch (D1) — after this many consecutive `verdict=None`
+# returns from the classifier, force `apply_exchange_outcome(success=False)`
+# to surface the sustained infra failure to the user instead of soft-locking
+# the call. Picked at 5 because at -15 patience per drain, 5 consecutive
+# forces approximately one hangup cycle (75 / 100 initial patience) — the
+# user sees the call degrade and ends naturally instead of silently
+# spinning forever on a degraded OpenRouter.
+_MAX_CONSECUTIVE_NONE_VERDICTS = 5
 
 
 class CheckpointManager(FrameProcessor):
@@ -222,6 +232,18 @@ class CheckpointManager(FrameProcessor):
         # after acquiring, the second turn re-evaluates whether the
         # state is still terminal.
         self._terminal_turn_lock = asyncio.Lock()
+
+        # Story 6.9 review patch (D1) — counter for consecutive
+        # `verdict=None` returns from the classifier. Deviation #5 made
+        # `None` patience-neutral to stop punishing the user for
+        # OpenRouter hiccups; the side effect is an unbounded soft-lock
+        # window if OpenRouter stays degraded. After
+        # `_MAX_CONSECUTIVE_NONE_VERDICTS` consecutive `None` returns
+        # we force `apply_exchange_outcome(success=False)` to surface
+        # the degradation as a normal patience drain — the call
+        # progresses toward hangup instead of silently spinning. Reset
+        # on any True/False verdict.
+        self._consecutive_none_count: int = 0
 
         # Smoke-gate observability: a journalctl tail confirms both
         # the checkpoint count and the first checkpoint id alongside
@@ -463,8 +485,16 @@ class CheckpointManager(FrameProcessor):
             prior.cancel()
             await asyncio.gather(prior, return_exceptions=True)
         self._in_flight = None
-        if hasattr(self._classifier, "close"):
-            await self._classifier.close()
+        # Story 6.9 review patch — `hasattr` alone matched any callable
+        # (e.g. `MagicMock().close` returns a MagicMock, not a coroutine).
+        # `await` on a non-awaitable raises `TypeError` at cleanup. Use
+        # `inspect.iscoroutinefunction` which correctly returns True for
+        # `AsyncMock` (Python 3.8+) and False for `MagicMock`/sync stubs,
+        # so test classifiers without a real async `close()` no longer
+        # crash teardown.
+        close_fn = getattr(self._classifier, "close", None)
+        if close_fn is not None and inspect.iscoroutinefunction(close_fn):
+            await close_fn()
 
     async def _schedule_classification(self, user_text: str) -> None:
         """Cancel any in-flight task and schedule a fresh classifier."""
@@ -543,13 +573,40 @@ class CheckpointManager(FrameProcessor):
             # `apply_exchange_outcome` — patience is neutral. The
             # checkpoint also doesn't advance (no free progression),
             # so the next user turn gets another classification chance.
+            #
+            # Story 6.9 review patch (D1) — sustained-failure backstop.
+            # Pure neutrality opens an unbounded soft-lock window if
+            # OpenRouter stays degraded for many consecutive turns
+            # (user keeps talking, no checkpoint advance, no patience
+            # drain, no hangup). After `_MAX_CONSECUTIVE_NONE_VERDICTS`
+            # consecutive `None` returns, we force a normal fail_penalty
+            # so the call surfaces the degradation instead of spinning
+            # forever. Counter resets on any True/False verdict so a
+            # transient hiccup doesn't accumulate across the whole call.
+            self._consecutive_none_count += 1
+            if self._consecutive_none_count >= _MAX_CONSECUTIVE_NONE_VERDICTS:
+                logger.error(
+                    "checkpoint_classifier_sustained_failure consecutive_none={} "
+                    "checkpoint_id={} — forcing fail_penalty to surface "
+                    "classifier degradation",
+                    self._consecutive_none_count,
+                    current_id,
+                )
+                self._patience_tracker.apply_exchange_outcome(success=False)
+                self._consecutive_none_count = 0
+                return
             logger.warning(
                 "checkpoint_classifier_inconclusive checkpoint_id={} text={!r} "
-                "(patience unchanged — infra failure)",
+                "consecutive_none={} (patience unchanged — infra failure)",
                 current_id,
                 trimmed,
+                self._consecutive_none_count,
             )
             return
+
+        # Reset the consecutive-None counter on any real verdict — the
+        # classifier is back to working order.
+        self._consecutive_none_count = 0
 
         if verdict is False:
             logger.info(

@@ -1,6 +1,6 @@
 # Story 6.8: Voice Pipeline Hardening + Scenario Calibration (MVP-Launch Blockers + Carry-Forward)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
