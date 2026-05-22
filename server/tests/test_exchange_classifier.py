@@ -11,6 +11,7 @@ import pytest
 
 from pipeline.exchange_classifier import (
     ExchangeClassifier,
+    _PROVIDER_MODEL,
     _parse_classifier_output,
 )
 
@@ -24,7 +25,7 @@ def _run(coro):
 
 
 def _make_classifier() -> ExchangeClassifier:
-    return ExchangeClassifier(openrouter_api_key="test-key")
+    return ExchangeClassifier(api_key="test-key")
 
 
 def _mock_http(
@@ -126,6 +127,85 @@ def test_classify_returns_None_on_http_error(monkeypatch: pytest.MonkeyPatch) ->
     assert out is None
 
 
+# ---------- Story 6.9b — Groq-specific failure paths ---------------------
+#
+# Groq free tier has a 6000 TPM rate limit (~17 of our 340-token classifies
+# per minute). At MVP scale (~5 classifies/call × 5 calls/day × 100 users =
+# 500/day = 21/hour) we sit comfortably under the cap, but a viral spike or
+# concurrent device storms could brush it. The prod classifier MUST treat
+# 429s as infra failure (verdict=None — patience-neutral per Story 6.9 D1
+# / Deviation #5), NOT as a False verdict (which would drain user patience
+# for our infra hiccup). Same contract for 5xx Groq incidents.
+
+
+def test_classify_returns_None_on_429_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.9b — Groq free-tier 6000 TPM rate-limit response (HTTP 429)
+    MUST surface as `verdict=None` (infra failure path), not as a False
+    verdict that would unfairly drain user patience. The prod
+    `CheckpointManager` treats None as "infra hiccup, don't punish the
+    user"; the consecutive-None backstop from Story 6.9 D1 then catches
+    sustained degradation at N=5.
+
+    Note: the BENCHMARK harness retries on 429 (because the harness fires
+    75 sequential calls in a burst that artificially overruns the per-
+    minute cap). The PROD classifier does NOT retry — a 429 in prod
+    means real degradation worth surfacing, not a bench-only artifact.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "message": (
+                        "Rate limit reached for model `llama-3.3-70b-versatile` "
+                        "on tokens per minute (TPM): Limit 6000"
+                    ),
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(_make_classifier().classify(**_kwargs()))
+    assert out is None, (
+        "HTTP 429 must surface as None (patience-neutral infra failure), "
+        "not as False (which would drain user patience for our rate-limit hit)"
+    )
+
+
+def test_classify_returns_None_on_5xx_groq_incident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.9b — Groq 5xx server errors (provider incident, deploy
+    rollover, overloaded model) MUST surface as `verdict=None` (infra
+    failure path). Same patience-neutral contract as 429.
+
+    This test guards the prod rollback contract: if Groq has a 30-min
+    incident, our app degrades to "classifier stuck" (consecutive-None
+    backstop catches the sustained degradation at N=5 forcing soft
+    hangup) rather than to "classifier drains patience for every turn"
+    (which would force-end every call with reason=character_hung_up
+    when nothing the user did was wrong).
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={"error": {"message": "Service Unavailable", "type": "server_error"}},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(_make_classifier().classify(**_kwargs()))
+    assert out is None, (
+        "HTTP 503 must surface as None — Groq incident must not drain "
+        "user patience for problems the user didn't cause"
+    )
+
+
 # ---------- Test 5: malformed JSON returns None ---------------------------
 
 
@@ -184,8 +264,8 @@ def test_classify_returns_None_on_non_bool_met(
 
 
 def test_init_raises_on_empty_api_key() -> None:
-    with pytest.raises(ValueError, match="openrouter_api_key"):
-        ExchangeClassifier(openrouter_api_key="")
+    with pytest.raises(ValueError, match="api_key"):
+        ExchangeClassifier(api_key="")
 
 
 # ---------- Test 9: Markdown-fenced response parses -----------------------
@@ -278,7 +358,7 @@ def test_close_releases_client_and_is_idempotent() -> None:
 
     async def _drive() -> None:
         # Force-init a client by calling _get_client directly (avoids
-        # the round-trip to OpenRouter for the test)
+        # the round-trip to the classifier provider for the test)
         await classifier._get_client()
         assert classifier._client is not None
         await classifier.close()
@@ -305,24 +385,51 @@ def test_parser_returns_none_for_pure_prose() -> None:
 # ---------- Test 11: HTTP boundary smoke ----------------------------------
 
 
-def test_classify_uses_httpx_post_with_reasoning_top_level(
+def test_classify_posts_to_groq_with_openai_compat_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Lock in the Story 6.3 / 6.6 smoke fix: `reasoning` MUST sit at the
-    top level of the JSON body, NOT nested in `extra_body`. OpenRouter's
-    HTTP API doesn't unwrap `extra_body`; the model would stay in default
-    reasoning mode and every classification would time out."""
+    """Story 6.9b migration witness — locks in the post-bench provider
+    swap (Qwen via OpenRouter → Groq Llama 3.3 70B). The contract this
+    test defends is BOTH directions:
+
+    - Target host is `api.groq.com` (no longer `openrouter.ai`).
+    - Default model is `llama-3.3-70b-versatile` (no longer
+      `qwen/qwen3.5-flash-02-23`).
+    - The `reasoning` field is NOT sent — Llama 3.3 70B has no thinking
+      mode and unknown fields risk 400 errors on stricter providers
+      (Qwen's `reasoning: {enabled: False}` was an OpenRouter-era hack
+      forced by Qwen's chain-of-thought default).
+    - `extra_body` still must not appear (OpenAI-SDK-only convention,
+      raw HTTP APIs ignore it).
+
+    Pre-migration this test was `test_classify_uses_httpx_post_with_
+    reasoning_top_level` (the Story 6.3/6.6 smoke witness). It now
+    serves as the Story 6.9b migration witness — a future rollback to
+    Qwen via OpenRouter MUST re-introduce `reasoning: {enabled: False}`
+    at top level, so this test would fail loudly on a partial rollback.
+    """
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "openrouter.ai"
+        assert request.url.host == "api.groq.com", (
+            "Story 6.9b migration — classifier posts to Groq, not OpenRouter"
+        )
         assert request.headers["authorization"] == "Bearer test-key"
         sent = json.loads(request.content)
-        assert sent["model"] == "qwen/qwen3.5-flash-02-23"
-        assert sent["reasoning"] == {"enabled": False}, (
-            "reasoning must be at the top level of the body, not in extra_body"
+        # Story 6.9b review P1 — assert against the module constant, not a
+        # literal. If `_PROVIDER_MODEL` ever flips to a different default,
+        # the assertion follows the constant; if a test wants to lock the
+        # exact string value, that belongs in a dedicated default-model test.
+        assert sent["model"] == _PROVIDER_MODEL == "llama-3.3-70b-versatile", (
+            "default model is Groq's Llama 3.3 70B per Story 6.9b bench winner"
+        )
+        assert "reasoning" not in sent, (
+            "the `reasoning` field is OpenRouter-era (Qwen chain-of-thought "
+            "disable); Llama 3.3 70B has no thinking mode and unknown fields "
+            "risk 400 errors. Re-adding it without rolling back to OpenRouter "
+            "would break the contract."
         )
         assert "extra_body" not in sent, (
-            "extra_body is OpenAI-SDK-only; would be dropped by OpenRouter"
+            "extra_body is OpenAI-SDK-only convention; raw HTTP API drops it"
         )
         return httpx.Response(
             200,
@@ -435,10 +542,11 @@ def test_classifier_defaults_to_met_on_borderline_response(
 
     We test by asserting the prompt text itself contains the
     default-to-MET principle. We can't directly assert the model's
-    behavior without hitting OpenRouter; the prompt is the authoritative
-    contract that the model is asked to follow. If the principle is
-    removed from the prompt, the LLM's default-to-MET behavior would
-    silently regress.
+    behavior without hitting the classifier provider (Groq since the
+    Story 6.9b migration); the prompt is the authoritative contract
+    that the model is asked to follow. If the principle is removed
+    from the prompt, the LLM's default-to-MET behavior would silently
+    regress.
     """
     from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
 
@@ -454,4 +562,116 @@ def test_classifier_defaults_to_met_on_borderline_response(
     assert "False positives" in EXCHANGE_CLASSIFIER_PROMPT, (
         "the default-to-MET rationale (false positives cost nothing) "
         "must remain in the prompt — the model needs the WHY"
+    )
+
+
+# ---------- Story 6.9b — 5 principle-regression tests (AC4) ---------------
+#
+# Pattern mirrors P21 above: assert each of the 6 GUIDING PRINCIPLES (Story
+# 6.9 D4) is present in `EXCHANGE_CLASSIFIER_PROMPT` by a stable wording
+# marker. Principle 5 (default-to-MET) is covered by the P21 test above; this
+# block covers principles 1, 2, 3, 4, 6. The Story 6.9b prompt compression
+# (~600-700 → ~340 tokens) trimmed each principle's prose to 1-2 lines, so a
+# future tightening that drops a principle entirely surfaces as a failing
+# test here BEFORE the call hot path silently regresses on B1-learner messy
+# speech. Phrasing may evolve over time; the SEMANTIC contract (each
+# principle remains explicit) is what these assertions defend.
+
+
+def test_classifier_intent_over_literal() -> None:
+    """Principle 1 — INTENT over literal words. A user engaging with the
+    topic of the current objective MEETS it even if the wording is
+    hesitant / partial / loosely related. Removing this principle would
+    silently regress the classifier to strict-keyword-match mode and
+    fail every paraphrased B1 reply.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    assert "INTENT" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 1 (INTENT over literal words) marker missing — "
+        "compression dropped it; classifier will revert to strict-match"
+    )
+    assert "literal" in EXCHANGE_CLASSIFIER_PROMPT.lower(), (
+        "principle 1 must contrast intent vs literal wording"
+    )
+
+
+def test_classifier_accepts_synonym_or_brand() -> None:
+    """Principle 2 — Synonyms / brand names / colloquialisms count.
+    "Coke"="cola" is the canonical call_id=118 example that prompted
+    Story 6.8 Phase 3 (Walid hit 4 consecutive `checkpoint_unmet drink`
+    in a row after saying "Coke"). Dropping this marker would re-open
+    the same UX regression.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    assert "Synonyms" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 2 (Synonyms count) marker missing"
+    )
+    assert "brand names" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 2 must mention brand names — 'Coke' for 'cola' is "
+        "the load-bearing call_id=118 example"
+    )
+    # Canonical example "Coke"="cola" anchors the principle concretely;
+    # paraphrase or removal would weaken it.
+    assert (
+        '"Coke"="cola"' in EXCHANGE_CLASSIFIER_PROMPT
+        or "Coke" in EXCHANGE_CLASSIFIER_PROMPT
+    ), "principle 2 should keep the Coke/cola exemplar from Story 6.8 Phase 3"
+
+
+def test_classifier_accepts_fragmented_response() -> None:
+    """Principle 3 — Short or fragmented responses count. B1 learners
+    under conversational pressure produce messy English (hesitations,
+    missing articles, incomplete sentences). The classifier must not
+    penalize the form.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    assert "fragmented" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 3 (fragmented responses count) marker missing"
+    )
+    # Hesitation marker ("uh", "um") anchors the principle to actual
+    # speech-to-text artifacts — removing this would let a future
+    # tightening reject disfluent transcriptions.
+    assert (
+        '"uh"' in EXCHANGE_CLASSIFIER_PROMPT or '"um"' in EXCHANGE_CLASSIFIER_PROMPT
+    ), "principle 3 should keep the disfluency exemplars (uh / um)"
+
+
+def test_classifier_accepts_restatement() -> None:
+    """Principle 4 — Re-statements count. "I already said pasta" / "like
+    I told you, chicken" should MEET the current objective if the prior
+    statement matches. call_id=118 surfaced this when Walid said "I
+    already said pasta" and the classifier returned checkpoint_unmet —
+    Story 6.8 Phase 3 widened the Waiter `clarify` success_criteria;
+    this principle generalises the lenience for every scenario.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    assert "Re-statements" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 4 (Re-statements of prior turns count) marker missing"
+    )
+    # "I already said" is the canonical call_id=118 phrase.
+    assert "I already said" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 4 should keep the 'I already said' exemplar from call_id=118"
+    )
+
+
+def test_classifier_evaluates_current_objective_only() -> None:
+    """Principle 6 — Evaluate ONLY the current objective. The user must
+    address each objective in turn; responses that anticipate future
+    objectives must NOT advance the current one. Removing this would
+    let users skip checkpoints, breaking calibration bands and the
+    survival_pct contract.
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+
+    assert "ONLY the current objective" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 6 (current-objective-only) marker missing — without "
+        "this the classifier may credit lookahead responses and skip "
+        "checkpoints, breaking calibration"
+    )
+    assert "anticipate future" in EXCHANGE_CLASSIFIER_PROMPT, (
+        "principle 6 must explicitly forbid crediting anticipatory responses"
     )

@@ -321,8 +321,17 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # to_checkpoint_manager_and_llm_settings`) source-text-asserts both
     # the import and this call shape, so a future refactor that drops
     # either breaks loud.
+    # Story 6.9b — Classifier migrated to Groq Llama 3.3 70B post-bench
+    # (2026-05-22, see report at `_bmad-output/implementation-artifacts/
+    # calibration-tests/classifier_benchmark_2026-05-22T09-29-19Z.json`).
+    # Constructor kwarg is provider-neutrally named `api_key` (was
+    # `openrouter_api_key` pre-migration). The model id reads from
+    # `Settings.classifier_model` (default `llama-3.3-70b-versatile`,
+    # overridable via `CLASSIFIER_MODEL` env for rollback to Qwen via
+    # OpenRouter if Groq has an incident).
     exchange_classifier = ExchangeClassifier(
-        openrouter_api_key=settings.openrouter_api_key,
+        api_key=settings.groq_api_key,
+        model=settings.classifier_model,
     )
     checkpoint_manager = CheckpointManager(
         base_prompt=scenario_base_prompt,

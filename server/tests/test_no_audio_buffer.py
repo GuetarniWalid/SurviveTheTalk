@@ -10,7 +10,10 @@ def test_no_audio_buffer_processor_in_pipeline() -> None:
 
     for directory in (pipeline_dir, api_dir):
         for py_file in directory.glob("*.py"):
-            content = py_file.read_text()
+            # Story 6.9b polish — explicit utf-8 (was relying on platform
+            # default which is cp1252 on Windows and breaks the moment any
+            # docstring contains a non-Latin-1 char like an em-dash).
+            content = py_file.read_text(encoding="utf-8")
             assert "AudioBufferProcessor" not in content, (
                 f"AudioBufferProcessor found in {py_file.name} — "
                 "violates process-and-discard requirement"

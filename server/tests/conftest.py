@@ -29,6 +29,9 @@ TEST_ENV_VARS = {
     "LIVEKIT_URL": "wss://livekit.example.com",
     "LIVEKIT_API_KEY": "test-lk-key",
     "LIVEKIT_API_SECRET": "test-lk-secret",
+    # Story 6.9b — Groq is the classifier provider since the 2026-05-22
+    # bench migration. Required for `Settings()` to validate at import.
+    "GROQ_API_KEY": "test-groq",
     "JWT_SECRET": "0" * 32,
     "RESEND_API_KEY": "test-resend",
     "RESEND_FROM_EMAIL": "noreply@example.com",

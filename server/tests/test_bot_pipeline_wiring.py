@@ -103,6 +103,19 @@ def test_bot_instantiates_emitters() -> None:
     # Story 6.6 — CheckpointManager + ExchangeClassifier instantiation.
     assert "ExchangeClassifier(" in source
     assert "CheckpointManager(" in source
+    # Story 6.9b — model id sourced from Settings so the operator can
+    # flip providers via env override at deploy time without a code
+    # release. The kwarg MUST land on the ExchangeClassifier
+    # construction site (not just be referenced elsewhere) — a
+    # forgotten thread would silently keep the hardcoded default.
+    assert "model=settings.classifier_model" in source
+    # Story 6.9b migration (2026-05-22) — ExchangeClassifier now uses
+    # Groq Llama 3.3 70B. The provider-neutral `api_key` kwarg replaced
+    # `openrouter_api_key`, and it MUST be threaded from
+    # `Settings.groq_api_key`. EmotionEmitter stays on Qwen via
+    # OpenRouter (asserted above on `openrouter_api_key=settings.
+    # openrouter_api_key`), so the two assertions co-exist intentionally.
+    assert "api_key=settings.groq_api_key" in source
     assert "VisemeEmitter" not in source
 
 
@@ -364,7 +377,7 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
     # Track classifier invocations.
     invoked_with: list[dict] = []
 
-    classifier = ExchangeClassifier(openrouter_api_key="test-key")
+    classifier = ExchangeClassifier(api_key="test-key")
 
     async def _stub_classify(**kwargs):
         invoked_with.append(kwargs)

@@ -91,7 +91,7 @@ def _make_manager(
     (one per call, raising IndexError past the end).
     """
     checkpoints = checkpoints or _make_checkpoints(3)
-    classifier = ExchangeClassifier(openrouter_api_key="test-key")
+    classifier = ExchangeClassifier(api_key="test-key")
 
     call_count = {"n": 0}
 
@@ -726,7 +726,7 @@ def test_cleanup_cancels_inflight_task() -> None:
 def test_constructor_rejects_empty_checkpoints() -> None:
     """A bug that loads an empty checkpoint list MUST fail at
     construction (call init), not later mid-call with an IndexError."""
-    classifier = ExchangeClassifier(openrouter_api_key="test-key")
+    classifier = ExchangeClassifier(api_key="test-key")
     with pytest.raises(ValueError, match="checkpoints"):
         CheckpointManager(
             base_prompt="BASE.",
@@ -963,7 +963,7 @@ def test_preemptive_path_falls_through_on_classifier_exception() -> None:
     tracker = _terminal_mock_tracker(patience=10, hang_up_after=False)
 
     # Set up a classifier that raises a runtime error on classify().
-    failing_classifier = ExchangeClassifier(openrouter_api_key="test-key")
+    failing_classifier = ExchangeClassifier(api_key="test-key")
 
     async def _explode(**_kwargs: Any) -> bool | None:
         raise RuntimeError("simulated classifier outage")
@@ -1027,7 +1027,7 @@ def test_constructor_raises_when_llm_settings_system_instruction_missing() -> No
             checkpoints=_make_checkpoints(2),
             llm=_BadLLMMissingSettings(),
             llm_context=LLMContext(),
-            classifier=ExchangeClassifier(openrouter_api_key="k"),
+            classifier=ExchangeClassifier(api_key="k"),
             patience_tracker=MagicMock(),
             scenario_description="bad-llm-test",
             coherence_charter="CHARTER.",
@@ -1039,7 +1039,7 @@ def test_constructor_raises_when_llm_settings_system_instruction_missing() -> No
             checkpoints=_make_checkpoints(2),
             llm=_BadLLMMissingSysInstruction(),
             llm_context=LLMContext(),
-            classifier=ExchangeClassifier(openrouter_api_key="k"),
+            classifier=ExchangeClassifier(api_key="k"),
             patience_tracker=MagicMock(),
             scenario_description="bad-llm-test",
             coherence_charter="CHARTER.",

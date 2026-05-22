@@ -5,36 +5,50 @@ against the CURRENT checkpoint's `success_criteria` only (per
 `difficulty-calibration.md` §3.1 D-5 review note line 48 — the classifier
 is current-checkpoint-only; no look-ahead, no caching of future intent).
 
-Mirrors the `pipeline/emotion_emitter.py` HTTPX + OpenRouter pattern:
-  - `qwen/qwen3.5-flash-02-23` model.
-  - `reasoning.enabled = False` at the **top level** of the request body
-    (NOT nested in `extra_body` — the OpenRouter HTTP API doesn't unwrap
-    `extra_body`; that key is only respected by the OpenAI Python SDK).
-  - JSON-strict response with Markdown-fence + first-`{...}` fallbacks.
+Provider: **Groq Llama 3.3 70B** (since Story 6.9b migration, 2026-05-22).
+Migrated from Qwen 3.5 Flash via OpenRouter after the bench at
+`_bmad-output/implementation-artifacts/calibration-tests/
+classifier_benchmark_2026-05-22T09-29-19Z.json` measured Groq from the
+VPS as 4.8× faster (p50 121 ms vs 587 ms), 2.7× faster on p95 (320 ms vs
+859 ms), and 4 pts more accurate (98.7 % vs 94.7 %) with ZERO false
+positives (Qwen had 3) on the 75-sample classifier corpus. Cost delta
+is +~10 €/mois at 100-user MVP scale (Groq Llama 3.3 70B priced $0.59/M
+input + $0.79/M output vs Qwen $0.05/$0.15). The sub-300 ms p95 from
+VPS unblocks Story 6.12 "Reactive Character Mood" sync-verdict-everywhere
+architecture (which needed classifier < 300 ms to keep total perceived
+latency under the PRD 800 ms target).
 
-Timing budget (post-Story 6.9 reliability incident, 2026-05-21): the
-classifier MUST resolve within 2.0 s or the conservative fallback path
-fires. Story 6.8 had tightened these to 1.0 s outer + 0.8 s HTTP for
-latency reasons, but the 0.8 s HTTP budget left zero margin for the
-~100-200 ms TLS+TCP cold-start cost paid on EVERY classify call (a new
-`httpx.AsyncClient` was instantiated per call — see persistent-client
-refactor below). OpenRouter qwen-flash TTFT variance (300-1500 ms)
-combined with the cold-start overhead caused ~30 % of classify calls to
-timeout, with each timeout incorrectly draining the user's patience
-meter — a classifier-side reliability bug that punished the user for
-our infra failures (Story 6.9 smoke-test 2026-05-21, call 138 lost on
-"Pasta" because of this exact cascade). Story 6.10 prep restores the
-2.0 s outer / 1.5 s HTTP budget AND adds persistent client reuse, so
-the cold-start cost is paid ONCE at first classify, and subsequent
-calls only pay the OpenRouter inference time.
+EmotionEmitter stays on Qwen via OpenRouter (out of scope for this
+migration — emotion latency has zero UX cost when slow, the character
+just stays in its prior Rive pose). A future Story 6.9c may unify both
+classifiers under Groq for vendor reduction.
 
-Emotion classification has no UX cost when slow (the character simply
-stays in its previous Rive emotion); exchange classification has
-direct UX cost (the user's turn either advances the checkpoint or
-doesn't, and the next bot reply runs under whichever system prompt is
-current). The HTTP timeout (1.5 s) sits under the classifier timeout
-(2.0 s) so an HTTP-side abort surfaces a clean log line BEFORE the
-async `wait_for` raises `TimeoutError`.
+Request shape: Groq is OpenAI-compatible at
+`https://api.groq.com/openai/v1/chat/completions`, so the body shape
+(messages list, max_tokens, temperature) matches what we sent to
+OpenRouter. The `reasoning` field from the OpenRouter era is NOT sent
+to Groq — Llama 3.3 70B doesn't have a thinking mode to disable, and
+sending unknown fields risks 400 errors with stricter providers.
+
+Streaming skipped — gain <100 ms. Groq's measured TTFT from the VPS is
+~70-90 ms with total `_classify()` p50 = 121 ms / p95 = 320 ms. Activating
+streaming would save at most the (total - TTFT) tail (~30-200 ms), but
+the verdict cannot be acted on until the full `{"met": ...}` JSON is
+parsed — there is no incremental UX win to harvest. Buffered POST is
+preserved per AC3 / Deviation #2 (streaming activation contingent on
+≥100 ms measured gain, which Groq's TTFT already invalidates).
+
+Timing budget (kept from Story 6.9): 2.0 s outer / 1.5 s HTTP. With
+Groq's measured p95 320 ms from VPS the budget is now ~6× larger than
+the actual classify latency, so the safety belt sits unused on the
+happy path. It still fires on degraded-Groq (rate-limit 429 storms,
+upstream outages) so the consecutive-None backstop in
+`checkpoint_manager.py:106` (Story 6.9 review D1) stays in place.
+
+Persistent client lifecycle (Story 6.9 Deviations #5-#10) is preserved
+unchanged — `_get_client()` double-checked locking, `_closed` flag,
+lock-guarded `close()`, RuntimeError handling for post-cleanup races.
+The lifecycle contract is provider-agnostic.
 
 Return contract:
   - `True`  — model said `{"met": true}` AND the response parsed cleanly.
@@ -61,8 +75,8 @@ from loguru import logger
 
 from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
 
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-_OPENROUTER_MODEL = "qwen/qwen3.5-flash-02-23"
+_PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
+_PROVIDER_MODEL = "llama-3.3-70b-versatile"
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
 # advanced (conservative — no free progression)". Story 6.9 reliability
@@ -85,26 +99,52 @@ _FENCE_RE = re.compile(
 )
 
 
+def _escape_format_braces(value: str) -> str:
+    """Escape `{` and `}` so `str.format()` doesn't interpret them as
+    placeholders. Story 6.9b review P14: STT-transcribed user text or
+    upstream character lines can contain literal braces (e.g. the user
+    reads JSON aloud, or the character line includes our own slot
+    markers verbatim). Without escaping, `.format()` raises `KeyError`
+    or `ValueError` and the verdict task dies silently.
+    """
+    return value.replace("{", "{{").replace("}", "}}")
+
+
 class ExchangeClassifier:
-    """Async OpenRouter-backed judge that returns `{met: bool}` per user turn.
+    """Async Groq-backed judge that returns `{met: bool}` per user turn.
 
     Single-purpose; one instance per call, owned by `CheckpointManager`.
     Never blocks the main pipeline — every classify wrapped in
     `asyncio.wait_for(_CLASSIFIER_TIMEOUT_SECONDS)`.
 
     Args:
-        openrouter_api_key: API key for OpenRouter. Required — passed in
-            by `bot.py` from `Settings.openrouter_api_key`. Empty/None
-            raises `ValueError` so the bug surfaces at process start, not
-            on every classify with a silent 401.
+        api_key: API key for the classifier provider (Groq since the
+            Story 6.9b migration). Required — passed in by `bot.py`
+            from `Settings.groq_api_key`. Empty/None raises `ValueError`
+            so the bug surfaces at process start, not on every classify
+            with a silent 401. The kwarg is provider-neutrally named
+            `api_key` (was `openrouter_api_key` pre-migration) so a
+            future provider swap doesn't require a parameter rename.
+        model: Provider-specific model id (default `llama-3.3-70b-
+            versatile`). Sourced from `Settings.classifier_model` in
+            `bot.py` so the model can be flipped via the
+            `CLASSIFIER_MODEL` env override at deploy time without a
+            code release — useful for rollback to Qwen
+            (`qwen/qwen3.5-flash-02-23` via OpenRouter) if Groq has
+            an incident. Retires `deferred-work.md` line 450 (Story 6.9
+            Defer #3).
     """
 
-    def __init__(self, *, openrouter_api_key: str) -> None:
-        if not openrouter_api_key:
-            raise ValueError(
-                "ExchangeClassifier requires a non-empty openrouter_api_key"
-            )
-        self._api_key = openrouter_api_key
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = _PROVIDER_MODEL,
+    ) -> None:
+        if not api_key:
+            raise ValueError("ExchangeClassifier requires a non-empty api_key")
+        self._api_key = api_key
+        self._model = model
         # Story 6.9 reliability patch (2026-05-21) — persistent
         # AsyncClient across classify calls. Pre-patch every classify()
         # opened a brand-new client → paid TCP + TLS handshake (~100-200
@@ -227,33 +267,54 @@ class ExchangeClassifier:
         scenario_description: str,
     ) -> bool | None:
         prompt = EXCHANGE_CLASSIFIER_PROMPT.format(
-            scenario_description=scenario_description,
-            last_character_line=last_character_line,
-            user_text=user_text,
-            success_criteria=success_criteria,
+            scenario_description=_escape_format_braces(scenario_description),
+            last_character_line=_escape_format_braces(last_character_line),
+            user_text=_escape_format_braces(user_text),
+            success_criteria=_escape_format_braces(success_criteria),
         )
-        # `reasoning` MUST sit at the top level of the JSON body. See
-        # `pipeline/emotion_emitter.py` for the original smoke-gate
-        # rationale: `extra_body` is an OpenAI-SDK convention that the
-        # SDK flattens into the request body before sending; OpenRouter's
-        # HTTP API doesn't know the `extra_body` key and silently drops
-        # it. Putting `reasoning` there leaves Qwen in default reasoning
-        # mode (5-15 s per call) and every classification times out.
+        # Story 6.9b — Groq is OpenAI-compatible: same body shape as the
+        # OpenRouter request we sent pre-migration. The `reasoning` field
+        # (which forced-disabled Qwen's chain-of-thought via OpenRouter)
+        # is NOT sent — Llama 3.3 70B has no thinking mode to disable,
+        # and sending unknown fields risks 400 errors on stricter
+        # providers. EmotionEmitter still sends `reasoning` because it
+        # stays on Qwen via OpenRouter (out of scope for this migration).
         payload = {
-            "model": _OPENROUTER_MODEL,
+            "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 32,
-            "reasoning": {"enabled": False},
+            # Story 6.9b review P15 — raised 32 → 64. Llama 3.3 70B can
+            # prepend whitespace/leading-newline tokens before the JSON
+            # body, and `{"met": true}` is already ~10 tokens; 32 left
+            # zero margin for verbose framing. 64 stays well below any
+            # cost concern (~0.02 ¢ per 1000 classifies) while making
+            # truncation-mid-JSON essentially impossible.
+            "max_tokens": 64,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
 
+        # Story 6.9b smoke-gate carry-over (2026-05-22): per-classify trace
+        # of input + verdict. DEBUG-level so prod INFO logs stay clean; flip
+        # `LOG_LEVEL=DEBUG` on the VPS to enable for Story 6.10 dev work
+        # (the goal-based-dialogue dev will want to see what the classifier
+        # actually receives when checkpoints fire out of order).
+        # ⚠️ TODO Story 6.10 — REMOVE these two logger.debug calls before
+        #    public launch. `user_text` is raw STT output (PII-equivalent
+        #    for real practice partners). Tracked in
+        #    `_bmad-output/implementation-artifacts/deferred-work.md` under
+        #    "Remove verbose classifier_input / classifier_output ...".
+        logger.debug(
+            "classifier_input user_text={!r} criteria={!r} last_char_line={!r}",
+            user_text,
+            success_criteria[:80],
+            last_character_line[:80],
+        )
         try:
             client = await self._get_client()
-            response = await client.post(_OPENROUTER_URL, headers=headers, json=payload)
+            response = await client.post(_PROVIDER_URL, headers=headers, json=payload)
         except httpx.HTTPError as exc:
             # Story 6.9 reliability patch — surface the exception's
             # qualified class name when the str() is empty (httpx
@@ -275,6 +336,12 @@ class ExchangeClassifier:
             # `Task exception was never retrieved` log. Surface it as a
             # normal `None` verdict (the caller already treats `None`
             # as infra failure).
+            # Story 6.9b review P9 — narrow to lifecycle "closed" errors
+            # only. Re-raise any other RuntimeError (e.g. event-loop
+            # mismatch, unexpected library bug) so the real defect isn't
+            # silently degraded to `verdict=None`.
+            if "closed" not in str(exc).lower():
+                raise
             logger.warning(
                 "exchange classifier lifecycle error: {} ({})",
                 exc,
@@ -288,12 +355,52 @@ class ExchangeClassifier:
 
         try:
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+        except ValueError as exc:
+            # Story 6.9b review P16 — 2xx with non-JSON body usually
+            # means Cloudflare/Groq interstitial or a bot-protection
+            # challenge page. Log content-type + first 200 chars of the
+            # body so the operator can disambiguate vs malformed JSON.
+            content_type = response.headers.get("content-type", "<missing>")
+            preview = response.text[:200] if response.text else "<empty>"
+            logger.warning(
+                "exchange classifier non-JSON body: {} (content-type={!r}, preview={!r})",
+                exc,
+                content_type,
+                preview,
+            )
+            return None
+        try:
+            choices = body["choices"]
+        except (KeyError, TypeError) as exc:
+            logger.warning("exchange classifier malformed envelope: {}", exc)
+            return None
+        if not choices:
+            # Story 6.9b review P22 — empty choices list at HTTP 200 is
+            # usually a Groq content-filter refusal (the model declined
+            # to respond on adversarial input). Log it distinctly so the
+            # operator can monitor it; verdict stays None (conservative
+            # — caller treats as infra failure, no patience drain). A
+            # future iteration could treat empty-choices as `False`
+            # (NOT MET) to drain patience on adversarial users, but
+            # changing the contract requires care: a transient Groq bug
+            # that returns empty choices on legit content would wrongly
+            # penalise patience.
+            logger.warning(
+                "exchange classifier empty choices — possible content filter (usage={})",
+                body.get("usage", "<missing>"),
+            )
+            return None
+        try:
+            content = choices[0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
             logger.warning("exchange classifier malformed envelope: {}", exc)
             return None
 
-        return _parse_classifier_output(content)
+        verdict = _parse_classifier_output(content)
+        # Story 6.9b — see classifier_input comment above. Same DEBUG-level
+        # gate + same Story 6.10 REMOVE-BEFORE-LAUNCH TODO applies.
+        logger.debug("classifier_output verdict={} raw={!r}", verdict, content[:120])
+        return verdict
 
 
 def _parse_classifier_output(content: str) -> bool | None:
