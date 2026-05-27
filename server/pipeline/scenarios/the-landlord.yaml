@@ -21,6 +21,7 @@ metadata:
   recovery_bonus: null       # effective: +0
   silence_prompt_seconds: null  # effective: 3
   silence_hangup_seconds: null  # effective: 5
+  ladder_impatience_seconds: null  # effective: 2.5 (Story 6.13 AC3)
   escalation_thresholds: null   # effective: [30, 0]
 
 # ============================================================

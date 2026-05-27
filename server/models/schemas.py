@@ -158,6 +158,10 @@ class ScenarioDetail(ScenarioListItem):
     recovery_bonus: int | None = None
     silence_prompt_seconds: int | None = None
     silence_hangup_seconds: int | None = None
+    # Story 6.13 AC3 — stage-1 impatience anchor (per-difficulty preset,
+    # YAML override via `metadata.ladder_impatience_seconds`). float
+    # because preset values are fractional (4.5 / 3.5 / 2.5 s).
+    ladder_impatience_seconds: float | None = None
     escalation_thresholds: list[int] | None = None
     tts_voice_id: str | None = None
     tts_speed: float | None = None

@@ -1074,3 +1074,125 @@ exit_lines:
     )
     with pytest.raises(RuntimeError, match="speak-first directive"):
         scenarios_mod.load_scenario_base_prompt("synth_speak_first_in_base")
+
+
+# ============================================================
+# Story 6.13 AC6 — Waiter clarify success_criteria accepts drink answers
+# ============================================================
+
+
+# ============================================================
+# Story 6.13 AC3 — ladder_impatience_seconds per-difficulty preset + validator
+# ============================================================
+
+
+def test_easy_preset_ladder_impatience_seconds_is_4_5() -> None:
+    """Story 6.13 AC3 — easy default raised from the deleted 3.0 s
+    constant to 4.5 s. Natural response time per smoke gate
+    call_id=148 is ~1.5-2.5 s + parse 0.5-1 s; 4.5 s gives the user
+    breathing room without feeling abandoned."""
+    from pipeline.scenarios import _DIFFICULTY_PRESETS
+
+    assert _DIFFICULTY_PRESETS["easy"]["ladder_impatience_seconds"] == 4.5
+    assert _DIFFICULTY_PRESETS["medium"]["ladder_impatience_seconds"] == 3.5
+    assert _DIFFICULTY_PRESETS["hard"]["ladder_impatience_seconds"] == 2.5
+
+
+def test_resolve_patience_config_validates_ladder_impatience_seconds_range(
+    tmp_path, monkeypatch
+) -> None:
+    """A YAML override outside [0.5, 10.0] is rejected at resolve time."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_ladder_too_small
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  ladder_impatience_seconds: 0.1
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        yaml_body,
+        scenario_id="synth_ladder_too_small",
+    )
+    with pytest.raises(RuntimeError, match="ladder_impatience_seconds"):
+        scenarios_mod.resolve_patience_config("synth_ladder_too_small")
+
+
+def test_resolve_patience_config_accepts_ladder_impatience_seconds_override(
+    tmp_path, monkeypatch
+) -> None:
+    """A valid override (e.g. 6.0) is propagated into the resolved
+    config dict, replacing the preset value."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_ladder_override
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  ladder_impatience_seconds: 6.0
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        yaml_body,
+        scenario_id="synth_ladder_override",
+    )
+    config = scenarios_mod.resolve_patience_config("synth_ladder_override")
+    assert config["ladder_impatience_seconds"] == 6.0
+
+
+def test_waiter_clarify_accepts_drink_answer_after_drinks_offered() -> None:
+    """Story 6.13 AC6 — when Tina's `clarify` prompt slides into drinks
+    (smoke-gate call_id=148 + 151 showed she sometimes phrases it as
+    "What about a drink? Water, juice, cola, or coffee?"), a user
+    answering "Cola" / "Water" must be classified as a valid clarify
+    response, not penalised as `checkpoint_unmet`. Verify the YAML's
+    `clarify.success_criteria` prose tells the classifier so.
+    """
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    checkpoints = load_scenario_checkpoints("waiter_easy_01")
+    clarify = next(c for c in checkpoints if c["id"] == "clarify")
+    criteria = clarify["success_criteria"].lower()
+    # The amended criteria must mention drink answers + at least one
+    # drink synonym so the classifier picks up the wide net.
+    assert "drink" in criteria, (
+        "clarify criteria must mention 'drink' to signal the wide net to the classifier"
+    )
+    assert "cola" in criteria or "coke" in criteria, (
+        "clarify criteria must list at least one drink synonym (cola / coke)"
+    )

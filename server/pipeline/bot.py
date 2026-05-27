@@ -23,7 +23,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.services.soniox.stt import SonioxSTTService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
@@ -38,12 +37,14 @@ from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.latency_probe import LatencyProbe
+from pipeline.llm_warmup import warm_up_llm
 from pipeline.patience_tracker import PatienceTracker
 from pipeline.prompts import (
-    CARTESIA_VOICE_ID,
     COHERENCE_CHARTER,
     SARCASTIC_CHARACTER_PROMPT,
 )
+from pipeline.tts_factory import build_tts_service
+from pipeline.tts_watchdog import TTSWatchdog
 from pipeline.scenarios import (
     TUTORIAL_SCENARIO_ID,
     load_scenario_base_prompt,
@@ -52,6 +53,16 @@ from pipeline.scenarios import (
     resolve_patience_config,
 )
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
+
+
+# Story 6.13 review (2026-05-27) — strong references to fire-and-forget
+# background tasks (the LLM warm-up). asyncio keeps only a WEAK reference
+# to a bare `create_task` result, so a discarded task can be garbage-
+# collected before it runs ("Task was destroyed but it is pending!") and
+# the warm-up silently never fires. Retaining the task here keeps it alive;
+# the done-callback discards the entry so the set can't grow unbounded
+# across calls.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 async def run_bot(url: str, room: str, token: str) -> None:
@@ -167,10 +178,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # truncated turn but the call doesn't hang.
     endpoint_watchdog = EndpointWatchdog()
 
+    main_llm_model = "qwen/qwen3.5-flash-02-23"
     llm = OpenRouterLLMService(
         api_key=settings.openrouter_api_key,
         settings=OpenRouterLLMService.Settings(
-            model="qwen/qwen3.5-flash-02-23",
+            model=main_llm_model,
             extra={"extra_body": {"reasoning": {"enabled": False}}},
             system_instruction=initial_system_prompt,
             temperature=0.7,
@@ -178,13 +190,28 @@ async def run_bot(url: str, room: str, token: str) -> None:
         ),
     )
 
-    tts = CartesiaTTSService(
-        api_key=settings.cartesia_api_key,
-        settings=CartesiaTTSService.Settings(
-            model="sonic-3",
-            voice=CARTESIA_VOICE_ID,
-        ),
+    # Story 6.13 follow-up (2026-05-27) — fire a fire-and-forget LLM
+    # warm-up so the user's first turn doesn't eat the OpenRouter
+    # cold-start (measured ~0.5 s slower on turn 1 vs warm turns, call
+    # 164). Launched here so it warms in PARALLEL with the rest of the
+    # pipeline setup + LiveKit connect + greeting playback; by the time
+    # the user finishes their first turn (several seconds in) the
+    # connection + provider-side model are hot. Never blocks, never
+    # raises — see `pipeline/llm_warmup.py`.
+    _warmup_task = asyncio.create_task(
+        warm_up_llm(api_key=settings.openrouter_api_key, model=main_llm_model)
     )
+    _BACKGROUND_TASKS.add(_warmup_task)
+    _warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    # Story 6.13 Phase 4b (2026-05-26) — TTS provider is selected by
+    # `Settings.tts_provider` (env: `TTS_PROVIDER=cartesia|elevenlabs`).
+    # The factory handles both providers + the Cartesia debug env-gates
+    # (`CARTESIA_INSTRUMENT` / `CARTESIA_FRESH_CTX`) — bot.py never
+    # names a provider class directly. See `pipeline/tts_factory.py`
+    # for the branching + the rationale on why we defaulted to
+    # ElevenLabs post the call 156-157 freeze findings.
+    tts = build_tts_service(settings)
 
     # Story 6.8 Phase 1 AC2 — VAD `stop_secs` audit. Pipecat 0.0.108's
     # `SileroVADAnalyzer` consumes `stop_secs` independently of the
@@ -293,6 +320,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
         silence_penalty=patience_config["silence_penalty"],
         recovery_bonus=patience_config["recovery_bonus"],
         silence_prompt_seconds=patience_config["silence_prompt_seconds"],
+        # Story 6.13 AC3 — per-difficulty stage-1 anchor (was the deleted
+        # module constant `_LADDER_IMPATIENCE_AT`). Easy 4.5 / medium 3.5
+        # / hard 2.5 s; nullable YAML override via `metadata.
+        # ladder_impatience_seconds`.
+        ladder_impatience_seconds=patience_config["ladder_impatience_seconds"],
         silence_hangup_seconds=patience_config["silence_hangup_seconds"],
         escalation_thresholds=patience_config["escalation_thresholds"],
         total_checkpoints=patience_config["total_checkpoints"],
@@ -362,6 +394,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
         frame_type=OutputAudioRawFrame,
     )
 
+    # Story 6.13 AC1 — Cartesia silent-stall watchdog. Sits between
+    # `tts` and `tts_first_audio_probe` so it observes the same audio
+    # stream the probe does. 5 s wall-clock timer arms on every
+    # `TTSStartedFrame`, cancels on first `OutputAudioRawFrame` or
+    # `TTSStoppedFrame`. On timeout, pushes a synthetic
+    # `TTSStoppedFrame` downstream so the pipeline unblocks — the
+    # user gets silence on their device for the stalled turn but the
+    # call survives instead of soft-locking until manual hangup.
+    # See `_bmad-output/implementation-artifacts/6-13-epic-6-prelaunch-hardening.md`
+    # AC1 + Deviation #1 (mitigation, not root-cause fix; investigation
+    # of the underlying Cartesia/pipecat bug is a follow-up).
+    tts_watchdog = TTSWatchdog()
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -414,6 +459,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
             llm_first_text_probe,
             transcript_character,
             tts,
+            # Story 6.13 AC1 — wedged immediately after `tts` so the
+            # watchdog observes Cartesia's audio stream BEFORE the
+            # `tts_first_audio_probe`. If the watchdog fires, the
+            # synthetic `TTSStoppedFrame` still flows through the
+            # probe to `transport.output()` and unblocks downstream.
+            tts_watchdog,
             tts_first_audio_probe,
             transport.output(),
             context_aggregator.assistant(),

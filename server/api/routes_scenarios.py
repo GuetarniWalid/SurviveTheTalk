@@ -157,6 +157,7 @@ async def get_scenario(request: Request, scenario_id: str) -> dict:
             recovery_bonus=row["recovery_bonus"],
             silence_prompt_seconds=row["silence_prompt_seconds"],
             silence_hangup_seconds=row["silence_hangup_seconds"],
+            ladder_impatience_seconds=row["ladder_impatience_seconds"],
             escalation_thresholds=_safe_json_load(
                 row["escalation_thresholds"],
                 scenario_id=sid,

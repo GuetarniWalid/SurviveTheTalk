@@ -89,6 +89,14 @@ def test_bot_instantiates_emitters() -> None:
     assert 'silence_penalty=patience_config["silence_penalty"]' in source
     assert 'recovery_bonus=patience_config["recovery_bonus"]' in source
     assert 'silence_prompt_seconds=patience_config["silence_prompt_seconds"]' in source
+    # Story 6.13 AC3 — per-difficulty stage-1 anchor threaded from the
+    # resolved config. A forgotten thread would silently fall back to a
+    # constructor default (no default exists today — would TypeError),
+    # but a future default could mask a misconfigured YAML.
+    assert (
+        'ladder_impatience_seconds=patience_config["ladder_impatience_seconds"]'
+        in source
+    )
     assert 'silence_hangup_seconds=patience_config["silence_hangup_seconds"]' in source
     assert 'escalation_thresholds=patience_config["escalation_thresholds"]' in source
     assert 'total_checkpoints=patience_config["total_checkpoints"]' in source

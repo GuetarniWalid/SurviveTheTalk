@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../auth/token_storage.dart';
 import 'api_exception.dart';
+import 'auth_interceptor.dart';
 
 class ApiClient {
   static const String baseUrl = 'http://167.235.63.129';
@@ -18,6 +19,14 @@ class ApiClient {
       ..receiveTimeout = const Duration(seconds: 15)
       ..headers = {'Content-Type': 'application/json'};
 
+    // Story 6.13 AC4 — install the 401 handler FIRST so it observes
+    // every error before the request-wrapper's ApiException mapping.
+    // Order matters: if the ApiException mapping ran first, the 401
+    // would already be wrapped and `err.response?.statusCode` lookup
+    // would still work (DioException keeps the response intact) but
+    // putting the AuthInterceptor first keeps the auth flow
+    // self-contained.
+    _dio.interceptors.add(AuthInterceptor());
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {

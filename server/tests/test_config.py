@@ -81,3 +81,72 @@ def test_settings_classifier_model_overrides_via_env() -> None:
     with patch.dict(os.environ, overrides, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
         assert s.classifier_model == "llama-3.3-70b-versatile-128k"
+
+
+# ---------- Story 6.13 Phase 4b — TTS provider switch -----------------------
+
+
+def test_settings_tts_provider_defaults_to_elevenlabs() -> None:
+    """Story 6.13 Phase 4b — post-2026-05-26 default is ElevenLabs.
+    Cartesia stays in the codebase for rollback but the production
+    default after the call 156-157 freeze findings is ElevenLabs."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.tts_provider == "elevenlabs"
+
+
+def test_settings_tts_provider_can_be_flipped_to_cartesia() -> None:
+    """Operator can switch back to Cartesia via env var alone (no
+    code release). Used for rollback once Cartesia ships a fix."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "TTS_PROVIDER": "cartesia",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.tts_provider == "cartesia"
+
+
+def test_settings_rejects_unknown_tts_provider() -> None:
+    """The `Literal["cartesia", "elevenlabs"]` type makes any other
+    value fail at parse — `Settings()` raises ValidationError instead
+    of accepting a misconfigured value that would 500 at first call."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "TTS_PROVIDER": "openai",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        with pytest.raises(ValidationError, match="tts_provider"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_elevenlabs_fields_default_empty_when_unset() -> None:
+    """Cartesia-only deploys (no ELEVENLABS_* env vars) must still
+    parse Settings cleanly — runtime validation in `tts_factory`
+    enforces non-empty values only when the provider is selected."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.elevenlabs_api_key == ""
+        assert s.elevenlabs_voice_id == ""
+        assert s.elevenlabs_model == "eleven_flash_v2_5"
+
+
+def test_settings_elevenlabs_fields_load_from_env() -> None:
+    """ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID + ELEVENLABS_MODEL
+    env overrides propagate to Settings."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "ELEVENLABS_API_KEY": "test-elevenlabs-key",
+        "ELEVENLABS_VOICE_ID": "Xb7hH8MSUJpSbSDYk0k2",  # Alice
+        "ELEVENLABS_MODEL": "eleven_turbo_v2_5",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.elevenlabs_api_key == "test-elevenlabs-key"
+        assert s.elevenlabs_voice_id == "Xb7hH8MSUJpSbSDYk0k2"
+        assert s.elevenlabs_model == "eleven_turbo_v2_5"

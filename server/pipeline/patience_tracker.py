@@ -107,6 +107,7 @@ from typing import Any, Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
@@ -121,10 +122,13 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 # Silence-ladder timing anchors (Story 6.4)
 # ============================================================
 
-# Stage 1 anchor (impatience face emit) — measured from the start
-# of the ladder, which itself starts on client-confirmed
-# `playback_idle` (= user's ear heard the bot finish speaking).
-_LADDER_IMPATIENCE_AT = 3.0
+# Stage 1 anchor (impatience face emit) is now per-difficulty (Story 6.13
+# AC3): easy=4.5, medium=3.5, hard=2.5 — read from
+# `_DIFFICULTY_PRESETS['ladder_impatience_seconds']` in scenarios.py and
+# threaded through the `PatienceTracker(ladder_impatience_seconds=...)`
+# constructor kwarg. The old module-level `_LADDER_IMPATIENCE_AT = 3.0`
+# constant was deleted: smoke gate call_id=148 showed 3 s was too
+# aggressive (natural response time ~1.5-2.5 s after perception).
 
 # Stages 3-4 (anger face + hang-up) are anchored to the moment the
 # user's ear hears the stage-2 prompt finish — NOT to absolute time
@@ -248,6 +252,7 @@ class PatienceTracker(FrameProcessor):
         initial_patience: int,
         silence_penalty: int,
         silence_prompt_seconds: float,
+        ladder_impatience_seconds: float,
         total_checkpoints: int,
         fail_penalty: int = 0,
         recovery_bonus: int = 0,
@@ -266,6 +271,23 @@ class PatienceTracker(FrameProcessor):
         super().__init__(**kwargs)
         if initial_patience <= 0:
             raise ValueError(f"initial_patience must be > 0, got {initial_patience!r}")
+        # Story 6.13 AC3 — `ladder_impatience_seconds` replaces the deleted
+        # module-level `_LADDER_IMPATIENCE_AT = 3.0` constant. Constructor
+        # guard rejects only zero/negative + non-number values so a bogus
+        # YAML override surfaces at PatienceTracker init rather than
+        # asyncio.sleep'ing on a negative duration mid-ladder. Operational
+        # range (0.5 ≤ x ≤ 10.0) is enforced upstream in
+        # `resolve_patience_config`; tests that need fast ladders pass
+        # sub-0.5 values directly without tripping the range guard.
+        if (
+            not isinstance(ladder_impatience_seconds, (int, float))
+            or isinstance(ladder_impatience_seconds, bool)
+            or ladder_impatience_seconds <= 0
+        ):
+            raise ValueError(
+                "ladder_impatience_seconds must be a positive number, "
+                f"got {ladder_impatience_seconds!r}"
+            )
         # Story 6.6 review patch — defensive type guards on the kwargs
         # that Story 6.6 newly consumes via `apply_exchange_outcome` and
         # `CheckpointManager.is_terminal_turn`. In production these
@@ -286,6 +308,11 @@ class PatienceTracker(FrameProcessor):
         self._patience = initial_patience
         self._silence_penalty = silence_penalty
         self._silence_prompt_seconds = silence_prompt_seconds
+        # Story 6.13 AC3 — per-difficulty stage 1 anchor (was the deleted
+        # module constant `_LADDER_IMPATIENCE_AT = 3.0`). Easy preset
+        # raises this to 4.5 s to match natural-response timing observed
+        # in call_id=148; medium 3.5 s; hard 2.5 s.
+        self._ladder_impatience_seconds = float(ladder_impatience_seconds)
         self._total_checkpoints = total_checkpoints
         # Story 6.7 review (2026-05-20) — CheckpointManager calls
         # `set_checkpoints_passed` on every state change so the
@@ -370,13 +397,14 @@ class PatienceTracker(FrameProcessor):
         logger.info(
             "PatienceTracker config initial_patience={} fail_penalty={} "
             "silence_penalty={} recovery_bonus={} silence_prompt_seconds={} "
-            "silence_hangup_seconds={} escalation_thresholds={} "
-            "total_checkpoints={}",
+            "ladder_impatience_seconds={} silence_hangup_seconds={} "
+            "escalation_thresholds={} total_checkpoints={}",
             initial_patience,
             fail_penalty,
             silence_penalty,
             recovery_bonus,
             silence_prompt_seconds,
+            self._ladder_impatience_seconds,
             silence_hangup_seconds,
             self._escalation_thresholds,
             total_checkpoints,
@@ -495,6 +523,49 @@ class PatienceTracker(FrameProcessor):
             # a transcription. Cancel the ladder now so a user mid-
             # speech doesn't trip stage 1 emit.
             self._cancel_silence_timer()
+        elif (
+            isinstance(frame, BotStartedSpeakingFrame)
+            and direction == FrameDirection.UPSTREAM
+        ):
+            # Story 6.13 AC2 (2026-05-26) — pause the silence ladder when
+            # the bot starts speaking. Pipecat 0.0.108's
+            # BaseOutputTransport._bot_started_speaking pushes BSF in
+            # both directions; same direction logic as
+            # BotStoppedSpeakingFrame above — PatienceTracker sits
+            # UPSTREAM of the output, so the only direction we
+            # observe is UPSTREAM (the downstream copy goes into the
+            # sink).
+            #
+            # Why: smoke gate call_id=150 T6 (2026-05-26) showed the
+            # ladder counting down WHILE Tina was actively speaking —
+            # the client's `playback_idle` for the prior turn armed
+            # the ladder, then Tina's new turn started mid-stage-1,
+            # and "Hello? Are you still there?" fired AT 45.501s
+            # while Tina was mid-sentence (T6 spans 39.498-45.998).
+            # Cancelling on BSF guarantees no ladder event can
+            # interrupt a bot turn that is audibly playing on the
+            # user's device. The next `playback_idle` (post-Tina-
+            # turn) re-arms the ladder cleanly.
+            #
+            # Patience meter is NOT touched — we're not punishing the
+            # bot for speaking; we're simply suppressing the ladder
+            # event window. Same semantics as a user-speech cancel:
+            # next playback_idle re-arms.
+            #
+            # Story 6.13 review (2026-05-27) — `_self_speaking` guard is
+            # LOAD-BEARING. When the ladder reaches stage 2 it pushes its
+            # OWN verbal prompt ("Hello? Are you still there?") downstream
+            # and sets `_self_speaking = True`; that prompt's audio makes
+            # the output transport emit a BotStartedSpeakingFrame which
+            # travels right back up here. Without this guard we'd cancel
+            # the very ladder task that is mid-flight awaiting
+            # `_prompt_played_event` — killing stages 3 (anger) + 4
+            # (silence hang-up) so the character NEVER hangs up on a
+            # silent user. A real character turn (the AC2 case this branch
+            # exists for) has `_self_speaking == False` and still cancels
+            # as intended.
+            if not self._self_speaking:
+                self._cancel_silence_timer()
 
     def handle_playback_idle(self) -> None:
         """Client-driven trigger — the user's speaker has been silent
@@ -767,13 +838,14 @@ class PatienceTracker(FrameProcessor):
 
     async def _run_silence_ladder(self) -> None:
         try:
-            # Stage 1 — 3.0 s of post-bot-turn silence: emit
+            # Stage 1 — `_ladder_impatience_seconds` (per-difficulty —
+            # Story 6.13 AC3) of post-bot-turn silence: emit
             # `impatience` so the Rive face shifts to a mildly
             # impatient state. Each ladder run emits fresh — the
             # client-side Rive enum is discrete (intensity is
             # currently dropped), so a re-emit to the same enum
             # value is a no-op visually but harmless.
-            await asyncio.sleep(_LADDER_IMPATIENCE_AT)
+            await asyncio.sleep(self._ladder_impatience_seconds)
             logger.info("PatienceTracker stage 1: impatience@0.5")
             await self._emit_emotion("impatience", 0.5)
 
@@ -782,7 +854,10 @@ class PatienceTracker(FrameProcessor):
             # `impatience` (Rive enum is discrete; intensity is
             # currently dropped client-side), so the visible change
             # is the audio prompt itself.
-            stage2 = max(0.0, self._silence_prompt_seconds - _LADDER_IMPATIENCE_AT)
+            stage2 = max(
+                0.0,
+                self._silence_prompt_seconds - self._ladder_impatience_seconds,
+            )
             await asyncio.sleep(stage2)
             logger.info("PatienceTracker stage 2: verbal prompt + impatience@0.7")
             self._self_speaking = True

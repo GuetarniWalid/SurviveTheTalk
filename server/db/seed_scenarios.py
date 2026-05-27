@@ -83,6 +83,9 @@ def _row_from_yaml(doc: dict) -> dict:
         "recovery_bonus": meta.get("recovery_bonus"),
         "silence_prompt_seconds": meta.get("silence_prompt_seconds"),
         "silence_hangup_seconds": meta.get("silence_hangup_seconds"),
+        # Story 6.13 AC3 — nullable per-difficulty override; null → use
+        # the preset value (4.5 / 3.5 / 2.5 s for easy / medium / hard).
+        "ladder_impatience_seconds": meta.get("ladder_impatience_seconds"),
         "escalation_thresholds": (
             json.dumps(escalation, ensure_ascii=False)
             if escalation is not None

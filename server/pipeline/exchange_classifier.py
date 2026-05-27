@@ -296,22 +296,6 @@ class ExchangeClassifier:
             "Content-Type": "application/json",
         }
 
-        # Story 6.9b smoke-gate carry-over (2026-05-22): per-classify trace
-        # of input + verdict. DEBUG-level so prod INFO logs stay clean; flip
-        # `LOG_LEVEL=DEBUG` on the VPS to enable for Story 6.10 dev work
-        # (the goal-based-dialogue dev will want to see what the classifier
-        # actually receives when checkpoints fire out of order).
-        # ⚠️ TODO Story 6.10 — REMOVE these two logger.debug calls before
-        #    public launch. `user_text` is raw STT output (PII-equivalent
-        #    for real practice partners). Tracked in
-        #    `_bmad-output/implementation-artifacts/deferred-work.md` under
-        #    "Remove verbose classifier_input / classifier_output ...".
-        logger.debug(
-            "classifier_input user_text={!r} criteria={!r} last_char_line={!r}",
-            user_text,
-            success_criteria[:80],
-            last_character_line[:80],
-        )
         try:
             client = await self._get_client()
             response = await client.post(_PROVIDER_URL, headers=headers, json=payload)
@@ -396,11 +380,7 @@ class ExchangeClassifier:
             logger.warning("exchange classifier malformed envelope: {}", exc)
             return None
 
-        verdict = _parse_classifier_output(content)
-        # Story 6.9b — see classifier_input comment above. Same DEBUG-level
-        # gate + same Story 6.10 REMOVE-BEFORE-LAUNCH TODO applies.
-        logger.debug("classifier_output verdict={} raw={!r}", verdict, content[:120])
-        return verdict
+        return _parse_classifier_output(content)
 
 
 def _parse_classifier_output(content: str) -> bool | None:

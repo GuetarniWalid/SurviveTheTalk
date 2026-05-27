@@ -19,6 +19,7 @@ metadata:
   recovery_bonus: null       # effective: +5
   silence_prompt_seconds: null  # effective: 6
   silence_hangup_seconds: null  # effective: 10
+  ladder_impatience_seconds: null  # effective: 4.5 (Story 6.13 AC3)
   escalation_thresholds: null   # effective: [75, 50, 25, 0]
 
 # ============================================================
@@ -116,22 +117,31 @@ checkpoints:
       For steak: "How do you want it cooked? And don't say 'medium
       rare' and then complain it's too pink." For other items, ask
       about a relevant detail. Wait for a clear answer.
-    # Story 6.8 Phase 3 (AC10) — leniency rewrite after call_id=118
-    # (2026-05-19) where user said "I already said pasta" and the
-    # classifier returned `checkpoint_unmet clarify`. The user is at
-    # the clarify stage; ANY direct or indirect response about their
-    # dish choice (cooking preference, variation, re-stating the dish,
-    # or even saying "as I said before") demonstrates engagement with
-    # the clarifying question — pass it. The classifier judges
-    # semantically; this prose tells it the wide net is intentional.
+    # Story 6.13 AC6 (2026-05-26) — extend Story 6.8's leniency rewrite to
+    # also accept drink answers. Smoke gate call_id=148 + 151 showed Tina
+    # sometimes phrases the `clarify` checkpoint as "What about a drink?
+    # Water, juice, cola, or coffee?" (carrying the drinks question into
+    # the clarify stage instead of waiting for the next checkpoint). When
+    # she does that, the user's "Cola" / "Water" / "Coke" answer is the
+    # NATURAL response to the clarifying question — refusing it as a
+    # checkpoint_unmet penalises engagement with the live conversation.
+    # Accept drink answers and polite acknowledgements as a third
+    # category of valid clarify response (alongside dish-confirmations
+    # and cooking-preference variations).
     success_criteria: >
       User answers the clarifying question about their dish in any
-      coherent way. Specifying a variation (grilled / fried, rare /
-      medium / well done), a cooking preference, a side preference,
-      OR simply re-stating / re-confirming the dish they already
-      named (including phrases like "I already said pasta",
-      "the chicken, like I said") all count as a successful response
-      to the clarifier.
+      coherent way. Three categories all count as a successful
+      response: (1) specifying a variation about the main course
+      (grilled / fried, rare / medium / well done, cooking preference,
+      side preference); (2) re-stating or re-confirming the dish
+      they already named, including phrases like "I already said
+      pasta", "the chicken, like I said"; (3) naming a drink when
+      Tina's prior question shifted into drinks (water, juice, cola,
+      coffee, plus common synonyms / brand names Coke, Pepsi, Sprite,
+      sparkling water, tap water, espresso); or polite
+      acknowledgements ("okay", "thanks", "sounds good"). The
+      classifier judges semantically; this prose tells it the wide
+      net is intentional.
 
   - id: drink
     hint_text: "Order a drink."

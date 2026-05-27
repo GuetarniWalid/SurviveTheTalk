@@ -296,6 +296,7 @@ INSERT INTO scenarios (
     content_warning,
     patience_start, fail_penalty, silence_penalty, recovery_bonus,
     silence_prompt_seconds, silence_hangup_seconds,
+    ladder_impatience_seconds,
     escalation_thresholds,
     tts_voice_id, tts_speed, scoring_model
 ) VALUES (
@@ -304,6 +305,7 @@ INSERT INTO scenarios (
     :content_warning,
     :patience_start, :fail_penalty, :silence_penalty, :recovery_bonus,
     :silence_prompt_seconds, :silence_hangup_seconds,
+    :ladder_impatience_seconds,
     :escalation_thresholds,
     :tts_voice_id, :tts_speed, :scoring_model
 )
@@ -324,6 +326,7 @@ ON CONFLICT(id) DO UPDATE SET
     recovery_bonus=excluded.recovery_bonus,
     silence_prompt_seconds=excluded.silence_prompt_seconds,
     silence_hangup_seconds=excluded.silence_hangup_seconds,
+    ladder_impatience_seconds=excluded.ladder_impatience_seconds,
     escalation_thresholds=excluded.escalation_thresholds,
     tts_voice_id=excluded.tts_voice_id,
     tts_speed=excluded.tts_speed,

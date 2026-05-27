@@ -1,5 +1,7 @@
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/app/app.dart';
+import 'package:client/core/api/auth_interceptor.dart';
+import 'package:client/core/auth/token_storage.dart';
 import 'package:client/core/onboarding/consent_storage.dart';
 import 'package:client/core/services/end_call_retry_service.dart';
 import 'package:client/features/auth/bloc/auth_bloc.dart';
@@ -30,6 +32,8 @@ class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
 class MockConsentStorage extends Mock implements ConsentStorage {}
 
 class MockEndCallRetryService extends Mock implements EndCallRetryService {}
+
+class MockTokenStorage extends Mock implements TokenStorage {}
 
 void main() {
   late MockAuthBloc mockAuthBloc;
@@ -414,6 +418,87 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Story 6.13 AC4 — the wired 401 handler clears the JWT, dispatches '
+    'ResetAuthEvent (the /login redirect trigger), and shows the '
+    '"Session expired" toast',
+    (tester) async {
+      // Verifies the load-bearing globalHandler closure wired in
+      // App.initState. We assert the closure's three effects directly
+      // (clear JWT + dispatch ResetAuthEvent + show toast) rather than
+      // driving a real bloc-state→GoRouter-redirect transition — the
+      // redirect-on-AuthInitial half is already covered by the
+      // "renders email entry when not authenticated" test above. This
+      // also exercises the Story 6.13 review fix where the toast is
+      // inserted via the navigator's OverlayState (the previous
+      // `Overlay.of(navigatorKey.currentContext)` threw and was swallowed,
+      // so the toast never rendered in prod).
+      final mockTokenStorage = MockTokenStorage();
+      when(() => mockTokenStorage.deleteToken()).thenAnswer((_) async {});
+
+      when(() => mockAuthBloc.state).thenReturn(AuthAuthenticated());
+      whenListen(
+        mockAuthBloc,
+        Stream<AuthState>.value(AuthAuthenticated()),
+        initialState: AuthAuthenticated(),
+      );
+      when(
+        () => mockOnboardingBloc.state,
+      ).thenReturn(const OnboardingComplete());
+      whenListen(
+        mockOnboardingBloc,
+        const Stream<OnboardingState>.empty(),
+        initialState: const OnboardingComplete(),
+      );
+
+      await tester.pumpWidget(
+        App(
+          authBloc: mockAuthBloc,
+          onboardingBloc: mockOnboardingBloc,
+          consentStorage: mockConsentStorage,
+          scenariosBloc: mockScenariosBloc,
+          tokenStorage: mockTokenStorage,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Precondition: authenticated user is on the scenario list, and
+      // App.initState wired the cross-cutting 401 handler.
+      expect(find.byType(ScenarioListScreen), findsOneWidget);
+      expect(
+        AuthInterceptor.globalHandler,
+        isNotNull,
+        reason: 'App.initState must wire the global 401 handler',
+      );
+
+      // Simulate a 401 landing on any ApiClient → the wired handler fires.
+      await AuthInterceptor.globalHandler!();
+      // Single pump (NOT pumpAndSettle — the toast holds a 600 ms delayed
+      // forward + a 10 s auto-dismiss Timer that would never settle).
+      await tester.pump();
+
+      // (a) JWT cleared.
+      verify(() => mockTokenStorage.deleteToken()).called(1);
+      // (b) ResetAuthEvent dispatched → AuthBloc emits AuthInitial →
+      //     refreshListenable redirects to /login (redirect proven above).
+      verify(
+        () => mockAuthBloc.add(any(that: isA<ResetAuthEvent>())),
+      ).called(1);
+      // (c) The "Session expired" toast copy is shown (review fix: inserted
+      //     into the navigator OverlayState, was previously swallowed).
+      expect(
+        find.text('Session expired, please sign in again'),
+        findsOneWidget,
+      );
+
+      // Drain the toast lifecycle (delayed forward → 10 s auto-dismiss →
+      // reverse → entry.remove) so no pending Timer trips test teardown.
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
     },
   );
 }

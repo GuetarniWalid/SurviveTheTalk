@@ -118,6 +118,11 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "recovery_bonus": 5,
         "silence_prompt_seconds": 6.0,
         "silence_hangup_seconds": 10.0,
+        # Story 6.13 AC3 — stage 1 impatience anchor. Easy raises this to
+        # 4.5 s to respect natural response time (parse ~0.5-1 s +
+        # formulate ~0.5-1 s + articulate); 3.0 s was too aggressive per
+        # smoke-gate call_id=148 (2026-05-26).
+        "ladder_impatience_seconds": 4.5,
         "escalation_thresholds": [75, 50, 25, 0],
     },
     "medium": {
@@ -127,6 +132,7 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "recovery_bonus": 3,
         "silence_prompt_seconds": 4.0,
         "silence_hangup_seconds": 7.0,
+        "ladder_impatience_seconds": 3.5,
         "escalation_thresholds": [60, 30, 0],
     },
     "hard": {
@@ -136,11 +142,14 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "recovery_bonus": 0,
         "silence_prompt_seconds": 3.0,
         "silence_hangup_seconds": 5.0,
+        # Hard scenarios get a visibly more impatient character (faster
+        # face-shift = "Mugger should be impatient by design" semantic).
+        "ladder_impatience_seconds": 2.5,
         "escalation_thresholds": [30, 0],
     },
 }
 
-# The 7 nullable override keys the scenario YAML may set in
+# The 8 nullable override keys the scenario YAML may set in
 # `metadata`. When null, the preset wins; when non-null, the YAML wins.
 _PATIENCE_OVERRIDE_KEYS = (
     "initial_patience",  # YAML key: patience_start (alias below)
@@ -149,6 +158,7 @@ _PATIENCE_OVERRIDE_KEYS = (
     "recovery_bonus",
     "silence_prompt_seconds",
     "silence_hangup_seconds",
+    "ladder_impatience_seconds",
     "escalation_thresholds",
 )
 
@@ -342,6 +352,22 @@ def resolve_patience_config(scenario_id: str) -> dict:
         raise RuntimeError(
             f"Scenario {scenario_id!r}: silence_penalty must be a non-positive int, "
             f"got {config['silence_penalty']!r}"
+        )
+    # Story 6.13 AC3 — range-bound the new `ladder_impatience_seconds`
+    # override. 0.5 s is the practical floor below which the impatience
+    # face fires before the user has even started parsing the bot's last
+    # word; 10.0 s is the ceiling above which the character feels
+    # disengaged regardless of difficulty. Bool-reject mirrors the other
+    # numeric validators (`isinstance(True, int)` is True in Python).
+    if (
+        not isinstance(config["ladder_impatience_seconds"], (int, float))
+        or isinstance(config["ladder_impatience_seconds"], bool)
+        or not (0.5 <= config["ladder_impatience_seconds"] <= 10.0)
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: ladder_impatience_seconds must be a "
+            f"number in [0.5, 10.0], got "
+            f"{config['ladder_impatience_seconds']!r}"
         )
 
     return config

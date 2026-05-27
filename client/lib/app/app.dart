@@ -5,11 +5,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api/api_client.dart';
+import '../core/api/auth_interceptor.dart';
 import '../core/auth/token_storage.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/permission_service.dart';
 import '../core/services/end_call_retry_service.dart';
 import '../core/theme/app_theme.dart';
+import '../core/widgets/app_toast.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_event.dart';
 import '../features/auth/bloc/auth_state.dart';
@@ -45,6 +47,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final AuthBloc _authBloc;
   late final OnboardingBloc _onboardingBloc;
   late final ConsentStorage _consentStorage;
+  late final TokenStorage _tokenStorage;
   ScenariosBloc? _scenariosBloc;
   late final GoRouter _router;
 
@@ -64,24 +67,23 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     // converge on the same idempotent `replayAll()`.
     WidgetsBinding.instance.addObserver(this);
     _consentStorage = widget.consentStorage ?? ConsentStorage();
+    // Use the preloaded TokenStorage from bootstrap if provided so the
+    // 401 handler clears the SAME store the AuthBloc reads from
+    // (hasValidTokenSync cache stays consistent).
+    _tokenStorage = widget.tokenStorage ?? TokenStorage();
 
     if (widget.authBloc != null) {
       _authBloc = widget.authBloc!;
     } else {
-      // Use the preloaded TokenStorage from bootstrap if provided so that
-      // hasValidTokenSync returns the cached answer; falls back to a fresh
-      // (non-preloaded → false) instance for tests that rely on App's own
-      // construction path.
-      final tokenStorage = widget.tokenStorage ?? TokenStorage();
       _authBloc = AuthBloc(
         authRepository: AuthRepository(ApiClient()),
-        tokenStorage: tokenStorage,
+        tokenStorage: _tokenStorage,
         // Seed with AuthAuthenticated when preload found a valid JWT — the
         // router's first redirect pass then sees the correct auth state and
         // skips the brief /login flash. CheckAuthStatusEvent still runs
         // below as a refresh-and-cleanup pass (catches expired tokens that
         // slipped past the cache, etc.).
-        initialState: tokenStorage.hasValidTokenSync
+        initialState: _tokenStorage.hasValidTokenSync
             ? AuthAuthenticated()
             : null,
       )..add(CheckAuthStatusEvent());
@@ -103,11 +105,73 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       consentStorage: _consentStorage,
       scenariosBloc: _scenariosBloc,
     );
+
+    // Story 6.13 AC4 — wire the cross-cutting 401 handler. When ANY
+    // backend endpoint returns 401, the AuthInterceptor (installed
+    // on every ApiClient) fires this callback:
+    //   (a) clear the JWT from secure storage,
+    //   (b) dispatch ResetAuthEvent so AuthBloc emits AuthInitial —
+    //       GoRouter's refreshListenable observes the state change
+    //       and redirects to /login (the existing pattern from
+    //       Story 4.2),
+    //   (c) show a one-shot AppToast explaining what happened.
+    // Closes the Story 5.5 "AUTH_UNAUTHORIZED silent loop" MUST-FIX
+    // gap that's been open ~1 month.
+    AuthInterceptor.globalHandler = () async {
+      // Capture the navigator key handle UP FRONT so the toast push
+      // below doesn't dereference `_router` across an async gap (lint
+      // `use_build_context_synchronously`). `currentContext` is still
+      // resolved freshly at toast-time — what matters is that the
+      // outer `_router` reference is captured before any await.
+      final navigatorKey = _router.routerDelegate.navigatorKey;
+      // Best-effort delete: even if it fails (locked keystore, etc.)
+      // we still dispatch the reset so the bloc emits AuthInitial
+      // and the router redirects — the stale token will be
+      // overwritten on next successful login anyway.
+      try {
+        await _tokenStorage.deleteToken();
+      } catch (_) {
+        // Swallow — the bloc reset below is the load-bearing step.
+      }
+      if (!mounted) return;
+      // Avoid double-dispatch: if the bloc is already in AuthInitial
+      // (the redirect already fired), skip re-emitting (BlocListener
+      // skips equal const states anyway — see client/CLAUDE.md
+      // gotcha #4 — but ResetAuthEvent emits a fresh AuthInitial
+      // each time, which the bloc accepts).
+      if (_authBloc.state is! AuthInitial) {
+        _authBloc.add(ResetAuthEvent());
+      }
+      // Toast is fire-and-forget — if the navigator isn't mounted yet
+      // (very first frame, pre-mount), skip silently rather than crash.
+      // The redirect itself is the load-bearing UX signal; the toast is
+      // supplemental copy.
+      //
+      // Story 6.13 review (2026-05-27) — insert into the navigator's
+      // OverlayState DIRECTLY. The previous `Overlay.of(navigatorKey.
+      // currentContext)` threw "No Overlay widget found": the root
+      // Navigator's Overlay is a CHILD of that context, not an ancestor,
+      // so the ancestor lookup failed and the exception was swallowed by
+      // the interceptor's `catch (_)` — the toast never actually showed.
+      final overlay = navigatorKey.currentState?.overlay;
+      if (overlay != null && overlay.mounted) {
+        AppToast.showInOverlay(
+          overlay,
+          message: 'Session expired, please sign in again',
+          type: AppToastType.warning,
+        );
+      }
+    };
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Story 6.13 AC4 — clear the global 401 handler so a recreated
+    // App (e.g. hot restart, integration-test tear-down) doesn't
+    // race with a stale handler closure that references the
+    // disposed _authBloc / _router.
+    AuthInterceptor.globalHandler = null;
     if (widget.authBloc == null) {
       _authBloc.close();
     }

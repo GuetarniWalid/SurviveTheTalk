@@ -15,7 +15,24 @@ class AppToast {
     required String message,
     AppToastType type = AppToastType.warning,
   }) {
-    final overlay = Overlay.of(context);
+    showInOverlay(Overlay.of(context), message: message, type: type);
+  }
+
+  /// Insert a toast directly into a known [OverlayState].
+  ///
+  /// Story 6.13 review (2026-05-27): the cross-cutting 401 handler only has
+  /// the root navigator's key, and `Overlay.of(navigatorKey.currentContext)`
+  /// throws — the Navigator's own Overlay is a CHILD of that context, not an
+  /// ancestor, so the ancestor lookup finds nothing. The exception was
+  /// silently swallowed by the interceptor's `catch (_)`, so the "Session
+  /// expired" toast never actually rendered. Callers that hold an
+  /// `OverlayState` (e.g. `navigatorKey.currentState?.overlay`) use this
+  /// overload to insert directly, bypassing the ancestor lookup.
+  static void showInOverlay(
+    OverlayState overlay, {
+    required String message,
+    AppToastType type = AppToastType.warning,
+  }) {
     late final OverlayEntry entry;
     entry = OverlayEntry(
       builder: (_) => _ToastOverlay(

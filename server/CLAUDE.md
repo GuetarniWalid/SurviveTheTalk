@@ -176,6 +176,48 @@ back the OpenRouter URL + the `openrouter_api_key` lifecycle. Tracked
 as a future hardening item (`deferred-work.md`) — env-paired URL
 selection would unblock env-only rollback, but is not built today.
 
+### 5. TTS provider is switchable — ElevenLabs default, Cartesia behind a flag (Story 6.13)
+
+Since 2026-05-27 the TTS provider is selected by `Settings.tts_provider`
+(env `TTS_PROVIDER=elevenlabs|cartesia`, default **`elevenlabs`**). The
+single branching point is `pipeline/tts_factory.py::build_tts_service(settings)`;
+`bot.py` never names a provider class. To add a third provider (OpenAI
+gpt-4o-mini-tts, Deepgram Aura…), add one branch there + matching
+`Settings` fields — `bot.py` stays untouched.
+
+**Why ElevenLabs is the default.** Cartesia Sonic-3 has a reproducible
+multi-frame stall: when ≥4 short transcript sends hit the same WebSocket
+context within ~300 ms (LLM emits a multi-sentence response fast),
+Cartesia goes silent then returns `type=error` ~30 s later. Reproduced
+on calls 156 + 157 (Pixel 9 Pro XL, 2026-05-26). Confirmed it's a
+Cartesia server-side capacity/rate issue, not our bug (the
+`FreshContextCartesiaTTSService` "fix attempt" made it WORSE — fresh
+context per sentence just multiplied the contexts Cartesia choked on).
+A support email went to support@cartesia.ai 2026-05-26; we switched to
+ElevenLabs rather than wait. ElevenLabs Flash v2.5 also has lower TTFA
+(~75 ms vs ~300 ms) so it IMPROVED latency.
+
+**Required env for ElevenLabs:** `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`
+(+ optional `ELEVENLABS_MODEL`, default `eleven_flash_v2_5`). The factory
+raises at boot if the chosen provider's creds are missing — fail-loud, not
+mid-call.
+
+**Cartesia debug env-gates (still in the repo, inert by default):**
+`CARTESIA_INSTRUMENT=1` → verbose WS send/recv logging
+(`pipeline/cartesia_instrumented.py`); `CARTESIA_FRESH_CTX=1` → the
+fresh-context fix attempt; `TTS_AUDIO_DEBUG=1` → per-frame audio
+amplitude/sample-rate logging in `TTSWatchdog`. All three are off in prod;
+flip + `systemctl restart` to re-arm for a future Cartesia investigation.
+
+**LLM warm-up:** `pipeline/llm_warmup.py` fires a throwaway `max_tokens=1`
+OpenRouter completion at call start (fire-and-forget from `bot.py`) to
+kill the ~0.5 s turn-1 cold-start. Never blocks, never raises.
+
+Beware the Bluetooth red herring: "no audio on device" was once just the
+test phone routing call audio to BT earbuds — verify output routing
+before chasing a server-side audio bug (the `TTS_AUDIO_DEBUG` frames will
+show real amplitude at the watchdog if the server side is fine).
+
 ---
 
 ## When in doubt

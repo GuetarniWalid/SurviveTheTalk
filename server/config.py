@@ -1,5 +1,7 @@
 """Server configuration loaded from environment / .env."""
 
+from typing import Literal
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -17,10 +19,48 @@ class Settings(BaseSettings):
     # Removing it from `/opt/survive-the-talk/.env` thinking "we migrated"
     # will fail boot. See the `groq_api_key` field below for the split.
     openrouter_api_key: str
-    cartesia_api_key: str
+    # Story 6.13 review (2026-05-27) — optional at parse time (empty
+    # default) so an ElevenLabs-only deploy keeps booting after the
+    # operator removes CARTESIA_API_KEY from .env. Mirrors the
+    # `elevenlabs_*` fields below: runtime validation in
+    # `tts_factory._build_cartesia` raises at process start if
+    # `tts_provider="cartesia"` but this is empty — fail-loud at boot,
+    # not silently mid-call.
+    cartesia_api_key: str = ""
     livekit_url: str
     livekit_api_key: str
     livekit_api_secret: str
+
+    # Story 6.13 Phase 4b (2026-05-26) — TTS provider switch. After
+    # Cartesia's multi-frame stall bug surfaced on the Pixel 9 smoke gate
+    # (root cause: server-side rate limit / capacity, see Phase 4 logs
+    # call 156-157), we keep BOTH providers in the codebase and let an
+    # operator switch via env var without a code release. ElevenLabs
+    # Flash v2.5 is the default because of its lower TTFA (~75 ms vs
+    # ~300 ms for Cartesia) AND its established reliability — until
+    # Cartesia ships a fix we can validate, ElevenLabs is the
+    # ship-ready choice.
+    #
+    # Switching providers requires both:
+    #   - `TTS_PROVIDER=elevenlabs` (or `cartesia`)
+    #   - the matching API key + voice id env vars below
+    #
+    # `pipeline/tts_factory.py::build_tts_service` is the single
+    # branching point; bot.py never names a provider directly.
+    tts_provider: Literal["cartesia", "elevenlabs"] = "elevenlabs"
+
+    # ElevenLabs Flash v2.5 — fields optional at Settings parse time
+    # (empty defaults) so a Cartesia-only deploy keeps booting; runtime
+    # validation in `tts_factory.build_tts_service` raises at process
+    # start if `tts_provider="elevenlabs"` but these are missing.
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    # Default model = lowest TTFA model in the ElevenLabs catalog (75 ms
+    # advertised). Operator may pin to a specific model for testing via
+    # `ELEVENLABS_MODEL` env override; see the Settings.extra="ignore"
+    # rationale below — typo'd env vars surface as missing required
+    # field at boot, not as silent-extras at parse time.
+    elevenlabs_model: str = "eleven_flash_v2_5"
 
     # Story 6.9b — Classifier provider migration (2026-05-22). Post-bench
     # verdict landed on Groq Llama 3.3 70B over Qwen via OpenRouter on the

@@ -1333,6 +1333,7 @@ def test_terminal_turn_lock_serializes_concurrent_invocations() -> None:
         silence_penalty=-10,
         recovery_bonus=0,
         silence_prompt_seconds=6.0,
+        ladder_impatience_seconds=4.5,
         silence_hangup_seconds=10.0,
         escalation_thresholds=[10, 0],
         total_checkpoints=3,

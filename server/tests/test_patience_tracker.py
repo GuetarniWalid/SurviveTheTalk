@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
@@ -35,12 +36,16 @@ def _run(coro):
 
 def _easy_kwargs(**overrides: Any) -> dict[str, Any]:
     """The Waiter / easy-difficulty PatienceTracker kwargs. Mirrors the
-    full 8-field config shape `resolve_patience_config` returns for
+    full 9-field config shape `resolve_patience_config` returns for
     `waiter_easy_01` so tests cover the production constructor surface
-    (Deviation #15). The 4 dormant fields (`fail_penalty`,
-    `recovery_bonus`, `silence_hangup_seconds`, `escalation_thresholds`)
-    are stored on the instance but not applied to behavior in Story
-    6.4; passing them here exercises the storage path.
+    (Deviation #15 + Story 6.13 AC3 ladder_impatience_seconds).
+
+    `ladder_impatience_seconds` defaults to 0.05 here (NOT the
+    production 4.5 s) because every test calls `_shrink_timers(...)`
+    which scales the other ladder anchors down to ms-scale; the
+    stage-1 anchor must be in the same range or stage 1 never fires
+    inside the test window. Tests that exercise the production
+    timing pass `ladder_impatience_seconds=4.5` explicitly.
     """
     base = dict(
         initial_patience=100,
@@ -48,6 +53,7 @@ def _easy_kwargs(**overrides: Any) -> dict[str, Any]:
         silence_penalty=-10,
         recovery_bonus=5,
         silence_prompt_seconds=6.0,
+        ladder_impatience_seconds=0.05,
         silence_hangup_seconds=10.0,
         escalation_thresholds=[75, 50, 25, 0],
         total_checkpoints=6,
@@ -70,10 +76,11 @@ def _shrink_timers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink ladder anchors + post-emit delays so tests run in ~300 ms.
 
     Windows asyncio.sleep granularity is ~15 ms, so we scale anchors
-    generously above that floor: stage 1 at 50 ms, stage 3 at 150 ms.
-    Test sleeps land in 50 ms windows between stages.
+    generously above that floor: stage 3 at 50 ms, etc. Stage 1
+    (`ladder_impatience_seconds`) is now a constructor kwarg (Story
+    6.13 AC3) so it's scaled via `_easy_kwargs()`'s default of 0.05 s
+    rather than monkeypatching a module constant.
     """
-    monkeypatch.setattr(pt_mod, "_LADDER_IMPATIENCE_AT", 0.05)
     monkeypatch.setattr(pt_mod, "_POST_PROMPT_ANGER_DELAY", 0.05)
     monkeypatch.setattr(pt_mod, "_POST_ANGER_HANGUP_DELAY", 0.05)
     monkeypatch.setattr(pt_mod, "_PROMPT_PLAYBACK_TIMEOUT_SECONDS", 0.5)
@@ -1501,3 +1508,263 @@ def test_pending_survival_pct_cleared_after_run_hang_up(
     assert tracker._pending_survival_pct is None, (
         "_pending_survival_pct must be cleared after _run_hang_up consumes it"
     )
+
+
+# ============================================================
+# Story 6.13 AC2 — silence ladder pauses on BotStartedSpeakingFrame
+# ============================================================
+
+
+def test_silence_ladder_pauses_on_BotStartedSpeakingFrame_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.13 AC2 (2026-05-26) — replays the call_id=150 T6 case:
+    `playback_idle` arms the ladder for the prior turn → bot starts a
+    new turn mid-ladder → the ladder MUST be cancelled so stage 1
+    impatience never fires while Tina is mid-sentence.
+
+    BSF arrives UPSTREAM (same direction logic as BotStoppedSpeakingFrame
+    per pipecat 0.0.108's BaseOutputTransport._bot_started_speaking).
+    """
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        # 1. Client-confirmed playback_idle for prior turn → ladder armed.
+        tracker.handle_playback_idle()
+        assert tracker._silence_task is not None
+        # 2. Bot starts speaking BEFORE stage 1 anchor fires.
+        await asyncio.sleep(0.02)  # halfway through stage 1 (50 ms)
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        # 3. Ladder must be cancelled.
+        assert tracker._silence_task is None, (
+            "BotStartedSpeakingFrame UPSTREAM must cancel the silence ladder"
+        )
+        # 4. Wait well past the original stage 1 anchor — no emit fires.
+        await asyncio.sleep(0.10)
+        emotion = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+        ]
+        assert emotion == [], (
+            "no impatience emit must fire while the ladder is paused for "
+            "bot speech (smoke gate call_id=150 T6 regression)"
+        )
+
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_silence_ladder_re_arms_after_bot_finishes_speaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.13 AC2 — after BSF cancels the ladder, the NEXT
+    `playback_idle` (= bot turn finished, user heard it drain) must
+    re-arm the ladder cleanly. Without this, the ladder is gone forever
+    after the first bot turn.
+    """
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        # Arm + cancel via BSF.
+        tracker.handle_playback_idle()
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        assert tracker._silence_task is None
+        # Next playback_idle (post-bot-turn drain) re-arms.
+        tracker.handle_playback_idle()
+        assert tracker._silence_task is not None, (
+            "next playback_idle after BSF cancel must re-arm the ladder"
+        )
+
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_BSF_started_direction_matches_pipecat_emission_routing():
+    """Story 6.13 AC2 cross-reference contract: PatienceTracker's
+    `BotStartedSpeakingFrame` direction check MUST match the direction
+    `pipecat.transports.base_output.BaseOutputTransport` actually
+    emits.
+
+    Mirror of `test_BSF_direction_matches_pipecat_emission_routing`
+    (for BotStoppedSpeakingFrame). Pipecat 0.0.108 pushes BSF (started)
+    in BOTH directions from `_bot_started_speaking()` — but the
+    downstream copy goes into the sink (output is the last processor,
+    `_next is None`), so PatienceTracker only ever sees the UPSTREAM
+    copy. If the check flips to DOWNSTREAM, AC2 silently regresses
+    (ladder will fire mid-bot-speech in prod) and this contract test
+    fires before deploy.
+    """
+    import inspect
+
+    from pipecat.transports.base_output import BaseOutputTransport
+
+    pipecat_src = inspect.getsource(BaseOutputTransport)
+    fn_marker = "async def _bot_started_speaking"
+    fn_start = pipecat_src.find(fn_marker)
+    assert fn_start != -1, (
+        "pipecat 0.0.108 structure changed — `_bot_started_speaking` no "
+        "longer present on `BaseOutputTransport`. Re-verify the BSF "
+        "(started) emission contract (Story 6.13 AC2) before this test "
+        "can be trusted again."
+    )
+    fn_body = pipecat_src[fn_start : fn_start + 1500]
+    assert "BotStartedSpeakingFrame()" in fn_body, (
+        "pipecat changed the BotStartedSpeakingFrame emission shape — "
+        "Story 6.13 AC2 needs re-verification."
+    )
+    assert "FrameDirection.UPSTREAM" in fn_body, (
+        "pipecat NO LONGER pushes BotStartedSpeakingFrame upstream from "
+        "`_bot_started_speaking`. PatienceTracker's UPSTREAM check "
+        "(Story 6.13 AC2) is built on this assumption — it MUST be "
+        "updated to match pipecat's new routing before this can ship "
+        "to prod."
+    )
+
+    pt_src = inspect.getsource(pt_mod)
+    bsf_marker = "isinstance(frame, BotStartedSpeakingFrame)"
+    bsf_start = pt_src.find(bsf_marker)
+    assert bsf_start != -1, (
+        "PatienceTracker source no longer references "
+        "`BotStartedSpeakingFrame` — Story 6.13 AC2's pause-on-bot-speech "
+        "path was removed or restructured. Re-evaluate this contract."
+    )
+    branch = pt_src[bsf_start : bsf_start + 300]
+    assert "FrameDirection.UPSTREAM" in branch, (
+        "PatienceTracker's BotStartedSpeakingFrame check no longer gates "
+        "on UPSTREAM. This reverts Story 6.13 AC2 — the silence ladder "
+        "will fire mid-bot-speech in prod again. Re-apply UPSTREAM or "
+        "update this test if pipecat routing genuinely changed."
+    )
+
+
+def test_stage2_prompt_BSF_does_not_self_cancel_the_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.13 review (2026-05-27) — CRITICAL regression net.
+
+    When the silence ladder reaches stage 2 it pushes its OWN verbal
+    prompt ("Hello? Are you still there?") and sets `_self_speaking`.
+    That prompt's audio makes the output transport emit a
+    `BotStartedSpeakingFrame` UPSTREAM that arrives right back at
+    PatienceTracker. The AC2 pause-on-bot-speech branch MUST NOT cancel
+    the ladder in that case (`_self_speaking` guard) — otherwise stages 3
+    (anger) + 4 (silence hang-up) never run and the character never hangs
+    up on a silent user.
+
+    Without the `_self_speaking` guard this test fails at the
+    `_silence_task is not None` assertion (ladder self-cancelled).
+    """
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(silence_prompt_seconds=0.1))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        # Arm the ladder and let it run through stage 1 + stage 2 so the
+        # verbal prompt is pushed and `_self_speaking` is set.
+        tracker.handle_playback_idle()
+        await asyncio.sleep(0.18)
+        assert tracker._self_speaking is True, (
+            "precondition: ladder should be at stage 2 awaiting the prompt's "
+            "playback_idle with _self_speaking set"
+        )
+        assert tracker._silence_task is not None
+
+        # The prompt's OWN BotStartedSpeakingFrame round-trips back here.
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        assert tracker._silence_task is not None and not tracker._silence_task.done(), (
+            "the stage-2 prompt's own BotStartedSpeakingFrame must NOT cancel "
+            "the ladder — stages 3-4 (anger + hang-up) would be killed "
+            "(CRITICAL self-cancel regression)"
+        )
+
+        # The prompt finishes playing on the client → playback_idle releases
+        # the stage-2 wait so stages 3 + 4 run and schedule the hang-up.
+        tracker.handle_playback_idle()
+        await _drain(tracker)
+
+        call_end = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "call_end"
+        ]
+        assert call_end, (
+            "stages 3-4 must still run after the self-prompt BSF → a "
+            "character_hung_up call_end must fire"
+        )
+        assert call_end[0].message["data"]["reason"] == "character_hung_up"
+
+    _run(_drive())
+
+
+# ============================================================
+# Story 6.13 AC3 — ladder_impatience_seconds per difficulty
+# ============================================================
+
+
+def test_constructor_rejects_non_positive_ladder_impatience_seconds() -> None:
+    """A YAML override that resolves to <= 0 would `asyncio.sleep(<=0)`
+    in `_run_silence_ladder`, silently skipping stage 1. Constructor
+    must raise loud so the misconfiguration surfaces at process start.
+    """
+    with pytest.raises(ValueError, match="ladder_impatience_seconds"):
+        PatienceTracker(**_easy_kwargs(ladder_impatience_seconds=0))
+    with pytest.raises(ValueError, match="ladder_impatience_seconds"):
+        PatienceTracker(**_easy_kwargs(ladder_impatience_seconds=-1.0))
+    # Bool reject — `isinstance(True, int)` is True in Python.
+    with pytest.raises(ValueError, match="ladder_impatience_seconds"):
+        PatienceTracker(**_easy_kwargs(ladder_impatience_seconds=True))
+
+
+def test_stage_1_emits_after_constructor_supplied_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stage-1 anchor is now sourced from the constructor kwarg
+    (Story 6.13 AC3), not from a module-level constant. A custom
+    ladder_impatience_seconds value must drive when stage 1 fires.
+    """
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_easy_kwargs(
+            ladder_impatience_seconds=0.15,
+            silence_prompt_seconds=2.0,
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.handle_playback_idle()
+        # Past the custom 150 ms anchor, well short of stage 2 (2.0 s).
+        await asyncio.sleep(0.20)
+        impatience = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+            and f.message["data"]["emotion"] == "impatience"
+        ]
+        assert len(impatience) == 1, (
+            f"stage 1 must fire at the constructor-supplied anchor; "
+            f"got {len(impatience)} impatience emits"
+        )
+
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_ladder_impatience_seconds_threaded_from_yaml_through_resolver() -> None:
+    """End-to-end: the easy preset's 4.5 s default reaches the resolved
+    `patience_config` dict on a null-override YAML."""
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert config["ladder_impatience_seconds"] == 4.5
