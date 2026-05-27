@@ -65,6 +65,28 @@ def test_bot_wires_dtln_audio_filter_into_livekit_params() -> None:
     )
 
 
+def test_bot_dtln_has_env_kill_switch() -> None:
+    """Story 6.13 follow-up — DTLN must be gated by `DTLN_ENABLED` (default
+    on) so it can be disabled via env + restart for the connection-jitter
+    A/B (does DTLN's per-frame ONNX inference on the 2-core VPS starve the
+    asyncio loop → bursty audio-out → 5G playout stretch?) and for ops,
+    without a code release. When disabled, `audio_in_filter` falls back to
+    None — pipecat's no-filter default.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert 'os.environ.get("DTLN_ENABLED"' in code, (
+        "bot.py must gate DTLN behind the DTLN_ENABLED env var so it can be "
+        "toggled via env + restart"
+    )
+    assert "audio_in_filter = None" in code, (
+        "the DTLN-disabled branch must set audio_in_filter=None "
+        "(pipecat no-filter default)"
+    )
+
+
 def test_bot_instantiates_emitters() -> None:
     """`bot.py` instantiates `EmotionEmitter` + `PatienceTracker` with the
     expected constructor args. `VisemeEmitter` must NOT appear anywhere.
@@ -299,25 +321,26 @@ def test_coherence_charter_threaded_to_checkpoint_manager_and_llm_settings() -> 
 
     # Initial composition wiring — the charter must be slotted into the
     # initial `system_instruction` so the first user turn already gets
-    # coherence. The composition uses string concatenation with
-    # COHERENCE_CHARTER as a substring; check the symbol appears near
-    # the OpenRouterLLMService construction site.
-    llm_start = code.find("OpenRouterLLMService(")
-    assert llm_start != -1, "OpenRouterLLMService construction not found"
-    llm_end = code.find(")", llm_start) + 1
-    # Walk back a bit to capture the `initial_system_prompt = (...)`
-    # block that's typically just above the LLM construction.
-    window_start = max(0, llm_start - 800)
-    composition_window = code[window_start:llm_end]
-    assert "COHERENCE_CHARTER" in composition_window, (
-        "the initial OpenRouterLLMService system_instruction must be "
-        "composed with COHERENCE_CHARTER so the first user turn already "
-        "gets coherence rules — without this, call_id=118 replay would "
-        "still see Tina forget the Coke 70 s later"
+    # coherence. Story 6.13: anchor on the composition block + the LLM's
+    # consumption of it, NOT on raw proximity (the old `llm_start - 800`
+    # window broke when the DTLN env-gate was added between the
+    # composition and the LLM construction — exactly the "fragile on
+    # refactor" caveat above).
+    assert "system_instruction=initial_system_prompt" in code, (
+        "OpenRouterLLMService.Settings must set system_instruction="
+        "initial_system_prompt so the first LLM turn uses the composed "
+        "prompt (base + charter + first prompt_segment)"
     )
-    assert "initial_system_prompt" in composition_window, (
-        "expected the initial_system_prompt local to compose the charter "
-        "between base_prompt and the first checkpoint's prompt_segment"
+    comp_start = code.find("initial_system_prompt = (")
+    assert comp_start != -1, (
+        "expected the `initial_system_prompt = (...)` composition block in bot.py"
+    )
+    composition_block = code[comp_start : comp_start + 600]
+    assert "COHERENCE_CHARTER" in composition_block, (
+        "the initial_system_prompt composition must slot COHERENCE_CHARTER "
+        "between base_prompt and the first checkpoint's prompt_segment so "
+        "the first user turn already gets coherence rules — without this, "
+        "call_id=118 replay would still see Tina forget the Coke 70 s later"
     )
 
 

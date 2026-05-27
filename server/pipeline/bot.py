@@ -133,7 +133,24 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # degraded the calm-room baseline. Cocktail-party fix deferred
     # to a future paid voice-isolation Story OR client-side headphone
     # recommendation in onboarding.
-    audio_in_filter = DTLNAudioFilter(strength=0.5)
+    # Story 6.13 follow-up (2026-05-27) — DTLN kill-switch (`DTLN_ENABLED`,
+    # default "1"). Doubles as ops control + the connection-jitter A/B:
+    # DTLN runs per-frame ONNX inference on the input (mic) path, and on
+    # the 2-core VPS that inference can contend with the output-audio
+    # sender on the single asyncio loop → bursty audio-out pacing → the
+    # WebRTC receiver time-stretches Tina's voice on a jittery 5G link
+    # ("syllables to rallonge" reported 2026-05-27). Set `DTLN_ENABLED=0`
+    # + restart to A/B whether the stretch is server-pacing (improves with
+    # DTLN off) vs pure network jitter (no change). `audio_in_filter=None`
+    # is pipecat's "no filter" default, so disabling is a clean no-op.
+    if os.environ.get("DTLN_ENABLED", "1") == "1":
+        audio_in_filter = DTLNAudioFilter(strength=0.5)
+    else:
+        audio_in_filter = None
+        logger.info(
+            "DTLN_ENABLED=0 — DTLN noise suppression DISABLED "
+            "(connection-jitter A/B / ops kill-switch)"
+        )
 
     transport = LiveKitTransport(
         url=url,
