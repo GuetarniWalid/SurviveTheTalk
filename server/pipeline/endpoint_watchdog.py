@@ -9,19 +9,34 @@ downstream observer — `CheckpointManager`, `PatienceTracker`,
 `LLMContextAggregatorPair.user()` — gates on `finalized=True` and stays
 silent on continuous interim TFs.
 
-This processor watches the `TranscriptionFrame` stream after STT. While
-interim frames (`finalized=False`) keep arriving without a final, a
-watchdog timer ticks. If the timer fires after
+This processor watches the post-STT frame stream. While
+`InterimTranscriptionFrame`s keep arriving without a final
+`TranscriptionFrame`, a watchdog timer ticks. If the timer fires after
 `_WATCHDOG_TIMEOUT_SECONDS` of continuous interim activity, the
 watchdog synthesises a `finalized=True` `TranscriptionFrame` using the
 last observed interim text and pushes it downstream so the rest of the
 pipeline can move forward. The user gets a slightly truncated turn (the
 last word might be mid-articulation) but the call doesn't hang.
 
-The watchdog is reset on every real `finalized=True` frame, so the
-common case (Soniox finalizes correctly) costs nothing. It also fires
-at most once per pending turn — once the synthetic finalize is pushed,
-the watchdog clears and waits for the next interim stream.
+**Frame-type contract (Story 6.13 follow-up, 2026-05-27 — CRITICAL):**
+Soniox streams interim results as `InterimTranscriptionFrame` and final
+results as `TranscriptionFrame(finalized=True)` — these are SEPARATE
+classes (both subclass `TextFrame`; neither inherits the other), and
+`SonioxSTTService` notes "every TranscriptionFrame is inherently
+finalized". The original Story 6.9 watchdog armed on `TranscriptionFrame`
+with `finalized=False`, which Soniox NEVER emits — so the watchdog was
+DORMANT for all of Epic 6. It surfaced on call_id=171 (2026-05-27): a
+3-word interim that never finalized hung the call ~23 s until the user
+gave up, with no `endpoint_watchdog_fired` log. The fix observes
+`InterimTranscriptionFrame` to arm and `TranscriptionFrame` to cancel.
+See `server/CLAUDE.md` §1 (the FrameProcessor "test and code mutually
+wrong" trap) — the original unit tests drove `TranscriptionFrame(
+finalized=False)` and passed against fiction.
+
+The watchdog is reset on every real `TranscriptionFrame` (finalize), so
+the common case (Soniox finalizes correctly) costs nothing. It also
+fires at most once per pending turn — once the synthetic finalize is
+pushed, the watchdog clears and waits for the next interim stream.
 
 Placement: between `SonioxSTTService` and `EmotionEmitter` /
 `LLMContextAggregatorPair.user()` in `bot.py`. Mirrors the Story 6.6
@@ -34,7 +49,11 @@ from __future__ import annotations
 import asyncio
 
 from loguru import logger
-from pipecat.frames.frames import Frame, TranscriptionFrame
+from pipecat.frames.frames import (
+    Frame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # Story 6.9 review patch (D3) — fire the watchdog after this many seconds
@@ -64,29 +83,30 @@ class EndpointWatchdog(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
+        # NOTE the isinstance ORDER: `InterimTranscriptionFrame` and
+        # `TranscriptionFrame` are siblings (both subclass `TextFrame`),
+        # so a single isinstance never matches both — but checking
+        # TranscriptionFrame first keeps the finalize/cancel path explicit.
         if isinstance(frame, TranscriptionFrame):
-            # Aggressive default (mirrors PatienceTracker per
-            # server/CLAUDE.md §1 asymmetric defaults): treat missing
-            # `finalized` as True so a future pipecat that drops the
-            # field doesn't make this watchdog fire spuriously on every
-            # frame.
-            finalized = getattr(frame, "finalized", True)
-            if finalized:
-                # Real finalize — cancel any pending watchdog and clear
-                # the captured interim state.
-                self._cancel_watchdog()
-                self._last_interim_text = ""
-                self._last_interim_user_id = ""
-                self._last_interim_timestamp = ""
-            else:
-                # Interim — track the latest text so we have something
-                # to synthesise on timeout, and (re)arm the watchdog.
-                text = (frame.text or "").strip()
-                if text:
-                    self._last_interim_text = text
-                    self._last_interim_user_id = getattr(frame, "user_id", "") or ""
-                    self._last_interim_timestamp = getattr(frame, "timestamp", "") or ""
-                    self._restart_watchdog()
+            # Soniox pushes `TranscriptionFrame` ONLY on a real endpoint
+            # (always `finalized=True`). A finalize resolves the pending
+            # turn → cancel any armed watchdog + clear interim state.
+            self._cancel_watchdog()
+            self._last_interim_text = ""
+            self._last_interim_user_id = ""
+            self._last_interim_timestamp = ""
+        elif isinstance(frame, InterimTranscriptionFrame):
+            # Interim result (the frame Soniox actually streams while the
+            # user is mid-utterance). Track the latest text so we have
+            # something to synthesise on timeout, and (re)arm the watchdog
+            # so a stuck interim stream that never finalizes still unblocks
+            # the call. See the module docstring's frame-type contract.
+            text = (frame.text or "").strip()
+            if text:
+                self._last_interim_text = text
+                self._last_interim_user_id = getattr(frame, "user_id", "") or ""
+                self._last_interim_timestamp = getattr(frame, "timestamp", "") or ""
+                self._restart_watchdog()
         await self.push_frame(frame, direction)
 
     def _cancel_watchdog(self) -> None:
