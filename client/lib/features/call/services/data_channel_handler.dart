@@ -160,12 +160,47 @@ class DataChannelHandler {
           );
           return;
         }
+        // Story 6.10 — `goals_met_indices` carries the FULL set of met-goal
+        // indices (author order), so the stepper can fill the right count
+        // even when goals flip out of order. Filter to in-range ints +
+        // dedupe; ignore non-numeric / out-of-range entries defensively.
+        // A pre-6.10 server omits the field — reconstruct the linear set
+        // `[0..index-1]` (old `index` == completed count) so the rendered
+        // fill count stays correct during a rolling deploy.
+        final rawIndices = data['goals_met_indices'];
+        final List<int> goalsMetIndices;
+        if (rawIndices is List) {
+          final seen = <int>{};
+          for (final entry in rawIndices) {
+            if (entry is num) {
+              final i = entry.toInt();
+              if (i >= 0 && i < totalInt) seen.add(i);
+            }
+          }
+          final sorted = seen.toList()..sort();
+          goalsMetIndices = sorted;
+        } else {
+          goalsMetIndices = [for (var i = 0; i < idxInt; i++) i];
+        }
+        // Story 6.10 UI refonte — `hints` carries every step's text in
+        // author order so the Flutter HUD animates locally. Keep only
+        // string entries; default to empty (pre-refonte server) → the
+        // HUD falls back to `next_hint`.
+        final rawHints = data['hints'];
+        final List<String> hints = rawHints is List
+            ? [
+                for (final h in rawHints)
+                  if (h is String) h,
+              ]
+            : const <String>[];
         _onCheckpointAdvanced(
           CheckpointAdvancedPayload(
             checkpointId: id,
             index: idxInt,
             total: totalInt,
             hintText: hint,
+            goalsMetIndices: goalsMetIndices,
+            hints: hints,
           ),
         );
       case 'bot_speaking_ended':

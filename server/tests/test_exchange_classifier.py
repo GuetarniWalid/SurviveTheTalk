@@ -675,3 +675,193 @@ def test_classifier_evaluates_current_objective_only() -> None:
     assert "anticipate future" in EXCHANGE_CLASSIFIER_PROMPT, (
         "principle 6 must explicitly forbid crediting anticipatory responses"
     )
+
+
+# ============================================================
+# Story 6.10 — classify_multi (goal-based dialogue)
+# ============================================================
+
+
+def _multi_pending(*ids: str) -> list[dict]:
+    chosen = ids or ("greet", "main", "drink")
+    return [{"id": gid, "success_criteria": f"crit {gid}"} for gid in chosen]
+
+
+def _multi_kwargs(**overrides: Any) -> dict[str, Any]:
+    base = dict(
+        user_text="hi, a coke please",
+        last_character_line="What can I get you?",
+        pending_goals=_multi_pending("greet", "main", "drink"),
+        scenario_description="The Waiter",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_classify_multi_returns_per_goal_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.10 AC2 — one LLM call returns a per-goal verdict dict.
+    Goals in `goals_met` → True, in `goals_unmet` → False, omitted → None.
+    Also asserts the goal_ids are formatted into the prompt body."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompt = body["messages"][0]["content"]
+        assert 'goal_id="greet"' in prompt, "goal ids must reach the prompt"
+        assert request.url.host == "api.groq.com"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"goals_met": ["greet", "drink"], "goals_unmet": ["main"]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
+    assert out == {"greet": True, "main": False, "drink": True}
+
+
+def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A goal_id absent from BOTH lists → None (no verdict, stays pending)."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"goals_met": ["greet"], "goals_unmet": []}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
+    assert out == {"greet": True, "main": None, "drink": None}
+
+
+def test_classify_multi_all_none_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wholesale HTTP failure → EVERY pending goal_id maps to None
+    (the caller treats an all-None turn as infra failure)."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated connect error")
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out == {"a": None, "b": None}
+
+
+def test_classify_multi_all_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pipeline.exchange_classifier as ec_mod
+
+    monkeypatch.setattr(ec_mod, "_CLASSIFIER_TIMEOUT_SECONDS", 0.05)
+
+    async def _slow(self: ExchangeClassifier, **kwargs: Any) -> Any:
+        await asyncio.sleep(0.5)
+        return {"a": True}
+
+    monkeypatch.setattr(ExchangeClassifier, "_classify_multi", _slow)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out == {"a": None, "b": None}
+
+
+def test_classify_multi_all_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Groq rate-limit (429) on the multi path → all None (patience-
+    neutral infra failure), same contract as the single-goal path."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "rate limited"}})
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out == {"a": None, "b": None}
+
+
+def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '```json\n{"goals_met": ["a"], "goals_unmet": ["b"]}\n```'
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out == {"a": True, "b": False}
+
+
+def test_legacy_classify_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Story 6.10 AC2 — the single-objective `classify` wrapper is
+    preserved unchanged for the legacy `/connect` PoC path."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"met": true}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(_make_classifier().classify(**_kwargs()))
+    assert out is True
+
+
+def test_multi_output_parser_helpers() -> None:
+    from pipeline.exchange_classifier import (
+        _format_pending_goals_block,
+        _parse_multi_classifier_output,
+    )
+
+    block = _format_pending_goals_block(
+        [
+            {"id": "greet", "success_criteria": "say hi"},
+            {"id": "drink", "success_criteria": "pick a drink"},
+        ]
+    )
+    assert 'goal_id="greet"' in block
+    assert "say hi" in block
+    assert 'goal_id="drink"' in block
+
+    # Pure prose → all None.
+    assert _parse_multi_classifier_output("no json here", ["a"]) == {"a": None}
+    # Contradiction (id in both lists) → MET wins (principle 5).
+    assert _parse_multi_classifier_output(
+        '{"goals_met": ["a"], "goals_unmet": ["a"]}', ["a"]
+    ) == {"a": True}
+    # Unknown ids in the model arrays are ignored.
+    assert _parse_multi_classifier_output(
+        '{"goals_met": ["x"], "goals_unmet": ["b"]}', ["a", "b"]
+    ) == {"a": None, "b": False}

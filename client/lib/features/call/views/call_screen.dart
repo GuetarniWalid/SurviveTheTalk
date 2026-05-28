@@ -28,9 +28,8 @@ import 'call_ended_notice_screen.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
-import 'widgets/checkpoint_hint_bubble.dart';
 import 'widgets/checkpoint_snapshot.dart';
-import 'widgets/checkpoint_stepper_canvas.dart';
+import 'widgets/checkpoint_step_hud.dart';
 import 'widgets/rive_character_canvas.dart';
 
 /// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
@@ -558,16 +557,16 @@ class _CallScreenState extends State<CallScreen> {
               // pops back to /scenarios.
               //
               // Story 6.7 Deviation #2 — BEFORE dispatching the bloc
-              // event, reconcile the stepper UP to the server-authoritative
+              // event, reconcile the HUD UP to the server-authoritative
               // checkpoints_passed count. Closes the "cancel-mid-flight
               // envelope-lost race" (Story 6.6 deferred-work line 406):
-              // if N `checkpoint_advanced` pushes succeeded but the
-              // final one was cancelled by the pipeline shutdown, the
-              // local stepper would lag behind the server's count. The
-              // call_end envelope carries the authoritative count, so
-              // reconcile silently before the call-ended overlay
-              // appears. Only walk UP — never back, that would mask a
-              // genuine future server-side regression.
+              // if N `checkpoint_advanced` pushes succeeded but the final
+              // one was cancelled by the pipeline shutdown, the local met
+              // count would lag the server. Story 6.10 — reconcile by
+              // marking the first `pi` indices met (sequential best-guess;
+              // the server only sends the COUNT here, not the set), with
+              // `justFlippedIndex: null` so no completion animation fires
+              // on the reconcile. Only walk UP — never back.
               onCallEnd: (reason, data) {
                 if (!context.mounted) return;
                 final passed = data['checkpoints_passed'];
@@ -576,11 +575,12 @@ class _CallScreenState extends State<CallScreen> {
                 if (passed is num && total is num && current != null) {
                   final pi = passed.toInt();
                   final ti = total.toInt();
-                  if (pi > current.currentIndex && ti > 0 && pi <= ti) {
+                  if (pi > current.metCount && ti > 0 && pi <= ti) {
                     _checkpointNotifier.value = CheckpointSnapshot(
-                      currentIndex: pi,
+                      hints: current.hints,
+                      metIndices: [for (var i = 0; i < pi; i++) i],
                       total: ti,
-                      hintText: current.hintText,
+                      justFlippedIndex: null,
                     );
                   }
                 }
@@ -596,18 +596,26 @@ class _CallScreenState extends State<CallScreen> {
               onBotSpeakingEnded: () {
                 _awaitingPlaybackIdle = true;
               },
-              // Story 6.7 — `checkpoint_advanced` envelope (emitted on
-              // call connect with index=0 AND on every successful
-              // checkpoint advance) updates the UI-only stepper state.
-              // ValueNotifier dispatches a rebuild to the
-              // ValueListenableBuilder around CheckpointStepperCanvas
-              // (Phase 2) without disturbing the bloc state.
+              // Story 6.7 / 6.10 — `checkpoint_advanced` envelope (emitted
+              // on call connect with zero goals met AND once per goal flip)
+              // updates the UI-only HUD state. Story 6.10 UI refonte: the
+              // HUD is a Flutter widget showing ONE step at a time. We pass
+              // the full `hints` + met set so it animates locally, plus
+              // `justFlippedIndex` (the goal that just flipped this turn, or
+              // null on the initial state) to drive the completion
+              // animation. `index` is the just-flipped goal's index, so it
+              // marks a real flip only when it's actually in the met set.
               onCheckpointAdvanced: (payload) {
                 if (!context.mounted) return;
+                final met = payload.goalsMetIndices;
+                final flipped = met.contains(payload.index)
+                    ? payload.index
+                    : null;
                 _checkpointNotifier.value = CheckpointSnapshot(
-                  currentIndex: payload.index,
+                  hints: payload.hints,
+                  metIndices: met,
                   total: payload.total,
-                  hintText: payload.hintText,
+                  justFlippedIndex: flipped,
                 );
               },
             );
@@ -884,42 +892,26 @@ class _CallScreenState extends State<CallScreen> {
             ),
           ),
         ),
-        // Layer 4 — Checkpoint HUD (Story 6.7). Composite: Rive
-        // stepper row (edge-to-edge) above a Flutter hint bubble
-        // (16px horizontal margin, 8px gap). `IgnorePointer` lets
-        // taps fall through to the character canvas underneath.
-        // Both children render `SizedBox.shrink()` when the
-        // snapshot is null. See story file Dev Agent Record for
-        // why the bubble is Flutter and the stepper is Rive.
+        // Layer 4 — Checkpoint HUD (Story 6.10 UI refonte). A single
+        // Flutter widget overlaid on the character: a dark gradient box
+        // pinned to the ABSOLUTE top of the screen showing ONLY the
+        // current step (inline check + text), animating per goal flip.
+        // The Rive `.riv` no longer renders checkpoints. NO SafeArea here
+        // (Walid 2026-05-28: the box must start at the very top, behind
+        // the status bar); the widget consumes `MediaQuery.padding.top`
+        // internally so the text still clears the status bar inside the
+        // solid band. `IgnorePointer` lets taps fall through to the
+        // character canvas. Renders `SizedBox.shrink()` when there's
+        // nothing to show (null snapshot / all done).
         Positioned.fill(
-          child: SafeArea(
-            bottom: false,
+          child: IgnorePointer(
+            ignoring: true,
             child: Align(
               alignment: Alignment.topCenter,
-              child: IgnorePointer(
-                ignoring: true,
-                child: ValueListenableBuilder<CheckpointSnapshot?>(
-                  valueListenable: _checkpointNotifier,
-                  builder: (context, snap, _) => Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Force edge-to-edge width so AspectRatio sizes
-                      // from the screen width regardless of the
-                      // artboard's intrinsic ratio. Without this wrap,
-                      // a tall/narrow artboard would silently shrink
-                      // the stepper to centered-content width.
-                      SizedBox(
-                        width: double.infinity,
-                        child: CheckpointStepperCanvas(snapshot: snap),
-                      ),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: CheckpointHintBubble(snapshot: snap),
-                      ),
-                    ],
-                  ),
-                ),
+              child: ValueListenableBuilder<CheckpointSnapshot?>(
+                valueListenable: _checkpointNotifier,
+                builder: (context, snap, _) =>
+                    CheckpointStepHud(snapshot: snap),
               ),
             ),
           ),

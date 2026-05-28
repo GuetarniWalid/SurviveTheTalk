@@ -424,6 +424,183 @@ void main() {
         received.first.hintText,
         'Tell the waiter what you want to drink.',
       );
+      // Story 6.10 — no goals_met_indices on this (pre-6.10-shaped)
+      // envelope, so the parser reconstructs the linear set [0..index-1].
+      expect(received.first.goalsMetIndices, [0, 1]);
+    },
+  );
+
+  // ----- Story 6.10 — goals_met_indices (goal-based dialogue) -----
+
+  test(
+    'checkpoint_advanced parses goals_met_indices as the full met set',
+    () async {
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      // Goal index 3 flipped first (out of order); the full met set is
+      // [0, 3]. The stepper fills `goalsMetIndices.length` (== 2) circles.
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'drink',
+            'index': 3,
+            'total': 6,
+            'next_hint': 'Clarify the cooking style.',
+            'goals_met_indices': [0, 3],
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.index, 3);
+      expect(received.first.goalsMetIndices, [0, 3]);
+    },
+  );
+
+  test(
+    'checkpoint_advanced initial state (goals_met_indices: []) yields empty set',
+    () async {
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'greet',
+            'index': 0,
+            'total': 6,
+            'next_hint': 'Greet the waiter.',
+            'goals_met_indices': <int>[],
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.goalsMetIndices, isEmpty);
+    },
+  );
+
+  test(
+    'checkpoint_advanced filters out-of-range / non-numeric goals_met_indices',
+    () async {
+      // Defensive: a drifted server must not push the stepper past its
+      // bounds. Entries outside [0, total) and non-numeric junk are
+      // dropped; the survivors are de-duped + sorted.
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'main',
+            'index': 1,
+            'total': 5,
+            'next_hint': 'whatever',
+            'goals_met_indices': [3, 99, -1, 'oops', 1, 1],
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.goalsMetIndices, [1, 3]);
+    },
+  );
+
+  test(
+    'checkpoint_advanced parses the hints list (full step texts)',
+    () async {
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'greet',
+            'index': 0,
+            'total': 3,
+            'next_hint': 'Greet the waiter.',
+            'goals_met_indices': <int>[],
+            'hints': ['Greet.', 'Order a dish.', 'Pick a drink.'],
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.hints, ['Greet.', 'Order a dish.', 'Pick a drink.']);
+    },
+  );
+
+  test(
+    'checkpoint_advanced without hints field defaults to empty list',
+    () async {
+      final fixture = _buildRoom();
+      final received = <CheckpointAdvancedPayload>[];
+      DataChannelHandler(
+        room: fixture.room,
+        onEmotion: (_, _) {},
+        onHangUpWarning: (_) {},
+        onCallEnd: (_, _) {},
+        onBotSpeakingEnded: () {},
+        onCheckpointAdvanced: received.add,
+      );
+
+      fixture.emitter.emit(
+        _envelope({
+          'type': 'checkpoint_advanced',
+          'data': {
+            'checkpoint_id': 'greet',
+            'index': 0,
+            'total': 3,
+            'next_hint': 'Greet the waiter.',
+            'goals_met_indices': <int>[],
+          },
+        }),
+      );
+      await _flush();
+
+      expect(received, hasLength(1));
+      expect(received.first.hints, isEmpty);
     },
   );
 

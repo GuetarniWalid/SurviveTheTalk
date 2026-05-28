@@ -31,7 +31,11 @@ from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Settings
-from pipeline.checkpoint_manager import CheckpointManager
+from pipeline.checkpoint_manager import (
+    CheckpointManager,
+    format_remaining_goals_block,
+    format_suggested_focus_block,
+)
 from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
@@ -88,13 +92,16 @@ async def run_bot(url: str, room: str, token: str) -> None:
     scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
     patience_config = resolve_patience_config(scenario_id)
 
-    # Story 6.8 Phase 2 — load scenario data NOW (before LLM construction)
-    # so we can compose the initial `system_instruction` with the
-    # `COHERENCE_CHARTER` slotted BETWEEN `base_prompt` and the first
-    # checkpoint's `prompt_segment`. This matches EXACTLY the position
-    # `CheckpointManager._classify_and_advance` uses on every subsequent
-    # swap (AC7) — the charter never moves around the prompt regardless
-    # of which checkpoint is active.
+    # Story 6.8 Phase 2 / Story 6.10 — load scenario data NOW (before LLM
+    # construction) so we can compose the initial `system_instruction`
+    # with the `COHERENCE_CHARTER` slotted BETWEEN `base_prompt` and the
+    # goal blocks. Story 6.10 (goal-based dialogue) replaced the linear
+    # "first checkpoint's prompt_segment" suffix with the full
+    # REMAINING_GOALS_BLOCK + SUGGESTED_FOCUS_BLOCK (all checkpoints are
+    # pending at boot). This matches EXACTLY what
+    # `CheckpointManager._update_system_instruction` recomposes on every
+    # successful turn (it calls the same `format_*` helpers), so the
+    # charter + goal framing never drift between init and recompose.
     scenario_metadata = load_scenario_metadata(scenario_id)
     scenario_checkpoints = load_scenario_checkpoints(scenario_id)
     scenario_base_prompt = load_scenario_base_prompt(scenario_id)
@@ -108,11 +115,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
     env_system_prompt = os.environ.get("SYSTEM_PROMPT")
     if scenario_base_prompt and scenario_checkpoints:
         initial_system_prompt = (
-            scenario_base_prompt
+            scenario_base_prompt.rstrip()
             + "\n\n"
             + COHERENCE_CHARTER
             + "\n\n"
-            + scenario_checkpoints[0]["prompt_segment"].rstrip()
+            + format_remaining_goals_block(scenario_checkpoints)
+            + "\n\n"
+            + format_suggested_focus_block(scenario_checkpoints[0])
         )
     elif env_system_prompt:
         initial_system_prompt = env_system_prompt + "\n\n" + COHERENCE_CHARTER

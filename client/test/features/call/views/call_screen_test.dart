@@ -776,24 +776,99 @@ void main() {
             state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
         expect(notifier.value, isNull);
 
-        // Fire a server-side advance.
+        // Fire a server-side advance. Story 6.10 — the snapshot carries
+        // the met SET + the full hints; metCount = goals met,
+        // justFlippedIndex = the goal that just flipped (index 1 ∈ met).
         capturedOnCheckpointAdvanced!(
           const CheckpointAdvancedPayload(
             checkpointId: 'order_item',
-            index: 2,
+            index: 1,
             total: 6,
             hintText: 'Tell the waiter what you want to drink.',
+            goalsMetIndices: [0, 1],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
         );
         await tester.pump();
 
         expect(notifier.value, isNotNull);
-        expect(notifier.value!.currentIndex, 2);
+        expect(notifier.value!.metCount, 2);
+        expect(notifier.value!.metIndices, [0, 1]);
         expect(notifier.value!.total, 6);
-        expect(
-          notifier.value!.hintText,
-          'Tell the waiter what you want to drink.',
+        expect(notifier.value!.justFlippedIndex, 1);
+        // Active step = first not-yet-met (index 2) → hints[2].
+        expect(notifier.value!.activeHint, 'drink');
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'out-of-order goals_met_indices maps to met COUNT, not max index',
+      (tester) async {
+        // Story 6.10 — when goals flip out of order (e.g. index 3 met
+        // before index 2), metCount must equal the SIZE of the met set
+        // (2), NOT the highest index (3) — and the active step is the
+        // first still-pending one (index 1).
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                return mock;
+              },
+            ),
+          ),
         );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'drink',
+            index: 3,
+            total: 6,
+            hintText: 'Clarify the cooking style.',
+            goalsMetIndices: [0, 3],
+            hints: ['greet', 'order', 'clarify', 'drink', 'confirm', 'thanks'],
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(
+          notifier.value?.metCount,
+          2,
+          reason: '2 goals met (indices 0 and 3) → metCount 2, '
+              'NOT 4 (max index 3 + 1)',
+        );
+        expect(notifier.value?.metIndices, [0, 3]);
+        expect(notifier.value?.justFlippedIndex, 3);
+        // Active = first pending (index 1) → hints[1].
+        expect(notifier.value?.activeHint, 'order');
+        expect(notifier.value?.total, 6);
 
         await tester.pumpWidget(const SizedBox.shrink());
       },
@@ -841,22 +916,26 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 1100));
 
-        // Bring the local stepper to "index 2 of 6" by simulating two
-        // advances arriving via the data-channel.
+        // Bring the local HUD to "2 of 6 met" by simulating two advances
+        // arriving via the data-channel.
         capturedOnCheckpointAdvanced!(
           const CheckpointAdvancedPayload(
             checkpointId: 'greet',
             index: 0,
             total: 6,
             hintText: 'Tell the waitress you want to order.',
+            goalsMetIndices: [0],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
         );
         capturedOnCheckpointAdvanced!(
           const CheckpointAdvancedPayload(
             checkpointId: 'order_item',
-            index: 2,
+            index: 1,
             total: 6,
             hintText: 'Tell the waitress what you want to drink.',
+            goalsMetIndices: [0, 1],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
         );
         await tester.pump();
@@ -866,7 +945,7 @@ void main() {
             as dynamic;
         final ValueNotifier<CheckpointSnapshot?> notifier =
             state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
-        expect(notifier.value?.currentIndex, 2);
+        expect(notifier.value?.metCount, 2);
 
         // Simulate the server's call_end envelope carrying the
         // authoritative count "checkpoints_passed: 6" — i.e. user
@@ -881,21 +960,19 @@ void main() {
         });
         await tester.pump();
 
-        // The notifier MUST have walked UP to 6 before the bloc was
-        // told the call ended.
+        // The notifier MUST have walked UP to 6 met before the bloc was
+        // told the call ended (justFlippedIndex null — no animation on a
+        // reconcile).
         expect(
-          notifier.value?.currentIndex,
+          notifier.value?.metCount,
           6,
-          reason: 'Deviation #2 — stepper must reconcile UP to '
+          reason: 'Deviation #2 — HUD must reconcile UP to '
               'server-authoritative checkpoints_passed on call_end',
         );
         expect(notifier.value?.total, 6);
-        // Last known hint stays — the server doesn't re-send hint
-        // text in call_end.
-        expect(
-          notifier.value?.hintText,
-          'Tell the waitress what you want to drink.',
-        );
+        expect(notifier.value?.justFlippedIndex, isNull);
+        // Hints survive the reconcile (server doesn't re-send them in call_end).
+        expect(notifier.value?.hints.length, 6);
 
         // Drain the bloc's pending playback-drain timer (the
         // RemoteCallEnded path arms it via the screen's onCallEnd →
@@ -954,9 +1031,11 @@ void main() {
         capturedOnCheckpointAdvanced!(
           const CheckpointAdvancedPayload(
             checkpointId: 'late',
-            index: 4,
+            index: 3,
             total: 6,
             hintText: 'late hint',
+            goalsMetIndices: [0, 1, 2, 3],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
         );
         await tester.pump();
@@ -966,7 +1045,7 @@ void main() {
             as dynamic;
         final ValueNotifier<CheckpointSnapshot?> notifier =
             state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
-        expect(notifier.value?.currentIndex, 4);
+        expect(notifier.value?.metCount, 4);
 
         // Server reports a LOWER count — must not walk back.
         capturedOnCallEnd!('character_hung_up', <String, dynamic>{
@@ -978,7 +1057,7 @@ void main() {
         await tester.pump();
 
         expect(
-          notifier.value?.currentIndex,
+          notifier.value?.metCount,
           4,
           reason: 'reconcile must walk UP only — backward steps would mask '
               'a real server-side regression',

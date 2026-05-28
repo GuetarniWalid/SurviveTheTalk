@@ -62,6 +62,15 @@ Return contract:
               their performance). `False` means the model actively
               rejected the turn — that IS a user-side failure, drains
               patience, and MUST be logged.
+
+Story 6.10 (goal-based dialogue) adds `classify_multi`, which judges a
+single user turn against ALL pending objectives in ONE LLM call and
+returns a `{goal_id: True | False | None}` dict. The original
+single-objective `classify` is preserved unchanged as a thin
+compatibility wrapper for the legacy `/connect` PoC path + existing
+tests. Both paths share `_post_for_content` for the provider request +
+failure-mode handling; only the verdict-parsing layer differs
+(`_parse_classifier_output` vs `_parse_multi_classifier_output`).
 """
 
 from __future__ import annotations
@@ -73,10 +82,20 @@ import re
 import httpx
 from loguru import logger
 
-from pipeline.prompts import EXCHANGE_CLASSIFIER_PROMPT
+from pipeline.prompts import (
+    EXCHANGE_CLASSIFIER_MULTI_PROMPT,
+    EXCHANGE_CLASSIFIER_PROMPT,
+)
 
 _PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
 _PROVIDER_MODEL = "llama-3.3-70b-versatile"
+
+# Story 6.10 — the multi-goal classifier emits a JSON object with two
+# arrays of goal_ids (`goals_met` / `goals_unmet`). For a 6-objective
+# scenario the body is ~6 short id tokens per array plus framing, well
+# under 128. Sized larger than the single-goal `max_tokens=64` because
+# the output grows with the objective count; still ~0.04 ¢ per classify.
+_MULTI_MAX_TOKENS = 128
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
 # advanced (conservative — no free progression)". Story 6.9 reliability
@@ -258,44 +277,70 @@ class ExchangeClassifier:
         except asyncio.CancelledError:
             raise
 
-    async def _classify(
+    async def classify_multi(
         self,
         *,
         user_text: str,
         last_character_line: str,
-        success_criteria: str,
+        pending_goals: list[dict],
         scenario_description: str,
-    ) -> bool | None:
-        prompt = EXCHANGE_CLASSIFIER_PROMPT.format(
-            scenario_description=_escape_format_braces(scenario_description),
-            last_character_line=_escape_format_braces(last_character_line),
-            user_text=_escape_format_braces(user_text),
-            success_criteria=_escape_format_braces(success_criteria),
-        )
-        # Story 6.9b — Groq is OpenAI-compatible: same body shape as the
-        # OpenRouter request we sent pre-migration. The `reasoning` field
-        # (which forced-disabled Qwen's chain-of-thought via OpenRouter)
-        # is NOT sent — Llama 3.3 70B has no thinking mode to disable,
-        # and sending unknown fields risks 400 errors on stricter
-        # providers. EmotionEmitter still sends `reasoning` because it
-        # stays on Qwen via OpenRouter (out of scope for this migration).
-        payload = {
-            "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            # Story 6.9b review P15 — raised 32 → 64. Llama 3.3 70B can
-            # prepend whitespace/leading-newline tokens before the JSON
-            # body, and `{"met": true}` is already ~10 tokens; 32 left
-            # zero margin for verbose framing. 64 stays well below any
-            # cost concern (~0.02 ¢ per 1000 classifies) while making
-            # truncation-mid-JSON essentially impossible.
-            "max_tokens": 64,
-        }
+    ) -> dict[str, bool | None]:
+        """Evaluate a single user turn against ALL pending objectives in
+        one LLM call (Story 6.10 goal-based dialogue).
+
+        Returns a `{goal_id: True | False | None}` dict keyed by EVERY
+        pending goal_id (so the caller can iterate without KeyErrors):
+          - True  — the model put the goal_id in `goals_met`.
+          - False — the model put the goal_id in `goals_unmet`.
+          - None  — the goal_id was omitted from both lists (model
+                    unsure), OR the whole call failed (timeout / HTTP
+                    error / parse error). When the call fails wholesale
+                    EVERY goal_id maps to None — the caller (Checkpoint
+                    Manager) treats an all-None turn as INFRA FAILURE
+                    (patience-neutral) exactly like the single-goal
+                    `classify` returning None.
+
+        Args:
+            user_text: The user's most-recent finalized transcription.
+            last_character_line: The previous character utterance.
+            pending_goals: List of `{"id": str, "success_criteria": str}`
+                dicts (extra keys ignored). Only goals still pending
+                should be passed — already-met goals must not be re-judged.
+            scenario_description: Short scenario context.
+        """
+        goal_ids = [g["id"] for g in pending_goals]
+        try:
+            return await asyncio.wait_for(
+                self._classify_multi(
+                    user_text=user_text,
+                    last_character_line=last_character_line,
+                    pending_goals=pending_goals,
+                    scenario_description=scenario_description,
+                ),
+                timeout=_CLASSIFIER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("exchange classifier multi timeout")
+            return {gid: None for gid in goal_ids}
+        except asyncio.CancelledError:
+            raise
+
+    async def _post_for_content(self, payload: dict) -> str | None:
+        """Issue the chat-completion POST and extract the assistant
+        message content, or return None on ANY failure.
+
+        Shared by the single-goal `_classify` and the multi-goal
+        `_classify_multi` paths (Story 6.10) so the provider request
+        shape + the full failure-mode handling (HTTP error, closed-
+        client lifecycle race, non-2xx, non-JSON body, malformed
+        envelope, empty content-filter choices) live in ONE place. Each
+        caller layers its own JSON-verdict parser on top of the returned
+        content string.
+        """
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-
         try:
             client = await self._get_client()
             response = await client.post(_PROVIDER_URL, headers=headers, json=payload)
@@ -375,12 +420,80 @@ class ExchangeClassifier:
             )
             return None
         try:
-            content = choices[0]["message"]["content"]
+            return choices[0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             logger.warning("exchange classifier malformed envelope: {}", exc)
             return None
 
+    async def _classify(
+        self,
+        *,
+        user_text: str,
+        last_character_line: str,
+        success_criteria: str,
+        scenario_description: str,
+    ) -> bool | None:
+        prompt = EXCHANGE_CLASSIFIER_PROMPT.format(
+            scenario_description=_escape_format_braces(scenario_description),
+            last_character_line=_escape_format_braces(last_character_line),
+            user_text=_escape_format_braces(user_text),
+            success_criteria=_escape_format_braces(success_criteria),
+        )
+        # Story 6.9b — Groq is OpenAI-compatible: same body shape as the
+        # OpenRouter request we sent pre-migration. The `reasoning` field
+        # (which forced-disabled Qwen's chain-of-thought via OpenRouter)
+        # is NOT sent — Llama 3.3 70B has no thinking mode to disable,
+        # and sending unknown fields risks 400 errors on stricter
+        # providers. EmotionEmitter still sends `reasoning` because it
+        # stays on Qwen via OpenRouter (out of scope for this migration).
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            # Story 6.9b review P15 — raised 32 → 64. Llama 3.3 70B can
+            # prepend whitespace/leading-newline tokens before the JSON
+            # body, and `{"met": true}` is already ~10 tokens; 32 left
+            # zero margin for verbose framing. 64 stays well below any
+            # cost concern (~0.02 ¢ per 1000 classifies) while making
+            # truncation-mid-JSON essentially impossible.
+            "max_tokens": 64,
+        }
+        content = await self._post_for_content(payload)
+        if content is None:
+            return None
         return _parse_classifier_output(content)
+
+    async def _classify_multi(
+        self,
+        *,
+        user_text: str,
+        last_character_line: str,
+        pending_goals: list[dict],
+        scenario_description: str,
+    ) -> dict[str, bool | None]:
+        goal_ids = [g["id"] for g in pending_goals]
+        none_result = {gid: None for gid in goal_ids}
+        prompt = EXCHANGE_CLASSIFIER_MULTI_PROMPT.format(
+            scenario_description=_escape_format_braces(scenario_description),
+            last_character_line=_escape_format_braces(last_character_line),
+            user_text=_escape_format_braces(user_text),
+            # The block is a pre-built format ARGUMENT — `str.format()`
+            # does not re-parse substituted values, so any literal braces
+            # in a success_criteria pass through unharmed (no escaping
+            # needed, and escaping here would double-brace the LLM-
+            # visible text). Verified 2026-05-28.
+            pending_goals_block=_format_pending_goals_block(pending_goals),
+        )
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": _MULTI_MAX_TOKENS,
+        }
+        content = await self._post_for_content(payload)
+        if content is None:
+            return none_result
+        return _parse_multi_classifier_output(content, goal_ids)
 
 
 def _parse_classifier_output(content: str) -> bool | None:
@@ -420,3 +533,82 @@ def _parse_classifier_output(content: str) -> bool | None:
         logger.warning("exchange classifier missing/non-bool 'met': {!r}", met)
         return None
     return met
+
+
+def _format_pending_goals_block(pending_goals: list[dict]) -> str:
+    """Render the pending objectives as a numbered list for the
+    `{pending_goals_block}` placeholder in `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.
+
+    Each line: `N. [goal_id="<id>"] <success_criteria>`. The `goal_id`
+    tag is what the model echoes back in the `goals_met` / `goals_unmet`
+    arrays, so it MUST be machine-stable (we use the YAML checkpoint id
+    verbatim).
+    """
+    lines = []
+    for i, goal in enumerate(pending_goals, start=1):
+        lines.append(f'{i}. [goal_id="{goal["id"]}"] {goal["success_criteria"]}')
+    return "\n".join(lines)
+
+
+def _parse_multi_classifier_output(
+    content: str, valid_ids: list[str]
+) -> dict[str, bool | None]:
+    """Parse the multi-goal model response into a `{goal_id: bool|None}`
+    dict keyed by EVERY id in `valid_ids`.
+
+    Expected shape: `{"goals_met": [...], "goals_unmet": [...]}`. A
+    goal_id present in `goals_met` → True; in `goals_unmet` → False;
+    absent from both (or any parse failure) → None. Unknown ids in the
+    model's arrays are ignored (defensive against a hallucinated id).
+    Mirrors `_parse_classifier_output`'s fence-strip + first-`{...}`
+    fallback so a model that wraps JSON in prose / Markdown still parses.
+    """
+    none_result = {gid: None for gid in valid_ids}
+    text = content.strip()
+    fence_match = _FENCE_RE.match(text)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            logger.warning("exchange classifier multi non-JSON output")
+            return none_result
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            logger.warning("exchange classifier multi non-JSON output")
+            return none_result
+
+    if not isinstance(data, dict):
+        logger.warning("exchange classifier multi output not a dict")
+        return none_result
+
+    met_raw = data.get("goals_met", [])
+    unmet_raw = data.get("goals_unmet", [])
+    met_set = (
+        {g for g in met_raw if isinstance(g, str)}
+        if isinstance(met_raw, list)
+        else set()
+    )
+    unmet_set = (
+        {g for g in unmet_raw if isinstance(g, str)}
+        if isinstance(unmet_raw, list)
+        else set()
+    )
+
+    result: dict[str, bool | None] = {}
+    for gid in valid_ids:
+        if gid in met_set:
+            # `goals_met` wins if the model contradicts itself (id in
+            # both lists) — Default-to-MET principle 5: a borderline
+            # "both" is treated as met (false positives cost nothing).
+            result[gid] = True
+        elif gid in unmet_set:
+            result[gid] = False
+        else:
+            result[gid] = None
+    return result

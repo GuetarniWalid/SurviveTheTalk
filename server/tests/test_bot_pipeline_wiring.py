@@ -27,7 +27,13 @@ def test_bot_imports_emitter_classes() -> None:
     source = _BOT_PATH.read_text(encoding="utf-8")
     assert "from pipeline.emotion_emitter import EmotionEmitter" in source
     assert "from pipeline.patience_tracker import PatienceTracker" in source
-    assert "from pipeline.checkpoint_manager import CheckpointManager" in source
+    # Story 6.10 — `bot.py` now imports CheckpointManager + the two
+    # goal-composition helpers from a multi-line import block, so assert
+    # the module + symbol rather than a single-line import string.
+    assert "from pipeline.checkpoint_manager import (" in source
+    assert "CheckpointManager," in source
+    assert "format_remaining_goals_block," in source
+    assert "format_suggested_focus_block," in source
     assert "from pipeline.exchange_classifier import ExchangeClassifier" in source
     # Story 6.8 Phase 2 AC8 — wiring assertion for the charter import.
     assert "COHERENCE_CHARTER" in source
@@ -410,11 +416,15 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
 
     classifier = ExchangeClassifier(api_key="test-key")
 
-    async def _stub_classify(**kwargs):
+    # Story 6.10 — the manager now calls `classify_multi` (goal-based
+    # dialogue). Stub it so the real Groq HTTP path is never hit; return
+    # all-unmet so no goal flips — we only need to prove the multi-goal
+    # classify path RAN end-to-end through a real pipeline.
+    async def _stub_classify_multi(**kwargs):
         invoked_with.append(kwargs)
-        return False  # Don't advance, just observe the call happened.
+        return {g["id"]: False for g in kwargs["pending_goals"]}
 
-    classifier.classify = _stub_classify  # type: ignore[assignment]
+    classifier.classify_multi = _stub_classify_multi  # type: ignore[assignment]
 
     checkpoints = [
         dict(
@@ -482,8 +492,12 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
         "TranscriptionFrame (re-verify against `pipecat.frames.frames` "
         "and `pipeline/bot.py` ordering) or the processor was moved to "
         "a position where user transcriptions don't reach it. The "
-        "ExchangeClassifier will be inert in prod and no checkpoint "
-        "will ever advance — same failure mode as the Story 6.4 "
+        "ExchangeClassifier will be inert in prod and no goal "
+        "will ever flip — same failure mode as the Story 6.4 "
         "silence-ladder regression."
     )
     assert invoked_with[0]["user_text"] == "I want chicken."
+    # Story 6.10 — the multi-goal classify path received the pending
+    # goals (one entry per checkpoint on the first turn).
+    pending = invoked_with[0]["pending_goals"]
+    assert [g["id"] for g in pending] == ["cp0"]

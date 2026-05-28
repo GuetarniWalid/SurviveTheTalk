@@ -1,6 +1,6 @@
 # Story 6.10: Goal-Based Dialogue Architecture (Steps → Goals shift)
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -225,91 +225,92 @@ See `## Smoke Test Gate` section below — a 7-box gate replay of yesterday's ca
 
 ### Phase 1 — Server: classifier + state model
 
-- [ ] **Task 1 — Multi-goal classifier prompt** (AC: #3)
-  - [ ] 1.1 — Draft `EXCHANGE_CLASSIFIER_MULTI_PROMPT` in `prompts.py` with the 6 intent-first principles + numbered pending-goals list + strict JSON output schema
-  - [ ] 1.2 — Define helper `_format_pending_goals_block(goals: list[dict]) -> str` that renders the goal list (id, criteria)
-  - [ ] 1.3 — Sanity-check the prompt size: enumerating 6 goals × ~50 tokens criteria = ~300 tokens. Add to the ~200 tokens charter + ~600 tokens base = ~1100 tokens system. Comfortable for qwen-flash's 32K context.
+- [x] **Task 1 — Multi-goal classifier prompt** (AC: #3)
+  - [x] 1.1 — Drafted `EXCHANGE_CLASSIFIER_MULTI_PROMPT` in `prompts.py` with the 6 intent-first principles + `{pending_goals_block}` placeholder + strict `{"goals_met":[...],"goals_unmet":[...]}` JSON schema + XML injection-resistance tags
+  - [x] 1.2 — `_format_pending_goals_block(pending_goals) -> str` lives in `exchange_classifier.py` (renders `N. [goal_id="x"] <criteria>`)
+  - [x] 1.3 — Prompt size sanity-checked; `_MULTI_MAX_TOKENS=128` for the larger goals_met/goals_unmet output
+  - [x] 1.4 — `test_prompts.py`: 2 new tests (presence/shape + `.format()` smoke)
 
-- [ ] **Task 2 — `ExchangeClassifier.classify_multi`** (AC: #2)
-  - [ ] 2.1 — Add `classify_multi` method, keep `classify` as legacy wrapper
-  - [ ] 2.2 — Use the same httpx + 1.0s timeout + 0.8s HTTP budget pattern from Story 6.8
-  - [ ] 2.3 — JSON parsing with fence-stripping fallback (mirrors existing `_parse_classifier_output`)
-  - [ ] 2.4 — Return `dict[goal_id, bool | None]` — missing goals = None (no verdict, keep pending)
+- [x] **Task 2 — `ExchangeClassifier.classify_multi`** (AC: #2)
+  - [x] 2.1 — Added `classify_multi`; `classify` preserved unchanged as the legacy wrapper
+  - [x] 2.2 — Shares `_post_for_content(payload)` with `_classify` (same 2.0s/1.5s budget + full failure-mode handling)
+  - [x] 2.3 — `_parse_multi_classifier_output(content, ids)` mirrors the fence-strip + first-`{...}` fallback
+  - [x] 2.4 — Returns `dict[goal_id, bool|None]` keyed by EVERY pending id; whole-call failure → all-None
 
-- [ ] **Task 3 — `CheckpointManager` state model rewrite** (AC: #1, #5)
-  - [ ] 3.1 — Replace `self._index = 0` with `self._goals: dict[str, str]`
-  - [ ] 3.2 — Add `goals_state`, `pending_goals`, `met_count` read-only properties
-  - [ ] 3.3 — Adapt `_classify_and_advance` → `_classify_and_flip_goals` using `classify_multi`
-  - [ ] 3.4 — Per-goal-flip emission of `checkpoint_advanced` envelope (one per flip, with updated `goals_met_indices`)
-  - [ ] 3.5 — Patience semantics: one `apply_exchange_outcome(success=any_flip)` per turn (not per-goal)
-  - [ ] 3.6 — Completion condition: `all(state == "met" for state in self._goals.values())` → `schedule_completion(survival_pct=100)`
-  - [ ] 3.7 — Generation-counter latest-line-wins preserved
-  - [ ] 3.8 — Deviation #7 terminal-turn preemptive synchronous classify preserved (redefined for goals — "would completing this turn end the call?")
-  - [ ] 3.9 — Delete `_index` (or alias to `met_count` for back-compat — dev call)
+- [x] **Task 3 — `CheckpointManager` state model rewrite** (AC: #1, #5)
+  - [x] 3.1 — `self._index` REMOVED; replaced with `self._goals: dict[str,str]` + `self._id_to_index`
+  - [x] 3.2 — Added `goals_state`, `pending_goals` (author order), `met_count` read-only properties
+  - [x] 3.3 — `_classify_and_advance` → `_classify_and_flip_goals` using `classify_multi`
+  - [x] 3.4 — Per-goal-flip `_emit_checkpoint_advanced` (one envelope per flip, all carrying the same post-flip `goals_met_indices`)
+  - [x] 3.5 — One `apply_exchange_outcome(success=any_flip)` per turn; fail ONLY when a real verdict landed and NO goal flipped (all-None = infra-neutral + consecutive-None backstop)
+  - [x] 3.6 — Completion: `all(state=="met")` → `schedule_completion(survival_pct=100)`
+  - [x] 3.7 — Generation-counter latest-line-wins preserved
+  - [x] 3.8 — Deviation #7 terminal-turn sync classify preserved + redefined for goals (`met_count+1 >= total` OR meter-zeroing)
+  - [x] 3.9 — `_index` deleted (no alias)
 
-- [ ] **Task 4 — Dynamic `system_instruction` composition** (AC: #4)
-  - [ ] 4.1 — Add `_update_system_instruction()` method that composes `base + charter + REMAINING_GOALS_BLOCK + SUGGESTED_FOCUS_BLOCK`
-  - [ ] 4.2 — Call it at `__init__` (initial composition) and after every successful flip
-  - [ ] 4.3 — Preserve the WARN-on-duplicate-charter guard from Story 6.8
-  - [ ] 4.4 — Update `bot.py` initial composition similarly (use the same helper or duplicate the formula)
+- [x] **Task 4 — Dynamic `system_instruction` composition** (AC: #4)
+  - [x] 4.1 — `_update_system_instruction()` composes `base + charter + REMAINING_GOALS_BLOCK + SUGGESTED_FOCUS_BLOCK` via shared module helpers `format_remaining_goals_block` / `format_suggested_focus_block` / `compose_goal_system_instruction`
+  - [x] 4.2 — Called at `__init__` (initial) AND after every successful flip
+  - [x] 4.3 — WARN-on-duplicate-charter guard preserved
+  - [x] 4.4 — `bot.py` initial composition uses the SAME shared helpers (no drift)
 
 ### Phase 2 — Server: envelope + bot.py
 
-- [ ] **Task 5 — Extend `checkpoint_advanced` envelope** (AC: #6)
-  - [ ] 5.1 — Add `goals_met_indices: list[int]` to the envelope's `data` block
-  - [ ] 5.2 — Keep existing `checkpoint_id`, `index`, `total`, `next_hint` for backward compat with old clients
-  - [ ] 5.3 — `next_hint` now reads from `pending_goals[0]` (suggested focus), or empty if all met
-  - [ ] 5.4 — Adapt `build_initial_envelope()` (Story 6.7) to carry `goals_met_indices: []` at call start
+- [x] **Task 5 — Extend `checkpoint_advanced` envelope** (AC: #6)
+  - [x] 5.1 — Added `goals_met_indices: list[int]` to the `data` block
+  - [x] 5.2 — Kept `checkpoint_id`, `index` (the just-flipped goal's author index), `total`, `next_hint`
+  - [x] 5.3 — `next_hint` reads `pending_goals[0]` (suggested focus), or "" if all met
+  - [x] 5.4 — `build_initial_envelope()` carries `goals_met_indices: []` at call start
 
-- [ ] **Task 6 — Adapt `bot.py` for goals** (AC: #1, #4)
-  - [ ] 6.1 — Update the initial `system_instruction` composition in `bot.py` to use the new full-goals format (or call into the CheckpointManager helper)
-  - [ ] 6.2 — Verify no other bot.py code expects `_index` (unlikely — should be all encapsulated in the manager)
+- [x] **Task 6 — Adapt `bot.py` for goals** (AC: #1, #4)
+  - [x] 6.1 — Initial `system_instruction` composition uses the goal helpers (all checkpoints pending at boot)
+  - [x] 6.2 — Verified no other bot.py code references `_index` (grep clean — all encapsulated)
 
 ### Phase 3 — Server: tests
 
-- [ ] **Task 7 — Rewrite `test_checkpoint_manager.py`** (~25 tests)
-  - [ ] 7.1 — Rewrite `_make_manager` helper for the new state model
-  - [ ] 7.2 — Adapt existing tests (advance-on-met, no-advance-on-not-met, conservative-None-fallback, last-checkpoint-completion, stale-verdict-guard, cleanup, empty-checkpoints, init-log, llm-settings-missing) to assert goal-state changes instead of `_index` changes
-  - [ ] 7.3 — Adapt Deviation #7 preemptive tests (suppress-on-meter-zero, suppress-on-completion, fall-through-on-recovery) to new "would completing this turn end the call" terminal definition
-  - [ ] 7.4 — Adapt charter tests (appears-in-every-swap, warn-on-duplicate) to the new dynamic composition
+- [x] **Task 7 — Rewrite `test_checkpoint_manager.py`** (42 tests green)
+  - [x] 7.1 — `_make_manager` helper rewritten for the goal model (stubs `classify_multi`, convenience + full-control verdict modes)
+  - [x] 7.2 — Adapted existing tests to assert `goals_state` / `met_count` instead of `_index`
+  - [x] 7.3 — Adapted Deviation #7 preemptive tests to the goal terminal definition
+  - [x] 7.4 — Adapted charter tests (appears-in-every-recompose, warn-on-duplicate) to dynamic composition
 
-- [ ] **Task 8 — New behavioral tests for goal-based architecture** (~10 new)
-  - [ ] 8.1 — `test_two_goals_flip_in_same_turn` — user says "grilled chicken with cola" → both `clarify` + `drink` flip in one turn (asserts envelope emits 2 events with same `goals_met_indices`)
-  - [ ] 8.2 — `test_out_of_order_goal_completion` — user fills goal index 3 before index 2, both legit, eventually all 6 met → `reason=survived`
-  - [ ] 8.3 — `test_off_topic_turn_only_fails_when_no_goal_matched` — fully off-topic turn ("what's the weather") → `apply_exchange_outcome(success=False)`, no goal flips
-  - [ ] 8.4 — `test_partial_credit_does_not_fail` — turn that meets 1 of 3 pending goals → `apply_exchange_outcome(success=True)`, no patience deduction
-  - [ ] 8.5 — `test_system_instruction_recomposes_after_goal_flip` — drive 2 successful turns, assert system_instruction was rewritten 2× and each recomposition contains the updated REMAINING_GOALS_BLOCK
-  - [ ] 8.6 — `test_completion_fires_when_all_goals_met_via_out_of_order_path` — fill goals in order [0, 2, 1, 4, 3, 5] → all met → completion
-  - [ ] 8.7 — `test_classify_multi_returns_per_goal_verdict` — direct test of `ExchangeClassifier.classify_multi` with a mock LLM response
-  - [ ] 8.8 — `test_envelope_carries_goals_met_indices` — verify the envelope payload extension
-  - [ ] 8.9 — `test_legacy_classify_still_works` — backward-compat for the single-objective `classify` wrapper
-  - [ ] 8.10 — `test_suggested_focus_is_first_pending_in_author_order` — even after out-of-order flips, the suggested focus stays anchored to author order
+- [x] **Task 8 — New behavioral tests for goal-based architecture**
+  - [x] 8.1 — `test_two_goals_flip_in_same_turn`
+  - [x] 8.2 — `test_out_of_order_goal_completion`
+  - [x] 8.3 — `test_off_topic_turn_only_fails_when_no_goal_matched`
+  - [x] 8.4 — `test_partial_credit_does_not_fail`
+  - [x] 8.5 — `test_system_instruction_recomposes_after_goal_flip`
+  - [x] 8.6 — `test_completion_fires_when_all_goals_met_via_out_of_order_path`
+  - [x] 8.7 — `test_classify_multi_returns_per_goal_verdict` (in `test_exchange_classifier.py`)
+  - [x] 8.8 — `test_envelope_carries_goals_met_indices`
+  - [x] 8.9 — `test_legacy_classify_still_works` (in `test_exchange_classifier.py`)
+  - [x] 8.10 — `test_suggested_focus_is_first_pending_in_author_order` (+ `test_pending_goals_property_preserves_author_order`)
 
-- [ ] **Task 9 — Wiring + integration tests**
-  - [ ] 9.1 — Add `test_classify_multi_threaded_through_pipeline_drive` to `test_bot_pipeline_wiring.py` (Déviation-#28 pattern — drive a real Pipecat pipeline with a real TranscriptionFrame to ensure the new multi-goal classifier path runs end-to-end)
+- [x] **Task 9 — Wiring + integration tests**
+  - [x] 9.1 — `test_bot_pipeline_wiring.py` Déviation-#28 contract test updated to drive `classify_multi` end-to-end through a real Pipeline; import-block + ordering assertions updated
 
 ### Phase 4 — Client: stepper non-sequential rendering
 
-- [ ] **Task 10 — Adapt `CheckpointAdvancedPayload`** (AC: #7)
-  - [ ] 10.1 — Add `goalsMetIndices: List<int>` to the payload model in `checkpoint_advanced_payload.dart`
-  - [ ] 10.2 — Backward-compat parser: if envelope lacks the field, default to `[index]` (single-most-recent-flip)
+- [x] **Task 10 — Adapt `CheckpointAdvancedPayload`** (AC: #7)
+  - [x] 10.1 — Added `goalsMetIndices: List<int>` to `checkpoint_advanced_payload.dart`
+  - [x] 10.2 — Backward-compat parser in `data_channel_handler.dart`: in-range filter + dedupe + sort; pre-6.10 envelope (no field) reconstructs the linear set `[0..index-1]` (count-correct — see Deviation #8)
 
-- [ ] **Task 11 — Adapt `CheckpointStepper` widget** (AC: #7)
-  - [ ] 11.1 — Switch from `lastCheckIndex` linear fill to per-index lookup against `goalsMetIndices`
-  - [ ] 11.2 — Preserve "just-flipped" animation on the most-recent `index` (so the user sees which circle just lit up)
-  - [ ] 11.3 — TalkBack/AAC announcement still fires per envelope ("checkpoint X of Y complete")
+- [x] **Task 11 — Adapt the stepper consumer** (AC: #7) — see Deviation #8
+  - [x] 11.1 — `call_screen.dart` drives the Rive stepper fill from `goalsMetIndices.length` (the COUNT of met goals). Per-circle non-sequential addressing is NOT achievable with today's count-based `.riv` (`lastCheckIndex`) — deferred to a Walid-owned Rive design change (Deviation #8). `checkpoint_stepper_canvas.dart` itself unchanged.
+  - [x] 11.2 — N/A — "just-flipped" pulse is a Rive concern; the count drive is the available signal
+  - [x] 11.3 — Existing TalkBack semantics path unchanged
 
-- [ ] **Task 12 — Client tests** (~3-5 new)
-  - [ ] 12.1 — Stepper renders circles 0 and 3 filled when payload has `goalsMetIndices: [0, 3]` (non-sequential)
-  - [ ] 12.2 — Backward-compat: payload without `goalsMetIndices` falls back to filling `[index]`
-  - [ ] 12.3 — Animation still triggers on the `index` field (just-flipped)
+- [x] **Task 12 — Client tests** (+4 net new)
+  - [x] 12.1 — `out-of-order goals_met_indices drives the stepper by COUNT, not max index` (call_screen) + `parses goals_met_indices as the full met set` (handler)
+  - [x] 12.2 — `without goals_met_indices reconstructs linear set` + `initial state ([]) yields empty set` (handler)
+  - [x] 12.3 — `filters out-of-range / non-numeric goals_met_indices` (handler)
 
 ### Phase 5 — Pre-commit + Smoke Gate
 
-- [ ] **Task 13 — Pre-commit gates** (AC: #9)
-  - [ ] 13.1 — `ruff check . && ruff format --check .` → green
-  - [ ] 13.2 — `pytest` → ≥350 passed
-  - [ ] 13.3 — `flutter analyze && flutter test` → ≥376 passed
+- [x] **Task 13 — Pre-commit gates** (AC: #9)
+  - [x] 13.1 — `ruff check .` + `ruff format --check .` → green
+  - [x] 13.2 — `pytest` → 438 passed (was 416; +22 net new)
+  - [x] 13.3 — `flutter analyze` (No issues) + `flutter test` → 388 passed (+4 net new)
 
 - [ ] **Task 14 — VPS deploy + Smoke Test Gate** (AC: #10)
   - [ ] 14.1 — **WALID** — `git push` → CI/CD deploy
@@ -399,16 +400,64 @@ Claude Opus 4.7 (1M context)
 
 ### Debug Log References
 
-(filled at dev time)
+- Verified `str.format()` does NOT re-parse substituted argument values (so the multi prompt's `pending_goals_block` can carry literal braces safely, and scalar escaping mirrors the existing `_classify` convention for parity).
+- Server full suite: 438 passed (was 416 baseline; +22 net new). Touched-file subset (checkpoint_manager + exchange_classifier + prompts + bot_pipeline_wiring): 91 passed.
+- Client: `flutter analyze` → No issues found; `flutter test` → 388 passed (+4 net new).
 
 ### Completion Notes List
 
-(filled at dev time)
+Architecture: replaced the linear `CheckpointManager._index` state machine with goal-tracking (`self._goals: dict[id, "pending"|"met"]` + `self._id_to_index`). Every finalized user turn is judged against ALL pending goals in one `ExchangeClassifier.classify_multi` call; any goal met (in any order) is a success.
+
+- **AC1** — `goals_state` / `pending_goals` (author order) / `met_count` properties; `_index` removed (no alias).
+- **AC2** — `classify_multi(user_text, last_character_line, pending_goals, scenario_description) -> dict[goal_id, bool|None]`; `classify` preserved as the legacy wrapper. Both share a new `_post_for_content` helper (one place for the provider request + all failure modes — 429/503/non-JSON/empty-choices/closed-client all collapse to None / all-None).
+- **AC3** — `EXCHANGE_CLASSIFIER_MULTI_PROMPT` in `prompts.py` (6 intent-first principles, `{pending_goals_block}`, strict `goals_met`/`goals_unmet` JSON, XML injection tags).
+- **AC4** — `_update_system_instruction()` recomposes `base + COHERENCE_CHARTER + REMAINING_GOALS_BLOCK + SUGGESTED_FOCUS_BLOCK` at init + after every flip, via 3 shared module helpers also used by `bot.py` (single source of truth, no drift); WARN-on-duplicate-charter preserved; zero pending → "All objectives complete. Wrap up…".
+- **AC5** — one async task per finalized turn → `classify_multi`; per-True flip + per-flip envelope; one `apply_exchange_outcome(success=any_flip)` per turn; all-met → `set_checkpoints_passed(total)` + `schedule_completion(100)`; generation-counter + Deviation #7 terminal-turn sync classify preserved (redefined: `met_count+1 >= total` OR meter-zeroing).
+- **AC6** — envelope `data` gains `goals_met_indices` (full author-order met set); `index` is now the just-flipped goal's index; one envelope per flip, all carrying the same post-flip set.
+- **AC7** — `CheckpointAdvancedPayload.goalsMetIndices` + handler parsing (filter/dedupe/sort; pre-6.10 fallback). See **Deviation #8** for the client rendering reality.
+- **AC8** — fail ONLY when a real verdict landed and NO goal flipped; partial credit (1 of N) is a success (recovery_bonus); all-None is patience-neutral infra failure (consecutive-None backstop at N=5 unchanged).
+- **AC9** — all gates green (438 pytest / flutter analyze clean / 388 flutter test).
+- **AC10 / Task 14** — Walid-owned Pixel 9 smoke gate (deploy + call_id=137 drift replay) for `review → done`.
+
+**New Deviation #8 (client rendering reality).** The spec's AC7 + Project Structure Notes assumed a Flutter circles widget (`checkpoint_stepper.dart`) that fills `goalsMetIndices` per-circle. Reality (post-Story-6.7 pivot): the stepper is a Rive `.riv` driven by a single count-based `lastCheckIndex` number (`checkpoint_stepper_canvas.dart`), and per project memory `feedback_hud_overlays_are_rive.md` Walid owns Rive visuals, not hand-rolled Flutter widget trees. So: the payload + wire carry the full `goalsMetIndices` set (forward-compat), and `call_screen.dart` drives the Rive fill from `goalsMetIndices.length` (the met COUNT) — correct even for out-of-order flips. True per-circle non-sequential rendering (circle 3 filled before circle 2) needs a `.riv` design change and is deferred to Walid. Also refined AC7's literal backward-compat default from `[index]` to the count-correct `[0..index-1]` for pre-6.10 envelopes.
+
+**Calibration note (per Dev Notes / Deviation #5).** Survival rates will rise under goal-tracking (off-topic-only failure). Re-tuning `fail_penalty` per scenario to hit the difficulty bands is a separate post-story task (6.10b/6.11) — NOT done here; existing YAMLs unchanged (Deviation #3).
 
 ### File List
 
-(filled at dev time)
+**Server — modified:**
+- `server/pipeline/prompts.py` — added `EXCHANGE_CLASSIFIER_MULTI_PROMPT`
+- `server/pipeline/exchange_classifier.py` — `classify_multi` + `_classify_multi` + `_post_for_content` (shared) + `_format_pending_goals_block` + `_parse_multi_classifier_output` + `_MULTI_MAX_TOKENS`
+- `server/pipeline/checkpoint_manager.py` — goal-tracking rewrite + `format_remaining_goals_block` / `format_suggested_focus_block` / `compose_goal_system_instruction` module helpers + `_all_hints()` → full `hints` list on every `checkpoint_advanced` envelope (UI refonte)
+- `server/pipeline/bot.py` — import the goal helpers; initial `system_instruction` composed via them
+- `server/tests/test_checkpoint_manager.py` — rewritten for the goal model (42 tests)
+- `server/tests/test_exchange_classifier.py` — `classify_multi` + parser tests + legacy-classify
+- `server/tests/test_prompts.py` — multi-prompt presence/shape + `.format()` smoke
+- `server/tests/test_bot_pipeline_wiring.py` — multi-line import assertion + contract test drives `classify_multi`
+
+**Server — NOT changed (per Deviation #3):** `scenarios/*.yaml`, `scenarios.py`, `patience_tracker.py`, `dtln_audio_filter.py`, `db/migrations/`, `api/routes_calls.py`.
+
+**Client — modified (goal model + UI refonte):**
+- `client/lib/features/call/services/checkpoint_advanced_payload.dart` — `goalsMetIndices` + `hints`
+- `client/lib/features/call/services/data_channel_handler.dart` — parse `goals_met_indices` + `hints`
+- `client/lib/features/call/views/call_screen.dart` — map payload → reshaped `CheckpointSnapshot`; Layer 4 now mounts `CheckpointStepHud` (removed the Rive stepper + hint-bubble composite)
+- `client/lib/features/call/views/widgets/checkpoint_snapshot.dart` — reshaped (`hints`/`metIndices`/`justFlippedIndex` + derived getters)
+- `client/test/features/call/services/data_channel_handler_test.dart` — goals_met_indices + hints tests
+- `client/test/features/call/views/call_screen_test.dart` — checkpoint-plumbing group migrated to the new snapshot shape
+
+**Client — NEW (UI refonte):**
+- `client/lib/features/call/views/widgets/checkpoint_step_hud.dart` — the Flutter HUD
+- `client/test/features/call/views/widgets/checkpoint_step_hud_test.dart` — HUD widget tests
+
+**Client — DELETED (UI refonte, Deviation #9):**
+- `client/lib/features/call/views/widgets/checkpoint_stepper_canvas.dart` (+ test) — Rive stepper retired
+- `client/lib/features/call/views/widgets/checkpoint_hint_bubble.dart` (+ test) — folded into the HUD
+- `client/assets/rive/checkpoint_stepper.riv` — Rive checkpoint asset removed (Walid 2026-05-28: "efface le RIV file Checkpoint Stepper"); also removed its `client/pubspec.yaml` asset entry (would break the build if left dangling).
 
 ## Change Log
 
 - 2026-05-20 — Spec drafted post-Story 6.9 smoke test analysis. Architecture shift from linear state machine to goal-tracking. 7 up-front deviations documented. Awaiting Walid sign-off before implementation begins.
+- 2026-05-28 — Implemented via `/bmad-dev-story`. Goal-tracking rewrite landed across server (classifier `classify_multi`, `CheckpointManager` state model, dynamic system_instruction, envelope `goals_met_indices`) + client (payload/handler/call_screen). +1 deviation (#8 — client Rive count-renderer vs spec's assumed per-circle widget). Pre-commit gates green: ruff + pytest 438 + flutter analyze + flutter test 388. Status `in-progress → review`. Smoke gate (Task 14) reserved for Walid per Story 6.5 D6.
+- 2026-05-28 (UI refonte v3 — call_id=183 multi-flip bug) — Smoke test surfaced: asking for water flipped BOTH `greet`(0) + `drink`(3) in one turn (greet's criterion is "any coherent response counts" — intentionally permissive), but the HUD animated only greet and **swallowed the drink completion**. Root cause: the completion animation was gated on the met-COUNT rising, and the two per-flip envelopes both report the same full set `[0,3]`. **Fix:** the HUD now diffs the incoming met set against an `_animatedMet` set and animates EVERY newly-met goal (author order), each as a uniform slide-in-checked → hold → slide-out (Walid's spec) before settling on the next pending step. Regression test `two goals completing in one turn...` added. greet calibration (tighten so a drink-only request doesn't auto-complete greet) **deferred by Walid** — kept permissive for now to observe goal-based multi-flip behaviour. Gates: flutter analyze (No issues) + flutter test. Client-only; folded into the same commit (amend + force-push).
+- 2026-05-28 (UI refonte v2 — Walid screenshot feedback) — Fixed the HUD gradient/position to spec: (1) gradient colour is the **dark app background** (#1E1F23), not accent; (2) box pinned to the **absolute top** (removed SafeArea — it now bleeds behind the status bar, widget consumes `MediaQuery.padding.top` so text still clears it); (3) gradient is **solid for the top 50%** then fades 100%→0% over the bottom 50% (stops 0/0.5/1.0); (4) box sized to **2× the content** via an invisible 0-opacity content mirror, so the text always sits in the solid band and adapts to any line count (no measurement/flash). Removed the now-redundant text shadow. HUD widget tests use `findsWidgets` for present-checks (text rendered twice: visible + mirror). Gates: flutter analyze (No issues) + flutter test. Folded into the same commit (amend + force-push).
+- 2026-05-28 (UI refonte, pre-smoke-gate) — Walid directive: the Rive `.riv` no longer renders checkpoints; the whole HUD moves to Flutter. **Deviation #8 SUPERSEDED by Deviation #9.** Deleted the Rive stepper (`checkpoint_stepper_canvas.dart`) + the Flutter hint bubble (`checkpoint_hint_bubble.dart`) and their tests; added a single Flutter widget `checkpoint_step_hud.dart` — a top gradient box (accent #00E5A0 → transparent), inline check left of the step text, showing ONLY the current step; check animates outline→green (`statusCompleted`) on completion, then swipe-up to the next step; out-of-order completions briefly show the just-completed step checked then return to the active pending step. Server now sends the full `hints` list on every `checkpoint_advanced` envelope so the widget computes/animates locally. `CheckpointSnapshot` reshaped (`hints` + `metIndices` + `justFlippedIndex`; derived `metCount`/`activeIndex`/`activeHint`). Memory `feedback_hud_overlays_are_rive.md` updated with the reversal. Gates green: ruff + pytest + flutter analyze (No issues) + flutter test. Folded into Story 6.10 (amend + force-push) per Walid. **The animation feel + gradient/contrast need Walid's on-device validation** (no device in dev env). Smoke gate to follow.
