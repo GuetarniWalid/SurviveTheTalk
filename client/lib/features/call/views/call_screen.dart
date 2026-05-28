@@ -10,6 +10,7 @@ import 'package:livekit_client/livekit_client.dart';
 import '../../../core/services/connectivity_service.dart';
 import '../../../core/services/end_call_retry_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_typography.dart';
 import '../../../core/theme/call_colors.dart';
 import '../../scenarios/character_catalog.dart';
 import '../../scenarios/models/character_identity.dart';
@@ -81,6 +82,16 @@ const double _kScreenBottomPadding = 70.0;
 /// circular avatar + "Calling..." dots + single hang-up button) so the
 /// onboarding incoming-call surface and the outgoing dial surface share
 /// the same visual language.
+/// Story 6.13 follow-up (2026-05-28) — maps a LiveKit `ConnectionQuality`
+/// to "should we warn the user their link is degraded?". `poor` and `lost`
+/// are the degraded states (NetEq jitter adaptation → the stuttering /
+/// skipping audio diagnosed as pure 5G network jitter, see deferred-work
+/// item 1). `unknown` (pre-measurement, at connect) is NOT treated as weak
+/// to avoid a spurious banner on every call start. Pure + top-level so the
+/// decision is unit-testable without pumping the call screen.
+bool isWeakConnectionQuality(ConnectionQuality quality) =>
+    quality == ConnectionQuality.poor || quality == ConnectionQuality.lost;
+
 class CallScreen extends StatefulWidget {
   final Scenario scenario;
   final CallSession callSession;
@@ -260,10 +271,66 @@ class _CallScreenState extends State<CallScreen> {
   ValueNotifier<CheckpointSnapshot?> get checkpointNotifierForTest =>
       _checkpointNotifier;
 
+  /// Story 6.13 follow-up — UI-only flag, true while the LOCAL
+  /// participant's LiveKit `ConnectionQuality` is poor/lost. Drives a
+  /// "weak connection" banner so the user understands the audio stutter
+  /// is their network (a marginal-5G NetEq artifact, see deferred-work
+  /// item 1), not an app bug — we can't fix the link, but we can set
+  /// expectations + deflect blame. UI-only on the State like
+  /// `_checkpointNotifier`; only the banner subtree rebuilds.
+  final ValueNotifier<bool> _weakConnectionNotifier = ValueNotifier<bool>(
+    false,
+  );
+
+  /// Cancels the LiveKit connection-quality listener on dispose.
+  CancelListenFunc? _qualityCancel;
+
+  /// On recovery (quality back to good/excellent) we hold the banner for
+  /// this long before hiding, so a brief quality bounce doesn't flicker
+  /// the banner off then back on.
+  static const Duration _kWeakConnectionLinger = Duration(seconds: 4);
+  Timer? _weakConnectionHideTimer;
+
+  /// User-facing banner copy. Attributes the stutter to the connection
+  /// (deflects blame from the app) without being preachy. Adjust /
+  /// localise here.
+  static const String _kWeakConnectionMessage =
+      'Weak connection · audio may stutter';
+
+  @visibleForTesting
+  ValueNotifier<bool> get weakConnectionNotifierForTest =>
+      _weakConnectionNotifier;
+
   @override
   void initState() {
     super.initState();
     _room = widget.room ?? Room();
+    // Story 6.13 follow-up — surface a "weak connection" banner when the
+    // LOCAL participant's LiveKit ConnectionQuality degrades. LiveKit
+    // derives quality from RTT + packet loss + jitter (the same jitter
+    // that makes Tina's voice stutter on a marginal 5G link). Only the
+    // LOCAL participant's quality reflects the USER's connection — the
+    // agent runs from the datacenter and is always good, so its quality
+    // is irrelevant here. Events arrive after connect; subscribing now is
+    // safe (no events fire pre-connect). Listener cancelled in dispose().
+    _qualityCancel = _room.events.on<ParticipantConnectionQualityUpdatedEvent>((
+      event,
+    ) {
+      if (event.participant is! LocalParticipant) return;
+      if (!mounted) return;
+      if (isWeakConnectionQuality(event.connectionQuality)) {
+        _weakConnectionHideTimer?.cancel();
+        _weakConnectionHideTimer = null;
+        _weakConnectionNotifier.value = true;
+      } else {
+        // Recovered — linger before hiding to avoid a flicker on a brief
+        // good/poor bounce.
+        _weakConnectionHideTimer?.cancel();
+        _weakConnectionHideTimer = Timer(_kWeakConnectionLinger, () {
+          if (mounted) _weakConnectionNotifier.value = false;
+        });
+      }
+    });
     _callRepository = widget.callRepository ?? CallRepository(ApiClient());
     _connectivityService = widget.connectivityService ?? ConnectivityService();
     // Story 6.5 Option B — read the app-level singleton via
@@ -379,6 +446,14 @@ class _CallScreenState extends State<CallScreen> {
     // so any rebuild-during-teardown can't read a disposed ValueNotifier
     // (would throw on `.value` access).
     _checkpointNotifier.dispose();
+    // Story 6.13 follow-up — tear down the connection-quality listener +
+    // linger timer before disposing the notifier so neither can fire on a
+    // disposed ValueNotifier during teardown.
+    _qualityCancel?.call();
+    _qualityCancel = null;
+    _weakConnectionHideTimer?.cancel();
+    _weakConnectionHideTimer = null;
+    _weakConnectionNotifier.dispose();
     if (!_blocCreated) {
       // Safety net: the bloc never ran, so `CallBloc.close()` will not.
       // Drop the Room ourselves so we don't leak background timers (TTLMap
@@ -849,6 +924,36 @@ class _CallScreenState extends State<CallScreen> {
             ),
           ),
         ),
+        // Story 6.13 follow-up — weak-connection indicator (bottom scrim).
+        // Renders only while the local participant's LiveKit quality is
+        // poor/lost (debounced via `_weakConnectionNotifier`). It slides up
+        // + fades in from the bottom; a background-coloured gradient fades
+        // to transparent so it reads as part of the scene, not a hard
+        // banner. Anchored low — clear of the checkpoint stepper at the
+        // top — with the content lifted above the in-canvas hang-up button.
+        // IgnorePointer so taps fall through to the hang-up.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: IgnorePointer(
+            ignoring: true,
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _weakConnectionNotifier,
+              builder: (context, weak, _) => AnimatedSlide(
+                offset: weak ? Offset.zero : const Offset(0, 1),
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeOutCubic,
+                child: AnimatedOpacity(
+                  opacity: weak ? 1 : 0,
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOut,
+                  child: _buildWeakConnectionIndicator(context),
+                ),
+              ),
+            ),
+          ),
+        ),
         if (_canvasInFallback)
           Positioned.fill(
             child: SafeArea(
@@ -862,6 +967,67 @@ class _CallScreenState extends State<CallScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  /// Story 6.13 follow-up — the "weak connection" indicator (bottom scrim).
+  /// A vertical gradient in the app background colour, opaque in the MIDDLE
+  /// (behind the icon + text, for legibility over the bright scene) and
+  /// fading to transparent at BOTH the top (so it blends into the scene)
+  /// and the bottom (so the in-canvas hang-up button below stays clear,
+  /// never dimmed). Content is vertically centred in the panel, which is
+  /// bottom-anchored but sits ABOVE the hang-up button. A prominent
+  /// wifi-off glyph reads "network problem" at a glance. Sizes are
+  /// screen-height fractions so it scales across devices and is trivial to
+  /// nudge here. Decorative, so `Semantics(liveRegion)` announces it
+  /// without trapping focus.
+  Widget _buildWeakConnectionIndicator(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    return Semantics(
+      liveRegion: true,
+      label: _kWeakConnectionMessage,
+      child: Container(
+        width: double.infinity,
+        height: screenHeight * 0.42,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              AppColors.background.withValues(alpha: 0.0),
+              AppColors.background.withValues(alpha: 0.92),
+              AppColors.background.withValues(alpha: 0.0),
+            ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.wifi_off_rounded,
+              color: AppColors.textPrimary,
+              size: 32,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Weak connection',
+              textAlign: TextAlign.center,
+              style: AppTypography.bodyEmphasis.copyWith(
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'Audio may stutter',
+              textAlign: TextAlign.center,
+              style: AppTypography.caption.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
