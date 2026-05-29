@@ -85,19 +85,27 @@ class Settings(BaseSettings):
     # Database
     database_path: str = "/opt/survive-the-talk/data/db.sqlite"
 
-    # Story 6.9b — Classifier model id sourced from env so we can pin a
-    # specific Groq model snapshot (e.g. `llama-3.3-70b-versatile-128k`)
-    # at deploy time without a code release. Default is the Story 6.9b
-    # benchmark winner (Groq Llama 3.3 70B) — see the `groq_api_key`
-    # field above for the empirical rationale. Retires `deferred-work.md`
-    # line 450 (Story 6.9 Defer #3, hardcoded model id).
+    # Classifier (checkpoint judge) model id, env-overridable to pin a
+    # snapshot at deploy time without a code release. Retires
+    # `deferred-work.md` line 450 (Story 6.9 Defer #3, hardcoded model id).
     #
-    # NOT a Qwen rollback knob — the provider URL is hardcoded to Groq
-    # in `pipeline/exchange_classifier.py:_PROVIDER_URL`. Flipping
-    # `CLASSIFIER_MODEL=qwen/...` alone will post a Qwen model id to
-    # `api.groq.com` and 404. A real rollback to OpenRouter+Qwen
-    # requires redeploying an earlier release. Story 6.9b review D2.
-    classifier_model: str = "llama-3.3-70b-versatile"
+    # 2026-05-29 — switched off `llama-3.3-70b-versatile` onto Llama 4 Scout
+    # because the multi-goal judge (`classify_multi`) now uses Groq STRICT
+    # structured outputs (`response_format=json_schema`), and 70B does NOT
+    # support that response format (HTTP 400 "model does not support
+    # json_schema"). Scout does — it returns a schema-pinned
+    # `{goal_id: met|unmet|unsure}` object Groq validates server-side, which
+    # eliminated the format-instability bug where 70B intermittently echoed
+    # `goal_id="greet"` (broke our id matching → silent all-None → no
+    # checkpoint flipped). Scout is also ~4-5x cheaper ($0.11/$0.34 per 1M
+    # vs $0.59/$0.79) and same latency (~220 ms from VPS).
+    #
+    # MUST stay a Groq model that supports `json_schema` structured outputs
+    # (see console.groq.com/docs/structured-outputs#supported-models).
+    # Pinning a model that lacks it (e.g. back to `llama-3.3-70b-versatile`)
+    # makes every `classify_multi` POST 400. The character + emotion paths
+    # keep 70B (they don't use structured outputs).
+    classifier_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
 
     # 2026-05-29 "all-Groq" migration — the main character LLM and the
     # EmotionEmitter moved off Qwen-via-OpenRouter (429-prone shared pool)

@@ -393,8 +393,9 @@ def test_classify_posts_to_groq_with_openai_compat_shape(
     test defends is BOTH directions:
 
     - Target host is `api.groq.com` (no longer `openrouter.ai`).
-    - Default model is `llama-3.3-70b-versatile` (no longer
-      `qwen/qwen3.5-flash-02-23`).
+    - Default model is `meta-llama/llama-4-scout-17b-16e-instruct` — the
+      2026-05-29 structured-output switch (70B can't do `json_schema`),
+      no longer `qwen/qwen3.5-flash-02-23`.
     - The `reasoning` field is NOT sent — Llama 3.3 70B has no thinking
       mode and unknown fields risk 400 errors on stricter providers
       (Qwen's `reasoning: {enabled: False}` was an OpenRouter-era hack
@@ -419,9 +420,11 @@ def test_classify_posts_to_groq_with_openai_compat_shape(
         # literal. If `_PROVIDER_MODEL` ever flips to a different default,
         # the assertion follows the constant; if a test wants to lock the
         # exact string value, that belongs in a dedicated default-model test.
-        assert sent["model"] == _PROVIDER_MODEL == "llama-3.3-70b-versatile", (
-            "default model is Groq's Llama 3.3 70B per Story 6.9b bench winner"
-        )
+        assert (
+            sent["model"]
+            == _PROVIDER_MODEL
+            == "meta-llama/llama-4-scout-17b-16e-instruct"
+        ), "default classifier model is Llama 4 Scout (structured-output capable)"
         assert "reasoning" not in sent, (
             "the `reasoning` field is OpenRouter-era (Qwen chain-of-thought "
             "disable); Llama 3.3 70B has no thinking mode and unknown fields "
@@ -702,13 +705,23 @@ def test_classify_multi_returns_per_goal_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Story 6.10 AC2 — one LLM call returns a per-goal verdict dict.
-    Goals in `goals_met` → True, in `goals_unmet` → False, omitted → None.
-    Also asserts the goal_ids are formatted into the prompt body."""
+    A goal answered "met" → True, "unmet" → False, "unsure"/missing →
+    None. Also asserts the request carries the STRICT json_schema whose
+    keys are exactly the pending goal_ids, and the bare ids reach the
+    prompt body (no `goal_id="..."` tag)."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         prompt = body["messages"][0]["content"]
-        assert 'goal_id="greet"' in prompt, "goal ids must reach the prompt"
+        assert "greet:" in prompt, "bare goal ids must reach the prompt"
+        assert 'goal_id="greet"' not in prompt, "the tagged id format is the bug"
+        # The strict schema must pin exactly the pending ids to the enum.
+        schema = body["response_format"]["json_schema"]["schema"]
+        assert body["response_format"]["json_schema"]["strict"] is True
+        assert set(schema["properties"]) == {"greet", "main", "drink"}
+        assert schema["properties"]["greet"]["enum"] == ["met", "unmet", "unsure"]
+        assert set(schema["required"]) == {"greet", "main", "drink"}
+        assert schema["additionalProperties"] is False
         assert request.url.host == "api.groq.com"
         return httpx.Response(
             200,
@@ -716,7 +729,7 @@ def test_classify_multi_returns_per_goal_verdict(
                 "choices": [
                     {
                         "message": {
-                            "content": '{"goals_met": ["greet", "drink"], "goals_unmet": ["main"]}'
+                            "content": '{"greet": "met", "main": "unmet", "drink": "met"}'
                         }
                     }
                 ]
@@ -729,18 +742,15 @@ def test_classify_multi_returns_per_goal_verdict(
 
 
 def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A goal_id absent from BOTH lists → None (no verdict, stays pending)."""
+    """A goal answered "unsure", or absent from the object, → None (no
+    verdict, stays pending)."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "choices": [
-                    {
-                        "message": {
-                            "content": '{"goals_met": ["greet"], "goals_unmet": []}'
-                        }
-                    }
+                    {"message": {"content": '{"greet": "met", "main": "unsure"}'}}
                 ]
             },
         )
@@ -801,16 +811,15 @@ def test_classify_multi_all_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defensive fence-strip fallback — a non-strict provider that wraps
+    the verdict object in a Markdown fence still parses."""
+
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "choices": [
-                    {
-                        "message": {
-                            "content": '```json\n{"goals_met": ["a"], "goals_unmet": ["b"]}\n```'
-                        }
-                    }
+                    {"message": {"content": '```json\n{"a": "met", "b": "unmet"}\n```'}}
                 ]
             },
         )
@@ -841,6 +850,7 @@ def test_legacy_classify_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_multi_output_parser_helpers() -> None:
     from pipeline.exchange_classifier import (
+        _build_verdict_schema,
         _format_pending_goals_block,
         _parse_multi_classifier_output,
     )
@@ -851,17 +861,27 @@ def test_multi_output_parser_helpers() -> None:
             {"id": "drink", "success_criteria": "pick a drink"},
         ]
     )
-    assert 'goal_id="greet"' in block
-    assert "say hi" in block
-    assert 'goal_id="drink"' in block
+    # Bare `- <id>: <criteria>` — the tagged `goal_id="..."` form is the
+    # 2026-05-29 silent-no-flip bug and must NOT appear.
+    assert "- greet: say hi" in block
+    assert "- drink: pick a drink" in block
+    assert 'goal_id="greet"' not in block
 
-    # Pure prose → all None.
+    # Strict schema: one enum-constrained property per id, all required,
+    # no extras.
+    schema = _build_verdict_schema(["a", "b"])
+    assert set(schema["properties"]) == {"a", "b"}
+    assert schema["properties"]["a"]["enum"] == ["met", "unmet", "unsure"]
+    assert set(schema["required"]) == {"a", "b"}
+    assert schema["additionalProperties"] is False
+
+    # met → True, unmet → False, unsure / missing key / unknown value → None.
     assert _parse_multi_classifier_output("no json here", ["a"]) == {"a": None}
-    # Contradiction (id in both lists) → MET wins (principle 5).
-    assert _parse_multi_classifier_output(
-        '{"goals_met": ["a"], "goals_unmet": ["a"]}', ["a"]
-    ) == {"a": True}
-    # Unknown ids in the model arrays are ignored.
-    assert _parse_multi_classifier_output(
-        '{"goals_met": ["x"], "goals_unmet": ["b"]}', ["a", "b"]
-    ) == {"a": None, "b": False}
+    assert _parse_multi_classifier_output('{"a": "met"}', ["a"]) == {"a": True}
+    assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"]) == {"a": False}
+    assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"]) == {"a": None}
+    # Missing key → None; unknown extra key ignored.
+    assert _parse_multi_classifier_output('{"x": "met", "b": "unmet"}', ["a", "b"]) == {
+        "a": None,
+        "b": False,
+    }

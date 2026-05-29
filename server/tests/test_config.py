@@ -46,12 +46,13 @@ def test_settings_fails_without_required_vars() -> None:
 # ---------- Story 6.9b — Classifier model id sourced from Settings --------
 
 
-def test_settings_classifier_model_defaults_to_groq_70b() -> None:
-    """Story 6.9b — `classifier_model` defaults to the post-migration
-    Groq Llama 3.3 70B winner (2026-05-22 bench). The default is what
-    the prod VPS uses when `CLASSIFIER_MODEL` is unset. A future bench
-    that points elsewhere would update both this default AND the
-    `groq_api_key` provider field (or rename to `classifier_api_key`).
+def test_settings_classifier_model_defaults_to_scout() -> None:
+    """2026-05-29 — `classifier_model` defaults to Llama 4 Scout. The
+    multi-goal judge uses Groq STRICT structured outputs
+    (`response_format=json_schema`), which 70B does NOT support (HTTP 400);
+    Scout does. The default is what the prod VPS uses when `CLASSIFIER_MODEL`
+    is unset and MUST stay a structured-output-capable Groq model (see
+    `config.Settings.classifier_model` + `server/CLAUDE.md` §4).
 
     Story 6.9b review P2 — `clear=True` so a developer's shell with
     `CLASSIFIER_MODEL` exported (e.g. left over from a benchmark run)
@@ -60,7 +61,7 @@ def test_settings_classifier_model_defaults_to_groq_70b() -> None:
     env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
     with patch.dict(os.environ, env, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
-        assert s.classifier_model == "llama-3.3-70b-versatile"
+        assert s.classifier_model == "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 def test_settings_classifier_model_overrides_via_env() -> None:

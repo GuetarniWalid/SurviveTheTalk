@@ -137,6 +137,19 @@ Bit us on Story 6.5 review P6 (NULL `duration_sec` log assertion).
 
 ### 4. ALL LLM paths run on Groq (2026-05-29 all-Groq migration)
 
+> **PROJECT LAW — checkpoint-judge model swaps.** Any future change to
+> `CLASSIFIER_MODEL` / `Settings.classifier_model` MUST pick a model that
+> supports **strict structured output** (Groq `response_format=
+> json_schema`, or the provider equivalent). Never pin a judge model that
+> lacks it. Reason: the 2026-05-29 "nothing checks" bug — a free-form-JSON
+> judge intermittently echoed a mangled goal id (`goal_id="greet"`) →
+> silent all-None → no checkpoint flipped. The format guarantee OUTRANKS a
+> few points of raw accuracy: a mangled-format turn silently drops a
+> checkpoint (bad UX), worse than an occasional wrong verdict. Verify the
+> candidate accepts `json_schema` on the target provider BEFORE adopting it
+> (console.groq.com/docs/structured-outputs#supported-models — 70B does
+> NOT; Scout / Llama-4 / gpt-oss / kimi do).
+
 Story 6.9b (2026-05-22) moved only the classifier to Groq; the
 **2026-05-29 all-Groq migration** then moved the remaining two LLM
 paths off Qwen-via-OpenRouter too. **Reason:** OpenRouter's *shared
@@ -150,7 +163,19 @@ can't control. So all three now run on Groq:
 
 - **`ExchangeClassifier`** (`pipeline/exchange_classifier.py`) → Groq via
   raw httpx (`api.groq.com/openai/v1/chat/completions`). Reads
-  `Settings.groq_api_key` + `Settings.classifier_model`.
+  `Settings.groq_api_key` + `Settings.classifier_model`. **2026-05-29 —
+  the multi-goal judge (`classify_multi`) sends Groq STRICT structured
+  outputs (`response_format=json_schema`): a schema-pinned object
+  `{goal_id: "met"|"unmet"|"unsure"}` validated server-side. So
+  `classifier_model` defaults to **Llama 4 Scout**, NOT 70B — 70B returns
+  HTTP 400 on `json_schema`. This killed the format-instability bug where
+  70B intermittently echoed the literal id tag (`goal_id="greet"`) under
+  the old free-form `{"goals_met":[...]}` contract → broke id matching →
+  silent all-None → NO checkpoint flipped for the SAME input that worked a
+  call earlier. `CLASSIFIER_MODEL` must stay a structured-output-capable
+  Groq model. The legacy single-goal `classify` is untouched (no
+  `response_format`). See `_build_verdict_schema` + `EXCHANGE_CLASSIFIER_
+  MULTI_PROMPT`.**
 - **`EmotionEmitter`** (`pipeline/emotion_emitter.py`) → Groq via raw
   httpx (same endpoint). Reads `Settings.groq_api_key` +
   `Settings.emotion_model`. Constructor kwarg is provider-neutral
@@ -164,11 +189,24 @@ can't control. So all three now run on Groq:
   extra) that we do NOT install → `ModuleNotFoundError` at boot. The
   warm-up (`llm_warmup.py`) hits Groq too.
 
-`character_model` / `emotion_model` / `classifier_model` all default to
-`"llama-3.3-70b-versatile"` (env-overridable: `CHARACTER_MODEL` /
-`EMOTION_MODEL` / `CLASSIFIER_MODEL`). **Persona note:** the character
-prompts were written for Qwen (`/no_think` prefix is a Qwen-ism, inert
-on Llama); a persona recalibration on Llama is a deliberate follow-up.
+`character_model` / `emotion_model` default to `"llama-3.3-70b-versatile"`;
+`classifier_model` defaults to `"meta-llama/llama-4-scout-17b-16e-instruct"`
+(2026-05-29 structured-output switch above). All env-overridable
+(`CHARACTER_MODEL` / `EMOTION_MODEL` / `CLASSIFIER_MODEL`). Scout is also
+~4-5x cheaper than 70B ($0.11/$0.34 vs $0.59/$0.79 per 1M) at the same
+~120-220 ms latency. **Accuracy (measured 2026-05-29 on the 75-sample
+`tests/fixtures/classifier_benchmark_corpus.json`, single-goal structured
+calls):** Scout **92.0%** (6 false positives, **0 false negatives**) vs
+70B's 98.7% (0 FP). Less precise, but every Scout error is over-generous
+(never wrongly rejects a real attempt — the frustrating case), which
+matches principle 5's "Default to MET" bias and beats a 98.7% judge whose
+format intermittently broke (no checkpoint shown). Bigger structured-
+output models aren't on our Groq account (`llama-4-maverick` + `kimi-k2`
+404, `gpt-oss-20b` 400s on schema). **Follow-up:** re-tune the multi
+prompt for Scout to trim the 6 FPs, then re-measure. **Persona note:**
+the character prompts were written for Qwen (`/no_think` prefix is a
+Qwen-ism, inert on Llama); a persona recalibration on Llama is a
+deliberate follow-up.
 
 Only `GROQ_API_KEY` is REQUIRED now. `OPENROUTER_API_KEY` is **legacy /
 optional** (default `""`) — no longer read by the runtime; safe to

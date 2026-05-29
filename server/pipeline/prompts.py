@@ -269,11 +269,14 @@ Scenario: {scenario_description}
 <character_line>{last_character_line}</character_line>
 <user_response>{user_text}</user_response>
 
-Pending objectives (each identified by goal_id):
+Pending objectives (the text before the colon is the objective's id):
 {pending_goals_block}
 
-Respond with strict JSON only — no prose, no preamble, no Markdown fences. Put each \
-goal_id under exactly one key; a goal_id you are unsure about may be omitted from both \
-lists.
-{{"goals_met": ["goal_id", ...], "goals_unmet": ["goal_id", ...]}}
+Respond with a JSON object whose keys are EXACTLY the objective ids above. For each \
+id give one verdict string:
+- "met"    — the user's response satisfies that objective.
+- "unmet"  — the user's response actively addresses the conversation but does NOT \
+satisfy that objective.
+- "unsure" — you genuinely cannot tell. Use this sparingly; for borderline cases that \
+lean positive, choose "met" (principle 5 — false positives cost nothing).
 """

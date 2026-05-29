@@ -71,6 +71,20 @@ compatibility wrapper for the legacy `/connect` PoC path + existing
 tests. Both paths share `_post_for_content` for the provider request +
 failure-mode handling; only the verdict-parsing layer differs
 (`_parse_classifier_output` vs `_parse_multi_classifier_output`).
+
+2026-05-29 structured-output fix — `classify_multi` now requests Groq
+STRICT structured outputs (`response_format=json_schema`): the verdict is
+a schema-pinned object `{goal_id: "met"|"unmet"|"unsure"}` validated by
+Groq server-side (constrained decoding). This replaces the free-form
+`{"goals_met":[...],"goals_unmet":[...]}` contract, which let the model
+intermittently echo the literal id tag (`goal_id="greet"`) — breaking id
+matching and silently yielding all-None (no checkpoint flipped) for an
+input that had worked moments before. Because 70B does NOT support
+`json_schema` (HTTP 400), the classifier model defaults to Llama 4 Scout
+(`config.Settings.classifier_model`); the single-goal legacy `classify`
+keeps its prose-tolerant `_parse_classifier_output` and sends no
+`response_format`. The character + emotion paths are unaffected — both
+still run 70B and neither uses structured outputs.
 """
 
 from __future__ import annotations
@@ -88,7 +102,21 @@ from pipeline.prompts import (
 )
 
 _PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
-_PROVIDER_MODEL = "llama-3.3-70b-versatile"
+# 2026-05-29 — Llama 4 Scout (NOT 70B): the multi-goal path uses Groq
+# STRICT structured outputs (`response_format=json_schema`), which 70B
+# does not support (HTTP 400). Scout does, and is ~4-5x cheaper at the
+# same latency. See `config.Settings.classifier_model`. bot.py always
+# passes the resolved `Settings.classifier_model`; this default only
+# governs direct/test construction.
+_PROVIDER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Story 6.10 follow-up (2026-05-29) — the multi-goal verdict is now a
+# schema-pinned object `{goal_id: "met"|"unmet"|"unsure"}`. Groq validates
+# it server-side (constrained decoding) so the model can neither mangle a
+# goal_id nor omit a key — killing the intermittent `goal_id="greet"`
+# echo bug that silently produced all-None (no checkpoint flipped).
+_VERDICT_VALUES = ("met", "unmet", "unsure")
+_VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure": None}
 
 # Story 6.10 — the multi-goal classifier emits a JSON object with two
 # arrays of goal_ids (`goals_met` / `goals_unmet`). For a 6-objective
@@ -494,6 +522,17 @@ class ExchangeClassifier:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
             "max_tokens": _MULTI_MAX_TOKENS,
+            # STRICT structured output — Groq constrains generation to this
+            # schema, guaranteeing an exactly-keyed `{goal_id: enum}` object.
+            # Requires a structured-output-capable model (Scout, NOT 70B).
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "goal_verdicts",
+                    "strict": True,
+                    "schema": _build_verdict_schema(goal_ids),
+                },
+            },
         }
         content = await self._post_for_content(payload)
         if content is None:
@@ -540,33 +579,61 @@ def _parse_classifier_output(content: str) -> bool | None:
     return met
 
 
-def _format_pending_goals_block(pending_goals: list[dict]) -> str:
-    """Render the pending objectives as a numbered list for the
-    `{pending_goals_block}` placeholder in `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.
+def _build_verdict_schema(goal_ids: list[str]) -> dict:
+    """Build the STRICT JSON schema for `classify_multi`'s structured
+    output: one property per pending goal_id, each constrained to the
+    met/unmet/unsure enum, ALL required, no extra keys.
 
-    Each line: `N. [goal_id="<id>"] <success_criteria>`. The `goal_id`
-    tag is what the model echoes back in the `goals_met` / `goals_unmet`
-    arrays, so it MUST be machine-stable (we use the YAML checkpoint id
-    verbatim).
+    Groq enforces this server-side via constrained decoding, so the model
+    physically cannot (a) echo a mangled id like `goal_id="greet"`, (b)
+    omit a goal, or (c) emit a value outside the enum. That removes the
+    entire format-instability class of bug at the source — the previous
+    free-form `{"goals_met":[...],"goals_unmet":[...]}` contract let 70B
+    intermittently return the literal tag text, which broke id matching
+    and produced a silent all-None (no checkpoint flipped) for the SAME
+    input that worked moments earlier.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            gid: {"type": "string", "enum": list(_VERDICT_VALUES)} for gid in goal_ids
+        },
+        "required": list(goal_ids),
+        "additionalProperties": False,
+    }
+
+
+def _format_pending_goals_block(pending_goals: list[dict]) -> str:
+    """Render the pending objectives as a bare `- <goal_id>: <criteria>`
+    list for the `{pending_goals_block}` placeholder in
+    `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.
+
+    The goal_id is shown plainly (no `goal_id="..."` tag) because it is the
+    JSON KEY the model fills under the strict schema, NOT a value it echoes.
+    The old tagged format invited the model to copy the literal tag
+    `goal_id="greet"` into its answer, breaking id matching (the 2026-05-29
+    silent-no-flip bug). We use the YAML checkpoint id verbatim so it lines
+    up with the schema keys built by `_build_verdict_schema`.
     """
     lines = []
-    for i, goal in enumerate(pending_goals, start=1):
-        lines.append(f'{i}. [goal_id="{goal["id"]}"] {goal["success_criteria"]}')
+    for goal in pending_goals:
+        lines.append(f"- {goal['id']}: {goal['success_criteria']}")
     return "\n".join(lines)
 
 
 def _parse_multi_classifier_output(
     content: str, valid_ids: list[str]
 ) -> dict[str, bool | None]:
-    """Parse the multi-goal model response into a `{goal_id: bool|None}`
+    """Parse the multi-goal verdict object into a `{goal_id: bool|None}`
     dict keyed by EVERY id in `valid_ids`.
 
-    Expected shape: `{"goals_met": [...], "goals_unmet": [...]}`. A
-    goal_id present in `goals_met` → True; in `goals_unmet` → False;
-    absent from both (or any parse failure) → None. Unknown ids in the
-    model's arrays are ignored (defensive against a hallucinated id).
-    Mirrors `_parse_classifier_output`'s fence-strip + first-`{...}`
-    fallback so a model that wraps JSON in prose / Markdown still parses.
+    Expected (strict-schema-enforced) shape:
+    `{"<goal_id>": "met"|"unmet"|"unsure", ...}`. met → True, unmet →
+    False, unsure (or a missing key / unknown value) → None. Any whole
+    parse failure → all-None. The fence-strip + first-`{...}` fallback is
+    retained as defensive belt-and-suspenders for a non-strict provider /
+    model that wraps the JSON, even though Groq strict mode returns clean
+    JSON on the happy path.
     """
     none_result = {gid: None for gid in valid_ids}
     text = content.strip()
@@ -592,28 +659,4 @@ def _parse_multi_classifier_output(
         logger.warning("exchange classifier multi output not a dict")
         return none_result
 
-    met_raw = data.get("goals_met", [])
-    unmet_raw = data.get("goals_unmet", [])
-    met_set = (
-        {g for g in met_raw if isinstance(g, str)}
-        if isinstance(met_raw, list)
-        else set()
-    )
-    unmet_set = (
-        {g for g in unmet_raw if isinstance(g, str)}
-        if isinstance(unmet_raw, list)
-        else set()
-    )
-
-    result: dict[str, bool | None] = {}
-    for gid in valid_ids:
-        if gid in met_set:
-            # `goals_met` wins if the model contradicts itself (id in
-            # both lists) — Default-to-MET principle 5: a borderline
-            # "both" is treated as met (false positives cost nothing).
-            result[gid] = True
-        elif gid in unmet_set:
-            result[gid] = False
-        else:
-            result[gid] = None
-    return result
+    return {gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids}

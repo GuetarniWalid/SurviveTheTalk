@@ -20,10 +20,11 @@ def test_sarcastic_prompt_mentions_character_name() -> None:
 
 
 def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
-    """Story 6.10 AC3 — the multi-goal classifier prompt exists, carries
-    the 4 substitution placeholders, requests the goals_met/goals_unmet
-    JSON schema, preserves the intent-first principles + any-order
-    framing, and keeps the Story 6.6 D3 XML injection-resistance tags."""
+    """Story 6.10 AC3 (2026-05-29 structured-output rev) — the multi-goal
+    classifier prompt exists, carries the 4 substitution placeholders,
+    instructs the per-id met/unmet/unsure verdict (the strict json_schema
+    enforces the object shape), preserves the intent-first principles +
+    any-order framing, and keeps the Story 6.6 D3 XML injection tags."""
     from pipeline.prompts import EXCHANGE_CLASSIFIER_MULTI_PROMPT
 
     p = EXCHANGE_CLASSIFIER_MULTI_PROMPT
@@ -32,9 +33,13 @@ def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
     assert "{user_text}" in p
     assert "{last_character_line}" in p
     assert "{scenario_description}" in p
-    # Output schema.
-    assert "goals_met" in p
-    assert "goals_unmet" in p
+    # Per-id verdict vocabulary (schema-enforced enum).
+    assert '"met"' in p
+    assert '"unmet"' in p
+    assert '"unsure"' in p
+    # The old free-form array contract is gone (it caused the goal_id echo bug).
+    assert "goals_met" not in p
+    assert "goals_unmet" not in p
     # Intent-first principles preserved + the any-order contract.
     assert "INTENT" in p
     assert "Default to MET" in p
@@ -47,19 +52,19 @@ def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
 
 def test_multi_prompt_formats_without_error() -> None:
     """The multi prompt must `.format()` cleanly with the 4 named
-    placeholders (the JSON example braces are escaped as `{{ }}`)."""
+    placeholders."""
     from pipeline.prompts import EXCHANGE_CLASSIFIER_MULTI_PROMPT
 
     out = EXCHANGE_CLASSIFIER_MULTI_PROMPT.format(
         scenario_description="The Waiter",
         last_character_line="What can I get you?",
         user_text="a coke please",
-        pending_goals_block='1. [goal_id="greet"] say hi',
+        pending_goals_block="- greet: say hi",
     )
     assert "a coke please" in out
-    assert 'goal_id="greet"' in out
-    # The literal JSON braces survive as single braces in the output.
-    assert '{"goals_met"' in out
+    assert "- greet: say hi" in out
+    # Bare ids only — the tagged form is the bug.
+    assert 'goal_id="greet"' not in out
 
 
 def test_cartesia_voice_id_is_valid_uuid() -> None:
