@@ -159,11 +159,16 @@ class ExchangeClassifier:
         *,
         api_key: str,
         model: str = _PROVIDER_MODEL,
+        base_url: str = _PROVIDER_URL,
     ) -> None:
         if not api_key:
             raise ValueError("ExchangeClassifier requires a non-empty api_key")
         self._api_key = api_key
         self._model = model
+        # 2026-05-29 — provider endpoint is injectable (from
+        # `Settings.llm_base_url` in `bot.py`) so a provider switch is an
+        # env change, not a code edit. Defaults to Groq.
+        self._base_url = base_url
         # Story 6.9 reliability patch (2026-05-21) — persistent
         # AsyncClient across classify calls. Pre-patch every classify()
         # opened a brand-new client → paid TCP + TLS handshake (~100-200
@@ -343,7 +348,7 @@ class ExchangeClassifier:
         }
         try:
             client = await self._get_client()
-            response = await client.post(_PROVIDER_URL, headers=headers, json=payload)
+            response = await client.post(self._base_url, headers=headers, json=payload)
         except httpx.HTTPError as exc:
             # Story 6.9 reliability patch — surface the exception's
             # qualified class name when the str() is empty (httpx

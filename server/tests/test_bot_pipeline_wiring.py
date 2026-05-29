@@ -35,6 +35,18 @@ def test_bot_imports_emitter_classes() -> None:
     assert "format_remaining_goals_block," in source
     assert "format_suggested_focus_block," in source
     assert "from pipeline.exchange_classifier import ExchangeClassifier" in source
+    # 2026-05-29 all-Groq migration + provider abstraction — the main
+    # character LLM is built by the single switch-point factory
+    # `pipeline/llm_provider.build_main_llm` (OpenAILLMService pointed at
+    # the configured base_url lives THERE, not inline in bot.py). Was
+    # OpenRouterLLMService/Qwen, which 429'd on OpenRouter's shared pool.
+    assert "from pipeline.llm_provider import (" in source
+    assert "build_main_llm," in source
+    assert "resolve_llm_api_key," in source
+    # raw-httpx sites need the FULL chat-completions URL (resolve_llm_chat_url),
+    # not the base — conflating them was the checkpoints-404 regression.
+    assert "resolve_llm_chat_url," in source
+    assert "OpenRouterLLMService" not in source
     # Story 6.8 Phase 2 AC8 — wiring assertion for the charter import.
     assert "COHERENCE_CHARTER" in source
     # Story 6.9 — DTLN noise suppression must be imported AND wired into
@@ -104,7 +116,9 @@ def test_bot_instantiates_emitters() -> None:
     source = _BOT_PATH.read_text(encoding="utf-8")
     assert "EmotionEmitter(" in source
     assert "character=scenario_character" in source
-    assert "openrouter_api_key=settings.openrouter_api_key" in source
+    # 2026-05-29 — EmotionEmitter runs on the shared LLM provider
+    # (resolved key/base_url, asserted below) + its own emotion_model.
+    assert "model=settings.emotion_model" in source
     assert "PatienceTracker(" in source
     # All 8 fields returned by `resolve_patience_config` are passed to
     # the PatienceTracker constructor (Deviation #15). The 4 dormant
@@ -139,19 +153,26 @@ def test_bot_instantiates_emitters() -> None:
     # Story 6.6 — CheckpointManager + ExchangeClassifier instantiation.
     assert "ExchangeClassifier(" in source
     assert "CheckpointManager(" in source
+    # 2026-05-29 — the main character LLM is built by the provider factory
+    # (the single switch point); bot.py no longer constructs the service
+    # inline.
+    assert (
+        "build_main_llm(settings, system_instruction=initial_system_prompt)" in source
+    )
     # Story 6.9b — model id sourced from Settings so the operator can
     # flip providers via env override at deploy time without a code
     # release. The kwarg MUST land on the ExchangeClassifier
     # construction site (not just be referenced elsewhere) — a
     # forgotten thread would silently keep the hardcoded default.
     assert "model=settings.classifier_model" in source
-    # Story 6.9b migration (2026-05-22) — ExchangeClassifier now uses
-    # Groq Llama 3.3 70B. The provider-neutral `api_key` kwarg replaced
-    # `openrouter_api_key`, and it MUST be threaded from
-    # `Settings.groq_api_key`. EmotionEmitter stays on Qwen via
-    # OpenRouter (asserted above on `openrouter_api_key=settings.
-    # openrouter_api_key`), so the two assertions co-exist intentionally.
-    assert "api_key=settings.groq_api_key" in source
+    # 2026-05-29 provider abstraction — all LLM calls resolve key + base_url
+    # via the `pipeline.llm_provider` helpers (the single switch point), not
+    # a raw `settings.groq_api_key` / hardcoded URL. Asserted once via
+    # `in source` (covers the classifier + emotion + warm-up call sites).
+    assert "api_key=resolve_llm_api_key(settings)" in source
+    # The raw-httpx LLM calls (classifier/emotion/warm-up) get the FULL
+    # chat-completions endpoint, NOT the base — otherwise they 404.
+    assert "base_url=resolve_llm_chat_url(settings)" in source
     assert "VisemeEmitter" not in source
 
 
@@ -296,11 +317,11 @@ def test_coherence_charter_threaded_to_checkpoint_manager_and_llm_settings() -> 
       - threaded into the `CheckpointManager(...)` constructor as the
         `coherence_charter=COHERENCE_CHARTER` kwarg (else the manager
         would refuse construction because the kwarg is required);
-      - composed into the initial `OpenRouterLLMService.Settings(
-        system_instruction=...)` call so the FIRST LLM turn already
-        has coherence rules (without this, the very first user turn
-        would be answered under a charter-less prompt and the smoke
-        gate's call_id=118 replay would fail).
+      - composed into the initial `system_instruction` passed to the main
+        LLM (via `build_main_llm(settings, system_instruction=...)`) so the
+        FIRST LLM turn already has coherence rules (without this, the very
+        first user turn would be answered under a charter-less prompt and
+        the smoke gate's call_id=118 replay would fail).
 
     Source-text matching is fragile (renames break it) — when bot.py
     refactors, expect to re-verify the assertions.
@@ -333,9 +354,9 @@ def test_coherence_charter_threaded_to_checkpoint_manager_and_llm_settings() -> 
     # composition and the LLM construction — exactly the "fragile on
     # refactor" caveat above).
     assert "system_instruction=initial_system_prompt" in code, (
-        "OpenRouterLLMService.Settings must set system_instruction="
+        "the main LLM must be built with system_instruction="
         "initial_system_prompt so the first LLM turn uses the composed "
-        "prompt (base + charter + first prompt_segment)"
+        "prompt (base + charter + remaining-goals blocks)"
     )
     comp_start = code.find("initial_system_prompt = (")
     assert comp_start != -1, (

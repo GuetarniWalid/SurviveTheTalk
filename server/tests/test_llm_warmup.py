@@ -50,16 +50,16 @@ class _CapturingClient:
 
 
 def test_warm_up_sends_minimal_request_to_correct_model(monkeypatch) -> None:
-    """Warm-up posts to OpenRouter with the given model + max_tokens=1."""
+    """Warm-up posts to Groq with the given model + max_tokens=1."""
     import pipeline.llm_warmup as warmup_mod
 
     monkeypatch.setattr(warmup_mod.httpx, "AsyncClient", _CapturingClient)
 
-    _run(warm_up_llm(api_key="test-key", model="qwen/qwen3.5-flash-02-23"))
+    _run(warm_up_llm(api_key="test-key", model="llama-3.3-70b-versatile"))
 
-    assert _CapturingClient.last_post_url == warmup_mod._OPENROUTER_URL
+    assert _CapturingClient.last_post_url == warmup_mod._PROVIDER_URL
     payload = _CapturingClient.last_post_json
-    assert payload["model"] == "qwen/qwen3.5-flash-02-23"
+    assert payload["model"] == "llama-3.3-70b-versatile"
     assert payload["max_tokens"] == 1, (
         "warm-up must request a single token — it's a connection primer, "
         "not a real inference"
@@ -80,7 +80,7 @@ def test_warm_up_swallows_network_errors(monkeypatch) -> None:
     monkeypatch.setattr(warmup_mod.httpx, "AsyncClient", _failing_client)
 
     # Must complete without raising.
-    _run(warm_up_llm(api_key="test-key", model="qwen/qwen3.5-flash-02-23"))
+    _run(warm_up_llm(api_key="test-key", model="llama-3.3-70b-versatile"))
 
 
 def test_warm_up_swallows_timeout(monkeypatch) -> None:
@@ -92,4 +92,4 @@ def test_warm_up_swallows_timeout(monkeypatch) -> None:
 
     monkeypatch.setattr(warmup_mod.httpx, "AsyncClient", _timeout_client)
 
-    _run(warm_up_llm(api_key="test-key", model="qwen/qwen3.5-flash-02-23"))
+    _run(warm_up_llm(api_key="test-key", model="llama-3.3-70b-versatile"))

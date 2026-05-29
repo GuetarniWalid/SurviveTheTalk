@@ -32,7 +32,7 @@ def _run(coro):
 
 
 def _make_emitter() -> EmotionEmitter:
-    return EmotionEmitter(character="waiter", openrouter_api_key="test-key")
+    return EmotionEmitter(character="waiter", api_key="test-key")
 
 
 def _make_user_frame(text: str) -> TranscriptionFrame:
@@ -344,10 +344,10 @@ def test_cleanup_drains_in_flight_task(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------- API key validation at construction (review patch) -------------
 
 
-def test_constructor_rejects_empty_openrouter_api_key() -> None:
+def test_constructor_rejects_empty_api_key() -> None:
     """An empty API key would silently 401 every classify call. Fail fast."""
-    with pytest.raises(ValueError, match="openrouter_api_key"):
-        EmotionEmitter(character="waiter", openrouter_api_key="")
+    with pytest.raises(ValueError, match="api_key"):
+        EmotionEmitter(character="waiter", api_key="")
 
 
 # ---------- Markdown fence parsing (review patch) -------------------------
@@ -371,8 +371,13 @@ def test_parser_strips_unlabeled_markdown_fence() -> None:
 def test_classify_uses_httpx_post(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The classify call hits the OpenRouter chat-completions endpoint with a
+    """The classify call hits the Groq chat-completions endpoint with a
     Bearer token. We mock the transport so no network call is made.
+
+    2026-05-29 all-Groq migration witness: target is `api.groq.com` (not
+    `openrouter.ai`), model is the Groq default, and the OpenRouter-era
+    `reasoning` field is NOT sent (Llama has no thinking mode; unknown
+    fields risk 400s).
     """
     body = {
         "choices": [
@@ -381,22 +386,16 @@ def test_classify_uses_httpx_post(
     }
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "openrouter.ai"
+        assert request.url.host == "api.groq.com"
         assert request.headers["authorization"] == "Bearer test-key"
-        # Lock in the Story 6.3 smoke-fix: `reasoning` MUST sit at the
-        # top level of the JSON body, NOT nested in `extra_body`.
-        # `extra_body` is an OpenAI-Python-SDK convention; the SDK
-        # flattens it into the body before sending. Direct httpx calls
-        # to OpenRouter's HTTP API don't go through the SDK, so a
-        # nested `extra_body` is silently dropped → the model stays in
-        # default reasoning mode → 5-15s response → classifier timeout.
         sent = json.loads(request.content)
-        assert sent["model"] == "qwen/qwen3.5-flash-02-23"
-        assert sent["reasoning"] == {"enabled": False}, (
-            "reasoning must be at the top level of the body, not in extra_body"
+        assert sent["model"] == "llama-3.3-70b-versatile"
+        assert "reasoning" not in sent, (
+            "the `reasoning` field is OpenRouter/Qwen-era; Groq Llama has no "
+            "thinking mode and unknown fields risk 400s"
         )
         assert "extra_body" not in sent, (
-            "extra_body is OpenAI-SDK-only; would be dropped by OpenRouter"
+            "extra_body is OpenAI-SDK-only; raw HTTP API drops it"
         )
         return httpx.Response(200, json=body)
 

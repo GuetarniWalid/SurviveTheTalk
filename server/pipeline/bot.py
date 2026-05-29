@@ -23,7 +23,11 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.services.openrouter.llm import OpenRouterLLMService
+from pipeline.llm_provider import (
+    build_main_llm,
+    resolve_llm_api_key,
+    resolve_llm_chat_url,
+)
 from pipecat.services.soniox.stt import SonioxSTTService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
@@ -204,20 +208,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # truncated turn but the call doesn't hang.
     endpoint_watchdog = EndpointWatchdog()
 
-    main_llm_model = "qwen/qwen3.5-flash-02-23"
-    llm = OpenRouterLLMService(
-        api_key=settings.openrouter_api_key,
-        settings=OpenRouterLLMService.Settings(
-            model=main_llm_model,
-            extra={"extra_body": {"reasoning": {"enabled": False}}},
-            system_instruction=initial_system_prompt,
-            temperature=0.7,
-            max_tokens=256,
-        ),
-    )
+    # 2026-05-29 all-Groq migration + provider abstraction — the main
+    # character LLM is built by `pipeline/llm_provider.build_main_llm`, the
+    # SINGLE switch point for which OpenAI-compatible provider every LLM
+    # call targets (`Settings.llm_base_url` + resolved key, default Groq).
+    # Moving off Groq tomorrow = env change (LLM_BASE_URL + LLM_API_KEY +
+    # CHARACTER_MODEL), zero code. The factory uses `OpenAILLMService`
+    # (NOT pipecat's `GroqLLMService`, whose package imports `groq.tts`
+    # needing the uninstalled `groq` SDK). Persona recalibration on the
+    # Llama model is a deliberate follow-up.
+    llm = build_main_llm(settings, system_instruction=initial_system_prompt)
 
     # Story 6.13 follow-up (2026-05-27) — fire a fire-and-forget LLM
-    # warm-up so the user's first turn doesn't eat the OpenRouter
+    # warm-up so the user's first turn doesn't eat the provider
     # cold-start (measured ~0.5 s slower on turn 1 vs warm turns, call
     # 164). Launched here so it warms in PARALLEL with the rest of the
     # pipeline setup + LiveKit connect + greeting playback; by the time
@@ -225,7 +228,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # connection + provider-side model are hot. Never blocks, never
     # raises — see `pipeline/llm_warmup.py`.
     _warmup_task = asyncio.create_task(
-        warm_up_llm(api_key=settings.openrouter_api_key, model=main_llm_model)
+        warm_up_llm(
+            api_key=resolve_llm_api_key(settings),
+            model=settings.character_model,
+            base_url=resolve_llm_chat_url(settings),
+        )
     )
     _BACKGROUND_TASKS.add(_warmup_task)
     _warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)
@@ -317,9 +324,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # `client/.../AudioClockChannel.kt` + `FormantVisemeAnalyzer.kt`.
     # No server-side viseme emitter is required (or wanted: data-channel
     # latency made the previous server-driven approach unsyncable).
+    # 2026-05-29 all-Groq migration — emotion runs on the shared LLM
+    # provider (resolved base_url + key from Settings; default Groq).
     emotion_emitter = EmotionEmitter(
         character=scenario_character,
-        openrouter_api_key=settings.openrouter_api_key,
+        api_key=resolve_llm_api_key(settings),
+        model=settings.emotion_model,
+        base_url=resolve_llm_chat_url(settings),
     )
 
     # Story 6.4 — server-side silence escalation + character hang-up.
@@ -379,17 +390,14 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # to_checkpoint_manager_and_llm_settings`) source-text-asserts both
     # the import and this call shape, so a future refactor that drops
     # either breaks loud.
-    # Story 6.9b — Classifier migrated to Groq Llama 3.3 70B post-bench
-    # (2026-05-22, see report at `_bmad-output/implementation-artifacts/
-    # calibration-tests/classifier_benchmark_2026-05-22T09-29-19Z.json`).
-    # Constructor kwarg is provider-neutrally named `api_key` (was
-    # `openrouter_api_key` pre-migration). The model id reads from
-    # `Settings.classifier_model` (default `llama-3.3-70b-versatile`,
-    # overridable via `CLASSIFIER_MODEL` env for rollback to Qwen via
-    # OpenRouter if Groq has an incident).
+    # Story 6.9b — Classifier on Groq Llama 3.3 70B (2026-05-22 bench).
+    # 2026-05-29 — now goes through the shared LLM provider config
+    # (resolved base_url + key from Settings; default Groq). Provider
+    # switch = env change (LLM_BASE_URL + LLM_API_KEY + CLASSIFIER_MODEL).
     exchange_classifier = ExchangeClassifier(
-        api_key=settings.groq_api_key,
+        api_key=resolve_llm_api_key(settings),
         model=settings.classifier_model,
+        base_url=resolve_llm_chat_url(settings),
     )
     checkpoint_manager = CheckpointManager(
         base_prompt=scenario_base_prompt,

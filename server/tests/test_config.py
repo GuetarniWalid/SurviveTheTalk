@@ -83,6 +83,70 @@ def test_settings_classifier_model_overrides_via_env() -> None:
         assert s.classifier_model == "llama-3.3-70b-versatile-128k"
 
 
+# ---------- 2026-05-29 all-Groq migration — character + emotion models -----
+
+
+def test_settings_character_and_emotion_models_default_to_groq() -> None:
+    """The all-Groq migration moved the main character LLM + EmotionEmitter
+    off Qwen/OpenRouter onto Groq. Both model ids default to the model we
+    already trust in prod and are env-overridable (CHARACTER_MODEL /
+    EMOTION_MODEL) for a future tuning pass. `clear=True` for a hermetic
+    env (a stray CHARACTER_MODEL in the dev shell mustn't shadow)."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.character_model == "llama-3.3-70b-versatile"
+        assert s.emotion_model == "llama-3.3-70b-versatile"
+
+
+def test_settings_character_and_emotion_models_override_via_env() -> None:
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "CHARACTER_MODEL": "llama-3.1-8b-instant",
+        "EMOTION_MODEL": "llama-3.1-8b-instant",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.character_model == "llama-3.1-8b-instant"
+        assert s.emotion_model == "llama-3.1-8b-instant"
+
+
+def test_settings_llm_provider_defaults_to_groq() -> None:
+    """The single LLM provider switch defaults to Groq; llm_api_key empty
+    (the resolver falls back to groq_api_key)."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.llm_base_url == "https://api.groq.com/openai/v1"
+        assert s.llm_api_key == ""
+
+
+def test_settings_llm_provider_override_via_env() -> None:
+    """Switching provider tomorrow = LLM_BASE_URL + LLM_API_KEY env, no code."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1/chat/completions",
+        "LLM_API_KEY": "or-key",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.llm_base_url == "https://openrouter.ai/api/v1/chat/completions"
+        assert s.llm_api_key == "or-key"
+
+
+def test_settings_boots_without_openrouter_key() -> None:
+    """Post all-Groq migration, OPENROUTER_API_KEY is optional (legacy).
+    Settings must parse cleanly when it's absent."""
+    env = {k: v for k, v in REQUIRED_ENV_VARS.items() if k != "OPENROUTER_API_KEY"}
+    env["JWT_SECRET"] = "0" * 32
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.openrouter_api_key == ""
+        assert s.groq_api_key == "test-groq-key"
+
+
 # ---------- Story 6.13 Phase 4b — TTS provider switch -----------------------
 
 

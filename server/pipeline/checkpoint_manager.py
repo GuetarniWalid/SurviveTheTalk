@@ -197,7 +197,8 @@ class CheckpointManager(FrameProcessor):
             The ORDER serves as a HINT (suggested focus) — not a strict
             constraint — under the goal-based model. Validated at load
             time by `scenarios.load_scenario_checkpoints`.
-        llm: Pipecat LLM service (e.g. `OpenRouterLLMService`). Must
+        llm: Pipecat LLM service (e.g. `OpenAILLMService` pointed at
+            Groq since the 2026-05-29 all-Groq migration). Must
             expose `._settings.system_instruction` for in-place mutation
             on advance (Deviation #2). Typed loosely so tests can pass
             a simple stub with the required attribute path.
@@ -315,7 +316,7 @@ class CheckpointManager(FrameProcessor):
         # so the FIRST LLM turn already reflects the full pending-goals
         # set (AC4: `_update_system_instruction` called once at
         # construction). bot.py composes the identical string for the
-        # `OpenRouterLLMService.Settings(system_instruction=...)` it
+        # `OpenAILLMService.Settings(system_instruction=...)` (Groq) it
         # passes in; this call re-sets it to the same value (idempotent),
         # and keeps the manager authoritative if bot.py's initial
         # composition ever drifts.

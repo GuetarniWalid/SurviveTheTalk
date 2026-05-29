@@ -135,46 +135,48 @@ assert any("expected message" in entry for entry in captured)
 
 Bit us on Story 6.5 review P6 (NULL `duration_sec` log assertion).
 
-### 4. The classifier and emotion paths use DIFFERENT LLM providers (Story 6.9b split)
+### 4. ALL LLM paths run on Groq (2026-05-29 all-Groq migration)
 
-Since the 2026-05-22 Story 6.9b migration, the server's two parallel LLM
-paths run on different providers — by design, not accident:
+Story 6.9b (2026-05-22) moved only the classifier to Groq; the
+**2026-05-29 all-Groq migration** then moved the remaining two LLM
+paths off Qwen-via-OpenRouter too. **Reason:** OpenRouter's *shared
+free pool* access to Qwen kept returning HTTP 429 "rate-limited
+upstream" from Alibaba (`is_byok: False`) — even on single slow test
+calls, freezing the character. Adding OpenRouter credits did NOT help
+(the bottleneck is Alibaba rate-limiting OpenRouter's pool, not our
+spend). Groq is a first-party provider: with our own dedicated key we
+get our own quota (raise it by upgrading the Groq tier), not a pool we
+can't control. So all three now run on Groq:
 
-- **`ExchangeClassifier`** (`pipeline/exchange_classifier.py`) → **Groq
-  Llama 3.3 70B** at `api.groq.com/openai/v1`. Reads
-  `Settings.groq_api_key` + `Settings.classifier_model` (default
-  `"llama-3.3-70b-versatile"`, overridable via `CLASSIFIER_MODEL` env).
-  Chosen for sub-200 ms p50 from VPS + 98.7 % accuracy on the
-  classifier corpus + 0 false positives. Sends OpenAI-compatible request
-  shape, NO `reasoning` field (Llama has no thinking mode to disable).
-  Persistent client lifecycle preserved from Story 6.9.
-- **`EmotionEmitter`** (`pipeline/emotion_emitter.py`) → **Qwen 3.5 Flash
-  via OpenRouter** at `openrouter.ai/api/v1`. Reads
-  `Settings.openrouter_api_key`. NOT migrated to Groq — emotion latency
-  has zero UX cost (the character simply stays in its previous Rive
-  pose). Migrating it later costs ~3-5 €/mois extra at MVP scale for
-  cosmetic vendor consolidation; tracked as possible future Story 6.9c.
-- **Main character LLM** (the one that generates the actual character's
-  voice via Pipecat's `OpenRouterLLMService`) → **Qwen 3.5 Flash via
-  OpenRouter**. NOT touched by Story 6.9b — only the classifier moved.
+- **`ExchangeClassifier`** (`pipeline/exchange_classifier.py`) → Groq via
+  raw httpx (`api.groq.com/openai/v1/chat/completions`). Reads
+  `Settings.groq_api_key` + `Settings.classifier_model`.
+- **`EmotionEmitter`** (`pipeline/emotion_emitter.py`) → Groq via raw
+  httpx (same endpoint). Reads `Settings.groq_api_key` +
+  `Settings.emotion_model`. Constructor kwarg is provider-neutral
+  `api_key` (was `openrouter_api_key`). No `reasoning` field.
+- **Main character LLM** (`bot.py`) → **`OpenAILLMService` pointed at
+  `base_url="https://api.groq.com/openai/v1"`** with
+  `Settings.groq_api_key` + `Settings.character_model`. We use
+  `OpenAILLMService` (the already-present `openai` SDK), **NOT** pipecat's
+  `GroqLLMService` — importing `pipecat.services.groq` pulls in
+  `groq.tts`, which hard-requires the `groq` SDK (`pipecat-ai[groq]`
+  extra) that we do NOT install → `ModuleNotFoundError` at boot. The
+  warm-up (`llm_warmup.py`) hits Groq too.
 
-Both `OPENROUTER_API_KEY` (for emotion + main LLM) and `GROQ_API_KEY`
-(for classifier) are REQUIRED env vars; `Settings()` validation will
-fail at boot if either is missing. The benchmark harness at
-`scripts/benchmark_classifier.py` is dev-only and reads keys via
-`load_dotenv()` from `server/.env`.
+`character_model` / `emotion_model` / `classifier_model` all default to
+`"llama-3.3-70b-versatile"` (env-overridable: `CHARACTER_MODEL` /
+`EMOTION_MODEL` / `CLASSIFIER_MODEL`). **Persona note:** the character
+prompts were written for Qwen (`/no_think` prefix is a Qwen-ism, inert
+on Llama); a persona recalibration on Llama is a deliberate follow-up.
 
-Rollback path: **REQUIRES A REDEPLOY** of an earlier release that
-points `_PROVIDER_URL` (in `pipeline/exchange_classifier.py`) at
-OpenRouter. The `CLASSIFIER_MODEL` env var lets us pin a Groq model
-snapshot but is NOT a provider-rollback knob — the URL is hardcoded
-to `api.groq.com`. Setting `CLASSIFIER_MODEL=qwen/...` alone would
-post a Qwen model id to Groq's endpoint and 404 every classify.
-If Groq has a sustained incident, the operator runbook is: redeploy
-the last pre-6.9b release (commit `54fd09c` or earlier) — that brings
-back the OpenRouter URL + the `openrouter_api_key` lifecycle. Tracked
-as a future hardening item (`deferred-work.md`) — env-paired URL
-selection would unblock env-only rollback, but is not built today.
+Only `GROQ_API_KEY` is REQUIRED now. `OPENROUTER_API_KEY` is **legacy /
+optional** (default `""`) — no longer read by the runtime; safe to
+remove from `/opt/survive-the-talk/.env`. The dev-only bench scripts
+still read it from the env directly.
+
+Rollback: revert this migration's commit + redeploy (a provider switch
+is code, not an env knob — the Groq base_url/URL is hardcoded).
 
 ### 5. TTS provider is switchable — ElevenLabs default, Cartesia behind a flag (Story 6.13)
 

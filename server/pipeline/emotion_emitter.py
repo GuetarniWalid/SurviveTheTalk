@@ -1,7 +1,8 @@
 """Story 6.3 — EmotionEmitter Pipecat FrameProcessor.
 
 Observes `TranscriptionFrame`s (the user's transcribed speech) and fires an
-async OpenRouter classification call. On success, emits an
+async Groq classification call (2026-05-29 all-Groq migration; was Qwen
+via OpenRouter). On success, emits an
 `OutputTransportMessageFrame` with a `{"type":"emotion","data":{...}}` dict
 payload. The LiveKit transport then JSON-encodes the dict and broadcasts it
 over the data channel to the Flutter client (verified at
@@ -60,11 +61,15 @@ _ALLOWED_EMOTIONS: frozenset[str] = frozenset(
     }
 )
 
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-_OPENROUTER_MODEL = "qwen/qwen3.5-flash-02-23"
-# 5.0s gives the model headroom even when OpenRouter is briefly slow.
-# Original 2.0s was too tight: smoke gate showed every classification
-# timing out, leaving the character locked in its default emotion.
+# 2026-05-29 "all-Groq" migration — emotion moved off Qwen-via-OpenRouter
+# (Alibaba 429-rate-limited OpenRouter's shared pool) onto Groq, which is
+# OpenAI-compatible at this endpoint. Body shape is unchanged except the
+# `reasoning` field is dropped (Llama has no thinking mode to disable).
+_PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
+_PROVIDER_MODEL = "llama-3.3-70b-versatile"
+# 5.0s headroom is now far more than Groq needs (~120 ms typical) but kept
+# as a generous safety belt; the character simply holds its prior pose on
+# the rare timeout.
 _CLASSIFIER_TIMEOUT_SECONDS = 5.0
 # < classifier timeout so httpx aborts first and we surface a clean
 # HTTP error log line instead of an opaque asyncio.TimeoutError.
@@ -77,25 +82,35 @@ class EmotionEmitter(FrameProcessor):
     Args:
         character: The scenario's `rive_character` slug (e.g. "waiter") used
             to fill the `{character}` placeholder in the classifier prompt.
-        openrouter_api_key: API key for OpenRouter. Required — passed in by
-            `bot.py` from `Settings.openrouter_api_key`.
+        api_key: API key for the provider (Groq since the 2026-05-29
+            all-Groq migration). Required — passed in by `bot.py` from
+            `Settings.groq_api_key`. Provider-neutrally named so a future
+            swap doesn't force a rename (mirrors `ExchangeClassifier`).
+        model: Provider model id. Default `llama-3.3-70b-versatile`;
+            sourced from `Settings.emotion_model` in `bot.py`.
     """
 
     def __init__(
         self,
         *,
         character: str,
-        openrouter_api_key: str,
+        api_key: str,
+        model: str = _PROVIDER_MODEL,
+        base_url: str = _PROVIDER_URL,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         # Fail fast at construction rather than silently 401-ing every
         # classify (which would lock the character in default emotion with
         # no in-call signal — the smoke gate is the only catch).
-        if not openrouter_api_key:
-            raise ValueError("EmotionEmitter requires a non-empty openrouter_api_key")
+        if not api_key:
+            raise ValueError("EmotionEmitter requires a non-empty api_key")
         self._character = character
-        self._api_key = openrouter_api_key
+        self._api_key = api_key
+        self._model = model
+        # 2026-05-29 — provider endpoint injectable (from
+        # `Settings.llm_base_url`) so a provider switch is an env change.
+        self._base_url = base_url
         self._in_flight: asyncio.Task[None] | None = None
         # Generation guard: bump on every schedule, capture in the task,
         # check before push_frame. Belt-and-braces with `prior.cancel()` —
@@ -210,18 +225,15 @@ class EmotionEmitter(FrameProcessor):
         character then simply stays in its previous Rive emotion state.
         """
         prompt = EMOTION_CLASSIFIER_PROMPT.format(character=self._character, text=text)
-        # `reasoning` MUST sit at the top level of the JSON body. `extra_body`
-        # is a Python OpenAI-SDK convention that the SDK flattens into the
-        # request body before sending; OpenRouter's HTTP API doesn't know the
-        # `extra_body` key and silently drops it. Putting `reasoning` there
-        # leaves Qwen in default reasoning mode, which takes 5-15 s per call
-        # and timed out every classification during the Story 6.3 smoke gate.
+        # 2026-05-29 all-Groq migration — Groq is OpenAI-compatible, same
+        # body shape. The `reasoning` field (an OpenRouter/Qwen hack to
+        # disable chain-of-thought) is NOT sent: Llama has no thinking mode
+        # and unknown fields risk 400s on stricter providers.
         payload = {
-            "model": _OPENROUTER_MODEL,
+            "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "max_tokens": 64,
-            "reasoning": {"enabled": False},
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -231,7 +243,7 @@ class EmotionEmitter(FrameProcessor):
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.post(
-                    _OPENROUTER_URL, headers=headers, json=payload
+                    self._base_url, headers=headers, json=payload
                 )
         except httpx.HTTPError as exc:
             logger.warning("emotion classifier HTTP error: {}", exc)

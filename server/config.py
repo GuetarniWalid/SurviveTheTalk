@@ -13,12 +13,15 @@ class Settings(BaseSettings):
 
     # Pipeline (Pipecat / LiveKit / AI services)
     soniox_api_key: str
-    # `openrouter_api_key` is STILL REQUIRED after Story 6.9b — the
-    # classifier moved to Groq but EmotionEmitter + the main character
-    # LLM (`OpenRouterLLMService` in `bot.py`) both still read this key.
-    # Removing it from `/opt/survive-the-talk/.env` thinking "we migrated"
-    # will fail boot. See the `groq_api_key` field below for the split.
-    openrouter_api_key: str
+    # `openrouter_api_key` — LEGACY, no longer read by the prod runtime
+    # since the 2026-05-29 "all-Groq" migration. The main character LLM +
+    # EmotionEmitter + classifier now ALL run on Groq (Qwen via OpenRouter
+    # was unreliable: Alibaba rate-limited OpenRouter's shared pool with
+    # 429s even on single slow calls — `is_byok: False`). Kept as an
+    # OPTIONAL field (empty default) so old `.env` files don't break boot;
+    # the dev-only bench scripts still read `OPENROUTER_API_KEY` straight
+    # from the env. Safe to delete from `/opt/survive-the-talk/.env`.
+    openrouter_api_key: str = ""
     # Story 6.13 review (2026-05-27) — optional at parse time (empty
     # default) so an ElevenLabs-only deploy keeps booting after the
     # operator removes CARTESIA_API_KEY from .env. Mirrors the
@@ -95,6 +98,30 @@ class Settings(BaseSettings):
     # `api.groq.com` and 404. A real rollback to OpenRouter+Qwen
     # requires redeploying an earlier release. Story 6.9b review D2.
     classifier_model: str = "llama-3.3-70b-versatile"
+
+    # 2026-05-29 "all-Groq" migration — the main character LLM and the
+    # EmotionEmitter moved off Qwen-via-OpenRouter (429-prone shared pool)
+    # onto Groq (first-party dedicated key = our own quota, controllable).
+    # Both default to the same model we already trust in prod (the
+    # classifier runs on it); split into two env-overridable fields so a
+    # future tuning pass can pin a faster/cheaper model for emotion (it's
+    # a background, non-critical call) without touching the character.
+    character_model: str = "llama-3.3-70b-versatile"  # CHARACTER_MODEL
+    emotion_model: str = "llama-3.3-70b-versatile"  # EMOTION_MODEL
+
+    # 2026-05-29 — single OpenAI-compatible LLM provider switch (mirrors the
+    # TTS factory). ALL LLM calls (character, emotion, checkpoint judge,
+    # warm-up) hit `llm_base_url`. To move off Groq tomorrow, set
+    # LLM_BASE_URL + LLM_API_KEY (+ the per-role *_MODEL vars) — ZERO code,
+    # because every provider we'd realistically use (Groq / OpenRouter /
+    # DashScope / OpenAI / Together / Fireworks…) speaks the same
+    # OpenAI-compatible request format. The switch point is
+    # `pipeline/llm_provider.py`; no call site hardcodes `api.groq.com`.
+    llm_base_url: str = "https://api.groq.com/openai/v1"  # LLM_BASE_URL
+    # Optional provider-key override. Empty → falls back to `groq_api_key`
+    # (so today's GROQ_API_KEY-only deploys keep working untouched). Resolved
+    # via `pipeline.llm_provider.resolve_llm_api_key`.
+    llm_api_key: str = ""  # LLM_API_KEY
 
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
