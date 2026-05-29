@@ -414,6 +414,20 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
                     f"Scenario {scenario_id!r}: checkpoint[{idx}] missing/empty "
                     f"required string field {field!r}."
                 )
+    # Story 6.10 review patch — checkpoint ids MUST be unique. The
+    # goal-tracking engine keys state by id (`CheckpointManager._goals` /
+    # `_id_to_index`), so a duplicate id silently collapses two goals into
+    # one map entry while `len(checkpoints)` still counts both — the client
+    # HUD `metCount` then can never reach `total` and the call never shows
+    # all-met. The pre-6.10 linear engine indexed positionally and was
+    # immune; this validation closes the new sensitivity at load time.
+    ids = [entry["id"] for entry in checkpoints]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: duplicate checkpoint id(s) {duplicates}. "
+            f"Checkpoint ids must be unique (goal state is keyed by id)."
+        )
     return checkpoints
 
 

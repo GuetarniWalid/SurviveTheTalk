@@ -124,16 +124,23 @@ def test_settings_llm_provider_defaults_to_groq() -> None:
 
 
 def test_settings_llm_provider_override_via_env() -> None:
-    """Switching provider tomorrow = LLM_BASE_URL + LLM_API_KEY env, no code."""
+    """Switching provider tomorrow = LLM_BASE_URL + LLM_API_KEY env, no code.
+
+    NOTE — `LLM_BASE_URL` is the OpenAI-compatible BASE url (ends at
+    `/v1`), NOT a full chat-completions endpoint. `resolve_llm_chat_url`
+    appends `/chat/completions` and `OpenAILLMService` appends it too, so
+    a full-endpoint value here would double-append → 404 (the 2026-05-29
+    checkpoints-404 regression). See `pipeline/llm_provider.py` docstrings.
+    """
     overrides = {
         **REQUIRED_ENV_VARS,
         "JWT_SECRET": "0" * 32,
-        "LLM_BASE_URL": "https://openrouter.ai/api/v1/chat/completions",
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
         "LLM_API_KEY": "or-key",
     }
     with patch.dict(os.environ, overrides, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
-        assert s.llm_base_url == "https://openrouter.ai/api/v1/chat/completions"
+        assert s.llm_base_url == "https://openrouter.ai/api/v1"
         assert s.llm_api_key == "or-key"
 
 

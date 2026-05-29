@@ -595,7 +595,38 @@ class CheckpointManager(FrameProcessor):
             )
             return
 
-        trimmed = user_text[:64]
+        # INFRA FAILURE — `classify_multi` returns None on timeout / HTTP
+        # error / closed-client race / non-2xx / empty choices / unparseable
+        # body. Patience-neutral (Deviation #5) + the consecutive-None
+        # backstop (Story 6.9 D1). A PARSED response is a dict, NOT None —
+        # even an all-"unsure" dict is genuine model ambiguity, not infra,
+        # so it must NOT feed the backstop (review D3, 2026-05-29: the old
+        # all-None-dict conflation fabricated a false "sustained failure"
+        # alert on a healthy-but-uncertain classifier).
+        if verdicts is None:
+            self._consecutive_none_count += 1
+            if self._consecutive_none_count >= _MAX_CONSECUTIVE_NONE_VERDICTS:
+                logger.error(
+                    "checkpoint_classifier_sustained_failure consecutive_none={} "
+                    "pending={} — forcing fail_penalty to surface "
+                    "classifier degradation",
+                    self._consecutive_none_count,
+                    len(pending),
+                )
+                self._patience_tracker.apply_exchange_outcome(success=False)
+                self._consecutive_none_count = 0
+                return
+            logger.warning(
+                "checkpoint_classifier_inconclusive text={!r} consecutive_none={} "
+                "pending={} (patience unchanged — infra failure)",
+                user_text[:64],
+                self._consecutive_none_count,
+                len(pending),
+            )
+            return
+
+        # A real (parsed) verdict landed — reset the infra backstop.
+        self._consecutive_none_count = 0
 
         # Which pending goals flipped to met this turn?
         flipped_ids = [
@@ -603,49 +634,31 @@ class CheckpointManager(FrameProcessor):
             for gid, verdict in verdicts.items()
             if verdict is True and self._goals.get(gid) == "pending"
         ]
-        any_real_verdict = any(v is not None for v in verdicts.values())
 
         if not flipped_ids:
-            # No objective met this turn. Distinguish infra failure
-            # (all-None — provider hiccup) from a genuine off-topic miss
-            # (at least one objective actively judged False).
-            if not any_real_verdict:
-                # INFRA FAILURE path (Deviation #5) — patience-neutral,
-                # plus the consecutive-None backstop (Story 6.9 D1).
-                self._consecutive_none_count += 1
-                if self._consecutive_none_count >= _MAX_CONSECUTIVE_NONE_VERDICTS:
-                    logger.error(
-                        "checkpoint_classifier_sustained_failure consecutive_none={} "
-                        "pending={} — forcing fail_penalty to surface "
-                        "classifier degradation",
-                        self._consecutive_none_count,
-                        len(pending),
-                    )
-                    self._patience_tracker.apply_exchange_outcome(success=False)
-                    self._consecutive_none_count = 0
-                    return
-                logger.warning(
-                    "checkpoint_classifier_inconclusive text={!r} consecutive_none={} "
-                    "pending={} (patience unchanged — infra failure)",
-                    trimmed,
-                    self._consecutive_none_count,
+            # No objective flipped. If the classifier actively judged at
+            # least one goal "unmet" (False) → genuine off-topic / true
+            # miss → drain patience (AC8: fail ONLY when NO goal matched).
+            # If EVERY goal came back "unsure" (all None in a PARSED dict)
+            # → genuine model ambiguity → patience-neutral (no penalty, no
+            # false sustained-failure alert).
+            if any(v is False for v in verdicts.values()):
+                logger.info(
+                    "checkpoint_unmet no_goal_flipped met_count={} pending={}",
+                    self.met_count,
                     len(pending),
                 )
+                self._patience_tracker.apply_exchange_outcome(success=False)
                 return
-            # Genuine off-topic / true-miss turn — the user addressed
-            # none of the pending objectives. Drain patience (AC8: fail
-            # ONLY when NO goal matched this turn).
-            self._consecutive_none_count = 0
             logger.info(
-                "checkpoint_unmet no_goal_flipped met_count={} pending={}",
+                "checkpoint_all_unsure no_goal_flipped met_count={} pending={} "
+                "(patience unchanged — model uncertain, not infra)",
                 self.met_count,
                 len(pending),
             )
-            self._patience_tracker.apply_exchange_outcome(success=False)
             return
 
-        # >=1 objective flipped → SUCCESS turn. Reset the infra counter.
-        self._consecutive_none_count = 0
+        # >=1 objective flipped → SUCCESS turn.
         for gid in flipped_ids:
             self._goals[gid] = "met"
 

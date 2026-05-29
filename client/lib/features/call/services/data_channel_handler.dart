@@ -184,8 +184,12 @@ class DataChannelHandler {
         }
         // Story 6.10 UI refonte — `hints` carries every step's text in
         // author order so the Flutter HUD animates locally. Keep only
-        // string entries; default to empty (pre-refonte server) → the
-        // HUD falls back to `next_hint`.
+        // string entries; default to empty when the field is absent.
+        // NOTE: there is NO `next_hint` fallback — `CheckpointStepHud`
+        // renders nothing when `hints` is empty. That only happens with a
+        // pre-refonte / rolled-back server that omits `hints`; on a normal
+        // single-VPS deploy the server is always at-or-ahead of the client,
+        // so the current server always sends the full `hints` list.
         final rawHints = data['hints'];
         final List<String> hints = rawHints is List
             ? [

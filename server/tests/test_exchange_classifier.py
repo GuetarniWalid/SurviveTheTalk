@@ -760,9 +760,12 @@ def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) ->
     assert out == {"greet": True, "main": None, "drink": None}
 
 
-def test_classify_multi_all_none_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wholesale HTTP failure → EVERY pending goal_id maps to None
-    (the caller treats an all-None turn as infra failure)."""
+def test_classify_multi_returns_none_on_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wholesale HTTP failure → `classify_multi` returns None (the
+    INFRA-FAILURE sentinel; the caller feeds the consecutive-None backstop,
+    distinct from a parsed all-"unsure" dict). Review D3 (2026-05-29)."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("simulated connect error")
@@ -773,10 +776,12 @@ def test_classify_multi_all_none_on_http_error(monkeypatch: pytest.MonkeyPatch) 
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": None, "b": None}
+    assert out is None
 
 
-def test_classify_multi_all_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_classify_multi_returns_none_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import pipeline.exchange_classifier as ec_mod
 
     monkeypatch.setattr(ec_mod, "_CLASSIFIER_TIMEOUT_SECONDS", 0.05)
@@ -791,15 +796,60 @@ def test_classify_multi_all_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> 
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": None, "b": None}
+    assert out is None
 
 
-def test_classify_multi_all_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Groq rate-limit (429) on the multi path → all None (patience-
-    neutral infra failure), same contract as the single-goal path."""
+def test_classify_multi_returns_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Groq rate-limit (429) on the multi path → None (patience-neutral
+    infra failure), same contract as the single-goal path."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"error": {"message": "rate limited"}})
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out is None
+
+
+def test_classify_multi_returns_none_on_unparseable_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 whose assistant content is not JSON → parse failure → None
+    (infra-grade), NOT a parsed all-"unsure" dict. Review D3 (2026-05-29)."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "I cannot answer that."}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out is None
+
+
+def test_classify_multi_parsed_all_unsure_returns_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SUCCESSFULLY-PARSED response where every goal is "unsure" returns
+    a dict of all-None — NOT the None infra sentinel. This is the case the
+    caller must treat as benign ambiguity (no backstop). Review D3."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"a": "unsure", "b": "unsure"}'}}]
+            },
+        )
 
     _mock_http(monkeypatch, handler=_handler)
     out = _run(
@@ -875,8 +925,10 @@ def test_multi_output_parser_helpers() -> None:
     assert set(schema["required"]) == {"a", "b"}
     assert schema["additionalProperties"] is False
 
+    # A PARSE failure (non-JSON / non-dict body) → None (infra-grade,
+    # review D3 2026-05-29), NOT a parsed all-None dict.
+    assert _parse_multi_classifier_output("no json here", ["a"]) is None
     # met → True, unmet → False, unsure / missing key / unknown value → None.
-    assert _parse_multi_classifier_output("no json here", ["a"]) == {"a": None}
     assert _parse_multi_classifier_output('{"a": "met"}', ["a"]) == {"a": True}
     assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"]) == {"a": False}
     assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"]) == {"a": None}

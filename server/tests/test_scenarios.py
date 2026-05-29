@@ -857,6 +857,44 @@ exit_lines:
         scenarios_mod.load_scenario_checkpoints("synth_malformed")
 
 
+def test_load_scenario_checkpoints_rejects_duplicate_ids(tmp_path, monkeypatch) -> None:
+    """Story 6.10 review patch — duplicate checkpoint ids must raise at
+    load time. The goal-tracking engine keys state by id
+    (`CheckpointManager._goals` / `_id_to_index`); a duplicate silently
+    collapses two goals into one map entry while `len(checkpoints)` counts
+    both, so the client HUD `metCount` can never reach `total`."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_dup
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: greet
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+  - id: greet
+    hint_text: b
+    prompt_segment: b
+    success_criteria: b
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_dup")
+    with pytest.raises(RuntimeError, match="duplicate checkpoint id"):
+        scenarios_mod.load_scenario_checkpoints("synth_dup")
+
+
 def test_load_scenario_base_prompt_does_not_include_SPEAK_FIRST_directive() -> None:
     """The CheckpointManager composes the live system message from
     `base_prompt + checkpoint.prompt_segment` after every advance. The

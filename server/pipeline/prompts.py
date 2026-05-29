@@ -232,12 +232,15 @@ or
 # Prompt-injection resistance from Story 6.6 D3 (XML `<user_response>` /
 # `<character_line>` tags) is preserved.
 #
-# Output schema is strict JSON: `{"goals_met": [...], "goals_unmet": [...]}`.
-# A goal_id omitted from BOTH lists = "no verdict" (the caller keeps it
-# pending and re-evaluates on the next turn). The classifier formats the
-# `{pending_goals_block}` placeholder as a numbered list of
-# `[goal_id="..."] <success_criteria>` entries (see
-# `exchange_classifier._format_pending_goals_block`).
+# Output schema (2026-05-29 structured-output fix): a strict JSON object
+# keyed by EVERY pending goal_id, each valued `"met"|"unmet"|"unsure"`
+# (Groq enforces this server-side via `response_format=json_schema`). This
+# REPLACED the old free-form `{"goals_met": [...], "goals_unmet": [...]}`
+# arrays, which let the model echo the literal id tag and break matching
+# (silent all-None / no-flip bug). "unsure" = no verdict (caller keeps the
+# goal pending). The `{pending_goals_block}` is a bare `- <goal_id>:
+# <success_criteria>` list — the bare id lines up with the schema keys (see
+# `exchange_classifier._format_pending_goals_block` + `_build_verdict_schema`).
 EXCHANGE_CLASSIFIER_MULTI_PROMPT = """\
 You judge whether a B1 English learner's response meets one or more objectives in a \
 conversation practice scenario. The objectives can be met in ANY order — evaluate each \

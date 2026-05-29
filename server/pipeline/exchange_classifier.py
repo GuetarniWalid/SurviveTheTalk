@@ -118,11 +118,14 @@ _PROVIDER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 _VERDICT_VALUES = ("met", "unmet", "unsure")
 _VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure": None}
 
-# Story 6.10 — the multi-goal classifier emits a JSON object with two
-# arrays of goal_ids (`goals_met` / `goals_unmet`). For a 6-objective
-# scenario the body is ~6 short id tokens per array plus framing, well
-# under 128. Sized larger than the single-goal `max_tokens=64` because
-# the output grows with the objective count; still ~0.04 ¢ per classify.
+# Story 6.10 (2026-05-29 structured-output) — the multi-goal classifier
+# emits a schema-pinned JSON object with ONE key per pending goal_id, each
+# valued `"met"|"unmet"|"unsure"` (NOT the old `goals_met`/`goals_unmet`
+# arrays — that free-form shape caused the silent-no-flip bug). For a
+# 6-objective scenario the body is ~6 short `"id": "enum"` pairs plus
+# framing, well under 128. Sized larger than the single-goal
+# `max_tokens=64` because the output grows with the objective count;
+# still ~0.04 ¢ per classify.
 _MULTI_MAX_TOKENS = 128
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
@@ -317,21 +320,26 @@ class ExchangeClassifier:
         last_character_line: str,
         pending_goals: list[dict],
         scenario_description: str,
-    ) -> dict[str, bool | None]:
+    ) -> dict[str, bool | None] | None:
         """Evaluate a single user turn against ALL pending objectives in
         one LLM call (Story 6.10 goal-based dialogue).
 
-        Returns a `{goal_id: True | False | None}` dict keyed by EVERY
-        pending goal_id (so the caller can iterate without KeyErrors):
-          - True  — the model put the goal_id in `goals_met`.
-          - False — the model put the goal_id in `goals_unmet`.
-          - None  — the goal_id was omitted from both lists (model
-                    unsure), OR the whole call failed (timeout / HTTP
-                    error / parse error). When the call fails wholesale
-                    EVERY goal_id maps to None — the caller (Checkpoint
-                    Manager) treats an all-None turn as INFRA FAILURE
-                    (patience-neutral) exactly like the single-goal
-                    `classify` returning None.
+        Returns EITHER:
+          - a `{goal_id: True | False | None}` dict keyed by EVERY pending
+            goal_id (a PARSED verdict) — the call succeeded and the model
+            answered:
+              * True  — that objective is met.
+              * False — that objective is actively NOT met.
+              * None  — the model was "unsure" about that objective (no
+                        verdict; the caller keeps it pending). An all-None
+                        DICT is genuine model ambiguity, NOT infra failure.
+          - `None` (the whole return value) — INFRA FAILURE: timeout, HTTP
+            error, closed-client race, non-2xx, empty content-filter
+            choices, or an unparseable body. The caller (CheckpointManager)
+            treats a `None` return as patience-neutral infra failure and
+            feeds the consecutive-None backstop — distinct from a parsed
+            all-None (all-"unsure") dict, which it treats as benign
+            ambiguity (review D3, 2026-05-29).
 
         Args:
             user_text: The user's most-recent finalized transcription.
@@ -341,7 +349,6 @@ class ExchangeClassifier:
                 should be passed — already-met goals must not be re-judged.
             scenario_description: Short scenario context.
         """
-        goal_ids = [g["id"] for g in pending_goals]
         try:
             return await asyncio.wait_for(
                 self._classify_multi(
@@ -354,7 +361,7 @@ class ExchangeClassifier:
             )
         except asyncio.TimeoutError:
             logger.warning("exchange classifier multi timeout")
-            return {gid: None for gid in goal_ids}
+            return None
         except asyncio.CancelledError:
             raise
 
@@ -503,9 +510,8 @@ class ExchangeClassifier:
         last_character_line: str,
         pending_goals: list[dict],
         scenario_description: str,
-    ) -> dict[str, bool | None]:
+    ) -> dict[str, bool | None] | None:
         goal_ids = [g["id"] for g in pending_goals]
-        none_result = {gid: None for gid in goal_ids}
         prompt = EXCHANGE_CLASSIFIER_MULTI_PROMPT.format(
             scenario_description=_escape_format_braces(scenario_description),
             last_character_line=_escape_format_braces(last_character_line),
@@ -536,7 +542,12 @@ class ExchangeClassifier:
         }
         content = await self._post_for_content(payload)
         if content is None:
-            return none_result
+            # Infra failure (HTTP error / non-2xx / closed client / empty
+            # choices). Signal it distinctly as `None` so the caller can
+            # tell it apart from a parsed all-"unsure" dict.
+            return None
+        # `_parse_multi_classifier_output` returns None on a parse failure
+        # (malformed / non-dict body) — also infra-grade, propagated as None.
         return _parse_multi_classifier_output(content, goal_ids)
 
 
@@ -623,19 +634,22 @@ def _format_pending_goals_block(pending_goals: list[dict]) -> str:
 
 def _parse_multi_classifier_output(
     content: str, valid_ids: list[str]
-) -> dict[str, bool | None]:
+) -> dict[str, bool | None] | None:
     """Parse the multi-goal verdict object into a `{goal_id: bool|None}`
-    dict keyed by EVERY id in `valid_ids`.
+    dict keyed by EVERY id in `valid_ids`, or `None` on a parse failure.
 
     Expected (strict-schema-enforced) shape:
     `{"<goal_id>": "met"|"unmet"|"unsure", ...}`. met → True, unmet →
-    False, unsure (or a missing key / unknown value) → None. Any whole
-    parse failure → all-None. The fence-strip + first-`{...}` fallback is
-    retained as defensive belt-and-suspenders for a non-strict provider /
-    model that wraps the JSON, even though Groq strict mode returns clean
-    JSON on the happy path.
+    False, unsure (or a missing key / unknown value) → None (per-goal "no
+    verdict"). A whole PARSE failure (non-JSON / non-dict body) returns
+    `None` (the whole value) so the caller treats it as infra failure —
+    NOT to be confused with a successfully-parsed dict whose values happen
+    to all be None ("unsure"), which is benign model ambiguity (review D3,
+    2026-05-29). The fence-strip + first-`{...}` fallback is retained as
+    defensive belt-and-suspenders for a non-strict provider / model that
+    wraps the JSON, even though Groq strict mode returns clean JSON on the
+    happy path.
     """
-    none_result = {gid: None for gid in valid_ids}
     text = content.strip()
     fence_match = _FENCE_RE.match(text)
     if fence_match:
@@ -648,15 +662,15 @@ def _parse_multi_classifier_output(
         end = text.rfind("}")
         if start == -1 or end == -1 or end <= start:
             logger.warning("exchange classifier multi non-JSON output")
-            return none_result
+            return None
         try:
             data = json.loads(text[start : end + 1])
         except json.JSONDecodeError:
             logger.warning("exchange classifier multi non-JSON output")
-            return none_result
+            return None
 
     if not isinstance(data, dict):
         logger.warning("exchange classifier multi output not a dict")
-        return none_result
+        return None
 
     return {gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids}

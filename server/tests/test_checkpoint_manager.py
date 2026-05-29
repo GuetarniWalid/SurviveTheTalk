@@ -120,7 +120,10 @@ def _make_manager(
         pending goals → None. `True` flips the first pending goal (the
         author-order analog of the old linear advance); `False` makes
         the turn an off-topic miss (no flip, at least one real verdict);
-        `None` makes the whole turn infra-failure (all goals None).
+        `None` makes `classify_multi` return `None` — the INFRA-FAILURE
+        sentinel (timeout / HTTP / parse failure). A parsed all-"unsure"
+        turn (a dict of all-None) is a SEPARATE case driven via
+        `multi_response_fn` (it must NOT feed the consecutive-None backstop).
     """
     checkpoints = checkpoints or _make_checkpoints(3)
     classifier = ExchangeClassifier(api_key="test-key")
@@ -134,7 +137,7 @@ def _make_manager(
         last_character_line: str,
         pending_goals: list[dict],
         scenario_description: str,
-    ) -> dict[str, bool | None]:
+    ) -> dict[str, bool | None] | None:
         idx = call_count["n"]
         call_count["n"] += 1
         classifier_calls.append(
@@ -158,7 +161,10 @@ def _make_manager(
             else classify_response
         )
         if verdict is None:
-            return {gid: None for gid in ids}
+            # INFRA-FAILURE sentinel — classify_multi returns None
+            # (timeout / HTTP / parse failure), distinct from a parsed
+            # all-"unsure" dict.
+            return None
         result: dict[str, bool | None] = {gid: None for gid in ids}
         result[ids[0]] = verdict
         return result
@@ -442,6 +448,37 @@ def test_consecutive_none_counter_resets_on_real_verdict() -> None:
         if c.kwargs.get("success") is False
     ]
     assert len(success_false_calls) == 0
+
+
+def test_parsed_all_unsure_does_not_drain_or_feed_backstop() -> None:
+    """Review D3 (2026-05-29) — a PARSED all-"unsure" turn (the classifier
+    answered but couldn't decide on every goal: a dict of all-None) is
+    genuine model ambiguity, NOT infra failure. It must be patience-neutral
+    AND must NOT increment the consecutive-None backstop — so even after
+    more than `_MAX_CONSECUTIVE_NONE_VERDICTS` such turns the manager never
+    fabricates `apply_exchange_outcome(success=False)` (the false "sustained
+    classifier failure" the old all-None-dict conflation used to fire)."""
+    from pipeline.checkpoint_manager import _MAX_CONSECUTIVE_NONE_VERDICTS
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # Parsed response; every goal came back "unsure".
+        return {g["id"]: None for g in pending}
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(multi_response_fn=_fn)
+    tracker.apply_exchange_outcome.reset_mock()
+
+    async def _drive() -> None:
+        for i in range(_MAX_CONSECUTIVE_NONE_VERDICTS + 2):
+            await manager.process_frame(
+                _make_user_frame(f"hmm {i}"), FrameDirection.DOWNSTREAM
+            )
+            await _drain(manager)
+
+    _run(_drive())
+
+    tracker.apply_exchange_outcome.assert_not_called()
+    assert manager._consecutive_none_count == 0
+    assert manager.met_count == 0
 
 
 def test_terminal_turn_classify_blocking_bounded_under_3s() -> None:
