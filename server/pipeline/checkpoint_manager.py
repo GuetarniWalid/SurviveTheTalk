@@ -94,6 +94,7 @@ from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     TranscriptionFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -699,8 +700,19 @@ class CheckpointManager(FrameProcessor):
         - `next_hint` = hint of the suggested-focus pending goal, or "".
         """
         idx = self._id_to_index[goal_id]
+        # URGENT (SystemFrame), NOT the queued OutputTransportMessageFrame:
+        # the flip fires mid-turn while the character LLM is busy streaming
+        # its reply. A queued DataFrame would sit in each processor's
+        # process-queue BEHIND that in-flight generation (pipecat serializes
+        # non-system frames per processor), so the client only received the
+        # checkpoint AFTER Tina finished speaking — the box looked unticked
+        # the whole time she talked (Walid 2026-05-29). A SystemFrame jumps
+        # the per-processor queue at every stage and reaches the transport
+        # immediately, so the tick lands ~at classify time (~0.2-0.5 s),
+        # before/while she starts speaking. The envelope is full-state
+        # (goals_met_indices + hints), so out-of-order delivery is safe.
         await self.push_frame(
-            OutputTransportMessageFrame(
+            OutputTransportMessageUrgentFrame(
                 message={
                     "type": "checkpoint_advanced",
                     "data": {

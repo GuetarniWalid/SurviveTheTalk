@@ -10,12 +10,12 @@ import 'package:flutter_test/flutter_test.dart';
 /// out-of-order detour back to the active step). The exact animation
 /// feel is validated on-device via the Smoke Test Gate.
 ///
-/// NOTE: the widget renders the step text TWICE — once visible, once in
-/// an invisible 0-opacity "mirror" used to size the box to 2× the content
-/// (so the text always lands in the solid top half of the dark gradient).
-/// So a present step matches `findsWidgets` (≥1, actually 2); the
-/// complementary absence checks (`findsNothing` for the wrong step) are
-/// what prove the RIGHT step is shown.
+/// NOTE: the widget renders the step text THREE times — once visible, plus
+/// TWO invisible 0-opacity "mirrors" used to size the box to 3× the content
+/// (so the text lands in the solid top band and the gradient fades gently
+/// over the bottom two-thirds). So a present step matches `findsWidgets`
+/// (≥1, actually 3); the complementary absence checks (`findsNothing` for
+/// the wrong step) are what prove the RIGHT step is shown.
 
 Widget _host(CheckpointSnapshot? snapshot) {
   return MaterialApp(

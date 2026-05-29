@@ -14,11 +14,12 @@ import 'checkpoint_snapshot.dart';
 /// Design (Walid's spec, 2026-05-28):
 ///   - A box pinned to the ABSOLUTE top of the screen (behind the status
 ///     bar — no SafeArea). Background = the dark app background
-///     ([AppColors.background] #1E1F23): SOLID for the top 50% of the box
-///     height, then a 100%→0% fade over the bottom 50% (gradient stops
-///     0 / 0.5 / 1.0). The box is sized to exactly 2× its content (via an
-///     invisible content mirror), so the text always sits in the solid
-///     top band and the fade trails into the scene below.
+///     ([AppColors.background] #1E1F23): SOLID over the top ~40% of the box
+///     height, then a 100%→0% fade over the bottom ~60% (gradient stops
+///     0 / 0.4 / 1.0). The box is sized to exactly 3× its content (via TWO
+///     invisible content mirrors), so the text always sits in the solid
+///     top band and the fade trails ~2× longer for a gentle blend into the
+///     scene below (Walid 2026-05-29: the old 2×-box fade was too abrupt).
 ///   - Inside, a single row: a **check** to the left + the CURRENT step's
 ///     text. Only ONE step is shown at a time (the next not-yet-done one).
 ///   - When that step is completed, the check animates from an outline to
@@ -240,7 +241,15 @@ class _CheckpointStepHudState extends State<CheckpointStepHud> {
     // fading over the bottom 50%, the text is GUARANTEED to live in the
     // 100%-opaque band, with the fade trailing into the scene below. No
     // measurement, no flash — it adapts to any line count automatically.
-    final fadeTail = Opacity(
+    // TWO invisible mirrors of the same content stacked below it. Each
+    // mirror has the identical structure/text/padding so its height equals
+    // the visible content's — so the Column is exactly 3× the content tall.
+    // With the gradient solid over the top ~third (behind the text) and
+    // fading over the bottom two-thirds, the fade trails ~2× longer than a
+    // single mirror gave — a gentler blend into the scene (Walid 2026-05-29:
+    // the old 2×-content box made the fade too abrupt on short text). No
+    // measurement, no flash — it adapts to any line count automatically.
+    Widget fadeMirror() => Opacity(
       opacity: 0,
       child: Padding(
         padding: contentPadding,
@@ -251,9 +260,10 @@ class _CheckpointStepHudState extends State<CheckpointStepHud> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        // Dark app-background (#1E1F23) — SOLID for the top half, then a
-        // 100%→0% fade over the bottom half (stops 0 / 0.5 / 1.0). Tokens
-        // only — `.withValues` keeps theme_tokens_test green.
+        // Dark app-background (#1E1F23) — SOLID over the top ~40% (covers
+        // the text band plus a small buffer below it), then a 100%→0% fade
+        // over the bottom ~60% (stops 0 / 0.4 / 1.0). Tokens only —
+        // `.withValues` keeps theme_tokens_test green.
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
@@ -262,12 +272,12 @@ class _CheckpointStepHudState extends State<CheckpointStepHud> {
             AppColors.background,
             AppColors.background.withValues(alpha: 0.0),
           ],
-          stops: const [0.0, 0.5, 1.0],
+          stops: const [0.0, 0.4, 1.0],
         ),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: [visibleContent, fadeTail],
+        children: [visibleContent, fadeMirror(), fadeMirror()],
       ),
     );
   }

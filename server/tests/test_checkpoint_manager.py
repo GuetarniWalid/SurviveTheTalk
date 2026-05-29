@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     Frame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     TextFrame,
     TranscriptionFrame,
 )
@@ -63,11 +64,18 @@ def _capture_pushed(manager: CheckpointManager) -> list[Frame]:
     return captured
 
 
-def _advance_envelopes(captured: list[Frame]) -> list[OutputTransportMessageFrame]:
+def _advance_envelopes(captured: list[Frame]) -> list[Frame]:
+    # The initial-state envelope is a queued OutputTransportMessageFrame;
+    # the mid-turn flip envelopes are URGENT (OutputTransportMessageUrgentFrame,
+    # a SystemFrame) so they jump the per-processor queue and reach the client
+    # without waiting behind the character LLM's in-flight generation. Match
+    # both so this helper captures the full checkpoint_advanced stream.
     return [
         f
         for f in captured
-        if isinstance(f, OutputTransportMessageFrame)
+        if isinstance(
+            f, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        )
         and f.message.get("type") == "checkpoint_advanced"
     ]
 
