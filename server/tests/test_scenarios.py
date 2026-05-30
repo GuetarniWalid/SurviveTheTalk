@@ -1278,3 +1278,20 @@ def test_resolve_patience_config_noisy_environment_falls_back_to_default(
     assert (
         config["hang_up_line_noisy_environment"] == NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT
     )
+
+
+def test_waiter_greet_criteria_requires_ordering_intent() -> None:
+    """2026-05-30 fix — `greet` used to end with "Any coherent response
+    counts", so an irrelevant line ("there is a lot of people here") passed
+    it (smoke call_id=204). The criteria must now require a move toward
+    ordering, and explicitly exclude bare greeting/small-talk."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    greet = next(
+        c for c in load_scenario_checkpoints("waiter_easy_01") if c["id"] == "greet"
+    )
+    crit = greet["success_criteria"].lower()
+    assert "any coherent response" not in crit, (
+        "the catch-all 'any coherent response counts' clause must be gone"
+    )
+    assert "order" in crit, "greet must require engaging with ordering"

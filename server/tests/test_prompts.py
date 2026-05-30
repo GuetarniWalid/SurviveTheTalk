@@ -53,7 +53,10 @@ def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
     assert "goals_unmet" not in p
     # Intent-first principles preserved + the any-order contract.
     assert "INTENT" in p
-    assert "Default to MET" in p
+    # 2026-05-30 fix — the judge must DEFAULT TO UNMET (was "Default to MET",
+    # which passed every checkpoint regardless of input; smoke call_id=203/204).
+    assert "Default to UNMET" in p
+    assert "Default to MET" not in p
     assert "any order" in p.lower()
     assert "Synonyms" in p
     # Story 6.6 D3 — prompt-injection resistance via XML tags.

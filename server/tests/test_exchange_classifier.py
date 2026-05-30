@@ -701,6 +701,30 @@ def _multi_kwargs(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def test_multi_prompt_defaults_to_unmet_not_met() -> None:
+    """2026-05-30 fix — the multi-goal judge was passing EVERY checkpoint
+    regardless of input (smoke call_id=203/204: "there is a lot of people
+    here" flipped `greet`). Root cause: the prompt told the model to mark
+    "loosely related" input met and to "Default to MET when uncertain".
+    Lock the corrected contract: the ACTIVE multi-goal prompt must default
+    to UNMET and must NOT carry the old lenient markers. (Behaviour can't be
+    asserted without hitting Groq; the prompt is the authoritative contract.)
+    """
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_MULTI_PROMPT as P
+
+    assert "Default to UNMET" in P, (
+        "the multi-goal judge must default to UNMET — a default-to-MET judge "
+        "passes every checkpoint and makes the exercise meaningless"
+    )
+    # The two markers that drove the over-validation must be gone.
+    assert "Default to MET" not in P
+    assert "loosely related" not in P
+    # B1 tolerance (real-but-messy attempts still pass) must be retained so
+    # the fix doesn't over-correct into false negatives.
+    assert "INTENT" in P
+    assert "uh" in P.lower() and "um" in P.lower()  # hesitation tolerance
+
+
 def test_classify_multi_returns_per_goal_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

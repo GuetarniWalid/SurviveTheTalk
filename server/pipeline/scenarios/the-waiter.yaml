@@ -92,9 +92,10 @@ checkpoints:
       fish and chips, soup of the day (tomato). No dessert tonight.
       If they stay silent, prompt them once with a weary "Well?".
     success_criteria: >
-      User states they want to order, asks for the menu, asks what's
-      available, or mentions any food item. Any coherent response to
-      the greeting counts.
+      User engages with ORDERING: states they want to order, asks for
+      the menu, asks what's available / what you recommend, or names a
+      food item. A greeting or small-talk with no move toward ordering
+      (e.g. "hi", "there are a lot of people here") does NOT count.
 
   - id: main_course
     hint_text: "Order your main course."
