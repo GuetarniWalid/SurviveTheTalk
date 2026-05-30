@@ -23,6 +23,7 @@ import '../models/call_session.dart';
 import '../repositories/call_repository.dart';
 import '../services/checkpoint_advanced_payload.dart';
 import '../services/data_channel_handler.dart';
+import '../services/env_warning_payload.dart';
 import '../services/viseme_scheduler.dart';
 import 'call_ended_notice_screen.dart';
 import 'scenario_backgrounds.dart';
@@ -30,6 +31,7 @@ import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
 import 'widgets/checkpoint_snapshot.dart';
 import 'widgets/checkpoint_step_hud.dart';
+import 'widgets/noisy_environment_banner.dart';
 import 'widgets/rive_character_canvas.dart';
 
 /// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
@@ -55,6 +57,7 @@ typedef DataChannelHandlerBuilder =
       required void Function() onBotSpeakingEnded,
       required void Function(CheckpointAdvancedPayload payload)
       onCheckpointAdvanced,
+      required void Function(EnvWarningPayload payload) onEnvWarning,
     });
 
 // Layout constants — mirrored from `IncomingCallScreen` so the outgoing
@@ -67,6 +70,11 @@ const double _kAvatarDiameter = 166.0;
 const double _kScreenHorizontalPadding = 30.0;
 const double _kScreenTopPadding = 60.0;
 const double _kScreenBottomPadding = 70.0;
+
+// Story 6.11 — vertical offset (below the SafeArea top inset) at which the
+// noisy-environment banner sits, so it clears the checkpoint HUD's solid
+// top band (status bar + a single line of step text + padding ≈ 50 px).
+const double _kNoisyBannerTopOffset = 64.0;
 
 /// Full-screen call surface for Story 6.1 + Story 6.2.
 ///
@@ -270,6 +278,20 @@ class _CallScreenState extends State<CallScreen> {
   ValueNotifier<CheckpointSnapshot?> get checkpointNotifierForTest =>
       _checkpointNotifier;
 
+  /// Story 6.11 — UI-only state for the noisy-environment banner. Null
+  /// until the (at-most-one-per-call) `env_warning` envelope arrives;
+  /// non-null thereafter through the character's exit line, until the
+  /// route transition to `CallEndedNoticeScreen` replaces the screen.
+  /// Same UI-only-on-the-State pattern as `_checkpointNotifier` (Story
+  /// 6.7) and `_weakConnectionNotifier` (Story 6.13) — only the banner
+  /// subtree rebuilds, never the Rive canvas.
+  final ValueNotifier<EnvWarningPayload?> _envWarningNotifier =
+      ValueNotifier<EnvWarningPayload?>(null);
+
+  @visibleForTesting
+  ValueNotifier<EnvWarningPayload?> get envWarningNotifierForTest =>
+      _envWarningNotifier;
+
   /// Story 6.13 follow-up — UI-only flag, true while the LOCAL
   /// participant's LiveKit `ConnectionQuality` is poor/lost. Drives a
   /// "weak connection" banner so the user understands the audio stutter
@@ -445,6 +467,9 @@ class _CallScreenState extends State<CallScreen> {
     // so any rebuild-during-teardown can't read a disposed ValueNotifier
     // (would throw on `.value` access).
     _checkpointNotifier.dispose();
+    // Story 6.11 — same teardown ordering for the noisy-environment
+    // banner notifier.
+    _envWarningNotifier.dispose();
     // Story 6.13 follow-up — tear down the connection-quality listener +
     // linger timer before disposing the notifier so neither can fire on a
     // disposed ValueNotifier during teardown.
@@ -618,6 +643,17 @@ class _CallScreenState extends State<CallScreen> {
                   justFlippedIndex: flipped,
                 );
               },
+              // Story 6.11 — parasitic background voice detected. Surface
+              // the banner so the user sees WHY the character is about to
+              // cut the call. The server-driven `call_end{reason:
+              // noisy_environment}` follows shortly after this (the
+              // PatienceTracker exit-line sequence), routing through
+              // `onCallEnd` → `RemoteCallEnded` like any other character
+              // hang-up. The banner stays up until the route transition.
+              onEnvWarning: (payload) {
+                if (!context.mounted) return;
+                _envWarningNotifier.value = payload;
+              },
             );
           }
 
@@ -648,6 +684,11 @@ class _CallScreenState extends State<CallScreen> {
           final wasGifted = state.wasGifted;
           final showsNotice =
               endReason == 'network_lost' ||
+              // Story 6.11 — parasitic-voice cut is ALWAYS gifted + always
+              // shows the notice (no-quota-burn path, same UX as
+              // network_lost): the user needs to know it was their
+              // environment and that the slot was refunded.
+              endReason == 'noisy_environment' ||
               ((endReason == 'character_hung_up' ||
                       endReason == 'inappropriate_content') &&
                   wasGifted == true);
@@ -889,6 +930,32 @@ class _CallScreenState extends State<CallScreen> {
                 if (widget.debugCanvasFallback != null) return;
                 if (mounted) setState(() => _canvasInFallback = true);
               },
+            ),
+          ),
+        ),
+        // Story 6.11 — noisy-environment banner. Top-anchored inside
+        // SafeArea with a top offset that clears the checkpoint HUD's
+        // solid band (the HUD pins to the absolute top; this sits just
+        // below it, per AC7 "above the character, below the stepper").
+        // Placed BEFORE the HUD layer so the HUD z-paints above it if they
+        // ever overlap. IgnorePointer so taps reach the character / in-
+        // canvas hang-up button. Renders SizedBox.shrink when no warning
+        // is active (null notifier value).
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: true,
+            child: SafeArea(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: _kNoisyBannerTopOffset),
+                  child: ValueListenableBuilder<EnvWarningPayload?>(
+                    valueListenable: _envWarningNotifier,
+                    builder: (context, payload, _) =>
+                        NoisyEnvironmentBanner(payload: payload),
+                  ),
+                ),
+              ),
             ),
           ),
         ),

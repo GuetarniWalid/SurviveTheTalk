@@ -4,6 +4,7 @@ import 'dart:developer' as dev;
 import 'package:livekit_client/livekit_client.dart';
 
 import 'checkpoint_advanced_payload.dart';
+import 'env_warning_payload.dart';
 
 /// Decodes Pipecat-side data-channel envelopes and forwards them to typed
 /// callbacks (Story 6.3).
@@ -38,11 +39,13 @@ class DataChannelHandler {
     required void Function() onBotSpeakingEnded,
     required void Function(CheckpointAdvancedPayload payload)
     onCheckpointAdvanced,
+    required void Function(EnvWarningPayload payload) onEnvWarning,
   }) : _onEmotion = onEmotion,
        _onHangUpWarning = onHangUpWarning,
        _onCallEnd = onCallEnd,
        _onBotSpeakingEnded = onBotSpeakingEnded,
-       _onCheckpointAdvanced = onCheckpointAdvanced {
+       _onCheckpointAdvanced = onCheckpointAdvanced,
+       _onEnvWarning = onEnvWarning {
     _cancel = room.events.on<DataReceivedEvent>(_onDataReceived);
   }
 
@@ -51,6 +54,7 @@ class DataChannelHandler {
   final void Function(String reason, Map<String, dynamic> data) _onCallEnd;
   final void Function() _onBotSpeakingEnded;
   final void Function(CheckpointAdvancedPayload payload) _onCheckpointAdvanced;
+  final void Function(EnvWarningPayload payload) _onEnvWarning;
   CancelListenFunc? _cancel;
 
   Future<void> _onDataReceived(DataReceivedEvent event) async {
@@ -218,6 +222,32 @@ class DataChannelHandler {
         // mis-classified as "bot turn over" and trigger a premature
         // ladder start.
         _onBotSpeakingEnded();
+      case 'env_warning':
+        // Story 6.11 — server detected a parasitic background voice via
+        // Soniox diarization. Emitted ONCE per call, right before the
+        // character speaks its noisy-environment exit line. The screen
+        // shows the `NoisyEnvironmentBanner` so the user connects the
+        // detection → the imminent hang-up → the daily-slot refund. Same
+        // defensive-parse posture as the other cases: validate field
+        // types, log on drift, NEVER throw.
+        final reason = data['reason'];
+        final speakers = data['detected_speakers'];
+        if (reason is! String || reason.isEmpty) {
+          dev.log(
+            'DataChannelHandler: env_warning missing/invalid reason '
+            '(got ${reason.runtimeType}); ignoring',
+            name: 'call.data',
+            level: 700,
+          );
+          return;
+        }
+        // `detected_speakers` is informational — default to 2 (the common
+        // user+narrator case) on a missing/wrong-type value rather than
+        // dropping the whole warning.
+        final n = speakers is num ? speakers.toInt() : 2;
+        _onEnvWarning(
+          EnvWarningPayload(reason: reason, detectedSpeakers: n),
+        );
       default:
         // Additive routing — silently ignore unknown types so a
         // server-side rollout can land emitters before the matching

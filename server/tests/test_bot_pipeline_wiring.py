@@ -56,7 +56,30 @@ def test_bot_imports_emitter_classes() -> None:
     # endpoint detection. Imported AND positioned immediately after STT
     # in the pipeline (see `test_bot_pipeline_ordering` below).
     assert "from pipeline.endpoint_watchdog import EndpointWatchdog" in source
+    # Story 6.11 — EnvironmentMonitor (parasitic-voice detection).
+    assert "from pipeline.environment_monitor import EnvironmentMonitor" in source
     assert "VisemeEmitter" not in source
+
+
+def test_bot_enables_soniox_speaker_diarization() -> None:
+    """Story 6.11 AC1 — `enable_speaker_diarization=True` on the Soniox
+    settings. Without it, `TranscriptionFrame.result` carries no `speaker`
+    ids and EnvironmentMonitor can never detect a parasitic voice."""
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    body = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "enable_speaker_diarization=True" in body
+
+
+def test_bot_instantiates_and_wires_environment_monitor() -> None:
+    """Story 6.11 AC2 — EnvironmentMonitor is constructed with the call's
+    PatienceTracker, and the noisy-environment exit line is threaded into
+    PatienceTracker from the resolved config."""
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    assert "EnvironmentMonitor(patience_tracker=patience_tracker)" in source
+    assert "hang_up_line_noisy_environment=patience_config[" in source
+    assert '"hang_up_line_noisy_environment"' in source
 
 
 def test_bot_wires_dtln_audio_filter_into_livekit_params() -> None:
@@ -224,6 +247,9 @@ def test_bot_pipeline_ordering() -> None:
         # emotion_emitter + checkpoint_manager + patience_tracker.
         _idx("endpoint_watchdog")
         < _idx("transcript_user")
+        # Story 6.11 — EnvironmentMonitor observes raw finalized TFs
+        # BEFORE emotion_emitter (and the aggregator), same rationale.
+        < _idx("environment_monitor")
         < _idx("emotion_emitter")
         < _idx("checkpoint_manager")
         < _idx("patience_tracker")

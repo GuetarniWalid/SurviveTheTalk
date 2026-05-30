@@ -117,6 +117,35 @@ void main() {
     },
   );
 
+  testWidgets(
+    'noisy_environment (Story 6.11) shows the 5th variant + volume_off icon '
+    '+ "Got it" CTA',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: CallEndedNoticeScreen(
+            endReason: 'noisy_environment',
+            wasGifted: true,
+            giftsRemainingToday: 2,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Background voice was too loud'), findsOneWidget);
+      expect(find.textContaining("couldn't hear you clearly"), findsOneWidget);
+      expect(
+        find.textContaining("doesn't count toward your daily limit"),
+        findsOneWidget,
+      );
+      // Visual continuity with the in-call banner.
+      expect(find.byIcon(Icons.volume_off), findsOneWidget);
+      // Close-only CTA, not "retry"/"back to scenarios".
+      expect(find.text('Got it'), findsOneWidget);
+      expect(find.text('Back to scenarios'), findsNothing);
+    },
+  );
+
   testWidgets('CTA pops the route', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

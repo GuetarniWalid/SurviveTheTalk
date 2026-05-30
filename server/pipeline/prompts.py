@@ -108,6 +108,19 @@ Conversation memory rules (MUST FOLLOW, regardless of scenario):
 """
 
 
+# Story 6.11 AC5 — generic, scenario-agnostic exit line spoken by the
+# active character when `EnvironmentMonitor` detects a parasitic
+# background voice. Scenario-agnostic by default (any character can say
+# it) so future scenarios inherit the behaviour for free — same principle
+# as COHERENCE_CHARTER. Each scenario YAML may OPTIONALLY override it via
+# `exit_lines.noisy_environment` (loaded by `resolve_patience_config`),
+# same shape as `exit_lines.hangup` / `exit_lines.completion`.
+NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT = (
+    "Look, I can't hear you over all that background noise. "
+    "Try me again when you've got somewhere quieter."
+)
+
+
 # Story 6.3 — emotion classifier prompt template.
 #
 # Tight, single-shot classification prompt for the user's most-recent line.

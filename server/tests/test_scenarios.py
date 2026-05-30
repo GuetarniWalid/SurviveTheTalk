@@ -1234,3 +1234,47 @@ def test_waiter_clarify_accepts_drink_answer_after_drinks_offered() -> None:
     assert "cola" in criteria or "coke" in criteria, (
         "clarify criteria must list at least one drink synonym (cola / coke)"
     )
+
+
+# ============================================================
+# Story 6.11 — exit_lines.noisy_environment loading + fallback
+# ============================================================
+
+
+def test_resolve_patience_config_loads_waiter_noisy_environment_line() -> None:
+    """End-to-end against the real `the-waiter.yaml`: Tina's per-character
+    noisy_environment override is loaded into the config (AC5)."""
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert config["hang_up_line_noisy_environment"] == (
+        "I can't hear you — there's another voice talking over you. "
+        "Call me back when it's just you, somewhere quieter."
+    )
+
+
+def test_resolve_patience_config_noisy_environment_falls_back_to_default(
+    tmp_path, monkeypatch
+) -> None:
+    """A scenario YAML WITHOUT `exit_lines.noisy_environment` inherits the
+    generic `NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT` constant (AC5 — the 4
+    un-overridden scenarios use the default)."""
+    from pipeline import scenarios as scenarios_mod
+    from pipeline.prompts import NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _BASE_YAML.format(
+            scenario_id="synth_no_noisy",
+            fail_penalty="null",
+            recovery_bonus="null",
+            silence_hangup_seconds="null",
+            escalation_thresholds="null",
+        ),
+        scenario_id="synth_no_noisy",
+    )
+    config = scenarios_mod.resolve_patience_config("synth_no_noisy")
+    assert (
+        config["hang_up_line_noisy_environment"] == NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT
+    )

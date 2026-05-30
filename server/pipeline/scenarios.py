@@ -23,6 +23,8 @@ from pathlib import Path
 
 import yaml
 
+from pipeline.prompts import NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT
+
 TUTORIAL_SCENARIO_ID = "waiter_easy_01"
 
 _SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
@@ -261,9 +263,18 @@ def resolve_patience_config(scenario_id: str) -> dict:
         exit_lines.get("patience_warning")
         or "*sighs* Look, are you ordering or not? Last chance."
     )
+    # Story 6.11 — `exit_lines.noisy_environment` is the in-character line
+    # spoken when EnvironmentMonitor detects a parasitic background voice.
+    # Optional in YAML; falls back to the generic scenario-agnostic
+    # constant (single source of truth in prompts.py) when absent, so the
+    # 4 un-overridden scenarios inherit the default for free (AC5).
+    noisy_environment_line = (
+        exit_lines.get("noisy_environment") or NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT
+    )
     config["hang_up_line_silence"] = hangup_line
     config["hang_up_line_inappropriate"] = hangup_line
     config["hang_up_line_survived"] = completion_line
+    config["hang_up_line_noisy_environment"] = noisy_environment_line
     config["patience_warning_line"] = patience_warning_line
 
     # Defensive: a YAML `patience_start: 0` override would silently

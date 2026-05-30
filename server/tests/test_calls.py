@@ -793,6 +793,8 @@ def test_end_call_happy_path_flips_status_and_returns_envelope(
         "network_lost",
         # Story 6.5 review D4 — pre-widened for Story 6.6's CheckpointManager.
         "survived",
+        # Story 6.11 — parasitic background-voice detection.
+        "noisy_environment",
     ],
 )
 def test_end_call_accepts_all_four_canonical_reasons(
@@ -1372,6 +1374,55 @@ def test_end_call_network_lost_long_duration_still_gifted(
     response = client.post(
         f"/calls/{call_id}/end",
         json={"reason": "network_lost"},
+        headers=_auth_header(token),
+    )
+
+    data = response.json()["data"]
+    assert data["was_gifted"] is True
+    assert data["duration_sec"] >= 300
+
+
+def test_end_call_noisy_environment_always_gifted_short_duration(
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Story 6.11 (Deviation #3) — `noisy_environment` is ALWAYS gifted
+    (no <30 s gate, like network_lost) — the user can't control a parasitic
+    background voice."""
+    user_id = _register_user(client, test_db_path)
+    call_id = _make_pending_call(
+        test_db_path, user_id, started_at=_now_iso(offset_seconds=-15)
+    )
+    token = issue_token(user_id)
+
+    response = client.post(
+        f"/calls/{call_id}/end",
+        json={"reason": "noisy_environment"},
+        headers=_auth_header(token),
+    )
+
+    data = response.json()["data"]
+    assert data["status"] == "failed"  # gifted → excluded from cap
+    assert data["was_gifted"] is True
+    assert data["gifts_remaining_today"] == 2  # consumed one of three
+
+
+def test_end_call_noisy_environment_long_duration_still_gifted(
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Story 6.11 — eligible regardless of duration (no <30 s gate)."""
+    user_id = _register_user(client, test_db_path)
+    call_id = _make_pending_call(
+        test_db_path, user_id, started_at=_now_iso(offset_seconds=-300)
+    )
+    token = issue_token(user_id)
+
+    response = client.post(
+        f"/calls/{call_id}/end",
+        json={"reason": "noisy_environment"},
         headers=_auth_header(token),
     )
 

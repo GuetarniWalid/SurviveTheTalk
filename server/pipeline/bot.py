@@ -43,6 +43,7 @@ from pipeline.checkpoint_manager import (
 from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
+from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.latency_probe import LatencyProbe
 from pipeline.llm_warmup import warm_up_llm
@@ -190,9 +191,26 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # With `False`, Soniox uses its own endpoint-detection model trained
     # on prosody + silence + speech-completion cues — much more robust
     # to ambient noise than Silero's acoustic-energy threshold.
+    #
+    # Story 6.11 AC1 — `enable_speaker_diarization=True` annotates every
+    # Soniox token with a `speaker` id in the `TranscriptionFrame.result`
+    # token list. Zero extra cost (diarization is included in our Soniox
+    # plan — it's a config flag, not a separate model) and used ONLY by
+    # Story 6.11's `EnvironmentMonitor` to detect a parasitic background
+    # VOICE (the cocktail-party case DTLN can't suppress — noise
+    # suppression ≠ voice isolation; see Story 6.9 smoke-test finding).
+    # Soniox puts the per-token speaker id on `result`, NOT on
+    # `frame.metadata` (verified against pipecat 0.0.108
+    # `services/soniox/stt.py` — the parser sets
+    # `TranscriptionFrame(..., result=self._final_transcription_buffer)`
+    # where each buffered token is the raw Soniox dict with a `speaker`
+    # key). EnvironmentMonitor reads `frame.result` accordingly.
     stt = SonioxSTTService(
         api_key=settings.soniox_api_key,
-        settings=SonioxSTTService.Settings(model="stt-rt-v4"),
+        settings=SonioxSTTService.Settings(
+            model="stt-rt-v4",
+            enable_speaker_diarization=True,
+        ),
         vad_force_turn_endpoint=False,
     )
 
@@ -368,8 +386,23 @@ async def run_bot(url: str, room: str, token: str) -> None:
         hang_up_line_silence=patience_config["hang_up_line_silence"],
         hang_up_line_inappropriate=patience_config["hang_up_line_inappropriate"],
         hang_up_line_survived=patience_config["hang_up_line_survived"],
+        # Story 6.11 — parasitic-voice exit line (YAML
+        # `exit_lines.noisy_environment` → generic default fallback).
+        hang_up_line_noisy_environment=patience_config[
+            "hang_up_line_noisy_environment"
+        ],
         patience_warning_line=patience_config["patience_warning_line"],
     )
+
+    # Story 6.11 — EnvironmentMonitor observes the user's finalized
+    # TranscriptionFrames and detects a parasitic background VOICE via
+    # Soniox speaker diarization (the cocktail-party case DTLN can't
+    # suppress). On detection it emits an `env_warning` envelope + calls
+    # `patience_tracker.schedule_noisy_environment_exit()`, which speaks
+    # the in-character exit line and ends the call (refunded server-side).
+    # Wired in the pipeline BEFORE emotion_emitter (raw-TF observation,
+    # mirror Story 6.6 Dev #5) — see the Pipeline list below.
+    environment_monitor = EnvironmentMonitor(patience_tracker=patience_tracker)
 
     # Story 6.6 — checkpoint progression brain. ExchangeClassifier is
     # fire-and-forget (asyncio.create_task, 1.0 s timeout per call —
@@ -452,6 +485,15 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # frame propagates through every observer that follows.
             endpoint_watchdog,
             transcript_user,
+            # Story 6.11 — EnvironmentMonitor sits BEFORE emotion_emitter so
+            # it observes the raw finalized TranscriptionFrame (with Soniox
+            # per-token speaker ids on `result`) straight from STT, before
+            # any downstream processor. Same upstream-of-aggregator rule as
+            # EmotionEmitter / CheckpointManager (Story 6.6 Dev #5 — the
+            # user aggregator consumes TranscriptionFrames). Its
+            # `env_warning` envelope rides DOWNSTREAM on the same proven
+            # client-bound path as the emotion / checkpoint envelopes.
+            environment_monitor,
             emotion_emitter,
             # Story 6.6 Deviation #5 — CheckpointManager sits BEFORE the
             # user aggregator, NOT after. The user-aggregator (see

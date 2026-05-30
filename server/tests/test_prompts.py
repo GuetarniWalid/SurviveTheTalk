@@ -1,6 +1,17 @@
 """Tests for character prompts."""
 
-from pipeline.prompts import CARTESIA_VOICE_ID, SARCASTIC_CHARACTER_PROMPT
+from pipeline.prompts import (
+    CARTESIA_VOICE_ID,
+    NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT,
+    SARCASTIC_CHARACTER_PROMPT,
+)
+
+
+def test_noisy_environment_exit_line_default_is_non_empty() -> None:
+    """Story 6.11 AC5 — the generic scenario-agnostic exit line exists and
+    is non-empty (the fallback when a scenario YAML omits the override)."""
+    assert isinstance(NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT, str)
+    assert NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT.strip()
 
 
 def test_sarcastic_prompt_is_non_empty() -> None:

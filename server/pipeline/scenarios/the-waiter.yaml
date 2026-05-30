@@ -196,6 +196,11 @@ exit_lines:
   hangup: "*heavy sigh* I'm done. Next customer."
   completion: "Huh. You actually knew what you wanted. That's a first."
   patience_warning: "*sighs heavily* Look, are you actually ordering food, or am I wasting my time here? Last chance."
+  # Story 6.11 AC5 — Tina's per-character noisy-environment exit line
+  # (tired + sarcastic). Reference YAML override demonstrating the
+  # extension pattern; the other 4 scenarios omit it and inherit the
+  # generic NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT from prompts.py.
+  noisy_environment: "I can't hear you — there's another voice talking over you. Call me back when it's just you, somewhere quieter."
 
 # ============================================================
 # BRIEFING — shown before the call

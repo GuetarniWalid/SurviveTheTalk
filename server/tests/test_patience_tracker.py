@@ -1768,3 +1768,153 @@ def test_ladder_impatience_seconds_threaded_from_yaml_through_resolver() -> None
 
     config = resolve_patience_config("waiter_easy_01")
     assert config["ladder_impatience_seconds"] == 4.5
+
+
+# ============================================================
+# Story 6.11 — schedule_noisy_environment_exit + _VALID_REASONS
+# ============================================================
+
+
+def test_noisy_environment_is_a_valid_reason() -> None:
+    """`_VALID_REASONS` widened to include `noisy_environment` (AC4)."""
+    assert "noisy_environment" in pt_mod._VALID_REASONS
+
+
+def test_schedule_noisy_environment_exit_speaks_line_and_emits_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`schedule_noisy_environment_exit()` runs the hang-up coroutine with
+    the noisy-environment exit line + `reason='noisy_environment'`, carrying
+    the live checkpoint count (AC4)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_noisy_environment="Too noisy. Call back later.",
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.set_checkpoints_passed(1)
+        tracker.schedule_noisy_environment_exit()
+        # Synchronous guard flips immediately (mirrors schedule_completion).
+        assert tracker.is_hanging_up is True
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts_speak = [
+        f
+        for f in captured
+        if isinstance(f, TTSSpeakFrame) and f.text == "Too noisy. Call back later."
+    ]
+    assert len(tts_speak) == 1, "must speak the noisy-environment exit line"
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    data = call_end[0].message["data"]
+    assert data["reason"] == "noisy_environment"
+    assert data["checkpoints_passed"] == 1
+    assert data["total_checkpoints"] == 6
+
+
+def test_noisy_environment_interrupts_in_flight_speech_before_exit_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.11 fix (smoke call_id=200) — the noisy_environment path fires
+    while the character LLM is mid-reply, so an InterruptionFrame must be
+    pushed BEFORE the exit-line TTSSpeakFrame to flush that reply + the TTS
+    queue; otherwise the exit line is queued behind it and flushed by the
+    parasite's continued-speech interruption (user never hears it)."""
+    from pipecat.frames.frames import InterruptionFrame
+
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(hang_up_line_noisy_environment="Too noisy. Call back later.")
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_noisy_environment_exit()
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    interrupt_idx = next(
+        (i for i, f in enumerate(captured) if isinstance(f, InterruptionFrame)),
+        None,
+    )
+    exit_idx = next(
+        (
+            i
+            for i, f in enumerate(captured)
+            if isinstance(f, TTSSpeakFrame) and f.text == "Too noisy. Call back later."
+        ),
+        None,
+    )
+    assert interrupt_idx is not None, "must push InterruptionFrame on noisy path"
+    assert exit_idx is not None, "must speak the noisy-environment exit line"
+    assert interrupt_idx < exit_idx, (
+        "the interruption must flush in-flight speech BEFORE the exit line"
+    )
+
+
+def test_silence_hangup_does_not_push_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The interruption is scoped to noisy_environment — the proven
+    silence/survived paths (no competing in-flight speech) must NOT gain an
+    InterruptionFrame."""
+    from pipecat.frames.frames import InterruptionFrame
+
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert not any(isinstance(f, InterruptionFrame) for f in captured), (
+        "silence/character_hung_up path must not push an interruption"
+    )
+
+
+def test_schedule_noisy_environment_exit_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second call while a hang-up is already in progress is swallowed."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_noisy_environment_exit()
+        tracker.schedule_noisy_environment_exit()  # no-op
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1, "idempotent — only one call_end envelope"

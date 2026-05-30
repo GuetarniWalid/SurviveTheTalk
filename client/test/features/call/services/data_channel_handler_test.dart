@@ -7,6 +7,7 @@ import 'dart:convert';
 
 import 'package:client/features/call/services/checkpoint_advanced_payload.dart';
 import 'package:client/features/call/services/data_channel_handler.dart';
+import 'package:client/features/call/services/env_warning_payload.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:livekit_client/livekit_client.dart';
@@ -55,6 +56,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     // Emit ONE envelope; if the handler subscribed twice (or zero times)
@@ -86,6 +88,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -117,6 +120,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     await handler.dispose();
@@ -134,6 +138,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -165,6 +170,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -202,6 +208,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     // Use a synthetic future-type so this test stays a true "unknown
@@ -228,6 +235,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(_rawEnvelope(utf8.encode('not-json')));
@@ -246,6 +254,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'emotion', 'data': {}}));
@@ -264,6 +273,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -290,6 +300,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -314,6 +325,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     // Missing top-level `data` field: the outer guard rejects the
@@ -345,6 +357,7 @@ void main() {
       onCallEnd: (r, d) => received.add((r, d)),
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -377,6 +390,7 @@ void main() {
       onCallEnd: (r, d) => received.add((r, d)),
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(_envelope({'type': 'call_end', 'data': <String, dynamic>{}}));
@@ -385,6 +399,83 @@ void main() {
     expect(received, hasLength(1));
     expect(received.first.$1, 'unknown');
     expect(received.first.$2, <String, dynamic>{});
+  });
+
+  // ----- Story 6.11 — env_warning routing -----
+
+  test('env_warning invokes onEnvWarning with typed payload', () async {
+    final fixture = _buildRoom();
+    final received = <EnvWarningPayload>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
+      onEnvWarning: received.add,
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'env_warning',
+        'data': {'reason': 'background_voice', 'detected_speakers': 2},
+      }),
+    );
+    await _flush();
+
+    expect(received, hasLength(1));
+    expect(received.first.reason, 'background_voice');
+    expect(received.first.detectedSpeakers, 2);
+  });
+
+  test('env_warning with missing detected_speakers defaults to 2', () async {
+    final fixture = _buildRoom();
+    final received = <EnvWarningPayload>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
+      onEnvWarning: received.add,
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'env_warning',
+        'data': {'reason': 'background_voice'},
+      }),
+    );
+    await _flush();
+
+    expect(received, hasLength(1));
+    expect(received.first.detectedSpeakers, 2);
+  });
+
+  test('env_warning with missing/invalid reason is dropped', () async {
+    final fixture = _buildRoom();
+    final received = <EnvWarningPayload>[];
+    DataChannelHandler(
+      room: fixture.room,
+      onEmotion: (_, _) {},
+      onHangUpWarning: (_) {},
+      onCallEnd: (_, _) {},
+      onBotSpeakingEnded: () {},
+      onCheckpointAdvanced: (_) {},
+      onEnvWarning: received.add,
+    );
+
+    fixture.emitter.emit(
+      _envelope({
+        'type': 'env_warning',
+        'data': {'detected_speakers': 2},
+      }),
+    );
+    await _flush();
+
+    expect(received, isEmpty, reason: 'no reason → drop, never throw');
   });
 
   // ----- Story 6.7 — checkpoint_advanced routing -----
@@ -401,6 +492,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -444,6 +536,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       // Goal index 3 flipped first (out of order); the full met set is
@@ -480,6 +573,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -516,6 +610,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -549,6 +644,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -583,6 +679,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: received.add,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -620,6 +717,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: (_) => callbacks++,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -654,6 +752,7 @@ void main() {
         onCallEnd: (_, _) {},
         onBotSpeakingEnded: () {},
         onCheckpointAdvanced: (_) => callbacks++,
+      onEnvWarning: (_) {},
       );
 
       fixture.emitter.emit(
@@ -685,6 +784,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () {},
       onCheckpointAdvanced: (_) => callbacks++,
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(
@@ -713,6 +813,7 @@ void main() {
       onCallEnd: (_, _) {},
       onBotSpeakingEnded: () => endedCount++,
       onCheckpointAdvanced: (_) {},
+      onEnvWarning: (_) {},
     );
 
     fixture.emitter.emit(

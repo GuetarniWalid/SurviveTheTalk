@@ -65,6 +65,9 @@ class EndCallIn(BaseModel):
     pre-widened now so Story 6.6 (CheckpointManager) ships a server that
     already accepts it; forgetting the widen would otherwise silently 422
     the client's POST and orphan the row until the janitor's 1 h sweep.
+    Story 6.11 — `'noisy_environment'` added for the parasitic-voice
+    detection path (always gifted, see `routes_calls._GIFT_ANY_DURATION_
+    REASONS`).
     """
 
     reason: Literal[
@@ -73,6 +76,7 @@ class EndCallIn(BaseModel):
         "inappropriate_content",
         "network_lost",
         "survived",
+        "noisy_environment",
     ]
 
 

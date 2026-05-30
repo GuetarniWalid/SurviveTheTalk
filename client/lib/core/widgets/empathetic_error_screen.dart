@@ -263,6 +263,12 @@ IconData _iconFor(String code) {
       return Icons.hourglass_empty_outlined;
     case 'MALFORMED_RESPONSE':
       return Icons.help_outline;
+    // Story 6.11 — noisy-environment notice. Matches the in-call
+    // `NoisyEnvironmentBanner`'s `Icons.volume_off` for visual continuity
+    // (the user saw the same glyph mid-call). Title + body are always
+    // overridden by `CallEndedNoticeScreen`; sensible defaults below.
+    case 'NOISY_ENVIRONMENT':
+      return Icons.volume_off;
     case 'UNKNOWN_ERROR':
     default:
       return Icons.error_outline;
@@ -277,6 +283,8 @@ String _titleFor(String code) {
       return 'Our servers are catching their breath.';
     case 'MALFORMED_RESPONSE':
       return "Something didn't load right.";
+    case 'NOISY_ENVIRONMENT':
+      return 'Background voice was too loud';
     case 'UNKNOWN_ERROR':
     default:
       return 'Something went wrong.';
@@ -298,6 +306,9 @@ String _bodyFor(String code, int retryCount) {
       return repeat
           ? 'Still stuck. Restart the app to clear the slate.'
           : "We've logged the issue. Try again — it usually works on the second try.";
+    case 'NOISY_ENVIRONMENT':
+      return "We couldn't hear you clearly. Try a quieter spot or use "
+          "earphones — and this call doesn't count toward your daily limit.";
     case 'UNKNOWN_ERROR':
     default:
       return repeat

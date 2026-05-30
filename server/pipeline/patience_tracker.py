@@ -111,6 +111,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
+    InterruptionFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -192,7 +193,20 @@ _PATIENCE_WARNING_THRESHOLD = 25
 _REASON_SILENCE = "character_hung_up"
 _REASON_INAPPROPRIATE = "inappropriate_content"
 _REASON_SURVIVED = "survived"
-_VALID_REASONS = frozenset({_REASON_SILENCE, _REASON_INAPPROPRIATE, _REASON_SURVIVED})
+# Story 6.11 — parasitic background-voice detection (EnvironmentMonitor).
+# The character announces in-character it can't hear, then hangs up; the
+# call is refunded server-side (`gifted`). Shares the existing hang-up
+# infra (exit-line TTS + `call_end` envelope), differing only in the
+# spoken line and the wire `reason`.
+_REASON_NOISY_ENVIRONMENT = "noisy_environment"
+_VALID_REASONS = frozenset(
+    {
+        _REASON_SILENCE,
+        _REASON_INAPPROPRIATE,
+        _REASON_SURVIVED,
+        _REASON_NOISY_ENVIRONMENT,
+    }
+)
 
 
 class PatienceTracker(FrameProcessor):
@@ -262,6 +276,10 @@ class PatienceTracker(FrameProcessor):
         hang_up_line_silence: str = "I don't have time for this. Goodbye.",
         hang_up_line_inappropriate: str = "I'm done with this. Goodbye.",
         hang_up_line_survived: str = ("Looks like you got what you came for. Goodbye."),
+        hang_up_line_noisy_environment: str = (
+            "Look, I can't hear you over all that background noise. "
+            "Try me again when you've got somewhere quieter."
+        ),
         patience_warning_line: str = (
             "*sighs* Look, are you ordering or not? Last chance."
         ),
@@ -327,6 +345,11 @@ class PatienceTracker(FrameProcessor):
         # Story 6.6 — exit line for the completion path. Sourced from
         # YAML `exit_lines.completion` via `resolve_patience_config`.
         self._hang_up_line_survived = hang_up_line_survived
+        # Story 6.11 — exit line for the noisy-environment path. Sourced
+        # from YAML `exit_lines.noisy_environment` via
+        # `resolve_patience_config` (falls back to the generic default in
+        # `NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT` when the YAML omits it).
+        self._hang_up_line_noisy_environment = hang_up_line_noisy_environment
         # Story 6.6 post-deploy (2026-05-18, Deviation #6) — the "last
         # chance" warning line fired once per call when the meter falls
         # into the warning band on a failed exchange.
@@ -802,6 +825,22 @@ class PatienceTracker(FrameProcessor):
         self._pending_survival_pct = survival_pct
         self._schedule_hang_up(_REASON_SURVIVED)
 
+    def schedule_noisy_environment_exit(self) -> None:
+        """Route to `_run_hang_up` with `reason='noisy_environment'` and the
+        YAML's `exit_lines.noisy_environment` line. Idempotent re-call
+        swallowed (the `_hang_up_in_progress` guard in `_schedule_hang_up`).
+
+        Called by `EnvironmentMonitor` when a parasitic background voice is
+        confirmed (Story 6.11 AC4). No `survival_pct` override is stashed —
+        `_run_hang_up` falls through to the meter-ratio branch (Deviation
+        #3: there is no meaningful "performance" measure for an
+        environmental cut, and the 5th `CallEndedNoticeScreen` variant
+        doesn't render survival % for this reason anyway; keeping the int
+        meter ratio avoids churning the `call_end` envelope shape + the
+        client's non-nullable `survival_pct` parse).
+        """
+        self._schedule_hang_up(_REASON_NOISY_ENVIRONMENT)
+
     # ---------- silence ladder ----------
 
     def _start_silence_timer(self) -> None:
@@ -944,6 +983,9 @@ class PatienceTracker(FrameProcessor):
             line = self._hang_up_line_silence
         elif reason == _REASON_INAPPROPRIATE:
             line = self._hang_up_line_inappropriate
+        elif reason == _REASON_NOISY_ENVIRONMENT:
+            # Story 6.11 — parasitic-voice exit line.
+            line = self._hang_up_line_noisy_environment
         else:  # _REASON_SURVIVED — validated by _schedule_hang_up
             line = self._hang_up_line_survived
         try:
@@ -957,6 +999,24 @@ class PatienceTracker(FrameProcessor):
                 FrameDirection.DOWNSTREAM,
             )
             await asyncio.sleep(_HANG_UP_PRE_TTS_DELAY)
+
+            # Story 6.11 fix (2026-05-30, smoke call_id=200) — the
+            # noisy_environment path is the ONLY hang-up path that fires
+            # WHILE the character LLM is mid-generating a normal reply to
+            # the triggering turn (silence has no in-flight speech; survived
+            # is suppressed by CheckpointManager's terminal-turn sync). On
+            # call_id=200 the exit line was generated correctly but queued
+            # BEHIND that normal reply ("Grilled chicken. Okay...") and then
+            # flushed by the parasite's continued-speech interruption, so the
+            # user never heard it. Push an InterruptionFrame first to
+            # cancel the in-flight reply + clear the TTS queue, so the exit
+            # line is the only thing that speaks. Scoped to this reason so
+            # the proven silence/survived/inappropriate paths are untouched.
+            if reason == _REASON_NOISY_ENVIRONMENT:
+                await self.push_frame(
+                    InterruptionFrame(),
+                    FrameDirection.DOWNSTREAM,
+                )
 
             # Create the event BEFORE pushing the TTSSpeakFrame so the
             # bot-stopped handler always has a non-None target.

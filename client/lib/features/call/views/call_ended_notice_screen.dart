@@ -63,8 +63,13 @@ class CallEndedNoticeScreen extends StatelessWidget {
       body: EmpatheticErrorScreen(
         code: _codeFor(endReason),
         onRetry: () => Navigator.of(context).maybePop(),
-        retryLabel: 'Back to scenarios',
-        semanticsLabel: 'Back',
+        // Story 6.11 — the noisy-environment variant's CTA is a plain
+        // "Got it" acknowledgement (close), not a "retry"; the other
+        // variants keep "Back to scenarios".
+        retryLabel: endReason == 'noisy_environment'
+            ? 'Got it'
+            : 'Back to scenarios',
+        semanticsLabel: endReason == 'noisy_environment' ? 'Got it' : 'Back',
         titleOverride: _titleFor(endReason),
         bodyOverride: _bodyFor(
           endReason: endReason,
@@ -81,12 +86,16 @@ class CallEndedNoticeScreen extends StatelessWidget {
   /// `UNKNOWN_ERROR` (neutral `error_outline` icon).
   String _codeFor(String reason) {
     if (reason == 'network_lost') return 'NETWORK_ERROR';
+    // Story 6.11 — drives the `Icons.volume_off` glyph (matches the
+    // in-call banner).
+    if (reason == 'noisy_environment') return 'NOISY_ENVIRONMENT';
     return 'UNKNOWN_ERROR';
   }
 
   /// Replace the code's default title with a context-specific one.
   String _titleFor(String reason) {
     if (reason == 'network_lost') return 'Connection lost.';
+    if (reason == 'noisy_environment') return 'Background voice was too loud';
     return 'Too short to count.';
   }
 
@@ -95,6 +104,12 @@ class CallEndedNoticeScreen extends StatelessWidget {
     required bool? wasGifted,
     required int? giftsRemainingToday,
   }) {
+    // Story 6.11 — parasitic-voice cut. Always gifted (no-quota-burn
+    // path); the copy reassures + nudges toward a quieter spot/earphones.
+    if (endReason == 'noisy_environment') {
+      return "We couldn't hear you clearly. Try a quieter spot or use "
+          "earphones — and this call doesn't count toward your daily limit.";
+    }
     if (endReason == 'network_lost') {
       // Quota exhausted: server confirmed `was_gifted=false` AND we
       // have a number to show. Honest about the cost so the user

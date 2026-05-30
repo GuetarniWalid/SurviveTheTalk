@@ -67,7 +67,19 @@ _GIFT_SHORT_THRESHOLD_SECONDS = 30
 _GIFT_SHORT_THRESHOLD_REASONS = frozenset(
     {"character_hung_up", "inappropriate_content"}
 )
-_GIFT_ANY_DURATION_REASONS = frozenset({"network_lost"})
+# Story 6.11 (Deviation #3) — `'noisy_environment'` joins `'network_lost'`
+# as an any-duration gift: the user can't control a parasitic background
+# voice any more than they can control losing signal, so it's ALWAYS
+# eligible (no `<30 s` gate). The spec's AC6 phrased this as a
+# `_compute_gifted()` helper returning `True` unconditionally, but the
+# existing `/end` route never grew that helper — it uses these frozensets
+# inline. Adding the reason here satisfies "no duration gate" AND keeps it
+# under the shared 3-per-day `within_quota` ceiling that bounds every
+# gifted reason. That ceiling is exactly the "annoying enough to be self-
+# limiting" backstop the story's Dev Notes call for against a user who'd
+# play a video near their phone every call — an unbounded `return True`
+# would remove it.
+_GIFT_ANY_DURATION_REASONS = frozenset({"network_lost", "noisy_environment"})
 
 
 def _today_utc_iso() -> str:

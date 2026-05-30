@@ -530,6 +530,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 builderCalls.add(room);
                 return mock;
@@ -586,6 +587,7 @@ void main() {
                     required onCallEnd,
                     required onBotSpeakingEnded,
                     required onCheckpointAdvanced,
+                required onEnvWarning,
                   }) {
                     capturedOnCallEnd = onCallEnd;
                     return mock;
@@ -655,6 +657,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 capturedOnHangUpWarning = onHangUpWarning;
                 return mock;
@@ -701,6 +704,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 return mock;
               },
@@ -756,6 +760,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 capturedOnCheckpointAdvanced = onCheckpointAdvanced;
                 return mock;
@@ -831,6 +836,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 capturedOnCheckpointAdvanced = onCheckpointAdvanced;
                 return mock;
@@ -905,6 +911,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 capturedOnCheckpointAdvanced = onCheckpointAdvanced;
                 capturedOnCallEnd = onCallEnd;
@@ -1017,6 +1024,7 @@ void main() {
                 required onCallEnd,
                 required onBotSpeakingEnded,
                 required onCheckpointAdvanced,
+                required onEnvWarning,
               }) {
                 capturedOnCheckpointAdvanced = onCheckpointAdvanced;
                 capturedOnCallEnd = onCallEnd;
