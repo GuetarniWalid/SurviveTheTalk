@@ -45,6 +45,7 @@ from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
+from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
 from pipeline.llm_warmup import warm_up_llm
 from pipeline.patience_tracker import PatienceTracker
@@ -402,7 +403,16 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # the in-character exit line and ends the call (refunded server-side).
     # Wired in the pipeline BEFORE emotion_emitter (raw-TF observation,
     # mirror Story 6.6 Dev #5) — see the Pipeline list below.
-    environment_monitor = EnvironmentMonitor(patience_tracker=patience_tracker)
+    # Story 6.11 fix (2026-05-30) — InputGate sits at the TOP of the pipeline
+    # (right after transport.input(), before STT). EnvironmentMonitor arms it
+    # on noise detection so the mic is muted ("stop listening") — the loud
+    # parasite can then no longer interrupt Tina's exit line (smoke
+    # call_id=205: continuous interruptions flushed the line every ~1.5 s).
+    input_gate = InputGate()
+    environment_monitor = EnvironmentMonitor(
+        patience_tracker=patience_tracker,
+        input_gate=input_gate,
+    )
 
     # Story 6.6 — checkpoint progression brain. ExchangeClassifier is
     # fire-and-forget (asyncio.create_task, 1.0 s timeout per call —
@@ -477,6 +487,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
     pipeline = Pipeline(
         [
             transport.input(),
+            # Story 6.11 fix — InputGate FIRST (after the transport's mic
+            # input, before STT). Inert until EnvironmentMonitor arms it on
+            # noise detection; once armed it drops mic audio + VAD +
+            # interruption frames so the noisy-environment exit line plays
+            # uninterrupted. See `pipeline/input_gate.py`.
+            input_gate,
             stt,
             # Story 6.9 review patch (D3) — sit immediately downstream
             # of STT so the watchdog observes Soniox's raw TF stream

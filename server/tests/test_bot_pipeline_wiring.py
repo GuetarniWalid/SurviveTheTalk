@@ -58,7 +58,35 @@ def test_bot_imports_emitter_classes() -> None:
     assert "from pipeline.endpoint_watchdog import EndpointWatchdog" in source
     # Story 6.11 — EnvironmentMonitor (parasitic-voice detection).
     assert "from pipeline.environment_monitor import EnvironmentMonitor" in source
+    # Story 6.11 fix — InputGate ("stop listening" so the noise exit line
+    # can't be interrupted).
+    assert "from pipeline.input_gate import InputGate" in source
     assert "VisemeEmitter" not in source
+
+
+def test_bot_wires_input_gate_first_and_arms_via_monitor() -> None:
+    """Story 6.11 fix (call_id=205) — InputGate must sit at the TOP of the
+    pipeline (after transport.input(), before stt) so muting starves the
+    VAD + STT at the source, and EnvironmentMonitor must receive it so it can
+    arm it on detection."""
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    assert "InputGate()" in source
+    assert "input_gate=input_gate" in source  # threaded into EnvironmentMonitor
+
+    start = source.find("pipeline = Pipeline(")
+    end = source.find("task = PipelineTask", start)
+    block = "\n".join(
+        line
+        for line in source[start:end].splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+    def _idx(needle: str) -> int:
+        i = block.find(needle)
+        assert i != -1, f"missing pipeline element: {needle!r}"
+        return i
+
+    assert _idx("transport.input()") < _idx("input_gate") < _idx("stt")
 
 
 def test_bot_enables_soniox_speaker_diarization() -> None:
@@ -77,7 +105,11 @@ def test_bot_instantiates_and_wires_environment_monitor() -> None:
     PatienceTracker, and the noisy-environment exit line is threaded into
     PatienceTracker from the resolved config."""
     source = _BOT_PATH.read_text(encoding="utf-8")
-    assert "EnvironmentMonitor(patience_tracker=patience_tracker)" in source
+    # Construction is multi-line since the Story 6.11 InputGate fix
+    # (patience_tracker= + input_gate= kwargs) — assert symbol + kwarg, not a
+    # single-line call string.
+    assert "EnvironmentMonitor(" in source
+    assert "patience_tracker=patience_tracker" in source
     assert "hang_up_line_noisy_environment=patience_config[" in source
     assert '"hang_up_line_noisy_environment"' in source
 

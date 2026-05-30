@@ -89,6 +89,7 @@ class EnvironmentMonitor(FrameProcessor):
         self,
         *,
         patience_tracker: Any,
+        input_gate: Any = None,
         window_size: int = _WINDOW_SIZE,
         trigger_turns: int = _TRIGGER_TURNS,
         min_speaker_tokens: int = _MIN_SPEAKER_TOKENS,
@@ -96,6 +97,11 @@ class EnvironmentMonitor(FrameProcessor):
     ) -> None:
         super().__init__(**kwargs)
         self._patience_tracker = patience_tracker
+        # Story 6.11 fix (2026-05-30) — the InputGate placed after
+        # transport.input(). Armed on detection to "stop listening" so the
+        # loud parasite can't keep interrupting the exit line (smoke
+        # call_id=205). Optional so unit tests can omit it.
+        self._input_gate = input_gate
         self._window_size = window_size
         self._trigger_turns = trigger_turns
         self._min_speaker_tokens = min_speaker_tokens
@@ -180,9 +186,17 @@ class EnvironmentMonitor(FrameProcessor):
         return parasitic_turns >= self._trigger_turns
 
     async def _on_parasitic_voice_detected(self) -> None:
-        """Fire-once: emit `env_warning` downstream, then schedule the
-        in-character noisy-environment exit via the PatienceTracker."""
+        """Fire-once: stop listening (arm the InputGate so the loud parasite
+        can't interrupt the exit line), emit `env_warning` downstream, then
+        schedule the in-character noisy-environment exit via the
+        PatienceTracker."""
         self._triggered = True
+        # ARM FIRST (Story 6.11 fix, smoke call_id=205) — mute the mic input
+        # before anything else so the in-flight interruption storm stops
+        # immediately and the exit line that PatienceTracker is about to
+        # speak cannot be flushed by the continuing parasite voice.
+        if self._input_gate is not None:
+            self._input_gate.arm()
         # Distinct speakers seen recently (window union) — the user + the
         # parasitic voice(s). Reported to the client banner for context.
         detected_speakers = len({s for turn in self._window for s in turn})

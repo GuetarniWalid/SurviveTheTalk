@@ -204,6 +204,32 @@ def test_tokens_without_speaker_key_no_detection() -> None:
 # ---------- envelope shape (AC3) ----------
 
 
+def test_detection_arms_the_input_gate() -> None:
+    """Story 6.11 fix (call_id=205) — on detection the monitor ARMS the
+    InputGate so the loud parasite can't interrupt the exit line. Arming
+    must happen exactly once, alongside the schedule_noisy_environment_exit
+    call."""
+    tracker = MagicMock()
+    gate = MagicMock()
+    monitor = EnvironmentMonitor(patience_tracker=tracker, input_gate=gate)
+    _capture_pushed(monitor)
+    for _ in range(2):
+        _run(monitor.process_frame(_turn({"1": 6, "2": 4}), FrameDirection.DOWNSTREAM))
+    gate.arm.assert_called_once()
+    tracker.schedule_noisy_environment_exit.assert_called_once()
+
+
+def test_no_input_gate_is_tolerated() -> None:
+    """input_gate is optional (unit tests / future callers may omit it) —
+    detection must still fire without one."""
+    tracker = MagicMock()
+    monitor = EnvironmentMonitor(patience_tracker=tracker)  # no gate
+    _capture_pushed(monitor)
+    for _ in range(2):
+        _run(monitor.process_frame(_turn({"1": 6, "2": 4}), FrameDirection.DOWNSTREAM))
+    tracker.schedule_noisy_environment_exit.assert_called_once()
+
+
 def test_env_warning_envelope_shape() -> None:
     monitor, _ = _make_monitor()
     captured = _capture_pushed(monitor)
