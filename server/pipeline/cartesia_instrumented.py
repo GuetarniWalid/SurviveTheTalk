@@ -1,46 +1,43 @@
-"""Story 6.13 Phase 2 — Investigation tooling for the Cartesia silent-stall bug.
+"""Cartesia diagnostics + always-on error-schema surfacing.
 
-Wraps pipecat 0.0.108's `CartesiaTTSService` with verbose loguru INFO logs
-on every event that matters for diagnosing the 30%-rate freeze surfaced
-during Story 6.9b's Pixel 9 smoke gate (2026-05-26, calls 149 + 151).
+Two layers, both wrapping pipecat 0.0.108's `CartesiaTTSService`
+WebSocket:
 
-Three layers of instrumentation, gated by the `CARTESIA_INSTRUMENT=1`
-env var so it stays opt-in in prod (the standing watchdog from AC1 is
-the always-on safety net; this module is the diagnostic that runs only
-when we want to capture a freeze):
+1. **`ErrorLoggingCartesiaTTSService` (always-on, the prod default).**
+   A thin subclass whose ONLY behavioural change is to surface
+   Cartesia's documented streaming-error frame at WARNING level. Since
+   Story 6.14 (2026-05-30) made Cartesia the launch default, we want its
+   errors visible in journalctl on every deploy — not gated behind a
+   debug env var.
 
-  1. **WebSocket-level proxy** — `_LoggingWebsocket` wraps the underlying
-     `websockets` connection so every `send()` (text + context_id +
-     continue/cancel flags) and every `__anext__()` (Cartesia → us
-     reply, with msg type + context_id) is logged BEFORE the parent
-     pipecat code sees it. Authoritative trace of the wire protocol.
-  2. **Context-lifecycle hooks** — overrides on the methods that
-     manipulate audio-context state (`create_audio_context`,
-     `remove_audio_context`, `_handle_interruption`,
-     `on_audio_context_interrupted`, `on_audio_context_completed`)
-     plus the high-level `flush_audio` and `run_tts`. Each logs the
-     state of `audio_contexts` + `_turn_context_id` at entry so we can
-     reconstruct the per-event sequence and spot the moment the
-     pipeline loses track of an open Cartesia context.
-  3. **Compact log prefix `[CART-INSTR]`** so an operator can grep the
-     journalctl tail without drowning in unrelated pipeline noise.
+   Why wrap the websocket instead of observing a downstream `ErrorFrame`:
+   pipecat's `CartesiaTTSService._process_messages` SILENTLY DROPS any
+   message (errors included) whose `context_id` is no longer in
+   `audio_contexts` — the `audio_context_available(...)` guard `continue`s
+   before the `type == "error"` branch is reached. That abandoned-context
+   case is exactly the freeze we most want visibility into. Logging at the
+   websocket boundary, BEFORE that guard, captures the error schema
+   regardless of context state.
 
-Diagnostic hypothesis (Story 6.13 investigation, 2026-05-26): the
-multi-frame freeze happens when an `InterruptionFrame` arrives
-mid-utterance (Silero VAD detects ambient noise or user breath),
-which calls `_handle_interruption` and resets `_turn_context_id = None`
-WITHOUT first sending `cancel: true` for the in-flight Cartesia
-context. The downstream code then opens a NEW context for any
-remaining text, and the OLD context never receives its terminal
-`continue=false` flush — so Cartesia keeps it open indefinitely,
-waiting for more transcript. This module's logs validate (or
-invalidate) the hypothesis by showing exactly which context ids
-get a `cancel: true` send, which get a `flush` send, and which get
-neither.
+2. **`InstrumentedCartesiaTTSService` (opt-in via `CARTESIA_INSTRUMENT=1`).**
+   Verbose `[CART-INSTR]` logging of every WS send/recv + audio-context
+   lifecycle transition. Used during a freeze diagnostic; inherits the
+   always-on error surfacing. Switch off with `CARTESIA_INSTRUMENT=0`
+   (or remove the env) + `systemctl restart pipecat.service`. No
+   production code path changes when off — only additional log lines.
 
-Switch off by setting `CARTESIA_INSTRUMENT=0` (or removing the env)
-and `systemctl restart pipecat.service`. No production code path
-changes when off.
+**Cartesia documented error schema** (support reply 2026-05-28, Ege
+Tinmaz): `{"type":"error","context_id":"...","status_code":<int>,
+"done":true,"error":"<human-readable string>"}`. 5xx `error` strings are
+generic. `_log_cartesia_error` logs exactly these fields.
+
+History: the 2026-05-26 multi-frame "freeze" (calls 156/157) that drove
+us off Cartesia turned out to be a RESOLVED Cartesia platform incident
+(status.cartesia.ai/incidents/1j04yfp4048k) — both reproductions landed
+inside the incident window. The earlier `FreshContextCartesiaTTSService`
+"fix attempt" (fresh context_id + `continue=False` per sentence) was
+confirmed by Cartesia to be unnecessary and counter-productive, and was
+removed in Story 6.14.
 """
 
 from __future__ import annotations
@@ -65,19 +62,102 @@ def _truncate(value: str, limit: int = 60) -> str:
     return value[:limit] + "..."
 
 
-class _LoggingWebsocket:
-    """Transparent proxy over the Cartesia WebSocket connection that
-    logs every send + recv before delegating to the wrapped object.
+def _log_cartesia_error(parsed: dict[str, Any]) -> None:
+    """Surface Cartesia's documented streaming-error schema at WARNING.
 
-    Mirrors the surface the parent `CartesiaTTSService` actually uses:
-    `send`, `__aiter__/__anext__` (for `async for msg in ws:`),
-    `state`, and `close`. Other attribute reads fall through to the
-    wrapped websocket via `__getattr__` so any future pipecat
-    upgrade that touches other attributes still works.
+    `parsed` is a decoded Cartesia WS message already known to have
+    `type == "error"`. Logs the documented fields (`status_code`,
+    `error`, `context_id`, `done`) so an operator greps one line instead
+    of reconstructing the failure from an opaque `type=error`.
+    """
+    logger.warning(
+        "cartesia_ws_error status_code={} error={!r} context_id={} done={}",
+        parsed.get("status_code"),
+        parsed.get("error"),
+        parsed.get("context_id"),
+        parsed.get("done"),
+    )
+
+
+def _maybe_log_cartesia_error(msg: Any) -> None:
+    """Parse a raw Cartesia WS message and, if it's an error frame, log
+    its documented schema. Silent on non-JSON / non-error messages.
+
+    Story 6.14 review (perf) — cheap substring pre-filter BEFORE the full
+    `json.loads`. This runs on EVERY inbound Cartesia message, and Cartesia
+    streams audio as `type=chunk` frames carrying a KB-sized base64 `data`
+    payload. Fully parsing every audio chunk (throughout Tina's whole
+    utterance) needlessly loads the asyncio event loop on the 2-core VPS —
+    in exactly the window where the concurrent checkpoint/emotion classifier
+    tasks run, so it can delay the `checkpoint_advanced` flip. Only the rare
+    error frame contains the substring "error"; scan first, parse only
+    candidates. A false-positive substring hit inside a base64 blob just
+    falls through to the original parse-and-check (correctness preserved)."""
+    if isinstance(msg, str):
+        if "error" not in msg:
+            return
+    elif isinstance(msg, (bytes, bytearray)):
+        if b"error" not in msg:
+            return
+    else:
+        return
+    try:
+        parsed = json.loads(msg)
+    except (ValueError, TypeError):
+        return
+    if isinstance(parsed, dict) and parsed.get("type") == "error":
+        _log_cartesia_error(parsed)
+
+
+class _ErrorLoggingWebsocket:
+    """Always-on minimal proxy over the Cartesia WebSocket: passes every
+    message through UNCHANGED, but surfaces Cartesia's documented
+    `type=error` schema at WARNING before the parent pipecat code (which
+    may silently drop it) ever sees it.
+
+    Mirrors the surface the parent `CartesiaTTSService` uses: `send`,
+    `__aiter__/__anext__` (for `async for msg in ws:`), `state`, and
+    `close`. Other attribute reads fall through via `__getattr__` so a
+    future pipecat upgrade that touches other attributes still works.
     """
 
     def __init__(self, ws: Any) -> None:
         self._ws = ws
+
+    async def send(self, msg: Any) -> Any:
+        return await self._ws.send(msg)
+
+    # `websockets`' `ClientConnection` does NOT expose `__anext__`
+    # directly even though it supports `async for`. `__aiter__` is a
+    # *plain* (non-async) function returning a fresh async generator that
+    # delegates to the underlying `async for` — see the regression test
+    # `test_logging_websocket_iterates_over_async_only_underlying` for the
+    # trap this avoids (an `AttributeError` → pipecat reconnect storm →
+    # Tina mute).
+    def __aiter__(self) -> Any:
+        return self._aiter_messages()
+
+    async def _aiter_messages(self) -> Any:
+        async for msg in self._ws:
+            _maybe_log_cartesia_error(msg)
+            yield msg
+
+    async def close(self) -> Any:
+        return await self._ws.close()
+
+    def __getattr__(self, name: str) -> Any:
+        # Fall through everything else (`state`, `close_code`,
+        # transport-internal hooks) to the wrapped websocket.
+        return getattr(self._ws, name)
+
+
+class _LoggingWebsocket(_ErrorLoggingWebsocket):
+    """Verbose `[CART-INSTR]` proxy (gated by `CARTESIA_INSTRUMENT=1`).
+
+    Logs every send + recv on top of the always-on error surfacing
+    inherited from `_ErrorLoggingWebsocket`. Authoritative trace of the
+    wire protocol for a freeze investigation.
+    """
 
     async def send(self, msg: Any) -> Any:
         # Cartesia send payloads are JSON strings. Parse them for the
@@ -104,29 +184,12 @@ class _LoggingWebsocket:
                 _LOG_PREFIX,
                 _truncate(str(msg), 200),
             )
-        return await self._ws.send(msg)
-
-    # Hotfix 2026-05-26 — `websockets`' `ClientConnection` does NOT
-    # expose `__anext__` directly even though it supports `async for`.
-    # The original implementation called `self._ws.__anext__()` which
-    # raised `AttributeError: 'ClientConnection' object has no
-    # attribute '__anext__'`, which pipecat's WebsocketTTSService
-    # caught and treated as a recv-failure → triggered an immediate
-    # reconnect → infinite reconnect storm → Cartesia never sent
-    # audio (Tina stayed silent on every call).
-    #
-    # Correct pattern for proxying an async iterable without making
-    # assumptions about the underlying object's iteration internals:
-    # `__aiter__` is a *plain* (non-async) function that returns a
-    # fresh async generator delegating to the underlying `async for`.
-    # This sidesteps the ambiguity of `async def __aiter__: yield`
-    # (which Python interprets as an async-generator function — usable,
-    # but reader-hostile and version-dependent semantics).
-    def __aiter__(self) -> Any:
-        return self._aiter_messages()
+        return await super().send(msg)
 
     async def _aiter_messages(self) -> Any:
         async for msg in self._ws:
+            # Always-on error surfacing first (the load-bearing diagnostic).
+            _maybe_log_cartesia_error(msg)
             try:
                 parsed = json.loads(msg)
                 ctx = parsed.get("context_id", "?")
@@ -158,21 +221,40 @@ class _LoggingWebsocket:
 
     async def close(self) -> Any:
         logger.info("{} WS-CLOSE", _LOG_PREFIX)
-        return await self._ws.close()
+        return await super().close()
 
-    def __getattr__(self, name: str) -> Any:
-        # Fall through everything else (`state`, `close_code`,
-        # transport-internal hooks) to the wrapped websocket.
-        return getattr(self._ws, name)
+
+class ErrorLoggingCartesiaTTSService(CartesiaTTSService):
+    """Prod-default Cartesia service — always-on error-schema surfacing.
+
+    Drop-in replacement for `CartesiaTTSService`: same constructor
+    surface, same Settings type. Only effect on prod behaviour is a
+    WARNING log when Cartesia returns its documented `type=error` frame
+    (otherwise silent). Wired by `pipeline/tts_factory.build_tts_service`
+    whenever `TTS_PROVIDER=cartesia` and no debug env-gate is set.
+    """
+
+    async def _connect_websocket(self) -> None:
+        await super()._connect_websocket()
+        # Wrap AFTER the parent established the raw websocket. If the
+        # connection failed (`_websocket is None`), skip wrapping so the
+        # parent's reconnect logic stays intact. Idempotent: never
+        # double-wrap on a reconnect.
+        if self._websocket is not None and not isinstance(
+            self._websocket, _ErrorLoggingWebsocket
+        ):
+            self._websocket = _ErrorLoggingWebsocket(self._websocket)
 
 
 class InstrumentedCartesiaTTSService(CartesiaTTSService):
-    """Subclass that wraps the WebSocket and overrides every method
-    that touches context-lifecycle state, adding [CART-INSTR] logs.
+    """Verbose-diagnostic Cartesia service (gated by `CARTESIA_INSTRUMENT=1`).
 
-    Drop-in replacement for `CartesiaTTSService` — same constructor
-    surface, same Settings type. Only effect on prod behaviour is
-    additional log lines (loguru INFO level).
+    Wraps the WebSocket with the verbose `_LoggingWebsocket` and overrides
+    every method that touches context-lifecycle state, adding
+    `[CART-INSTR]` logs. Includes the always-on error surfacing via
+    `_LoggingWebsocket`'s base class. Drop-in replacement for
+    `CartesiaTTSService` — same constructor surface; only effect on prod
+    behaviour is additional log lines (loguru INFO/WARNING).
     """
 
     async def _connect_websocket(self) -> None:
@@ -310,83 +392,3 @@ class InstrumentedCartesiaTTSService(CartesiaTTSService):
         logger.info("{} cancel ENTER", _LOG_PREFIX)
         await super().cancel(frame)
         logger.info("{} cancel EXIT", _LOG_PREFIX)
-
-
-class FreshContextCartesiaTTSService(InstrumentedCartesiaTTSService):
-    """Story 6.13 Phase 4 Option A fix — eliminates the Cartesia multi-send
-    freeze by sending each sentence as a self-contained single-shot
-    request (fresh context_id + `continue=False`) instead of accumulating
-    multiple `continue=True` sends on the same context.
-
-    Root cause confirmed via call 156 (2026-05-26): Cartesia hangs when
-    it receives 4+ rapid sends (<300 ms apart) on the same `context_id`.
-    Pattern: 4 transcript sends + 1 flush in 281 ms → ZERO audio chunks
-    + ZERO `done` response from Cartesia for ~5 s until the watchdog
-    fires. Reproduced 3 times in one call on different contexts; ~30 %
-    of calls overall.
-
-    Two complementary changes are BOTH required:
-
-    1. `reuse_context_id_within_turn=False` — Pipecat's `TTSService`
-       has a built-in knob that, when False, makes every call to
-       `create_context_id()` return a fresh UUID instead of reusing
-       the per-turn one. Each `AggregatedTextFrame` therefore goes to
-       its own Cartesia context. No more 4-sends-on-same-context race.
-
-    2. Force `continue=False` in `_build_msg` — Cartesia's protocol
-       treats `continue=True` as "more transcript will follow on this
-       context_id". Without a final `continue=False` flush, Cartesia
-       waits indefinitely. Pipecat's flush path
-       (`on_turn_context_completed → flush_audio(self._turn_context_id)`)
-       targets the *turn* context (a fresh UUID that was never
-       actually opened when `reuse=False`), so the flush never reaches
-       the per-sentence contexts. By forcing `continue=False` on every
-       send, each per-sentence context is self-flushing: Cartesia
-       receives `text + immediate end-of-transcript`, generates audio,
-       closes the context. No race possible because each context only
-       ever sees one message.
-
-    Inherits from `InstrumentedCartesiaTTSService` so the `[CART-INSTR]`
-    logs are still emitted — operators can validate the fix is firing
-    correctly via journalctl. Once we have shipped this fix and
-    confirmed it sticks, a follow-up story should:
-      - Promote this class to the default in `bot.py` (drop the env gate)
-      - Either delete the `InstrumentedCartesiaTTSService` instrumentation
-        OR keep it permanently gated for future Cartesia investigations.
-
-    Gated by `CARTESIA_FRESH_CTX=1` (default off). Coexists with
-    `CARTESIA_INSTRUMENT=1` — `bot.py` picks `FreshContext` if both
-    are set, since `FreshContext` already includes the instrumentation.
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        # Force fresh context_id per sentence. `setdefault` so an
-        # explicit caller-override (e.g. a future test that wants the
-        # legacy behaviour) still works.
-        kwargs.setdefault("reuse_context_id_within_turn", False)
-        super().__init__(**kwargs)
-        logger.info(
-            "{} FreshContextCartesiaTTSService active — single-shot per sentence",
-            _LOG_PREFIX,
-        )
-
-    def _build_msg(
-        self,
-        text: str = "",
-        continue_transcript: bool = True,
-        add_timestamps: bool = True,
-        context_id: str = "",
-    ) -> str:
-        # ALWAYS `continue=False` so every send to Cartesia is
-        # self-flushing. The redundant flush from
-        # `on_turn_context_completed` later targets `_turn_context_id`
-        # which (with `reuse=False`) never matched a real audio
-        # context, so it's already a no-op via the existing
-        # `audio_context_available(...)` guard — no further override
-        # needed in `flush_audio`.
-        return super()._build_msg(
-            text=text,
-            continue_transcript=False,
-            add_timestamps=add_timestamps,
-            context_id=context_id,
-        )

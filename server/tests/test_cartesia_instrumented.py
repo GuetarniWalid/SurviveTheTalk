@@ -115,74 +115,171 @@ def test_logging_websocket_state_attribute_passthrough() -> None:
 
 
 # ============================================================
-# Story 6.13 Phase 4 Option A — FreshContextCartesiaTTSService
+# Story 6.14 AC4.1 — always-on Cartesia error-schema surfacing
 # ============================================================
 
 
-def test_fresh_context_service_forces_continue_false_in_build_msg() -> None:
-    """The Option A fix relies on EVERY send to Cartesia being a
-    self-flushing `continue=False` message. Even if the caller passes
-    `continue_transcript=True` (which is the default in the parent
-    `flush_audio` / `run_tts` paths), the override MUST coerce it
-    to False — that's the load-bearing invariant that prevents
-    Cartesia from waiting for additional transcript on a context."""
-    import json
+def _capture_warnings(action) -> list[str]:
+    """Run `action()` (sync) with a temp loguru WARNING sink and return
+    the captured lines. Loguru doesn't propagate to pytest's `caplog`
+    (server/CLAUDE.md §3), so we add our own sink."""
+    from loguru import logger as loguru_logger
 
-    from pipeline.cartesia_instrumented import FreshContextCartesiaTTSService
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="WARNING")
+    try:
+        action()
+    finally:
+        loguru_logger.remove(sink_id)
+    return captured
 
-    # Construct without going through the heavy parent __init__ path;
-    # we only need _build_msg behaviour. The parent uses these attrs.
-    service = FreshContextCartesiaTTSService.__new__(FreshContextCartesiaTTSService)
-    service._settings = type("S", (), {})()  # bare namespace
-    service._settings.voice = "voice-id"
-    service._settings.model = "sonic-3"
-    service._settings.language = None
-    service._settings.generation_config = None
-    service._settings.pronunciation_dict_id = None
-    service._output_container = "raw"
-    service._output_encoding = "pcm_s16le"
-    service._output_sample_rate = 16000
 
-    # Caller asks for continue=True — fix MUST override to False.
-    msg_str = service._build_msg(
-        text="Hello.",
-        continue_transcript=True,
-        context_id="ctx-A",
+def test_log_cartesia_error_formats_documented_fields() -> None:
+    """`_log_cartesia_error` logs Cartesia's documented error schema
+    (`status_code`, `error`, `context_id`, `done`) at WARNING so an
+    operator greps one structured line."""
+    from pipeline.cartesia_instrumented import _log_cartesia_error
+
+    captured = _capture_warnings(
+        lambda: _log_cartesia_error(
+            {
+                "type": "error",
+                "context_id": "ctx-Z",
+                "status_code": 503,
+                "done": True,
+                "error": "service unavailable",
+            }
+        )
     )
-    msg = json.loads(msg_str)
-    assert msg["continue"] is False, (
-        "FreshContextCartesiaTTSService MUST force continue=False so each "
-        "send is single-shot; got continue=True — the fix is inert"
+
+    line = "\n".join(captured)
+    assert "cartesia_ws_error" in line
+    assert "status_code=503" in line
+    assert "service unavailable" in line
+    assert "ctx-Z" in line
+
+
+def test_maybe_log_skips_json_parse_when_no_error_substring() -> None:
+    """Story 6.14 review (perf) — the cheap substring pre-filter must NOT
+    even call `json.loads` on an audio chunk that lacks the substring
+    "error". We assert it by passing a non-JSON string with no "error":
+    the old code path would hit `json.loads` (caught → return); the new
+    path returns before parsing. Either way it must stay silent — and a
+    `type=chunk` frame whose base64 happens to contain "error" must still
+    fall through correctly (parsed, type != error → silent)."""
+    from pipeline.cartesia_instrumented import _maybe_log_cartesia_error
+
+    # (a) plain audio chunk, no "error" substring → silent.
+    captured = _capture_warnings(
+        lambda: _maybe_log_cartesia_error(
+            '{"context_id": "ctx-A", "type": "chunk", "data": "AAAABBBB"}'
+        )
     )
-    assert msg["transcript"] == "Hello."
-    assert msg["context_id"] == "ctx-A"
+    assert not any("cartesia_ws_error" in e for e in captured)
 
-    # Caller already says False — still False.
-    msg_str2 = service._build_msg(
-        text="X",
-        continue_transcript=False,
-        context_id="ctx-B",
+    # (b) base64 payload that DOES contain the substring "error" but is a
+    # chunk, not an error frame → pre-filter matches, parse falls through,
+    # type != "error" → still silent (correctness preserved).
+    captured = _capture_warnings(
+        lambda: _maybe_log_cartesia_error(
+            '{"context_id": "ctx-A", "type": "chunk", "data": "Zerror1234"}'
+        )
     )
-    msg2 = json.loads(msg_str2)
-    assert msg2["continue"] is False
+    assert not any("cartesia_ws_error" in e for e in captured)
 
 
-def test_fresh_context_service_sets_reuse_context_id_within_turn_false() -> None:
-    """The other half of Option A: `reuse_context_id_within_turn=False`
-    so `create_context_id()` returns a fresh UUID per sentence.
-    Without this, multiple sentences still land on the same context_id
-    and the multi-frame race re-emerges."""
-    from pipeline.cartesia_instrumented import FreshContextCartesiaTTSService
+def test_error_logging_websocket_surfaces_error_and_passes_through() -> None:
+    """`_ErrorLoggingWebsocket` MUST (a) yield every message unchanged
+    and (b) log the documented schema on a `type=error` frame — even
+    though it is otherwise silent."""
+    from pipeline.cartesia_instrumented import _ErrorLoggingWebsocket
 
-    # Inspect the constructor signature via the default kwargs path —
-    # avoid actually constructing (parent needs real api_key etc.).
-    # The class's __init__ sets the default; we can validate by
-    # reading the source string.
-    import inspect
-
-    src = inspect.getsource(FreshContextCartesiaTTSService.__init__)
-    assert 'kwargs.setdefault("reuse_context_id_within_turn", False)' in src, (
-        "FreshContextCartesiaTTSService.__init__ must default "
-        "reuse_context_id_within_turn=False — the Option A fix is "
-        "inert without it"
+    underlying = _FakeAsyncOnlyWebsocket(
+        [
+            '{"context_id": "ctx-A", "type": "chunk", "data": "AAAA"}',
+            '{"context_id": "ctx-A", "type": "error", "status_code": 500, '
+            '"done": true, "error": "internal error"}',
+            '{"context_id": "ctx-A", "type": "done", "done": true}',
+        ]
     )
+    proxy = _ErrorLoggingWebsocket(underlying)
+
+    collected: list[str] = []
+
+    def _drive() -> None:
+        async def _run() -> None:
+            async for msg in proxy:
+                collected.append(msg)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+    captured = _capture_warnings(_drive)
+
+    # Pass-through: all three messages forwarded unchanged.
+    assert len(collected) == 3
+    # Error surfaced exactly once with the documented fields.
+    line = "\n".join(captured)
+    assert line.count("cartesia_ws_error") == 1
+    assert "status_code=500" in line
+    assert "internal error" in line
+
+
+def test_error_logging_websocket_silent_on_non_error_messages() -> None:
+    """No `cartesia_ws_error` WARNING for chunk/done/timestamps frames —
+    the proxy is silent on the happy path."""
+    from pipeline.cartesia_instrumented import _ErrorLoggingWebsocket
+
+    underlying = _FakeAsyncOnlyWebsocket(
+        [
+            '{"context_id": "ctx-A", "type": "chunk", "data": "AAAA"}',
+            '{"context_id": "ctx-A", "type": "done", "done": true}',
+        ]
+    )
+    proxy = _ErrorLoggingWebsocket(underlying)
+
+    def _drive() -> None:
+        async def _run() -> None:
+            async for _ in proxy:
+                pass
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+    captured = _capture_warnings(_drive)
+    assert not any("cartesia_ws_error" in entry for entry in captured)
+
+
+def test_verbose_logging_websocket_also_surfaces_error_schema() -> None:
+    """The verbose `_LoggingWebsocket` (CARTESIA_INSTRUMENT path) inherits
+    the always-on error surfacing — an error frame still produces the
+    structured WARNING on top of the verbose INFO trace."""
+    underlying = _FakeAsyncOnlyWebsocket(
+        [
+            '{"context_id": "ctx-A", "type": "error", "status_code": 429, '
+            '"done": true, "error": "rate limited"}',
+        ]
+    )
+    proxy = _LoggingWebsocket(underlying)
+
+    def _drive() -> None:
+        async def _run() -> None:
+            async for _ in proxy:
+                pass
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+    captured = _capture_warnings(_drive)
+    line = "\n".join(captured)
+    assert "cartesia_ws_error" in line
+    assert "status_code=429" in line

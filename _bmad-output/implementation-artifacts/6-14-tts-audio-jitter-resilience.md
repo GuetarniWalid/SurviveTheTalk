@@ -1,6 +1,6 @@
 # Story 6.14: TTS Audio Jitter Resilience + Cartesia Re-evaluation
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -102,27 +102,27 @@ See `## Smoke Test Gate` below.
 
 ### Phase 1 — Measure + client jitter buffer (the core fix)
 
-- [ ] **Task 1 — Capture the jitter measurement** (AC1)
-  - [ ] 1.1 — Pull WebRTC inbound-audio stats on the client during a stretched call (`RTCPeerConnection.getStats` via livekit_client, or LiveKit's track stats): `jitter`, `jitterBufferDelay`, `concealedSamples`, `insertedSamplesForDeceleration`.
-  - [ ] 1.2 — Log them (dev-only) so before/after is comparable.
-- [ ] **Task 2 — Increase the inbound audio jitter buffer / playout delay** (AC2)
-  - [ ] 2.1 — Find the knob in the deployed `livekit_client` / `flutter_webrtc` (`jitterBufferTarget`, playout-delay hint, or audio track config). Document what's available.
-  - [ ] 2.2 — Set an empirically-tuned target (~150–400 ms); make it a named constant, easy to retune.
-  - [ ] 2.3 — If no knob exists, document it and pivot to AC3/AC4 as the mitigation.
+- [x] **Task 1 — Capture the jitter measurement** (AC1)
+  - [x] 1.1 — Pull WebRTC inbound-audio stats on the client. Done via `InboundAudioStatsLogger` — subscribes to each remote audio track's `AudioReceiverStatsEvent` (livekit_client 2.6.4 already parses `jitter`, `jitterBufferDelay`, `packetsLost`, `concealedSamples`, `concealmentEvents`). NOTE: `insertedSamplesForDeceleration` is NOT parsed by livekit_client 2.6.4 — `concealedSamples` (rising delta = NetEq stretch) is the proxy signal used instead.
+  - [x] 1.2 — Logged dev-only via `dev.log(name: 'call.audioStats')`, gated by `kLogInboundAudioStats`, with a per-window `concealedSamples` delta so before/after is comparable. **(Actual on-device capture during a stretched call = Walid, smoke gate box 1.)**
+- [x] **Task 2 — Increase the inbound audio jitter buffer / playout delay** (AC2)
+  - [x] 2.1 — **Finding:** `flutter_webrtc` 1.3.0 exposes NO client-side per-receiver jitter-buffer / playout-delay knob (no `jitterBufferTarget`, no playout-delay setter). The usable lever is LiveKit's **server-side** room config `min_playout_delay` (ms), attached to the access token → SFU emits the `playout-delay` RTP extension → receiver NetEq keeps a bigger buffer.
+  - [x] 2.2 — Implemented server-side: `Settings.livekit_min_playout_delay_ms` (named constant, default 200, env `LIVEKIT_MIN_PLAYOUT_DELAY_MS`) attached to BOTH call tokens in new `pipeline/livekit_tokens.py`. **(Empirical tuning of the 200 ms value = Walid, smoke gate box 2/3.)**
+  - [x] 2.3 — No client knob exists → documented above + implemented the server-side knob (a real fix, not a fallback to AC3/AC4).
 
 ### Phase 2 — Provider robustness + Cartesia re-eval
 
-- [ ] **Task 3 — ElevenLabs frame/streaming review** (AC3)
-  - [ ] 3.1 — Audit `tts_factory.py` ElevenLabs config for steadier-stream settings; tune if it helps AC1; verify no TTFA regression.
-- [ ] **Task 4 — Cartesia re-evaluation** (AC4)
-  - [ ] 4.1 — Parse + log Cartesia's documented error schema (`status_code`, `error`) in the Cartesia path / `TTSWatchdog`.
-  - [ ] 4.2 — Remove `FreshContextCartesiaTTSService` (or justify keeping it) — Cartesia confirmed it's unnecessary/counter-productive.
-  - [ ] 4.3 — Re-test `TTS_PROVIDER=cartesia` post-incident (Walid device gate) — freeze gone? stretching better?
-  - [ ] 4.4 — Decide + record the launch default in `server/CLAUDE.md` §5 + `memory/project_tts_provider_switch.md`.
+- [x] **Task 3 — ElevenLabs frame/streaming review** (AC3)
+  - [x] 3.1 — Audited `tts_factory.py` ElevenLabs config. Levers documented inline (`output_format`/sample_rate, `auto_mode`, `optimize_streaming_latency`). NO change made: each needs on-device AC1-metric validation (a wrong move regresses TTFA), and the receiver-side jitter buffer + Cartesia default are the primary fixes — ElevenLabs is now the fallback. A future device A/B can wire a smaller-frame config behind a Settings field.
+- [x] **Task 4 — Cartesia re-evaluation** (AC4)
+  - [x] 4.1 — Parse + log Cartesia's documented error schema (`status_code`, `error`, `context_id`, `done`) at WARNING (`cartesia_ws_error`) via always-on `ErrorLoggingCartesiaTTSService` (`pipeline/cartesia_instrumented.py`) — at the websocket boundary, BEFORE pipecat's `audio_context_available` guard can silently drop an abandoned-context error.
+  - [x] 4.2 — Removed `FreshContextCartesiaTTSService` + the `CARTESIA_FRESH_CTX` env gate (Cartesia confirmed it's unnecessary/counter-productive).
+  - [ ] 4.3 — Re-test `TTS_PROVIDER=cartesia` post-incident (**Walid device gate** — freeze gone? stretching better?).
+  - [x] 4.4 — Decided + recorded the launch default = **Cartesia** in `server/CLAUDE.md` §5 + `memory/project_tts_provider_switch.md` (+ `config.py` default flipped + `deploy/.env.example`).
 
 ### Phase 3 — Gates + smoke
 
-- [ ] **Task 5 — Pre-commit gates** (AC5) — ruff + pytest + flutter analyze + flutter test.
+- [x] **Task 5 — Pre-commit gates** (AC5) — ruff + pytest + flutter analyze + flutter test (see Dev Agent Record).
 - [ ] **Task 6 — WALID device smoke gate** (AC6) — the 6 boxes above; then `review → done`.
 
 ## Dev Notes
@@ -150,21 +150,85 @@ See `## Smoke Test Gate` below.
 
 ### Agent Model Used
 
-(filled at dev time)
+claude-opus-4-8[1m] (Claude Opus 4.8, 1M context) via `/bmad-dev-story`, 2026-06-01.
 
 ### Debug Log References
 
-(filled at dev time)
+- Diagnosed root cause from spec + `memory/project_tts_provider_switch.md`: receiver-side NetEq time-stretch (network jitter), not server pacing.
+- Verified `flutter_webrtc` 1.3.0 exposes no client playout-delay knob; `livekit_client` 2.6.4 exposes `AudioReceiverStats` (jitter/jitterBufferDelay/concealedSamples/concealmentEvents) + the server-side `RoomConfiguration.min_playout_delay` lever.
+- Confirmed `livekit.api.AccessToken.with_room_config(RoomConfiguration(min_playout_delay=...))` lands in the JWT `roomConfig` claim.
 
 ### Completion Notes List
 
-(filled at dev time)
+**Autonomous slice delivered (code). Device validation = Walid (smoke gate).**
+
+Track 2 (the immediate launch win — Cartesia is the validated launch default):
+- ✅ `Settings.tts_provider` default flipped `elevenlabs` → `cartesia` (Walid's 2026-05-30 on-device A/B + Cartesia's resolved-incident confirmation).
+- ✅ `FreshContextCartesiaTTSService` + `CARTESIA_FRESH_CTX` gate **deleted** (Cartesia confirmed unnecessary/counter-productive).
+- ✅ New always-on `ErrorLoggingCartesiaTTSService` (the prod default) surfaces Cartesia's documented `{type:error,status_code,error,context_id,done}` schema at WARNING (`cartesia_ws_error`) at the websocket boundary — captures even the abandoned-context errors pipecat silently drops.
+
+Track 1 (jitter resilience):
+- ✅ AC2 — server-side `min_playout_delay` jitter buffer via new `pipeline/livekit_tokens.py` (both tokens carry the room config), env-tunable `LIVEKIT_MIN_PLAYOUT_DELAY_MS` (default 200). This is the LiveKit-recommended mechanism since `flutter_webrtc` has no client knob.
+- ✅ AC1 — client `InboundAudioStatsLogger` logs inbound-audio jitter stats (jitter / jitterBufferDelay / concealedSamples delta) for before/after measurement; gated by `kLogInboundAudioStats`.
+- ✅ AC3 — ElevenLabs frame/streaming levers reviewed + documented inline; no speculative change (needs device AC1-metric validation; ElevenLabs is now the fallback).
+
+**Deviations from the spec's assumptions:**
+- **#1 — Track 1 is SERVER-side, not client-side.** The spec guessed the jitter-buffer fix would be a client knob; `flutter_webrtc` 1.3.0 has none, so it's implemented via LiveKit's server-side `min_playout_delay` room config on the token. This is a real fix (the SFU instructs the receiver's NetEq), strictly better than the spec's AC2 "fall back to AC3/AC4" path.
+- **#2 — AC4.4 launch default already decided.** Walid's 2026-05-30 device A/B + Change Log already chose Cartesia; this story formalizes it in code rather than waiting on the device re-test (AC4.3), which only re-confirms.
+- **#3 — Kept token fn names `generate_token`/`generate_token_with_agent`** (in our module, not pipecat's) so the ~16 existing `@patch("api.routes_calls.generate_token*")` test decorators keep working without a mass-rename.
+
+**Pre-commit gates (2026-06-01) — ALL GREEN:**
+- ✅ `ruff check` + `ruff format --check` — clean on all changed server files.
+- ✅ **Full server `pytest` — 497 passed, 0 failures** (incl. the new `test_livekit_tokens` ×6, `test_calls`, `test_scenarios`). `test_livekit_tokens` re-run with `-W error::Warning` → clean (JWT secret lengthened to ≥32 bytes). Covers all of Track 2 (Cartesia default, removed fresh-context, `cartesia_ws_error` error-schema logging), the `livekit_min_playout_delay_ms` config field + token wiring.
+- ✅ `flutter analyze` — No issues found.
+- ✅ `flutter test` — **404 passed** (399 baseline + 5 new `inbound_audio_stats_logger_test`). The new `InboundAudioStatsLogger` is fail-safe (try/catch in `start()` + the stats callback) so it can never crash a call; this also fixed 15 `call_screen_test` failures that surfaced because a dev diagnostic was reading an unstubbed `room.remoteParticipants`.
+- ℹ️ Env note: `from livekit import api` (→ `import aiohttp`) initially deadlocked in the dev sandbox while Windows Defender cloud-scanned aiohttp's compiled `_http_parser.pyd`. NOT a code issue and NOT a regression (the original `routes_calls.py` already imported it via `pipecat.runner.livekit`). Resolved by warming Defender's verdict (one `import aiohttp` in a non-sandboxed terminal), after which the full suite ran in 183 s. Captured in `memory/feedback_sandbox_livekit_import_hang.md`.
 
 ### File List
 
-(filled at dev time)
+**Server — modified:**
+- `server/config.py` — `tts_provider` default → `cartesia`; new `livekit_min_playout_delay_ms` field (env `LIVEKIT_MIN_PLAYOUT_DELAY_MS`, default 200).
+- `server/pipeline/tts_factory.py` — Cartesia default = `ErrorLoggingCartesiaTTSService`; removed `CARTESIA_FRESH_CTX` branch; AC3 ElevenLabs review comment; docstrings.
+- `server/pipeline/cartesia_instrumented.py` — removed `FreshContextCartesiaTTSService`; added `ErrorLoggingCartesiaTTSService` + `_ErrorLoggingWebsocket` + `_log_cartesia_error`/`_maybe_log_cartesia_error`; `_LoggingWebsocket` now extends the error proxy.
+- `server/api/routes_calls.py` — import + use the new token helpers with `min_playout_delay_ms`.
+- `server/pipeline/bot.py` — comment update (provider default now Cartesia; `CARTESIA_FRESH_CTX` reference removed).
+
+**Server — new:**
+- `server/pipeline/livekit_tokens.py` — `generate_token` / `generate_token_with_agent` with the jitter-buffer room config.
+
+**Server — tests:**
+- `server/tests/test_config.py` — default `cartesia` + `livekit_min_playout_delay_ms` tests.
+- `server/tests/test_tts_factory.py` — `ErrorLoggingCartesiaTTSService` default; removed FreshContext test.
+- `server/tests/test_cartesia_instrumented.py` — removed FreshContext tests; added error-schema logging tests.
+- `server/tests/test_livekit_tokens.py` — NEW (6 tests: grants + room-config claim + knob-off).
+
+**Client — modified:**
+- `client/lib/features/call/views/call_screen.dart` — wire `InboundAudioStatsLogger` (create on connect, dispose on teardown).
+
+**Client — new:**
+- `client/lib/features/call/services/inbound_audio_stats_logger.dart`
+- `client/test/features/call/services/inbound_audio_stats_logger_test.dart`
+
+**Docs / config:**
+- `server/CLAUDE.md` §5 — rewritten (Cartesia default, error schema, jitter buffer).
+- `deploy/.env.example` — `TTS_PROVIDER=cartesia`, new `LIVEKIT_MIN_PLAYOUT_DELAY_MS`, removed `CARTESIA_FRESH_CTX`.
+- `memory/project_tts_provider_switch.md` — Story 6.14 formalization (not in repo).
 
 ## Change Log
 
+- 2026-06-01 — **`review` → `done`.** Walid device smoke gate PASSED on Pixel 9: Cartesia voice validated fluid (no "voix rallongée"), checkpoint flips OK. `/bmad-code-review` had landed 2 patches (min-playout-delay boot validator + Cartesia error-logger chunk pre-filter) + 5 deferred + ~12 dismissed, zero AC violations. Post-deploy investigation of a "checkpoint tick feels slow on UI" report: server logs (call ~13:43) PROVED the server emits the URGENT `checkpoint_advanced` mid-speech (the Story 6.10 fast-path is intact) — the residual "character acknowledges before the tick flips" lag is the pre-existing async classifier-vs-reply mismatch (Story 6.12), NOT a 6.14 regression. The one 6.14-introduced contributor (full `json.loads` on every Cartesia audio chunk loading the 2-core event loop during speech) was fixed via the substring pre-filter. Deployed at `a90cbcf`. Gates: ruff clean + pytest 501 + flutter analyze clean + flutter test 404 (all run by Claude). Follow-ups tracked in deferred-work.md (incl. flip `kLogInboundAudioStats` → false now AC1 capture is done).
+- 2026-06-01 — **`/bmad-dev-story` autonomous slice landed; `in-progress` → `review`.** Track 2 (Cartesia made the code default + `FreshContextCartesiaTTSService`/`CARTESIA_FRESH_CTX` removed + always-on `ErrorLoggingCartesiaTTSService` surfacing the documented error schema). Track 1 (server-side `min_playout_delay` jitter buffer via new `pipeline/livekit_tokens.py`, since `flutter_webrtc` 1.3.0 has no client knob; client `InboundAudioStatsLogger` for AC1 measurement; ElevenLabs AC3 review documented, no change). 3 deviations recorded in Dev Agent Record (server-side jitter fix vs spec's client-side guess; launch default already decided; kept token fn names to avoid test churn). Device validation (AC4.3 Cartesia re-test, the 6-box AC6 smoke gate, empirical 200 ms tune) reserved for Walid per Story 6.5 D6. Gates: see Dev Agent Record.
 - 2026-05-30 (update) — **Cartesia validated far smoother on device (Walid A/B).** After flipping `TTS_PROVIDER=cartesia` on the VPS, Walid confirmed the voice is fluid with no stretching, "rien à voir avec ElevenLabs", and no freeze across his post-incident test calls. → **Track 2's likely outcome is already known: make Cartesia the launch default; ElevenLabs becomes last-resort until Track 1's jitter buffer ships.** This shifts the story's center of gravity: Track 2 (flip default to Cartesia + remove fresh-context workaround + log the documented error schema + keep watching for the freeze) is the immediate launch-readiness win; Track 1 (client jitter buffer) is still needed to make ElevenLabs viable as a fallback but is no longer the only path to relief. See [[project_tts_provider_switch]] (direction reversal recorded).
 - 2026-05-30 — Spec drafted. Root cause of the recurring "voix rallongée" diagnosed as network-jitter receiver-side time-stretch (server logs clean on call_id=198; DTLN-off never helped → not server pacing). Two tracks: (1) provider-agnostic client jitter-buffer/playout-delay tune (the launch-blocker fix), (2) Cartesia re-evaluation post-incident (Cartesia support 2026-05-28 confirmed the 2026-05-26 freeze was a resolved platform incident — both our reproductions were in that window — and that no client pacing is needed + the fresh-context workaround was unnecessary). Awaiting Walid sign-off / `/bmad-dev-story`.
+
+## Review Findings
+
+_Code review 2026-06-01 (`/bmad-code-review`, 3 adversarial layers: Blind Hunter + Edge Case Hunter + Acceptance Auditor on the uncommitted Story 6.14 diff). Auditor confirmed NO AC violations and all Dev-Record claims true; the WS-proxy surface, the FreshContext removal, and the error-schema logging all verified correct. 1 decision-needed + 5 deferred + ~12 dismissed as noise._
+
+- [ ] [Review][Decision] **Unbounded `LIVEKIT_MIN_PLAYOUT_DELAY_MS`** — no clamp/validator on `Settings.livekit_min_playout_delay_ms` (`config.py`) nor in `_room_config` (`livekit_tokens.py`). A typo'd/over-large env value either (a) bricks ALL calls — a value > int32 max overflows the protobuf `RoomConfiguration.min_playout_delay` → `ValueError` → the generic `except Exception` in `initiate_call` returns 502 `LIVEKIT_TOKEN_FAILED` on every call, masking the real cause — or (b) silently ships a playout delay past the PRD 2 s perceived-latency kill-criterion. `deferred-work.md` already estimated this class of buffer at ~100-200 ms CONSTANT added latency. The comments cite the 2 s ceiling as load-bearing but nothing enforces it. [server/config.py, server/pipeline/livekit_tokens.py]
+- [x] [Review][Defer] **`InboundAudioStatsLogger` track-churn data correctness** — null/reassigned `track.sid` (keyed by `identityHashCode` fallback) can double-attach the same track; the missing `TrackUnsubscribedEvent` handler leaves stale `_prevConcealed`/`_trackCancels`; a cumulative-counter reset prints a negative `(+delta)`. Corrupts/duplicates the AC1 measurement. Dev-only diagnostic, rare in the single-remote-track call model. [client/lib/features/call/services/inbound_audio_stats_logger.dart] — deferred, dev-only diagnostic, low trigger probability.
+- [x] [Review][Defer] **`InboundAudioStatsLogger.dispose()` vs concurrent `_attach`** — a `TrackSubscribedEvent` firing during teardown can mutate `_trackCancels` mid-iteration (ConcurrentModificationError) or leak a listener past dispose. Low likelihood (room listener cancelled first). [client/lib/features/call/services/inbound_audio_stats_logger.dart] — deferred, dev-only diagnostic.
+- [x] [Review][Defer] **livekit_client `monitorStats()` self-cancels permanently on first transient `false`** → the AC1 logger can go silent mid-call with no restart; partial before/after capture. SDK limitation; needs a re-arm if the diagnostic is kept long-term. [client/lib/features/call/services/inbound_audio_stats_logger.dart] — deferred, SDK limitation, dev-only.
+- [x] [Review][Defer] **`kLogInboundAudioStats = true` ships the diagnostic ON in prod** while its own doc-comment says "off-by-default keeps journals clean" — intentional for the AC1 smoke-gate capture; flip to `false` once the before/after is recorded. [client/lib/features/call/services/inbound_audio_stats_logger.dart:23] — deferred follow-up, post smoke-gate.
+- [x] [Review][Patch] **Cartesia error-logger parsed every audio chunk (perf regression)** — `_maybe_log_cartesia_error` ran a full `json.loads` on EVERY inbound Cartesia WS message, including `type=chunk` frames carrying KB-sized base64 audio. On the 2-core VPS this loaded the asyncio event loop throughout Tina's speech — exactly when the concurrent checkpoint/emotion classifier tasks run — and could delay the `checkpoint_advanced` flip. Surfaced during Walid's 2026-06-01 device test (checkpoint tick felt slow on UI). FIXED with a cheap substring pre-filter (`"error" in msg`) before parsing; audio chunks now skip the parse. +1 regression test. NOTE: this reduces classifier-starvation pressure but the deeper "character acknowledges before the tick flips" lag is the pre-existing async classifier-vs-reply mismatch tracked by Story 6.12. [server/pipeline/cartesia_instrumented.py]
+- [x] [Review][Defer] **Room-reuse no-op** — if a room with the same `call-<id>` name survives a prior crashed session, LiveKit keeps the original room's config and the new `min_playout_delay` is silently ignored; the A/B would then show "no change" with no signal. Validate fresh-room on the device gate. [server/api/routes_calls.py, server/pipeline/livekit_tokens.py] — deferred, device-gate validation item.

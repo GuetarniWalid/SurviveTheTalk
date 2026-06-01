@@ -24,6 +24,7 @@ import '../repositories/call_repository.dart';
 import '../services/checkpoint_advanced_payload.dart';
 import '../services/data_channel_handler.dart';
 import '../services/env_warning_payload.dart';
+import '../services/inbound_audio_stats_logger.dart';
 import '../services/viseme_scheduler.dart';
 import 'call_ended_notice_screen.dart';
 import 'scenario_backgrounds.dart';
@@ -232,6 +233,14 @@ class _CallScreenState extends State<CallScreen> {
   /// platform-generated viseme onto the Rive canvas. Same lifecycle as
   /// the handler.
   VisemeScheduler? _visemeScheduler;
+
+  /// Story 6.14 AC1 — dev-only diagnostic. Logs the inbound (remote)
+  /// audio receiver stats (jitter, jitterBufferDelay, concealedSamples)
+  /// so the receiver-side time-stretch ("voix rallongée") can be measured
+  /// before/after the jitter-buffer fix. Same non-lifecycle subscriber
+  /// contract as `_dataChannelHandler`; inert when `kLogInboundAudioStats`
+  /// is false.
+  InboundAudioStatsLogger? _inboundAudioStatsLogger;
 
   /// Story 6.4 — gates the upstream `playback_idle` publish + the
   /// bloc's `PlaybackDrained` dispatch. The naive
@@ -463,6 +472,12 @@ class _CallScreenState extends State<CallScreen> {
     if (scheduler != null) {
       unawaited(scheduler.dispose());
     }
+    // Story 6.14 — tear down the inbound-audio diagnostic.
+    final statsLogger = _inboundAudioStatsLogger;
+    _inboundAudioStatsLogger = null;
+    if (statsLogger != null) {
+      unawaited(statsLogger.dispose());
+    }
     // Story 6.7 — dispose the checkpoint notifier BEFORE super.dispose()
     // so any rebuild-during-teardown can't read a disposed ValueNotifier
     // (would throw on `.value` access).
@@ -562,6 +577,10 @@ class _CallScreenState extends State<CallScreen> {
                 context.read<CallBloc>().add(const PlaybackDrained());
               },
             );
+            // Story 6.14 AC1 — start the inbound-audio jitter diagnostic
+            // on the same connect transition. Inert unless
+            // `kLogInboundAudioStats` is true.
+            _inboundAudioStatsLogger = InboundAudioStatsLogger(room)..start();
             final handlerBuilder =
                 widget.debugHandlerBuilder ?? DataChannelHandler.new;
             _dataChannelHandler = handlerBuilder(

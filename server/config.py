@@ -34,23 +34,47 @@ class Settings(BaseSettings):
     livekit_api_key: str
     livekit_api_secret: str
 
-    # Story 6.13 Phase 4b (2026-05-26) — TTS provider switch. After
-    # Cartesia's multi-frame stall bug surfaced on the Pixel 9 smoke gate
-    # (root cause: server-side rate limit / capacity, see Phase 4 logs
-    # call 156-157), we keep BOTH providers in the codebase and let an
-    # operator switch via env var without a code release. ElevenLabs
-    # Flash v2.5 is the default because of its lower TTFA (~75 ms vs
-    # ~300 ms for Cartesia) AND its established reliability — until
-    # Cartesia ships a fix we can validate, ElevenLabs is the
-    # ship-ready choice.
+    # Story 6.13 Phase 4b (2026-05-26) → Story 6.14 (2026-05-30) — TTS
+    # provider switch. We keep BOTH providers in the codebase and let an
+    # operator switch via env var without a code release.
+    #
+    # 2026-05-30 DIRECTION REVERSAL — default is now **Cartesia** (was
+    # ElevenLabs since 2026-05-26). Two findings flipped it:
+    #   1. Cartesia support confirmed the 2026-05-26 multi-frame freeze
+    #      (calls 156/157) was a RESOLVED platform incident, not a
+    #      fundamental bug — both our reproductions landed inside the
+    #      incident window (status.cartesia.ai/incidents/1j04yfp4048k).
+    #   2. Walid's on-device A/B (2026-05-30): Cartesia's smaller audio
+    #      frames play FAR smoother under network jitter — they don't
+    #      time-stretch ("voix rallongée") the way ElevenLabs' larger
+    #      frames do. ElevenLabs Flash v2.5 still wins on raw TTFA
+    #      (~75 ms vs ~300 ms) but loses on jitter smoothness, which is
+    #      the launch-blocker. ElevenLabs is now the LAST-RESORT fallback
+    #      until the Story 6.14 jitter buffer (`min_playout_delay` below)
+    #      makes it viable again.
     #
     # Switching providers requires both:
-    #   - `TTS_PROVIDER=elevenlabs` (or `cartesia`)
+    #   - `TTS_PROVIDER=cartesia` (or `elevenlabs`)
     #   - the matching API key + voice id env vars below
     #
     # `pipeline/tts_factory.py::build_tts_service` is the single
     # branching point; bot.py never names a provider directly.
-    tts_provider: Literal["cartesia", "elevenlabs"] = "elevenlabs"
+    tts_provider: Literal["cartesia", "elevenlabs"] = "cartesia"
+
+    # Story 6.14 AC2 (2026-05-30) — client-side jitter buffer / playout
+    # delay, set SERVER-SIDE. The recurring "voix rallongée" is the
+    # receiver's WebRTC NetEq time-stretching audio to fill bursty-packet
+    # gaps (network jitter). The fix is a bigger playout delay so the
+    # jitter buffer doesn't run dry. `flutter_webrtc` 1.3.0 exposes NO
+    # client-side per-receiver knob, so the lever is LiveKit's room
+    # config `min_playout_delay` (ms), attached to BOTH access tokens via
+    # `pipeline/livekit_tokens.py` — the SFU then sends the `playout-delay`
+    # RTP header extension that tells the receiver to buffer at least this
+    # long. Trades a small fixed latency for smooth playback; keep it the
+    # SMALLEST value that kills the stretching (PRD ceiling = 2 s perceived,
+    # so ≤ ~400 ms is well within budget). 0 disables the knob (no room
+    # config attached). Empirically tuned on the Pixel 9 smoke gate.
+    livekit_min_playout_delay_ms: int = 200  # LIVEKIT_MIN_PLAYOUT_DELAY_MS
 
     # ElevenLabs Flash v2.5 — fields optional at Settings parse time
     # (empty defaults) so a Cartesia-only deploy keeps booting; runtime
@@ -176,6 +200,33 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET must be at least 32 chars in production "
                 "(generate with: openssl rand -hex 32)"
+            )
+        return value
+
+    @field_validator("livekit_min_playout_delay_ms")
+    @classmethod
+    def _validate_min_playout_delay(cls, value: int) -> int:
+        """Bound the jitter-buffer knob at boot — fail-loud, not per-call.
+
+        Without this, a typo'd `LIVEKIT_MIN_PLAYOUT_DELAY_MS` would either
+        (a) overflow the protobuf `RoomConfiguration.min_playout_delay`
+        (int32) → `ValueError` deep in token minting → a generic 502 on
+        EVERY `initiate_call`, masking the real cause; or (b) silently ship
+        a playout delay past the PRD 2 s perceived-latency kill-criterion.
+        The ceiling here is that 2 s PRD ceiling (the buffer trades a little
+        latency for smoothness; 0 disables the knob). Reject at process
+        start so a misconfig surfaces clearly instead of bricking calls.
+        """
+        if value < 0:
+            raise ValueError(
+                "LIVEKIT_MIN_PLAYOUT_DELAY_MS must be >= 0 "
+                "(0 disables the jitter buffer)"
+            )
+        if value > 2000:
+            raise ValueError(
+                "LIVEKIT_MIN_PLAYOUT_DELAY_MS must be <= 2000 (the PRD 2 s "
+                "perceived-latency ceiling); keep it the smallest value that "
+                f"kills the stretching, got {value}"
             )
         return value
 

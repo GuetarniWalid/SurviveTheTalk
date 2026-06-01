@@ -256,13 +256,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
     _BACKGROUND_TASKS.add(_warmup_task)
     _warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
-    # Story 6.13 Phase 4b (2026-05-26) — TTS provider is selected by
-    # `Settings.tts_provider` (env: `TTS_PROVIDER=cartesia|elevenlabs`).
-    # The factory handles both providers + the Cartesia debug env-gates
-    # (`CARTESIA_INSTRUMENT` / `CARTESIA_FRESH_CTX`) — bot.py never
-    # names a provider class directly. See `pipeline/tts_factory.py`
-    # for the branching + the rationale on why we defaulted to
-    # ElevenLabs post the call 156-157 freeze findings.
+    # Story 6.13 → 6.14 — TTS provider is selected by
+    # `Settings.tts_provider` (env: `TTS_PROVIDER=cartesia|elevenlabs`,
+    # default `cartesia` since Story 6.14). The factory handles both
+    # providers + the `CARTESIA_INSTRUMENT` verbose debug gate — bot.py
+    # never names a provider class directly. See `pipeline/tts_factory.py`
+    # for the branching + why Cartesia is the default again (resolved
+    # platform incident + smoother under jitter than ElevenLabs).
     tts = build_tts_service(settings)
 
     # Story 6.8 Phase 1 AC2 — VAD `stop_secs` audit. Pipecat 0.0.108's

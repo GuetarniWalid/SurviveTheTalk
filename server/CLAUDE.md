@@ -216,38 +216,69 @@ still read it from the env directly.
 Rollback: revert this migration's commit + redeploy (a provider switch
 is code, not an env knob — the Groq base_url/URL is hardcoded).
 
-### 5. TTS provider is switchable — ElevenLabs default, Cartesia behind a flag (Story 6.13)
+### 5. TTS provider is switchable — Cartesia default, ElevenLabs fallback (Story 6.13 → 6.14)
 
-Since 2026-05-27 the TTS provider is selected by `Settings.tts_provider`
-(env `TTS_PROVIDER=elevenlabs|cartesia`, default **`elevenlabs`**). The
-single branching point is `pipeline/tts_factory.py::build_tts_service(settings)`;
-`bot.py` never names a provider class. To add a third provider (OpenAI
-gpt-4o-mini-tts, Deepgram Aura…), add one branch there + matching
-`Settings` fields — `bot.py` stays untouched.
+The TTS provider is selected by `Settings.tts_provider` (env
+`TTS_PROVIDER=cartesia|elevenlabs`, default **`cartesia`** since Story
+6.14 / 2026-05-30). The single branching point is
+`pipeline/tts_factory.py::build_tts_service(settings)`; `bot.py` never
+names a provider class. To add a third provider (OpenAI gpt-4o-mini-tts,
+Deepgram Aura…), add one branch there + matching `Settings` fields —
+`bot.py` stays untouched.
 
-**Why ElevenLabs is the default.** Cartesia Sonic-3 has a reproducible
-multi-frame stall: when ≥4 short transcript sends hit the same WebSocket
-context within ~300 ms (LLM emits a multi-sentence response fast),
-Cartesia goes silent then returns `type=error` ~30 s later. Reproduced
-on calls 156 + 157 (Pixel 9 Pro XL, 2026-05-26). Confirmed it's a
-Cartesia server-side capacity/rate issue, not our bug (the
-`FreshContextCartesiaTTSService` "fix attempt" made it WORSE — fresh
-context per sentence just multiplied the contexts Cartesia choked on).
-A support email went to support@cartesia.ai 2026-05-26; we switched to
-ElevenLabs rather than wait. ElevenLabs Flash v2.5 also has lower TTFA
-(~75 ms vs ~300 ms) so it IMPROVED latency.
+**Why Cartesia is the default again (REVERSED 2026-05-30).** The
+2026-05-26 multi-frame "freeze" that drove us to ElevenLabs (calls
+156/157: ≥4 short sends on one context within ~300 ms → silence →
+`type=error` ~30 s later) turned out to be a **RESOLVED Cartesia platform
+incident** (support reply 2026-05-28, Ege Tinmaz;
+status.cartesia.ai/incidents/1j04yfp4048k) — both our reproductions
+landed inside the incident window. Cartesia also confirmed: no client
+pacing is needed, and the `FreshContextCartesiaTTSService` "fix attempt"
+was unnecessary/counter-productive (it multiplied the contexts the
+incident choked on) → **removed in Story 6.14**. Walid's on-device A/B
+(2026-05-30) found Cartesia FAR smoother under network jitter: its
+smaller audio frames don't time-stretch ("voix rallongée") the way
+ElevenLabs' larger frames do. ElevenLabs Flash v2.5 still wins raw TTFA
+(~75 ms vs ~300 ms) but loses on jitter smoothness — it's now the
+**last-resort fallback** until the jitter buffer (next paragraph) makes
+it viable again.
 
-**Required env for ElevenLabs:** `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`
-(+ optional `ELEVENLABS_MODEL`, default `eleven_flash_v2_5`). The factory
-raises at boot if the chosen provider's creds are missing — fail-loud, not
+**Cartesia error schema is always-on now.** The default service is
+`ErrorLoggingCartesiaTTSService` (not a debug gate) — it surfaces
+Cartesia's documented error frame
+(`{"type":"error","context_id":...,"status_code":<int>,"done":true,
+"error":"<str>"}`) at WARNING (`cartesia_ws_error ...`) at the websocket
+boundary, BEFORE pipecat's `audio_context_available` guard can silently
+drop an abandoned-context error (the freeze case). Grep journalctl for
+`cartesia_ws_error`.
+
+**Story 6.14 jitter buffer (the "voix rallongée" fix), server-side.** The
+stretching is receiver-side WebRTC NetEq time-stretching audio to fill
+bursty-packet gaps (network jitter, diagnosed call_id=198 — server logs
+clean, `DTLN_ENABLED=0` never helped). `flutter_webrtc` 1.3.0 exposes NO
+client playout-delay knob, so the lever is LiveKit's room config
+`min_playout_delay` (ms), attached to BOTH call tokens in
+`pipeline/livekit_tokens.py` (env `LIVEKIT_MIN_PLAYOUT_DELAY_MS`, default
+200, 0 disables). The SFU then emits the `playout-delay` RTP extension →
+the phone's NetEq keeps a bigger jitter buffer → no stretching. Helps
+EVERY provider (Cartesia and ElevenLabs). Trades a small fixed latency
+for smoothness; keep it the smallest value that kills the stretching
+(PRD ceiling = 2 s perceived). The client logs inbound-audio stats
+(`InboundAudioStatsLogger`, `kLogInboundAudioStats`) so the before/after
+is measurable (watch `concealedSamples` deltas drop).
+
+**Required env for Cartesia (default):** `CARTESIA_API_KEY`. For
+ElevenLabs: `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` (+ optional
+`ELEVENLABS_MODEL`, default `eleven_flash_v2_5`). The factory raises at
+boot if the chosen provider's creds are missing — fail-loud, not
 mid-call.
 
 **Cartesia debug env-gates (still in the repo, inert by default):**
 `CARTESIA_INSTRUMENT=1` → verbose WS send/recv logging
-(`pipeline/cartesia_instrumented.py`); `CARTESIA_FRESH_CTX=1` → the
-fresh-context fix attempt; `TTS_AUDIO_DEBUG=1` → per-frame audio
-amplitude/sample-rate logging in `TTSWatchdog`. All three are off in prod;
-flip + `systemctl restart` to re-arm for a future Cartesia investigation.
+(`pipeline/cartesia_instrumented.py`, on top of the always-on error
+surfacing); `TTS_AUDIO_DEBUG=1` → per-frame audio amplitude/sample-rate
+logging in `TTSWatchdog`. Both off in prod; flip + `systemctl restart`
+to re-arm. (`CARTESIA_FRESH_CTX` was removed in Story 6.14.)
 
 **LLM warm-up:** `pipeline/llm_warmup.py` fires a throwaway `max_tokens=1`
 OpenRouter completion at call start (fire-and-forget from `bot.py`) to

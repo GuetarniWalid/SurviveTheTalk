@@ -3,10 +3,10 @@
 The factory is the single branching point between Cartesia and
 ElevenLabs. These tests lock the contract:
 
-- Default provider = ElevenLabs (post-2026-05-26 default after the
-  Cartesia stall findings)
-- Cartesia branch returns the right class based on
-  `CARTESIA_INSTRUMENT` / `CARTESIA_FRESH_CTX` env gates
+- Default provider = Cartesia (Story 6.14 reversal — smoother under
+  jitter; the 2026-05-26 freeze was a resolved Cartesia incident)
+- Cartesia branch returns the always-on `ErrorLoggingCartesiaTTSService`
+  by default, or `InstrumentedCartesiaTTSService` under `CARTESIA_INSTRUMENT`
 - Each branch raises a clear RuntimeError at process start if its
   required credentials / voice id are empty
 """
@@ -17,12 +17,11 @@ import os
 from unittest.mock import patch
 
 import pytest
-from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
 from config import Settings
 from pipeline.cartesia_instrumented import (
-    FreshContextCartesiaTTSService,
+    ErrorLoggingCartesiaTTSService,
     InstrumentedCartesiaTTSService,
 )
 from pipeline.tts_factory import build_tts_service
@@ -49,45 +48,29 @@ def _build_settings(**extra: str) -> Settings:
 # ---------- Cartesia branch ----------
 
 
-def test_factory_returns_vanilla_cartesia_when_provider_is_cartesia_no_env_gate() -> (
-    None
-):
-    """No CARTESIA_INSTRUMENT / CARTESIA_FRESH_CTX → vanilla service."""
+def test_factory_returns_error_logging_cartesia_when_no_env_gate() -> None:
+    """No CARTESIA_INSTRUMENT → always-on `ErrorLoggingCartesiaTTSService`
+    (surfaces Cartesia's documented `type=error` schema), NOT the verbose
+    instrumented sibling."""
     s = _build_settings(TTS_PROVIDER="cartesia")
     with patch.dict(os.environ, {}, clear=False):
         # Make sure no gate is leaking from the test runner env.
-        for key in ("CARTESIA_INSTRUMENT", "CARTESIA_FRESH_CTX"):
-            os.environ.pop(key, None)
+        os.environ.pop("CARTESIA_INSTRUMENT", None)
         tts = build_tts_service(s)
 
-    assert isinstance(tts, CartesiaTTSService)
+    assert isinstance(tts, ErrorLoggingCartesiaTTSService)
     assert not isinstance(tts, InstrumentedCartesiaTTSService)
 
 
 def test_factory_returns_instrumented_cartesia_when_CARTESIA_INSTRUMENT_set() -> None:
     s = _build_settings(TTS_PROVIDER="cartesia")
     with patch.dict(os.environ, {"CARTESIA_INSTRUMENT": "1"}, clear=False):
-        # Belt-and-braces: clear FRESH_CTX so we test the INSTRUMENT-only branch.
-        os.environ.pop("CARTESIA_FRESH_CTX", None)
         tts = build_tts_service(s)
 
     assert isinstance(tts, InstrumentedCartesiaTTSService)
-    # Should NOT also be the FreshContext subclass.
-    assert not isinstance(tts, FreshContextCartesiaTTSService)
-
-
-def test_factory_returns_fresh_context_cartesia_when_CARTESIA_FRESH_CTX_set() -> None:
-    """FRESH_CTX takes precedence over INSTRUMENT (FreshContext IS
-    already instrumented via inheritance)."""
-    s = _build_settings(TTS_PROVIDER="cartesia")
-    with patch.dict(
-        os.environ,
-        {"CARTESIA_FRESH_CTX": "1", "CARTESIA_INSTRUMENT": "1"},
-        clear=False,
-    ):
-        tts = build_tts_service(s)
-
-    assert isinstance(tts, FreshContextCartesiaTTSService)
+    # Sibling, not subclass — the verbose service is distinct from the
+    # always-on error-logging default.
+    assert not isinstance(tts, ErrorLoggingCartesiaTTSService)
 
 
 def test_factory_raises_when_cartesia_selected_but_api_key_empty() -> None:
@@ -135,14 +118,14 @@ def test_factory_raises_when_elevenlabs_selected_but_voice_id_empty() -> None:
 # ---------- Default behaviour ----------
 
 
-def test_factory_defaults_to_elevenlabs_provider_post_2026_05_26() -> None:
-    """If no TTS_PROVIDER env var is set, Settings defaults to
-    `elevenlabs` and the factory takes that branch — confirms the
-    post-call-156-157 default is wired end-to-end."""
-    s = _build_settings(
-        ELEVENLABS_API_KEY="test-eleven-key",
-        ELEVENLABS_VOICE_ID="Xb7hH8MSUJpSbSDYk0k2",
-    )
-    assert s.tts_provider == "elevenlabs"
-    tts = build_tts_service(s)
-    assert isinstance(tts, ElevenLabsTTSService)
+def test_factory_defaults_to_cartesia_provider() -> None:
+    """Story 6.14 reversal — if no TTS_PROVIDER env var is set, Settings
+    defaults to `cartesia` and the factory builds the always-on
+    error-logging Cartesia service. Confirms the launch default is wired
+    end-to-end."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("CARTESIA_INSTRUMENT", None)
+        s = _build_settings()
+        assert s.tts_provider == "cartesia"
+        tts = build_tts_service(s)
+    assert isinstance(tts, ErrorLoggingCartesiaTTSService)

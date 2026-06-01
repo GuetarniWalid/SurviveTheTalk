@@ -158,27 +158,99 @@ def test_settings_boots_without_openrouter_key() -> None:
 # ---------- Story 6.13 Phase 4b — TTS provider switch -----------------------
 
 
-def test_settings_tts_provider_defaults_to_elevenlabs() -> None:
-    """Story 6.13 Phase 4b — post-2026-05-26 default is ElevenLabs.
-    Cartesia stays in the codebase for rollback but the production
-    default after the call 156-157 freeze findings is ElevenLabs."""
+def test_settings_tts_provider_defaults_to_cartesia() -> None:
+    """Story 6.14 (2026-05-30) — DIRECTION REVERSAL: the default is now
+    Cartesia (was ElevenLabs since 2026-05-26). Cartesia's smaller frames
+    play smoother under network jitter (Walid on-device A/B) and the
+    2026-05-26 freeze was a resolved Cartesia platform incident.
+    ElevenLabs stays in the codebase as the last-resort fallback."""
     env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
     with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.tts_provider == "cartesia"
+
+
+def test_settings_tts_provider_can_be_flipped_to_elevenlabs() -> None:
+    """Operator can switch to ElevenLabs via env var alone (no code
+    release) — the last-resort fallback until the jitter buffer makes
+    its larger frames viable again."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "TTS_PROVIDER": "elevenlabs",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
         assert s.tts_provider == "elevenlabs"
 
 
-def test_settings_tts_provider_can_be_flipped_to_cartesia() -> None:
-    """Operator can switch back to Cartesia via env var alone (no
-    code release). Used for rollback once Cartesia ships a fix."""
+# ---------- Story 6.14 AC2 — LiveKit min playout delay (jitter buffer) -------
+
+
+def test_settings_min_playout_delay_defaults_to_200ms() -> None:
+    """Story 6.14 AC2 — the server-side jitter buffer knob defaults to
+    200 ms: a starting point inside the spec's 150-400 ms candidate band,
+    well under the 2 s PRD perceived-latency ceiling. Tuned empirically
+    on the Pixel 9 smoke gate; env-overridable for retune without a code
+    release."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.livekit_min_playout_delay_ms == 200
+
+
+def test_settings_min_playout_delay_overrides_via_env() -> None:
+    """`LIVEKIT_MIN_PLAYOUT_DELAY_MS` lets an operator retune the jitter
+    buffer (or set 0 to disable it) at deploy time without a code release."""
     overrides = {
         **REQUIRED_ENV_VARS,
         "JWT_SECRET": "0" * 32,
-        "TTS_PROVIDER": "cartesia",
+        "LIVEKIT_MIN_PLAYOUT_DELAY_MS": "350",
     }
     with patch.dict(os.environ, overrides, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
-        assert s.tts_provider == "cartesia"
+        assert s.livekit_min_playout_delay_ms == 350
+
+
+def test_settings_min_playout_delay_zero_disables_buffer() -> None:
+    """`LIVEKIT_MIN_PLAYOUT_DELAY_MS=0` is the documented rollback — it
+    parses cleanly to 0 (no room config attached at the token layer)."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "LIVEKIT_MIN_PLAYOUT_DELAY_MS": "0",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.livekit_min_playout_delay_ms == 0
+
+
+def test_settings_rejects_negative_min_playout_delay() -> None:
+    """Story 6.14 review — a negative jitter-buffer value is rejected at
+    boot (fail-loud) instead of silently producing a bad room config."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "LIVEKIT_MIN_PLAYOUT_DELAY_MS": "-1",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        with pytest.raises(ValidationError, match="LIVEKIT_MIN_PLAYOUT_DELAY_MS"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_rejects_min_playout_delay_above_prd_ceiling() -> None:
+    """Story 6.14 review — a value past the PRD 2 s perceived-latency
+    ceiling is rejected at process start. Without this guard an over-large
+    value would either overflow the protobuf int32 (→ 502 on every call)
+    or silently breach the latency kill-criterion."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "LIVEKIT_MIN_PLAYOUT_DELAY_MS": "2001",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        with pytest.raises(ValidationError, match="LIVEKIT_MIN_PLAYOUT_DELAY_MS"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 def test_settings_rejects_unknown_tts_provider() -> None:

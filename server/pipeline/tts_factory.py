@@ -1,21 +1,29 @@
-"""Story 6.13 Phase 4b (2026-05-26) — TTS provider factory.
+"""Story 6.13 Phase 4b (2026-05-26) → Story 6.14 (2026-05-30) — TTS factory.
 
 Single branching point that builds the right TTS service from
 `Settings.tts_provider`. Two providers are wired today:
 
-- **Cartesia Sonic-3** (`tts_provider="cartesia"`) — the original
-  provider. Lives behind `CARTESIA_INSTRUMENT` / `CARTESIA_FRESH_CTX`
-  env-gated debug paths (see `pipeline/cartesia_instrumented.py`) so a
-  future Cartesia investigation can be re-enabled instantly without a
-  code release.
-- **ElevenLabs Flash v2.5** (`tts_provider="elevenlabs"`) — added
-  after Cartesia's multi-frame stall bug surfaced (call 156 +
-  call 157 on Pixel 9 Pro XL, 2026-05-26). Chosen because of lower
-  TTFA (~75 ms advertised vs ~300 ms for Cartesia) AND established
-  reliability. We're not waiting for a Cartesia support reply before
-  shipping — switching now and waiting for their answer in
-  parallel; if they ship a fix later we can flip back via the env
-  var alone.
+- **Cartesia Sonic-3** (`tts_provider="cartesia"`, the launch DEFAULT
+  since Story 6.14 2026-05-30). The default service is
+  `ErrorLoggingCartesiaTTSService` — always-on surfacing of Cartesia's
+  documented `type=error` schema (see `pipeline/cartesia_instrumented.py`).
+  The `CARTESIA_INSTRUMENT=1` env-gate swaps in the verbose
+  `InstrumentedCartesiaTTSService` for a future investigation, no code
+  release needed.
+- **ElevenLabs Flash v2.5** (`tts_provider="elevenlabs"`) — now the
+  LAST-RESORT fallback. It has lower raw TTFA (~75 ms vs ~300 ms) but
+  its larger audio frames time-stretch ("voix rallongée") more under
+  network jitter, which is the launch-blocker; viable again once the
+  Story 6.14 `min_playout_delay` jitter buffer absorbs the bursty
+  arrival. Flip with `TTS_PROVIDER=elevenlabs` (env only, no code).
+
+Why Cartesia is the default again: Cartesia support confirmed
+(2026-05-28) the 2026-05-26 multi-frame freeze (calls 156/157) was a
+RESOLVED platform incident, not a fundamental bug — both reproductions
+landed in the incident window. Walid's on-device A/B (2026-05-30) found
+Cartesia far smoother under jitter. The `FreshContextCartesiaTTSService`
+"fix attempt" Cartesia confirmed unnecessary/counter-productive was
+removed.
 
 The factory is the ONLY place that names a provider class. Pipeline
 construction (`bot.py`) calls `build_tts_service(settings)` and uses
@@ -83,47 +91,42 @@ def build_tts_service(settings: Settings) -> Any:
 
 
 def _build_cartesia(settings: Settings) -> Any:
-    """Construct a Cartesia Sonic-3 service.
+    """Construct a Cartesia Sonic-3 service (the Story 6.14 launch default).
 
-    Preserves the Story 6.13 investigation env-gates:
+    - Default (no env-gate) → `ErrorLoggingCartesiaTTSService` (always-on
+      WARNING surfacing of Cartesia's documented `type=error` schema).
+    - `CARTESIA_INSTRUMENT=1` → `InstrumentedCartesiaTTSService` (verbose
+      logging of every WS send/recv + audio context transition). Used
+      during a freeze diagnostic phase.
 
-    - `CARTESIA_FRESH_CTX=1` → `FreshContextCartesiaTTSService` (the
-      Option A fix attempt — multi-frame race mitigation via fresh
-      context_id per sentence). NOT a real fix per the call 157 logs
-      (Cartesia just queues the freezes differently) but kept as a
-      research artifact for the Cartesia support thread.
-    - `CARTESIA_INSTRUMENT=1` → `InstrumentedCartesiaTTSService`
-      (verbose logging of every WS send/recv + audio context
-      transition). Used during the freeze diagnostic phase.
-    - Both unset → vanilla `CartesiaTTSService`. The Story 6.13 AC1
-      watchdog (`pipeline/tts_watchdog.py`) is the always-on 5s
-      safety net regardless of which subclass is selected.
+    The Story 6.13 AC1 watchdog (`pipeline/tts_watchdog.py`) is the
+    always-on 5 s safety net regardless of which subclass is selected.
 
-    `tts_provider` is `"cartesia"` only when an operator explicitly
-    selects it via env var — default is `"elevenlabs"`. This branch
-    therefore stays around for rollback / Cartesia support
-    reproduction but isn't the prod default.
+    `CARTESIA_FRESH_CTX` is gone: Cartesia confirmed (2026-05-28) the
+    fresh-context-per-sentence workaround was unnecessary and
+    counter-productive (it multiplied the contexts the platform incident
+    choked on), so Story 6.14 removed it.
     """
     if not settings.cartesia_api_key:
         raise RuntimeError(
             "TTS_PROVIDER=cartesia but CARTESIA_API_KEY is empty. "
             "Set it in /opt/survive-the-talk/.env or switch to "
-            "TTS_PROVIDER=elevenlabs (the post-2026-05-26 default)."
+            "TTS_PROVIDER=elevenlabs (the last-resort fallback)."
         )
 
-    tts_cls: type[CartesiaTTSService] = CartesiaTTSService
-    if os.environ.get("CARTESIA_FRESH_CTX") == "1":
-        from pipeline.cartesia_instrumented import FreshContextCartesiaTTSService
+    # Lazy import: the Cartesia debug subclasses pull in pipecat's
+    # cartesia service module; only import inside this branch.
+    from pipeline.cartesia_instrumented import (
+        ErrorLoggingCartesiaTTSService,
+        InstrumentedCartesiaTTSService,
+    )
 
-        tts_cls = FreshContextCartesiaTTSService
-        logger.info("CARTESIA_FRESH_CTX=1 — using FreshContextCartesiaTTSService")
-    elif os.environ.get("CARTESIA_INSTRUMENT") == "1":
-        from pipeline.cartesia_instrumented import InstrumentedCartesiaTTSService
-
+    tts_cls: type[CartesiaTTSService] = ErrorLoggingCartesiaTTSService
+    if os.environ.get("CARTESIA_INSTRUMENT") == "1":
         tts_cls = InstrumentedCartesiaTTSService
         logger.info("CARTESIA_INSTRUMENT=1 — using InstrumentedCartesiaTTSService")
 
-    logger.info("TTS provider = cartesia (Sonic-3)")
+    logger.info("TTS provider = cartesia (Sonic-3) [launch default]")
     return tts_cls(
         api_key=settings.cartesia_api_key,
         settings=CartesiaTTSService.Settings(
@@ -149,6 +152,27 @@ def _build_elevenlabs(settings: Settings) -> ElevenLabsTTSService:
     Defaults are documented in `config.py::Settings` field comments.
     The model `eleven_flash_v2_5` is the lowest-TTFA option in their
     catalog (~75 ms advertised).
+
+    Story 6.14 AC3 — frame/streaming review (the "larger frames stretch
+    more under jitter" angle). Pipecat 0.0.108's `ElevenLabsTTSService`
+    exposes three levers, NONE changed here because each needs on-device
+    AC1-metric validation (a wrong move regresses TTFA — and ElevenLabs
+    is now the last-resort fallback, so the jitter buffer + Cartesia
+    default are the primary fixes, not this):
+      - `output_format` — derived from `sample_rate` (default service
+        sample rate → e.g. `pcm_24000`). A lower sample rate yields
+        smaller per-chunk payloads but coarser audio; not obviously a
+        steadier stream and risks quality.
+      - `params.auto_mode` (default `True`) — ElevenLabs buffers to
+        sentence boundaries and ignores `chunk_length_schedule`. Setting
+        it `False` would let us pin a `chunk_length_schedule` for
+        smaller, steadier chunks, at a latency cost.
+      - `params.enable_ssml_parsing` — irrelevant to framing.
+    The real receiver-side fix is `Settings.livekit_min_playout_delay_ms`
+    (the jitter buffer), which helps EVERY provider. If a future device
+    A/B shows a smaller-frame ElevenLabs config measurably reduces
+    `concealedSamples`/stretch without a TTFA regression, wire it here
+    behind a Settings field.
     """
     if not settings.elevenlabs_api_key:
         raise RuntimeError(

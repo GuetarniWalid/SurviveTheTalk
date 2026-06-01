@@ -22,7 +22,6 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from livekit import api as livekit_api
 from loguru import logger
-from pipecat.runner.livekit import generate_token, generate_token_with_agent
 
 from api.middleware import AUTH_DEPENDENCY
 from api.responses import now_iso, ok
@@ -37,6 +36,7 @@ from db.queries import (
     insert_call_session,
 )
 from models.schemas import EndCallIn, EndCallOut, InitiateCallIn, InitiateCallOut
+from pipeline.livekit_tokens import generate_token, generate_token_with_agent
 from pipeline.scenarios import load_scenario_metadata, load_scenario_prompt
 
 # Story 6.5 review (P19) — bound the LiveKit cleanup so a hung DNS
@@ -238,19 +238,27 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                 ) from exc
             rive_character = str(scenario_metadata.get("rive_character") or "waiter")
 
-            # 3. LiveKit tokens (no DB).
+            # 3. LiveKit tokens (no DB). Story 6.14 AC2 — both tokens carry
+            # the `min_playout_delay` room config (jitter buffer) so the SFU
+            # sends the `playout-delay` RTP extension to the receiver,
+            # absorbing network jitter that otherwise time-stretches Tina's
+            # voice. Attached to BOTH tokens because the room is auto-created
+            # on first join — whichever participant creates it applies the
+            # config; the other is ignored (room already exists).
             try:
                 agent_token = generate_token_with_agent(
                     room_name=room_name,
                     participant_name="tina-bot",
                     api_key=settings.livekit_api_key,
                     api_secret=settings.livekit_api_secret,
+                    min_playout_delay_ms=settings.livekit_min_playout_delay_ms,
                 )
                 user_token = generate_token(
                     room_name=room_name,
                     participant_name=f"user-{user_id}",
                     api_key=settings.livekit_api_key,
                     api_secret=settings.livekit_api_secret,
+                    min_playout_delay_ms=settings.livekit_min_playout_delay_ms,
                 )
             except Exception as exc:
                 logger.exception("LiveKit token generation failed")
