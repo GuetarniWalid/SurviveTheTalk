@@ -1,6 +1,6 @@
 # Story 6.13: Epic 6 Pre-Launch Hardening
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
