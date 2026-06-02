@@ -10,6 +10,7 @@ metadata:
   rive_character: girlfriend
   language_focus: "emotional vocabulary, apologizing, making promises"
   tts_voice_id: null  # Select an expressive young female voice from Cartesia during calibration
+  opening_line: "Oh, so you finally pick up. Do you even realise what you did tonight?"
   content_warning: >
     An angry, disappointed partner trying to guilt-trip you.
     No insults — just a real argument.

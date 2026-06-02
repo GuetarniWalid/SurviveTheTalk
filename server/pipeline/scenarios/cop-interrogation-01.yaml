@@ -6,6 +6,7 @@ metadata:
   rive_character: cop
   language_focus: Past simple and past continuous for narrating last night ('I was working', 'I left at eight'); time and place prepositions (at 8:30, on Carver Street, in the back); giving consistent, specific details and politely standing your ground ('Actually, that's not what I said', 'Let me be clear').
   tts_voice_id: 5ee9feff-1265-424a-9d7f-8e4d431a12c7  # Cartesia "Ronald - Thinker" — intense, deep male; fits the dry, relentless detective. (Story 6.17; re-run the live voice-matcher to override.)
+  opening_line: "This is Detective Frank Mercer with the Riverside Police Department. This call is being recorded. Do you have a minute to answer a few questions?"
   content_warning: null
   patience_start: 90
   fail_penalty: null

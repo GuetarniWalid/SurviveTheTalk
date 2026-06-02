@@ -10,6 +10,7 @@ metadata:
   rive_character: landlord
   language_focus: "housing vocabulary, negotiating payments, formal complaints"
   tts_voice_id: null  # Select an older, stern British male voice from Cartesia during calibration
+  opening_line: "This is Mr. Whitmore, your landlord. We need to talk about your rent — and I'd choose your words carefully."
   content_warning: >
     A landlord threatening eviction, leaning on the law.
     No physical confrontation — it's a phone call.

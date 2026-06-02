@@ -459,6 +459,29 @@ def test_fetch_cartesia_voices_filters_to_english(monkeypatch):
     assert voices[0]["country"] == "US"
 
 
+def test_assemble_threads_opening_line_and_base_prompt_notes_it():
+    brief = _brief(2)
+    brief["opening_line"] = "This is Detective Mercer. Answer my questions."
+    bp = builder.build_base_prompt(brief, difficulty="hard")
+    sc = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt=bp,
+        checkpoints=_checkpoints(2),
+        brief=brief,
+    )
+    # Story 6.17 — the per-scenario opening line is in metadata (bot.py plays it)
+    # and the base_prompt tells the character it has already been spoken.
+    assert (
+        sc["metadata"]["opening_line"]
+        == "This is Detective Mercer. Answer my questions."
+    )
+    assert "OPEN the call by saying" in bp
+    assert "Detective Mercer" in bp
+
+
 def test_assemble_scenario_threads_voice_id():
     sc = builder.assemble_scenario(
         scenario_id="x",

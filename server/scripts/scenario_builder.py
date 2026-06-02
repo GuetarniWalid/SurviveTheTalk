@@ -180,6 +180,7 @@ Return STRICT JSON only (no prose, no Markdown fences), with these keys:
   "vocabulary": "<comma-separated example phrases the learner might use>",
   "context": "<1 sentence shown to the learner before the call>",
   "expect": "<1 sentence setting expectations for the learner>",
+  "opening_line": "<the character's FIRST spoken line that OPENS the call, in-character — it is played to the learner BEFORE they say anything (the character always speaks first). Make it fit THIS character, never a generic greeting>",
   "exit_completion": "<the character's in-character line if the learner SUCCEEDS>",
   "exit_hangup": "<the character's in-character line if the learner FAILS/gives up>",
   "exit_patience_warning": "<a 'last chance' in-character line>",
@@ -450,6 +451,13 @@ def build_base_prompt(brief: dict, *, difficulty: str) -> str:
     parts = [f"You are {name}. {persona}".strip()]
     if setting:
         parts.append(f"Setting: {setting}")
+    opening = (brief.get("opening_line") or "").strip()
+    if opening:
+        parts.append(
+            f'Conversation context: you OPEN the call by saying: "{opening}" — that '
+            "line has ALREADY been spoken to them. Do NOT greet again or repeat it; "
+            "respond to what they say next."
+        )
     parts.append(
         "Rules you MUST follow:\n"
         "- Keep every response to 1-3 short sentences, as if on a real phone call.\n"
@@ -497,6 +505,10 @@ def assemble_scenario(
             "rive_character": rive_character,
             "language_focus": brief.get("language_focus", ""),
             "tts_voice_id": tts_voice_id,
+            # Story 6.17 — the canned line the character speaks first (played by
+            # bot.py before the learner talks). Per-scenario, never the hardcoded
+            # waiter greeting.
+            "opening_line": (brief.get("opening_line") or "").strip(),
             "content_warning": brief.get("content_warning") or None,
             # Sized starting guess for a long scenario; calibration tunes it.
             "patience_start": patience_start,

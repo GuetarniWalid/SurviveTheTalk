@@ -10,6 +10,7 @@ metadata:
   rive_character: waiter
   language_focus: "ordering food, polite requests, food adjectives"
   tts_voice_id: "62ae83ad-4f6a-430b-af41-a9bede9286ca"  # Cartesia "Gemma - Decisive Agent" — confident, emotive British female
+  opening_line: "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
   content_warning: null
 
   # Nullable difficulty overrides (null = use easy preset)

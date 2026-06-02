@@ -74,6 +74,11 @@ from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
 # across calls.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
+# Story 6.17 fix — neutral fallback when a scenario YAML has no
+# `metadata.opening_line`. Every shipped scenario sets its own; this only
+# guards a malformed/legacy YAML so the call never opens silently.
+_DEFAULT_OPENING_LINE = "Hello? Can you hear me?"
+
 
 async def run_bot(url: str, room: str, token: str) -> None:
     """Configure and run the Pipecat voice pipeline in a LiveKit room.
@@ -579,13 +584,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
         transport: LiveKitTransport, participant_id: str
     ) -> None:
         logger.info(f"First participant joined: {participant_id}")
-        await task.queue_frames(
-            [
-                TTSSpeakFrame(
-                    "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
-                )
-            ]
-        )
+        # Story 6.17 fix — the canned opening line is PER-SCENARIO
+        # (`metadata.opening_line`), not the hardcoded waiter greeting that used
+        # to play for every scenario (a detective opening with "Welcome to The
+        # Golden Fork" — call_id 2026-06-02). Falls back to a neutral line if a
+        # scenario omits it.
+        opening_line = scenario_metadata.get("opening_line") or _DEFAULT_OPENING_LINE
+        await task.queue_frames([TTSSpeakFrame(opening_line)])
         # Story 6.7 AC1 + Phase 2 retouche #5 (2026-05-19) — schedule
         # the initial `checkpoint_advanced(index=0)` envelope to be
         # emitted by CheckpointManager itself on its first
