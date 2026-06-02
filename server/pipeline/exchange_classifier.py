@@ -118,15 +118,29 @@ _PROVIDER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 _VERDICT_VALUES = ("met", "unmet", "unsure")
 _VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure": None}
 
-# Story 6.10 (2026-05-29 structured-output) — the multi-goal classifier
-# emits a schema-pinned JSON object with ONE key per pending goal_id, each
-# valued `"met"|"unmet"|"unsure"` (NOT the old `goals_met`/`goals_unmet`
-# arrays — that free-form shape caused the silent-no-flip bug). For a
-# 6-objective scenario the body is ~6 short `"id": "enum"` pairs plus
-# framing, well under 128. Sized larger than the single-goal
-# `max_tokens=64` because the output grows with the objective count;
-# still ~0.04 ¢ per classify.
-_MULTI_MAX_TOKENS = 128
+# Story 6.10 (2026-05-29 structured-output) — the multi-goal classifier emits a
+# schema-pinned JSON object with ONE key per pending goal_id, each valued
+# `"met"|"unmet"|"unsure"`. The output length grows with the objective count
+# (each entry is the goal_id key + a short enum value + punctuation), so the
+# completion-token budget MUST scale with the number of goals.
+#
+# Story 6.16 surfaced the failure mode: a 20-checkpoint scenario with all 20
+# goals pending overflowed the old FIXED `128` budget → Groq returned HTTP 400
+# `json_validate_failed` ("max completion tokens reached before generating a
+# valid document") on EVERY classify, so NO checkpoint ever advanced and the
+# call drained patience unfairly. (1 and 5 goals were fine; 20 was not.) We size
+# base + per-goal with headroom for long snake_case ids — still a fraction of a
+# cent per classify even at 20 goals.
+_MULTI_MAX_TOKENS_BASE = 64
+_MULTI_MAX_TOKENS_PER_GOAL = 24
+
+
+def _multi_max_tokens(num_goals: int) -> int:
+    """Completion-token budget for `classify_multi`, scaled to the pending-goal
+    count so the schema-pinned verdict object can't be truncated mid-document
+    (Story 6.16). At 6 goals → 208; at 20 goals → 544."""
+    return _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
+
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
 # advanced (conservative — no free progression)". Story 6.9 reliability
@@ -419,7 +433,16 @@ class ExchangeClassifier:
             return None
 
         if response.status_code >= 300:
-            logger.warning("exchange classifier non-2xx: {}", response.status_code)
+            # Story 6.16 — include a body preview so a 4xx/5xx is diagnosable
+            # (a bare status hid WHY a 400 fired — e.g. an unsupported
+            # response_format, a schema the provider rejects, or a rate-limit
+            # detail). Cheap + safe; the body is provider error JSON, not PII.
+            body_preview = response.text[:300] if response.text else "<empty>"
+            logger.warning(
+                "exchange classifier non-2xx: {} body={!r}",
+                response.status_code,
+                body_preview,
+            )
             return None
 
         try:
@@ -527,7 +550,7 @@ class ExchangeClassifier:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": _MULTI_MAX_TOKENS,
+            "max_tokens": _multi_max_tokens(len(goal_ids)),
             # STRICT structured output — Groq constrains generation to this
             # schema, guaranteeing an exactly-keyed `{goal_id: enum}` object.
             # Requires a structured-output-capable model (Scout, NOT 70B).

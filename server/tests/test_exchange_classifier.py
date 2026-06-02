@@ -823,6 +823,18 @@ def test_classify_multi_returns_none_on_timeout(
     assert out is None
 
 
+def test_multi_max_tokens_scales_with_goal_count() -> None:
+    """Story 6.16 regression — the multi-goal completion budget MUST grow with
+    the goal count, else a long (e.g. 20-checkpoint) scenario overflows it and
+    Groq returns 400 `json_validate_failed` on every classify. A fixed 128 was
+    the bug."""
+    from pipeline.exchange_classifier import _multi_max_tokens
+
+    assert _multi_max_tokens(1) < _multi_max_tokens(6) < _multi_max_tokens(20)
+    # 20 goals need real headroom (the old fixed 128 truncated the JSON).
+    assert _multi_max_tokens(20) >= 500
+
+
 def test_classify_multi_returns_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
     """Groq rate-limit (429) on the multi path → None (patience-neutral
     infra failure), same contract as the single-goal path."""

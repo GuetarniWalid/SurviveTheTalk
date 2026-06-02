@@ -32,15 +32,50 @@ def test_detail_requires_jwt(client):
     assert response.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
 
 
-def test_list_returns_five_scenarios_ordered(
+# Story 6.16/6.17 — the catalog grows as scenarios are generated, so these tests
+# read the expected set/order from the YAML files (source of truth) instead of
+# hard-coding "5". The 5 originals must always be present.
+_ORIGINAL_IDS = {
+    "waiter_easy_01",
+    "mugger_medium_01",
+    "girlfriend_medium_01",
+    "cop_hard_01",
+    "landlord_hard_01",
+}
+
+
+def _yaml_scenarios() -> dict:
+    """{id: {difficulty, is_free}} read straight from pipeline/scenarios/*.yaml."""
+    import pathlib
+
+    import yaml
+
+    d = pathlib.Path(__file__).resolve().parent.parent / "pipeline" / "scenarios"
+    out: dict = {}
+    for p in sorted(d.glob("*.yaml")):
+        meta = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get(
+            "metadata"
+        ) or {}
+        out[meta["id"]] = {
+            "difficulty": meta["difficulty"],
+            "is_free": bool(meta.get("is_free")),
+        }
+    return out
+
+
+def _expected_order(scn: dict) -> list:
+    """The list ordering contract: difficulty bucket (easy<medium<hard), then id ASC."""
+    rank = {"easy": 0, "medium": 1, "hard": 2}
+    return sorted(scn, key=lambda i: (rank[scn[i]["difficulty"]], i))
+
+
+def test_list_returns_all_scenarios_ordered(
     client: TestClient, mock_resend, test_db_path: str
 ) -> None:
-    """Authenticated GET /scenarios returns 5 items in the exact expected order.
+    """Authenticated GET /scenarios returns every catalog scenario in order.
 
-    Order contract (AC4): easy bucket first, then medium, then hard; inside
-    each bucket, `id` ASC. The full id sequence is asserted so a regression
-    to alphabetical (which would still pass a loose `endswith` check) or a
-    bucket misorder gets caught.
+    Order contract (AC4): easy bucket first, then medium, then hard; inside each
+    bucket, `id` ASC. Computed from the YAML catalog so it survives new scenarios.
     """
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
@@ -49,15 +84,11 @@ def test_list_returns_five_scenarios_ordered(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["meta"]["count"] == 5
+    scn = _yaml_scenarios()
+    assert body["meta"]["count"] == len(scn)
     ids = [item["id"] for item in body["data"]]
-    assert ids == [
-        "waiter_easy_01",
-        "girlfriend_medium_01",
-        "mugger_medium_01",
-        "cop_hard_01",
-        "landlord_hard_01",
-    ]
+    assert ids == _expected_order(scn)
+    assert _ORIGINAL_IDS.issubset(set(ids))
 
 
 def test_list_shape_includes_progression_fields(
@@ -82,16 +113,22 @@ def test_list_shape_includes_progression_fields(
 def test_list_includes_free_and_paid_mix(
     client: TestClient, mock_resend, test_db_path: str
 ) -> None:
-    """3 free scenarios (waiter, mugger, girlfriend) + 2 paid (cop, landlord)."""
+    """The list has BOTH free and paid scenarios, in the proportions the YAML
+    catalog declares (originals: 3 free + 2 paid; generated paid scenarios add to
+    the paid side)."""
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
 
     items = client.get("/scenarios", headers=_auth_header(token)).json()["data"]
 
+    scn = _yaml_scenarios()
+    free_expected = sum(1 for v in scn.values() if v["is_free"])
+    paid_expected = len(scn) - free_expected
     free_count = sum(1 for item in items if item["is_free"])
     paid_count = sum(1 for item in items if not item["is_free"])
-    assert free_count == 3
-    assert paid_count == 2
+    assert free_count == free_expected
+    assert paid_count == paid_expected
+    assert free_count > 0 and paid_count > 0  # a genuine mix
 
 
 def test_detail_returns_full_shape(
@@ -323,7 +360,7 @@ def test_meta_count_and_timestamp_still_present(
 
     meta = client.get("/scenarios", headers=_auth_header(token)).json()["meta"]
 
-    assert meta["count"] == 5
+    assert meta["count"] == len(_yaml_scenarios())
     assert meta["timestamp"].endswith("Z")
 
 

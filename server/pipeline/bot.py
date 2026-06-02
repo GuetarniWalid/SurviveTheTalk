@@ -263,7 +263,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # never names a provider class directly. See `pipeline/tts_factory.py`
     # for the branching + why Cartesia is the default again (resolved
     # platform incident + smoother under jitter than ElevenLabs).
-    tts = build_tts_service(settings)
+    # Story 6.17 — pass the scenario's selected voice (metadata.tts_voice_id) so
+    # each character speaks with its own voice (e.g. a detective vs the default
+    # British female). None/empty → the Cartesia default. Before 6.17 this field
+    # was stored but ignored.
+    tts = build_tts_service(settings, voice_id=scenario_metadata.get("tts_voice_id"))
 
     # Story 6.8 Phase 1 AC2 — VAD `stop_secs` audit. Pipecat 0.0.108's
     # `SileroVADAnalyzer` consumes `stop_secs` independently of the

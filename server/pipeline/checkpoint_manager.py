@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -182,6 +183,77 @@ def compose_goal_system_instruction(
         + format_remaining_goals_block(pending_goals)
         + "\n\n"
         + format_suggested_focus_block(pending_goals[0])
+    )
+
+
+# ============================================================
+# Story 6.10 — pure goal-advance decision (shared with the harness)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class GoalAdvance:
+    """Pure result of judging one turn's verdicts against the goal state.
+
+    Returned by `advance_goals`. Holds everything both the live
+    `CheckpointManager` AND the Story 6.15 text calibration harness need to
+    apply a turn's outcome WITHOUT re-deriving the rule independently:
+
+    - `new_goals`: post-flip `{id: "pending"|"met"}` map (a fresh copy — the
+      caller may assign it back to its state without aliasing).
+    - `flipped_ids`: the goal ids that flipped pending→met THIS turn, in the
+      order the verdicts dict presented them (so per-flip envelope emission
+      order is stable).
+    - `met_count` / `all_met`: progress over `new_goals`.
+    - `outcome`: `"success"` (≥1 flip → recovery_bonus), `"fail"` (no flip but
+      ≥1 goal actively `unmet` → genuine off-topic, drain patience, AC8), or
+      `"neutral"` (no flip, all `unsure` → model ambiguity, patience-neutral).
+    """
+
+    new_goals: dict[str, str]
+    flipped_ids: list[str]
+    met_count: int
+    all_met: bool
+    outcome: str
+
+
+def advance_goals(
+    goals_state: dict[str, str],
+    verdicts: dict[str, bool | None],
+) -> GoalAdvance:
+    """Pure goal-advance decision shared by `CheckpointManager` (prod) and the
+    Story 6.15 calibration harness.
+
+    Given the current `{id: "pending"|"met"}` state and a parsed verdict dict
+    `{id: True|False|None}` (the shape `ExchangeClassifier.classify_multi`
+    returns — NEVER the infra-failure `None` whole-value, which the caller
+    handles before reaching here), compute which goals flip, the resulting
+    state, and the turn's outcome class. No side effects, no I/O — so the
+    offline validator gets the EXACT flip/outcome rule prod uses (Story 6.15
+    AC1: "does NOT re-implement the advance rule").
+    """
+    flipped_ids = [
+        gid
+        for gid, verdict in verdicts.items()
+        if verdict is True and goals_state.get(gid) == "pending"
+    ]
+    new_goals = dict(goals_state)
+    for gid in flipped_ids:
+        new_goals[gid] = "met"
+    met_count = sum(1 for state in new_goals.values() if state == "met")
+    all_met = all(state == "met" for state in new_goals.values())
+    if flipped_ids:
+        outcome = "success"
+    elif any(verdict is False for verdict in verdicts.values()):
+        outcome = "fail"
+    else:
+        outcome = "neutral"
+    return GoalAdvance(
+        new_goals=new_goals,
+        flipped_ids=flipped_ids,
+        met_count=met_count,
+        all_met=all_met,
+        outcome=outcome,
     )
 
 
@@ -628,28 +700,27 @@ class CheckpointManager(FrameProcessor):
         # A real (parsed) verdict landed — reset the infra backstop.
         self._consecutive_none_count = 0
 
-        # Which pending goals flipped to met this turn?
-        flipped_ids = [
-            gid
-            for gid, verdict in verdicts.items()
-            if verdict is True and self._goals.get(gid) == "pending"
-        ]
+        # Pure goal-advance decision (shared verbatim with the Story 6.15
+        # text calibration harness via `advance_goals`) — keeps prod and the
+        # offline validator from forking the flip/outcome rule.
+        advance = advance_goals(self._goals, verdicts)
 
-        if not flipped_ids:
-            # No objective flipped. If the classifier actively judged at
+        if advance.outcome == "fail":
+            # No objective flipped AND the classifier actively judged at
             # least one goal "unmet" (False) → genuine off-topic / true
             # miss → drain patience (AC8: fail ONLY when NO goal matched).
-            # If EVERY goal came back "unsure" (all None in a PARSED dict)
-            # → genuine model ambiguity → patience-neutral (no penalty, no
+            logger.info(
+                "checkpoint_unmet no_goal_flipped met_count={} pending={}",
+                self.met_count,
+                len(pending),
+            )
+            self._patience_tracker.apply_exchange_outcome(success=False)
+            return
+
+        if advance.outcome == "neutral":
+            # EVERY goal came back "unsure" (all None in a PARSED dict) →
+            # genuine model ambiguity → patience-neutral (no penalty, no
             # false sustained-failure alert).
-            if any(v is False for v in verdicts.values()):
-                logger.info(
-                    "checkpoint_unmet no_goal_flipped met_count={} pending={}",
-                    self.met_count,
-                    len(pending),
-                )
-                self._patience_tracker.apply_exchange_outcome(success=False)
-                return
             logger.info(
                 "checkpoint_all_unsure no_goal_flipped met_count={} pending={} "
                 "(patience unchanged — model uncertain, not infra)",
@@ -658,11 +729,10 @@ class CheckpointManager(FrameProcessor):
             )
             return
 
-        # >=1 objective flipped → SUCCESS turn.
-        for gid in flipped_ids:
-            self._goals[gid] = "met"
-
-        all_met = all(state == "met" for state in self._goals.values())
+        # outcome == "success": >=1 objective flipped → SUCCESS turn.
+        self._goals = advance.new_goals
+        flipped_ids = advance.flipped_ids
+        all_met = advance.all_met
 
         # Keep PatienceTracker's checkpoints_passed in sync so a mid-flight
         # character_hung_up emits the real passed count in `call_end`

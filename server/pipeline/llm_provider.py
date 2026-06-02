@@ -31,6 +31,16 @@ if TYPE_CHECKING:
     from config import Settings
 
 
+# Character-LLM generation parameters. Module-level constants (NOT inlined in
+# `build_main_llm`) so the Story 6.15 calibration harness — which drives a
+# single character reply via the raw `openai` SDK because `OpenAILLMService`
+# is pipeline-only (Story 6.15 Deviation #1) — uses the EXACT same numbers as
+# prod. A drift here would make the harness validate a slightly different
+# character than the one users talk to.
+CHARACTER_TEMPERATURE = 0.7
+CHARACTER_MAX_TOKENS = 256
+
+
 def resolve_llm_base_url(settings: Settings) -> str:
     """The OpenAI-compatible BASE url (e.g. `…/openai/v1`).
 
@@ -78,7 +88,7 @@ def build_main_llm(settings: Settings, *, system_instruction: str) -> OpenAILLMS
         settings=OpenAILLMService.Settings(
             model=settings.character_model,
             system_instruction=system_instruction,
-            temperature=0.7,
-            max_tokens=256,
+            temperature=CHARACTER_TEMPERATURE,
+            max_tokens=CHARACTER_MAX_TOKENS,
         ),
     )

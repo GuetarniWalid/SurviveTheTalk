@@ -1,0 +1,218 @@
+{
+  "scenario_id": "waiter_easy_01",
+  "engine_version": 1,
+  "reviewed": true,
+  "_note": "Story 6.15 — hand-authored worked example + template (the other scenarios are bootstrapped via `calibrate_scenario <id> --generate-golden` then reviewed). `reviewed: true` makes these cases gating. NEGATIVE = coherent but does NOT accomplish THAT objective (must be judged 'unmet'); POSITIVE = messy/hesitant but genuine (must be judged 'met'). The universal off-topic seed in calibration_engine.py runs on top of these for every scenario, with no review needed.",
+  "cases": [
+    {
+      "checkpoint_id": "greet",
+      "kind": "positive",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "uh, yeah, I want to order.",
+      "note": "messy but engages with ordering"
+    },
+    {
+      "checkpoint_id": "greet",
+      "kind": "positive",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "can I see the menu?",
+      "note": "asking for the menu counts"
+    },
+    {
+      "checkpoint_id": "greet",
+      "kind": "positive",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "what do you have here?",
+      "note": "asking what's available counts"
+    },
+    {
+      "checkpoint_id": "greet",
+      "kind": "negative",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "Hi, how are you doing tonight?",
+      "note": "pure greeting / small talk, no move toward ordering"
+    },
+    {
+      "checkpoint_id": "greet",
+      "kind": "negative",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "There are a lot of people here.",
+      "note": "the literal 2026-05-30 off-topic that wrongly flipped greet"
+    },
+    {
+      "checkpoint_id": "main_course",
+      "kind": "positive",
+      "character_line": "So what do you want to eat?",
+      "user_text": "uh... the chicken.",
+      "note": "fragmented but names a menu dish"
+    },
+    {
+      "checkpoint_id": "main_course",
+      "kind": "positive",
+      "character_line": "So what do you want to eat?",
+      "user_text": "I'll have the pasta please.",
+      "note": "names a dish"
+    },
+    {
+      "checkpoint_id": "main_course",
+      "kind": "positive",
+      "character_line": "So what do you want to eat?",
+      "user_text": "the fish, yeah.",
+      "note": "names a dish, informal"
+    },
+    {
+      "checkpoint_id": "main_course",
+      "kind": "negative",
+      "character_line": "So what do you want to eat?",
+      "user_text": "This place is pretty busy tonight.",
+      "note": "small talk, names no dish"
+    },
+    {
+      "checkpoint_id": "main_course",
+      "kind": "negative",
+      "character_line": "So what do you want to eat?",
+      "user_text": "Have you worked here a long time?",
+      "note": "off-topic question, no dish"
+    },
+    {
+      "checkpoint_id": "clarify",
+      "kind": "positive",
+      "character_line": "Grilled or fried? I'm not psychic.",
+      "user_text": "grilled.",
+      "note": "answers the cooking-preference question"
+    },
+    {
+      "checkpoint_id": "clarify",
+      "kind": "positive",
+      "character_line": "And what did you want again?",
+      "user_text": "I already said pasta.",
+      "note": "re-statement of prior order counts (success_criteria cat 2)"
+    },
+    {
+      "checkpoint_id": "clarify",
+      "kind": "positive",
+      "character_line": "What about a drink — water, cola, coffee?",
+      "user_text": "a Coke.",
+      "note": "drink answer when Tina's clarify shifted into drinks (cat 3)"
+    },
+    {
+      "checkpoint_id": "clarify",
+      "kind": "negative",
+      "character_line": "Grilled or fried?",
+      "user_text": "What's your name?",
+      "note": "off-topic question, does not answer the clarification"
+    },
+    {
+      "checkpoint_id": "clarify",
+      "kind": "negative",
+      "character_line": "Grilled or fried?",
+      "user_text": "Is it going to rain later?",
+      "note": "off-topic, no answer to the dish question"
+    },
+    {
+      "checkpoint_id": "drink",
+      "kind": "positive",
+      "character_line": "And to drink? Water, juice, cola, or coffee.",
+      "user_text": "a Coke please.",
+      "note": "brand-name synonym for cola"
+    },
+    {
+      "checkpoint_id": "drink",
+      "kind": "positive",
+      "character_line": "And to drink? Water, juice, cola, or coffee.",
+      "user_text": "just water.",
+      "note": "names a beverage"
+    },
+    {
+      "checkpoint_id": "drink",
+      "kind": "positive",
+      "character_line": "And to drink? Water, juice, cola, or coffee.",
+      "user_text": "no, I'm fine, nothing for me.",
+      "note": "explicit refusal is a valid response to the drink question"
+    },
+    {
+      "checkpoint_id": "drink",
+      "kind": "negative",
+      "character_line": "And to drink? Water, juice, cola, or coffee.",
+      "user_text": "The food smells really good in here.",
+      "note": "off-topic, names no beverage and no refusal"
+    },
+    {
+      "checkpoint_id": "drink",
+      "kind": "negative",
+      "character_line": "And to drink? Water, juice, cola, or coffee.",
+      "user_text": "Where is the bathroom?",
+      "note": "off-topic question"
+    },
+    {
+      "checkpoint_id": "confirm",
+      "kind": "positive",
+      "character_line": "So that's grilled chicken and a Coke. Did I get that right?",
+      "user_text": "yeah, that's right.",
+      "note": "confirms the summary"
+    },
+    {
+      "checkpoint_id": "confirm",
+      "kind": "positive",
+      "character_line": "So that's grilled chicken and a Coke. Did I get that right?",
+      "user_text": "no, I said fried, not grilled.",
+      "note": "a correction also counts"
+    },
+    {
+      "checkpoint_id": "confirm",
+      "kind": "positive",
+      "character_line": "So that's grilled chicken and a Coke. Did I get that right?",
+      "user_text": "yes correct.",
+      "note": "acknowledgement of the order summary"
+    },
+    {
+      "checkpoint_id": "confirm",
+      "kind": "negative",
+      "character_line": "So that's grilled chicken and a Coke. Did I get that right?",
+      "user_text": "I think I left my car unlocked outside.",
+      "note": "off-topic, neither confirms nor corrects the order"
+    },
+    {
+      "checkpoint_id": "confirm",
+      "kind": "negative",
+      "character_line": "So that's grilled chicken and a Coke. Did I get that right?",
+      "user_text": "Do you know the wifi password?",
+      "note": "off-topic question, no confirmation"
+    },
+    {
+      "checkpoint_id": "close",
+      "kind": "positive",
+      "character_line": "Fine. It'll be 15 minutes.",
+      "user_text": "thanks.",
+      "note": "polite closing remark"
+    },
+    {
+      "checkpoint_id": "close",
+      "kind": "positive",
+      "character_line": "Fine. It'll be 15 minutes.",
+      "user_text": "okay, sounds good.",
+      "note": "acknowledges the wait"
+    },
+    {
+      "checkpoint_id": "close",
+      "kind": "positive",
+      "character_line": "Fine. It'll be 15 minutes.",
+      "user_text": "great, thank you so much.",
+      "note": "thank you"
+    },
+    {
+      "checkpoint_id": "close",
+      "kind": "negative",
+      "character_line": "Fine. It'll be 15 minutes.",
+      "user_text": "Do you know what the weather will be tomorrow?",
+      "note": "off-topic question, not a closing/ack"
+    },
+    {
+      "checkpoint_id": "close",
+      "kind": "negative",
+      "character_line": "Fine. It'll be 15 minutes.",
+      "user_text": "Actually, can you tell me your manager's name?",
+      "note": "off-topic, not a thank-you / acknowledgement / closing"
+    }
+  ]
+}

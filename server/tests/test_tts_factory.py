@@ -84,6 +84,30 @@ def test_factory_raises_when_cartesia_selected_but_api_key_empty() -> None:
         build_tts_service(s)
 
 
+def test_factory_uses_scenario_voice_id_else_default(monkeypatch) -> None:
+    """Story 6.17 — the scenario's `tts_voice_id` must reach the Cartesia service
+    (so a character speaks with its own voice); `None` falls back to the default
+    `CARTESIA_VOICE_ID`. Before 6.17 the field was ignored."""
+    import pipeline.cartesia_instrumented as ci
+    from pipeline.prompts import CARTESIA_VOICE_ID
+
+    captured: dict[str, str] = {}
+
+    class _FakeCartesia:
+        def __init__(self, *, api_key: str, settings) -> None:
+            captured["voice"] = settings.voice
+
+    monkeypatch.setattr(ci, "ErrorLoggingCartesiaTTSService", _FakeCartesia)
+    os.environ.pop("CARTESIA_INSTRUMENT", None)
+    s = _build_settings(TTS_PROVIDER="cartesia")
+
+    build_tts_service(s, voice_id="scenario-voice-xyz")
+    assert captured["voice"] == "scenario-voice-xyz"
+
+    build_tts_service(s, voice_id=None)
+    assert captured["voice"] == CARTESIA_VOICE_ID
+
+
 # ---------- ElevenLabs branch ----------
 
 

@@ -289,6 +289,58 @@ test phone routing call audio to BT earbuds — verify output routing
 before chasing a server-side audio bug (the `TTS_AUDIO_DEBUG` frames will
 show real amplitude at the watchdog if the server side is fine).
 
+### 6. Validate a scenario with `calibrate_scenario` when you add or edit one (Story 6.15)
+
+**Adding or editing a scenario? Run the validation engine before trusting it.**
+The rigor lives in the engine, NOT in scenario authoring — author the YAML
+simply (set `difficulty`, write `success_criteria` in plain prose) and let the
+tool prove the logic:
+
+```bash
+cd server
+python scripts/calibrate_scenario.py <scenario_id>          # golden net + calibration
+python scripts/calibrate_scenario.py                        # smart sweep (only new/changed)
+python scripts/calibrate_scenario.py --golden-only          # fast regression-only sweep
+python scripts/calibrate_scenario.py <scenario_id> --generate-golden  # bootstrap fixtures
+```
+
+It is a **text-driven** validator (no Soniox/TTS/LiveKit/device) that reuses the
+EXACT prod code paths — `ExchangeClassifier.classify_multi`, the pure
+`checkpoint_manager.advance_goals`, `patience_tracker.step_patience`,
+`compose_goal_system_instruction`, and the YAML loaders — so a green run means
+PROD behaves. The library is `scripts/calibration_engine.py`; logic is unit-
+tested in `tests/test_calibration_engine.py` (those mocked-LLM tests DO run in
+`pytest`).
+
+What it checks (PASS ✅ / FAIL ❌, with a non-zero exit code on FAIL so an agent
+or CI can branch on it):
+
+- **Golden net** — a UNIVERSAL off-topic seed (zero authoring, every scenario)
+  asserts off-topic input is judged `unmet` on every checkpoint — this is the
+  2026-05-30 "judge passes everything" bug as a permanent assertion. Plus
+  per-checkpoint cases that you `--generate-golden` then review (`reviewed: true`
+  in `tests/fixtures/golden/<id>.json` makes them gating; the Waiter fixture is
+  the hand-authored worked example).
+- **Calibration** — an AI learner plays N=10 conversations; the cooperative
+  completion rate must land in the difficulty band (derived from `difficulty`:
+  easy 60-80, medium 35-55, hard 15-35 per `difficulty-calibration.md` §4.3;
+  ±5 pts = ⚠️ warning, still passes), and an off_topic learner must NOT complete.
+
+On FAIL it prints a copy-pasteable Markdown diagnostic (named YAML field paths +
+likely cause/fix + reproduction command) you can hand straight to an AI agent.
+
+**Ledger + revalidate-only-what-changed.** A `calibration-tests/validation-ledger.json`
+records each PASS with a behaviour-only `scenario_hash` (covers base_prompt,
+checkpoints, difficulty, the 8 patience overrides, briefing, exit_lines — NOT
+cosmetic fields like `tts_voice_id`). The no-arg sweep skips scenarios that are
+unchanged AND still PASS. Bumping `ENGINE_VERSION` in `calibration_engine.py`
+(when the rules change) forces a full revalidation on the next sweep.
+
+**Cost + determinism (gated out of `pytest`).** Live runs need `GROQ_API_KEY`
+and run only via the CLI (never imported by prod). A full
+`calibrate_scenario <id>` ≈ a few US cents at N=10 (Groq); `--golden-only` is a
+fraction of a cent. Treat a full sweep as a deliberate, budgeted action.
+
 ---
 
 ## When in doubt

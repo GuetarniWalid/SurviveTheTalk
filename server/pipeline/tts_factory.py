@@ -52,8 +52,16 @@ from config import Settings
 from pipeline.prompts import CARTESIA_VOICE_ID
 
 
-def build_tts_service(settings: Settings) -> Any:
+def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any:
     """Return the configured TTS service instance.
+
+    Story 6.17 — `voice_id` is the scenario's `metadata.tts_voice_id` (a Cartesia
+    voice UUID, threaded from `bot.py`). When set AND the provider is Cartesia,
+    that voice is used; when `None` (or for ElevenLabs, whose per-scenario voice
+    is out of scope — it uses its single env voice), the Cartesia default
+    `CARTESIA_VOICE_ID` is used. This is what makes a scenario's chosen voice
+    (e.g. a detective's voice vs the default British female) actually take effect
+    — before 6.17 the field was stored but ignored.
 
     Reads `settings.tts_provider` and returns either a Cartesia or
     ElevenLabs service constructed with the matching credentials +
@@ -77,7 +85,7 @@ def build_tts_service(settings: Settings) -> Any:
     """
     provider = settings.tts_provider
     if provider == "cartesia":
-        return _build_cartesia(settings)
+        return _build_cartesia(settings, voice_id=voice_id)
     if provider == "elevenlabs":
         return _build_elevenlabs(settings)
     # The Literal[...] type on settings.tts_provider already makes this
@@ -90,8 +98,12 @@ def build_tts_service(settings: Settings) -> Any:
     )
 
 
-def _build_cartesia(settings: Settings) -> Any:
+def _build_cartesia(settings: Settings, *, voice_id: str | None = None) -> Any:
     """Construct a Cartesia Sonic-3 service (the Story 6.14 launch default).
+
+    Story 6.17 — `voice_id` (the scenario's `metadata.tts_voice_id`) overrides the
+    default `CARTESIA_VOICE_ID` when provided, so each scenario speaks with its
+    own selected voice. Falls back to the default when `None`/empty.
 
     - Default (no env-gate) → `ErrorLoggingCartesiaTTSService` (always-on
       WARNING surfacing of Cartesia's documented `type=error` schema).
@@ -126,12 +138,16 @@ def _build_cartesia(settings: Settings) -> Any:
         tts_cls = InstrumentedCartesiaTTSService
         logger.info("CARTESIA_INSTRUMENT=1 — using InstrumentedCartesiaTTSService")
 
-    logger.info("TTS provider = cartesia (Sonic-3) [launch default]")
+    resolved_voice = voice_id or CARTESIA_VOICE_ID
+    logger.info(
+        "TTS provider = cartesia (Sonic-3) voice={} [launch default]",
+        resolved_voice,
+    )
     return tts_cls(
         api_key=settings.cartesia_api_key,
         settings=CartesiaTTSService.Settings(
             model="sonic-3",
-            voice=CARTESIA_VOICE_ID,
+            voice=resolved_voice,
         ),
     )
 

@@ -209,6 +209,27 @@ _VALID_REASONS = frozenset(
 )
 
 
+def step_patience(
+    meter: int,
+    *,
+    success: bool,
+    initial_patience: int,
+    fail_penalty: int,
+    recovery_bonus: int,
+) -> int:
+    """Pure patience-meter step shared by `PatienceTracker.apply_exchange_outcome`
+    (prod) and the Story 6.15 text calibration harness.
+
+    On success add `recovery_bonus` (capped at `initial_patience`); on failure
+    add `fail_penalty` (a non-positive int, floored at 0). No side effects — so
+    the offline validator computes the SAME meter trajectory prod does without
+    forking the formula (Story 6.15 AC1 / Task 10).
+    """
+    if success:
+        return min(initial_patience, meter + recovery_bonus)
+    return max(0, meter + fail_penalty)
+
+
 class PatienceTracker(FrameProcessor):
     """4-tier silence escalation + meter-driven character hang-up.
 
@@ -701,13 +722,16 @@ class PatienceTracker(FrameProcessor):
             # The call is ending; further outcome events from a stale
             # in-flight classifier task MUST NOT mutate the meter.
             return
-        if success:
-            self._patience = min(
-                self._initial_patience, self._patience + self._recovery_bonus
-            )
-        else:
-            # `_fail_penalty` is a non-positive int; addition floors at 0.
-            self._patience = max(0, self._patience + self._fail_penalty)
+        # Pure meter math (shared with the Story 6.15 harness via
+        # `step_patience`). `_fail_penalty` is a non-positive int; the helper
+        # floors at 0 on failure and caps at `_initial_patience` on success.
+        self._patience = step_patience(
+            self._patience,
+            success=success,
+            initial_patience=self._initial_patience,
+            fail_penalty=self._fail_penalty,
+            recovery_bonus=self._recovery_bonus,
+        )
         logger.info(
             "patience_outcome success={} patience={}/{}",
             success,

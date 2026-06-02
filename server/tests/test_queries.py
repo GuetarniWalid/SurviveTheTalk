@@ -179,8 +179,45 @@ def test_tier_rename_migration_succeeds_with_referencing_call_sessions(
     conn.close()
 
 
-def test_seed_scenarios_populates_five_rows(migrated_db):
-    """All 5 authored YAMLs are upserted into the scenarios table."""
+# Story 6.16/6.17 — the catalog grows as scenarios are generated, so these tests
+# read the expected set from the YAML files (the seeder's source of truth) rather
+# than hard-coding "5". The 5 originals must always be present.
+_ORIGINAL_IDS = {
+    "waiter_easy_01",
+    "mugger_medium_01",
+    "girlfriend_medium_01",
+    "cop_hard_01",
+    "landlord_hard_01",
+}
+
+
+def _yaml_scenarios() -> dict:
+    """{id: {difficulty, is_free}} read straight from pipeline/scenarios/*.yaml."""
+    import pathlib
+
+    import yaml
+
+    d = pathlib.Path(__file__).resolve().parent.parent / "pipeline" / "scenarios"
+    out: dict = {}
+    for p in sorted(d.glob("*.yaml")):
+        meta = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get(
+            "metadata"
+        ) or {}
+        out[meta["id"]] = {
+            "difficulty": meta["difficulty"],
+            "is_free": bool(meta.get("is_free")),
+        }
+    return out
+
+
+def _expected_order(scn: dict) -> list:
+    """The list ordering contract: difficulty bucket (easy<medium<hard), then id ASC."""
+    rank = {"easy": 0, "medium": 1, "hard": 2}
+    return sorted(scn, key=lambda i: (rank[scn[i]["difficulty"]], i))
+
+
+def test_seed_scenarios_populates_all_yaml_rows(migrated_db):
+    """Every authored YAML under pipeline/scenarios/ is upserted into the table."""
     asyncio.run(seed_scenarios())
 
     conn = sqlite3.connect(migrated_db)
@@ -188,14 +225,10 @@ def test_seed_scenarios_populates_five_rows(migrated_db):
     ids = {row[0] for row in conn.execute("SELECT id FROM scenarios").fetchall()}
     conn.close()
 
-    assert count == 5
-    assert ids == {
-        "waiter_easy_01",
-        "mugger_medium_01",
-        "girlfriend_medium_01",
-        "cop_hard_01",
-        "landlord_hard_01",
-    }
+    scn = _yaml_scenarios()
+    assert count == len(scn)
+    assert ids == set(scn)
+    assert _ORIGINAL_IDS.issubset(ids)
 
 
 def test_seed_scenarios_is_idempotent(migrated_db):
@@ -207,7 +240,7 @@ def test_seed_scenarios_is_idempotent(migrated_db):
     count = conn.execute("SELECT COUNT(*) FROM scenarios").fetchone()[0]
     conn.close()
 
-    assert count == 5
+    assert count == len(_yaml_scenarios())
 
 
 def test_get_all_scenarios_with_progress_left_joins_correctly(migrated_db):
@@ -268,15 +301,10 @@ def test_scenarios_ordered_easy_medium_hard(migrated_db):
     rows = asyncio.run(_fetch())
     ids = [row["id"] for row in rows]
 
-    # Full ordered id sequence for the seeded 1/2/2 split — proves both
-    # bucket ordering AND the id-ASC tiebreak inside each bucket.
-    assert ids == [
-        "waiter_easy_01",
-        "girlfriend_medium_01",
-        "mugger_medium_01",
-        "cop_hard_01",
-        "landlord_hard_01",
-    ]
+    # Proves BOTH bucket ordering (easy<medium<hard) AND the id-ASC tiebreak
+    # inside each bucket — computed from the YAML catalog so it survives new
+    # scenarios (e.g. a 2nd hard 'cop_*' sorts between cop_hard_01 and landlord).
+    assert ids == _expected_order(_yaml_scenarios())
 
 
 def test_insert_call_session_returns_id_and_persists(migrated_db):
