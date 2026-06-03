@@ -329,19 +329,23 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     ),
                 ],
                 stop=[
-                    # Story 6.8 Phase 1 AC1 — was 1.8 s; PRD hard ceiling
-                    # is 2 s for perceived latency (">2 s consistently →
-                    # concept is dead"). 1.8 s already burned the entire
-                    # budget BEFORE any STT/LLM/TTS/RTT work. Dropped to
-                    # 0.6 s as the smoke-gate-tunable starting point;
-                    # bump to 0.7-0.8 s only if Pixel 9 Pro XL traces show
-                    # B1 learners getting their turns cut mid-sentence
-                    # (target speaker: 1-3 s thinking pauses between
-                    # phrases). Stacks ADDITIVELY with VAD `stop_secs`
-                    # above — net silence-to-turn-end ≈ 1.4 s. See
-                    # `memory/feedback_latency_kill_criterion_exceeded.md`
-                    # lever #1.
-                    SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6),
+                    # Turn-endpoint timeout — how long we wait after the VAD
+                    # flags silence before declaring the user's turn DONE and
+                    # letting the character respond. History: 1.8 s (pre-6.8) →
+                    # 0.6 s (Story 6.8 latency tune) → 0.8 s default +
+                    # env-configurable (Story 6.18 smoke gate, call_id=215,
+                    # 2026-06-03). 0.6 s chopped B1 thinking pauses into separate
+                    # turns — "Do you, uh, ooh." was finalized as its own turn
+                    # and judged a FAIL (unfair -25 patience), and the character
+                    # talked over the user. Now sourced from
+                    # `Settings.user_speech_timeout` (USER_SPEECH_TIMEOUT) so the
+                    # VPS can tune it without a redeploy. Stacks ADDITIVELY with
+                    # VAD `stop_secs` above — net silence-to-turn-end ≈ 1.6 s at
+                    # the 0.8 s default, still under the PRD 2 s ceiling. See
+                    # `memory/feedback_latency_kill_criterion_exceeded.md` lever #1.
+                    SpeechTimeoutUserTurnStopStrategy(
+                        user_speech_timeout=settings.user_speech_timeout
+                    ),
                 ],
             ),
         ),

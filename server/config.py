@@ -167,6 +167,20 @@ class Settings(BaseSettings):
     # usual bool forms (`0`/`1`/`true`/`false`).
     hangup_line_generation: bool = True  # HANGUP_LINE_GENERATION
 
+    # Story 6.18 smoke gate (call_id=215, 2026-06-03) — turn-endpoint timeout,
+    # now env-configurable. This is how long the pipeline waits (after the VAD
+    # flags silence) before declaring the user's turn DONE and letting the
+    # character respond. It was hardcoded 0.6 s (Story 6.8 latency tune); call
+    # 215 showed that was too short for a B1 learner composing an answer under
+    # pressure — a thinking pause finalized a FRAGMENT as its own turn (e.g.
+    # "Do you, uh, ooh." was judged a failed turn → unfair patience drain) and
+    # the character talked over the user. Raised to 0.8 s + exposed as
+    # `USER_SPEECH_TIMEOUT` so the VPS can tune it without a code release.
+    # Stacks ADDITIVELY with the VAD `stop_secs` (~0.8 s in bot.py): net
+    # silence-to-turn-end ≈ stop_secs + this (0.8 + 0.8 = 1.6 s today, under the
+    # PRD 2 s perceived-latency ceiling). Recommended range 0.6-1.0 s.
+    user_speech_timeout: float = 0.8  # USER_SPEECH_TIMEOUT
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #
@@ -239,6 +253,31 @@ class Settings(BaseSettings):
                 "LIVEKIT_MIN_PLAYOUT_DELAY_MS must be <= 2000 (the PRD 2 s "
                 "perceived-latency ceiling); keep it the smallest value that "
                 f"kills the stretching, got {value}"
+            )
+        return value
+
+    @field_validator("user_speech_timeout")
+    @classmethod
+    def _validate_user_speech_timeout(cls, value: float) -> float:
+        """Bound the turn-endpoint timeout at boot — fail-loud on a typo'd env.
+
+        A non-positive value would break turn detection (the user's turn never
+        ends, or ends instantly); a too-large value (e.g. `USER_SPEECH_TIMEOUT=8`)
+        means the character waits seconds of dead air before replying. Catch
+        both at process start rather than degrading every call. The 3.0 s
+        ceiling is a generous sanity bound — the recommended range is 0.6-1.0 s
+        (it stacks with the VAD `stop_secs`, keep the sum under the PRD 2 s).
+        """
+        if value <= 0:
+            raise ValueError(
+                "USER_SPEECH_TIMEOUT must be > 0 (it is the silence wait before "
+                f"the user's turn ends), got {value}"
+            )
+        if value > 3.0:
+            raise ValueError(
+                "USER_SPEECH_TIMEOUT must be <= 3.0 s — beyond that the character "
+                "waits seconds before replying (dead-air UX); keep it in the "
+                f"0.6-1.0 s range, got {value}"
             )
         return value
 

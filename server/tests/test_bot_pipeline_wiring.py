@@ -622,3 +622,20 @@ def test_bot_wires_dynamic_exit_line_generator_into_patience_tracker() -> None:
         "bot.py must thread the generator into PatienceTracker via "
         "hang_up_line_generator=..."
     )
+
+
+def test_bot_sources_user_speech_timeout_from_settings() -> None:
+    """Story 6.18 smoke gate (call_id=215) — the turn-endpoint timeout must be
+    sourced from Settings (USER_SPEECH_TIMEOUT), not hardcoded, so it's tunable
+    on the VPS without a redeploy. 0.6 s chopped B1 hesitations ("Do you, uh,
+    ooh.") into separate turns judged as failures (unfair patience drain)."""
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "user_speech_timeout=settings.user_speech_timeout" in code, (
+        "bot.py must source user_speech_timeout from Settings, not hardcode it"
+    )
+    assert "user_speech_timeout=0.6" not in code, (
+        "must not regress to the hardcoded 0.6 s that chopped B1 thinking pauses"
+    )

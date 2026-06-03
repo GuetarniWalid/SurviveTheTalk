@@ -181,6 +181,40 @@ def test_settings_hangup_line_generation_kill_switch_via_env() -> None:
         assert s.hangup_line_generation is False
 
 
+# ---------- Story 6.18 smoke gate — env-configurable turn-endpoint timeout --
+
+
+def test_settings_user_speech_timeout_defaults_to_0_8() -> None:
+    """Story 6.18 smoke gate (call_id=215) — raised 0.6 → 0.8 s default so B1
+    thinking pauses aren't chopped into separate (failed) turns."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.user_speech_timeout == 0.8
+
+
+def test_settings_user_speech_timeout_overrides_via_env() -> None:
+    """Tunable on the VPS without a code release via `USER_SPEECH_TIMEOUT`."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "USER_SPEECH_TIMEOUT": "1.0",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.user_speech_timeout == 1.0
+
+
+def test_settings_user_speech_timeout_rejects_out_of_range() -> None:
+    """Fail-loud at boot on a typo'd env: non-positive (breaks turn detection)
+    or absurdly large (seconds of dead air before the bot replies)."""
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    for bad in ("0", "-0.5", "8"):
+        with patch.dict(os.environ, {**base, "USER_SPEECH_TIMEOUT": bad}, clear=True):
+            with pytest.raises(ValidationError):
+                Settings(_env_file=None)  # type: ignore[call-arg]
+
+
 # ---------- Story 6.13 Phase 4b — TTS provider switch -----------------------
 
 
