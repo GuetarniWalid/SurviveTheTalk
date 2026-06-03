@@ -712,14 +712,20 @@ async def select_voice(
 
     `required_gender` ("masculine"/"feminine") restricts the catalog to that
     gender FIRST, so the voice matches the puppet's physique (a female puppet
-    never gets a male voice). Falls back to the full catalog if no voice of that
-    gender exists.
+    never gets a male voice). If no voice of that gender exists in the catalog,
+    keeps the DEFAULT voice (returns None) rather than risk a wrong-gender voice.
     """
     if not voices:
         return None, "no voices available"
     if required_gender:
         pool = [v for v in voices if v.get("gender") == required_gender]
-        voices = pool or voices
+        if not pool:
+            # No catalog voice of the puppet's gender: keep the DEFAULT voice
+            # rather than silently widen to the full catalog and risk a
+            # wrong-gender voice (AC2 — a female puppet must never get a male
+            # voice); AC3 allows voice selection to fall back to the default.
+            return None, f"no {required_gender} voice in the catalog — kept default"
+        voices = pool
     catalog = "\n".join(
         f"{v['id']} | {v['name']} | gender={v['gender']} | country={v.get('country')} | {v['description']}"
         for v in voices
@@ -878,6 +884,7 @@ async def build_scenario(
         rive_character=rive_character,
         voice_id=voice_id,
         voice_reason=voice_reason,
+        expected_checkpoints=n_checkpoints,
     )
 
 
@@ -891,9 +898,14 @@ def finalize_build(
     rive_character: str,
     voice_id: str | None = None,
     voice_reason: str = "",
+    expected_checkpoints: int | None = None,
 ) -> BuildResult:
     """PURE: assemble + validate + serialize (separated from the LLM steps so the
-    full assembly is unit-testable without any network)."""
+    full assembly is unit-testable without any network).
+
+    When `expected_checkpoints` is given, a count mismatch is recorded as a
+    structural problem (AC3 — "exactly N"): the LLM under/over-generating must
+    block the write, not ship a wrong-length scenario silently."""
     checkpoints = sanitize_checkpoints(checkpoints)
     base_prompt = build_base_prompt(brief, difficulty=difficulty)
     scenario = assemble_scenario(
@@ -907,6 +919,12 @@ def finalize_build(
         tts_voice_id=voice_id,
     )
     problems = validate_structure(scenario)
+    if expected_checkpoints is not None and len(checkpoints) != expected_checkpoints:
+        problems.append(
+            f"expected exactly {expected_checkpoints} checkpoints but got "
+            f"{len(checkpoints)} — the generator under/over-produced (re-run, raise "
+            f"the draft token budget, or set --checkpoints {len(checkpoints)})"
+        )
     overlaps = lexical_overlap_pairs(checkpoints)
     return BuildResult(
         scenario=scenario,

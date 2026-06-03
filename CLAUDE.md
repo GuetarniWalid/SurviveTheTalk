@@ -1,5 +1,17 @@
 # Claude Code Instructions for This Project
 
+## Command-Line Execution — the agent runs it, Walid is the last resort
+
+**RULE (Walid 2026-06-03): command lines are the AGENT's job by default — never punt them to Walid.** Whenever a task needs a terminal command and the agent is capable of running it, the **agent runs it first** and reports the result: `pytest`, `ruff`, `flutter analyze` / `flutter test`, builds, `git`, VPS `ssh` / `systemctl` / `journalctl`, scripts, etc. Walid running a command himself is the **last resort**, reserved only for what the agent genuinely cannot do:
+
+- on-device tests (Pixel 9 smoke gates),
+- anything needing a secret/credential the agent does not hold (e.g. live API keys),
+- interactive auth the agent cannot complete.
+
+Do **not** pre-emptively hand a runnable command to Walid "to be safe." If you can run it, run it. Only escalate to Walid **after** you have actually tried and hit a real wall — and state exactly what the wall was.
+
+This explicitly retires the old habit of deferring the full server `pytest` to Walid: that was based on a stale "sandbox livekit import hang" note. The full suite runs fine in-sandbox once warmed (**574 passed, verified 2026-06-03**); see `memory/feedback_sandbox_livekit_import_hang.md` (cold-start Defender-scan quirk only — warm once with `import aiohttp`, then run).
+
 ## Git Commit Messages
 
 **IMPORTANT**: Do NOT add "Co-Authored-By" lines to any commits in this project.

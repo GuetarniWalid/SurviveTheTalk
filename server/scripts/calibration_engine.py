@@ -722,17 +722,31 @@ def build_seed_cases(checkpoints: list[dict]) -> list[GoldenCase]:
 def load_golden_fixture(
     scenario_id: str, *, fixture_dir: pathlib.Path | None = None
 ) -> dict | None:
-    """Load the per-scenario golden fixture, or None if absent."""
+    """Load the per-scenario golden fixture, or None if absent.
+
+    A corrupt fixture fails LOUD (not silently treated as absent) — a gating
+    `reviewed: true` fixture that silently vanished would drop its positive
+    coverage and manufacture a false PASS.
+    """
     fixture_dir = fixture_dir or _GOLDEN_FIXTURE_DIR
     path = fixture_dir / f"{scenario_id}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Golden fixture {path} is not valid JSON: {exc}") from exc
 
 
 def _fixture_cases(fixture: dict) -> list[GoldenCase]:
     out: list[GoldenCase] = []
-    for c in fixture.get("cases", []):
+    for i, c in enumerate(fixture.get("cases", [])):
+        missing = [k for k in ("checkpoint_id", "kind", "user_text") if k not in c]
+        if missing:
+            raise ValueError(
+                f"Golden fixture case #{i} is missing required field(s) "
+                f"{missing}: {c!r}"
+            )
         out.append(
             GoldenCase(
                 checkpoint_id=c["checkpoint_id"],
@@ -855,6 +869,18 @@ async def run_golden(
         results,
         reviewed_fixture=reviewed_fixture,
         fixture_present=fixture is not None,
+    )
+
+
+def golden_inconclusive(golden: GoldenResult) -> bool:
+    """True when a golden run was dominated by 'unsure' verdicts (a rate-limited
+    judge) so its PASS/FAIL is not trustworthy — callers should report
+    INCONCLUSIVE, not PASS. Story 6.17 / review 2026-06-02: the wizard already
+    guards this; this shared helper lets the `build_scenario --validate` CLI path
+    be honest too (an all-unsure run had 0 negative_failures → golden.passed=True
+    → a FALSE pass)."""
+    return bool(golden.negative_warnings) and len(golden.negative_warnings) >= max(
+        1, golden.negative_total // 2
     )
 
 

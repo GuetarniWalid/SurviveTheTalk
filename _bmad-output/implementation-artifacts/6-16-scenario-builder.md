@@ -201,12 +201,13 @@ Workflow (expand → draft → 3 adversarial critics → repair → verify).
   pure helpers).
 - `server/scripts/build_scenario.py` — the CLI (fuzzy desc → YAML; `--dry-run`/`--validate`/`--overwrite`).
 - `server/scripts/build.cmd`, `server/scripts/calibrate.cmd` — venv-python wrappers (Windows stub fix).
-- `server/tests/test_scenario_builder.py` — 14 mocked-LLM unit tests.
+- `server/tests/test_scenario_builder.py` — mocked-LLM unit tests (14 for 6.16; the file now totals
+  ~28+ incl. Story 6.17 voice/auto-repair tests bundled in commit `e258dbf`, +2 from the 2026-06-02 review).
 - `server/pipeline/scenarios/cop-interrogation-01.yaml` — the worked-example scenario (20 checkpoints).
 
 **Touched (post-live-run fixes):**
 - `server/pipeline/exchange_classifier.py` — PROD fix: `_multi_max_tokens(n)` scales the multi-goal
-  completion budget (was a fixed 128 → 400 on 20 goals) + non-2xx body logging.
+  completion budget (`64 + 24·n`; was a fixed 128 → **544** on 20 goals) + non-2xx body logging.
 - `server/scripts/calibration_engine.py` — `load_llm_settings()` (LLM-only config), `ResilientJudge`
   (throttle + retry for the free-tier 30-RPM limit), `force_utf8_stdio()`.
 - `server/scripts/{calibrate_scenario,build_scenario,simulate_conversation}.py` — use the minimal
@@ -227,3 +228,34 @@ Workflow (expand → draft → 3 adversarial critics → repair → verify).
 - 2026-06-02 — Spec drafted + dev started (Walid ask, `/bmad-dev-story` continuation). Front half of
   the authoring loop (build → validate-via-6.15). Target: fuzzy premise → 20 coherent, time-advancing,
   discriminative checkpoints; worked example = the cop/fingerprints interrogation.
+
+## Review Findings — /bmad-code-review (2026-06-02)
+
+Three adversarial layers (Blind Hunter diff-only + Edge Case Hunter + Acceptance Auditor) on the 6.16 net-new scope (`scenario_builder.py` + `build_scenario.py` + `build.cmd` + `cop-interrogation-01.yaml` + `test_scenario_builder.py` + the PROD fix `exchange_classifier.py` + `test_exchange_classifier.py`). The "touched" files `calibration_engine.py`/`calibrate_scenario.py`/`simulate_conversation.py` were already covered in the Story 6.15 review, so they were NOT re-audited here. The Acceptance Auditor confirmed all 10 ACs delivered EXCEPT AC3's "exactly N" (verified absent via a fake-LLM test); AC2/AC4/AC5(efficacy)/AC6(timing)/AC9(live calibration) are legitimately UNVERIFIABLE without a live run. The cop artifact has exactly 20 unique checkpoints and loads through every prod loader; the PROD `_multi_max_tokens` fix is real (64+24·20 = **544** for 20 goals) and low-risk (only raises the ceiling). **3 patches, 11 deferred, 7 dismissed.**
+
+### Patch (action items)
+- [ ] [Review][Patch] **AC3 not enforced — a wrong checkpoint count ships silently** [server/scripts/scenario_builder.py:884 `finalize_build`] — neither `sanitize_checkpoints` nor `validate_structure` checks `len(checkpoints) == requested N`; the Auditor drove a fake LLM returning 3 when 20 requested → written with 3, `structural_problems` empty. AC3 says "exactly N". Fix: thread the expected count into `finalize_build` and append a structural problem on mismatch (blocks the write) + a regression test.
+- [ ] [Review][Patch] **`--id` path traversal / unvalidated slug** [server/scripts/build_scenario.py:70 `_amain`; scenario_builder.py:1086 `default_scenario_path`] — `default_scenario_path` puts `--id` straight into the filename (only `_`→`-`), so `--id ../x` writes outside the scenarios dir, and the id flows unvalidated into the index key + metadata. Fix: reject an `--id` that isn't `^[a-z0-9_]+$` early in `_amain`.
+- [ ] [Review][Patch] **Dev Agent Record accuracy** [6-16-scenario-builder.md] — File List says the prod fix is "→400 on 20 goals" but the code is 64+24·20 = **544** (the Completion Notes are right); test counts are stated as 14 / 179 / 193 but `test_scenario_builder.py` has 28 (≈14 of them are Story 6.17 voice/auto-repair tests bundled in the same file). Fix: correct 400→544 + clarify the count is bundled 6.16+6.17.
+
+### Deferred (logged to deferred-work.md)
+- [x] [Review][Defer] cop artifact has compound `PASS if (a) … AND (b) …` success_criteria the one-verdict-per-goal judge handles as a whole (harder, not unrepresentable) [cop-interrogation-01.yaml] — deferred, live calibration is the backstop
+- [x] [Review][Defer] `critique_and_repair` silently no-ops on unparseable critique output; lexical-overlap is advisory only (doesn't block the write) [scenario_builder.py:critique_and_repair] — deferred, the 6.15 `too_easy` gate is the empirical backstop
+- [x] [Review][Defer] `_multi_max_tokens` has no upper ceiling for huge N + its regression test only checks monotonicity/≥500, not that 544 actually holds a 20-goal verdict [exchange_classifier.py:134] — deferred, fine for realistic N
+- [x] [Review][Defer] non-2xx body log (`response.text[:300]`) — low PII risk for `json_validate_failed` (model output, not user input), other 4xx bodies unverified [exchange_classifier.py:440] — deferred, consider debug-level
+- [x] [Review][Defer] `parse_json_array`/`parse_json_object` greedy bracket span breaks on stray brackets in LLM prose [scenario_builder.py:783] — deferred, operator sees the error
+- [x] [Review][Defer] `expand_brief` trusts keys blindly → a brief missing `arc`/`canonical_facts` yields a hollow scenario that passes structural validation [scenario_builder.py:expand_brief] — deferred, calibration catches a hollow scenario
+- [x] [Review][Defer] `sanitize_checkpoints` dedupe can mangle ids on degenerate LLM output (foo,foo,foo_2→foo_2_2) [scenario_builder.py:331] — deferred, low frequency
+- [x] [Review][Defer] `suggest_patience_start` absorbs ~3 misses regardless of length; the long-scenario bump is cosmetic vs its docstring [scenario_builder.py:420] — deferred, it's a seed; calibration tunes
+- [x] [Review][Defer] `--deploy` (Story 6.17) deploys to prod root with no confirmation, `StrictHostKeyChecking=no`, NOT gated on `--validate`/golden, overwrites prod with no backup [build_scenario.py:41,156] — deferred, revisit in the 6.17 review
+- [x] [Review][Defer] `--out` can overwrite an unrelated existing YAML (`--overwrite` only guards the index id, not an arbitrary `--out`) [build_scenario.py:129] — deferred, trusted operator
+- [x] [Review][Defer] Story 6.17 code in 6.16-attributed files (auto-repair loop id-drift, voice-fetch shape) to be reviewed under the 6.17 review [scenario_builder.py, build_scenario.py] — deferred to the 6.17 review
+
+### Dismissed (7 — false positives / working-as-specified)
+- BH#5 `validate_structure` "weaker fork" — Auditor verified byte-identical speak-first guard + identical difficulty/character/required-field rules; the unmirror'd rules (patience/exit_lines shape) are builder-CONSTRUCTED, so it cannot emit a value prod rejects. No fork.
+- BH#9 deploy shell injection — `subprocess.run` uses an argv LIST (no local shell); the remote-path risk is mitigated by the P2 snake_case `--id` guard + trusted operator.
+- BH#10 auto-repair loop "dead code" — it's Story 6.17 functionality reached via `new_scenario.py` (the wizard), not 6.16's CLI; reviewed under 6.17.
+- BH#16 `_data_from_result` passes `patience={}`/re-derived difficulty — immaterial: `run_golden` uses only title + checkpoints, not patience/difficulty.
+- BH#15 YAML representer block-scalar only on `\n` — cosmetic; output is valid YAML.
+- BH#17 `ScriptedLLM` clamps its index — minor test-harness point; the call count IS pinned in the main pipeline test.
+- ECH `--checkpoints 0`/negative — n=0 yields an empty list which `validate_structure`'s "non-empty list" rule already rejects.

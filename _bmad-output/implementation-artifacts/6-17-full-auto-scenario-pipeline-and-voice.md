@@ -141,3 +141,30 @@ claude-opus-4-8[1m] (`/bmad-dev-story`, 2026-06-02). Cartesia catalog fetched li
   live Cartesia catalog (gender/accent/vibe) with graceful no-key degradation; `build_scenario
   --deploy` lands a scenario in the app list; cop given a real detective voice. ruff clean, safe
   subset green.
+
+## Review Findings — /bmad-code-review (2026-06-02)
+
+Three adversarial layers on the 6.17 net-new scope (voice wiring `tts_factory.py`/`bot.py`, the LLM voice matcher + auto-repair in `scenario_builder.py`, the wizard `new_scenario.py`, `--deploy` in `build_scenario.py`, the `the-*.yaml` voice ids, tests). The Acceptance Auditor verified ALL 7 ACs against the on-disk code (it also caught that the fan-out diff was stale — built from the commit, it predated the 6.15/6.16 review patches — and audited the real files): voice threading works + falls back on null, the matcher validates against the catalog + honours gender, graceful no-key degradation, and the wizard's INCONCLUSIVE guard genuinely works. No critical bug. **2 patches applied, 9 deferred, ~6 dismissed.**
+
+### Patch (applied 2026-06-02)
+- [x] [Review][Patch] **`select_voice` could yield a wrong-gender voice** [server/scripts/scenario_builder.py:720] — `voices = pool or voices` silently widened to the FULL catalog when no voice matched `required_gender`, so a `feminine` puppet could get a male voice (violates AC2) on an empty pool or a Cartesia gender-taxonomy drift. Fixed: keep the DEFAULT voice (return None + reason) instead of widening. + test.
+- [x] [Review][Patch] **`build_scenario --validate` reported PASS on a rate-limited (all-unsure) judge** [server/scripts/build_scenario.py + calibration_engine.py] — the wizard guards INCONCLUSIVE but the CLI `--validate` path printed `PASS` when the judge returned all-"unsure" (a FALSE pass; the free tier rate-limits these tools). Fixed: shared `golden_inconclusive()` helper; the CLI now prints INCONCLUSIVE. + test.
+
+### Deferred (logged to deferred-work.md)
+- [x] [Review][Defer] `--deploy` safety: ungated on golden-pass, no confirmation, prod-root + `StrictHostKeyChecking=no`, partial-deploy (scp ok / restart fail) leaves inconsistent state, scp/ssh-missing → uncaught traceback, wizard offers deploy even after a failed verdict [build_scenario.py, new_scenario.py] — deferred, trusted-operator dev tool + the YAML lives in the repo; top operational item (carried from the 6.16 review)
+- [x] [Review][Defer] a stale/deleted/typo'd Cartesia voice id 4xx's every call (catalog validated only at generation time; no startup probe / no 4xx→default fallback in `_build_cartesia`) [tts_factory.py, scenario_builder.py] — deferred, low frequency
+- [x] [Review][Defer] `opening_line` not validated in `validate_structure` (empty → generic default greeting; non-string hand-edit → TTSSpeakFrame crash) [scenario_builder.py, bot.py] — deferred, a softer recurrence of the bug 6.17 fixed
+- [x] [Review][Defer] auto-repair loop ignores `structural_problems` mid-loop + empty-checkpoint false-pass (masked only by the wizard's post-loop check) + no monotonic-progress early-exit (cost on the free tier) [scenario_builder.py] — deferred, only the wizard caller guards it
+- [x] [Review][Defer] wizard infinite re-prompt loop on stdin EOF (piped/closed stdin → `_ask` returns "" forever) [new_scenario.py] — deferred, interactive double-click tool
+- [x] [Review][Defer] `fetch_cartesia_voices` ignores `max_voices` (limit hardcoded 100) + no pagination + assumes a `data` envelope key [scenario_builder.py] — deferred, ~36 English voices fit in 100 today
+- [x] [Review][Defer] a bad Cartesia key (401/403) is swallowed into best-effort "voice fetch failed" — user not told the key is wrong; scenario ships default-voiced [scenario_builder.py] — deferred, voice is best-effort (AC3)
+- [x] [Review][Defer] test hardening: the tts_factory test misses the `CARTESIA_INSTRUMENT` + empty-string-voice branches; the YAML-oracle seeding/listing tests read the live dir (KeyError on a malformed YAML, weakened regression power) [tests] — deferred
+- [x] [Review][Defer] prompt-injection: free-text description/idea injected verbatim into the LLM prompts (no delimiting) [new_scenario.py, scenario_builder.py] — deferred, trusted operator
+
+### Dismissed (~6 — diff artifacts / verified safe / informational)
+- AA: the fan-out diff was stale (predated the 6.15/6.16 review patches) — a diff-construction artifact, not a code defect; the Auditor verified the on-disk code is correct.
+- AA: File List names `cop-interrogation-01.yaml` while the diff edits `the-cop.yaml` — both cop files coexist; `cop_interrogation_01` IS voiced (Ronald/masculine, matches the cop puppet); cosmetic.
+- AA: `calibration_engine.py` `cartesia_api_key` absent from the diff — same stale-diff artifact; the claim is accurate vs the code.
+- AA: only the cop got a real voice; the other 4 puppets keep `tts_voice_id: null` — expected AC3 fallback (re-run the builder to voice them).
+- AA: test count "+6" vs ~14 actual — bundling artifact (6.16+6.17 tests in one file); coverage is better than claimed.
+- BH: `bot.py` `scenario_metadata` scoping / NameError — Auditor verified `load_scenario_metadata` returns a dict, `.get()` is safe (the non-string-opening_line nuance is folded into the deferred `validate_structure` item).

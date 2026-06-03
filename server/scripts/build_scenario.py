@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import pathlib
+import re
 import sys
 
 _HERE = pathlib.Path(__file__).resolve().parent
@@ -75,6 +76,16 @@ async def _amain(args: argparse.Namespace) -> int:
         return 2
 
     from pipeline import scenarios
+
+    # Reject an unsafe id BEFORE any LLM work: the id becomes a filename
+    # (default_scenario_path) + the scenario index key, so `../x` would write
+    # outside the scenarios dir (path traversal).
+    if not re.fullmatch(r"[a-z0-9_]+", args.id):
+        print(
+            f"[refuse] --id must be snake_case (a-z, 0-9, _ only) — got {args.id!r}",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.id in scenarios._SCENARIO_INDEX and not args.overwrite and not args.dry_run:
         print(
@@ -143,8 +154,15 @@ async def _amain(args: argparse.Namespace) -> int:
                 "\n🔎 Golden sanity check (off-topic must be unmet on every checkpoint)..."
             )
             golden = await engine.run_golden(scenario_id=args.id, judge=judge)
+            if engine.golden_inconclusive(golden):
+                status = (
+                    "INCONCLUSIVE (judge rate-limited — too many 'unsure'; re-run "
+                    "or use the Groq Dev tier)"
+                )
+            else:
+                status = "PASS" if golden.passed else "FAIL"
             print(
-                f"   golden: {'PASS' if golden.passed else 'FAIL'} — "
+                f"   golden: {status} — "
                 f"{len(golden.negative_failures)} off-topic accepted, "
                 f"{golden.negative_total} seed cases"
             )

@@ -153,6 +153,18 @@ async def _amain(args: argparse.Namespace) -> int:
     else:
         scenario_ids = engine.list_scenarios()
 
+    # Validate explicit ids up front so a typo yields a clean message + exit
+    # code, not an unhandled FileNotFoundError traceback mid-loop (AC9 — an
+    # agent/CI branches on the exit code).
+    known = set(engine.list_scenarios())
+    unknown = [s for s in scenario_ids if s not in known]
+    if unknown:
+        print(
+            f"[unknown scenario] {', '.join(unknown)}. Known ids: {sorted(known)}",
+            file=sys.stderr,
+        )
+        return 2
+
     chat_llm, judge = engine.build_live_clients(settings)
     # Throttle + retry so a batch of calls doesn't trip Groq's requests-per-minute
     # cap (the 429 storm). Judge (Scout) and chat (70B character+learner) are
@@ -212,7 +224,9 @@ async def _amain(args: argparse.Namespace) -> int:
             # Don't poison the ledger with a partial (golden-only) PASS — a full
             # validation must run before a scenario counts as cached-PASS.
             if not args.no_ledger and not args.golden_only:
-                ledger = engine.record_verdict(verdict, report_path=str(report_path))
+                ledger = engine.record_verdict(
+                    ledger, verdict, report_path=str(report_path)
+                )
                 engine.save_ledger(ledger)
             verdicts.append(verdict)
             _print_verdict_line(verdict)

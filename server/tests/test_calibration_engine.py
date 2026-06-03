@@ -693,3 +693,127 @@ def test_waiter_golden_fixture_is_valid():
         assert case["kind"] in ("positive", "negative")
         assert case["user_text"].strip()
         assert case["checkpoint_id"] in valid_ids
+
+
+# ============================================================
+# Review 2026-06-02 — regression nets for the patched findings
+# ============================================================
+
+
+def test_cli_amain_records_verdict_with_correct_arity(monkeypatch, tmp_path):
+    """Regression: the CLI must call `engine.record_verdict(ledger, verdict, ...)`,
+    NOT `record_verdict(verdict, ...)`. The live calibrate path is gated out of
+    pytest (AC6), so this wiring bug crashed the primary `calibrate_scenario <id>`
+    command with a TypeError AFTER the (paid) calibration, with zero coverage.
+    Drives `_amain` end-to-end with faked engine I/O but keeps `combine_verdict`
+    + `record_verdict` REAL, so a wrong call site fails the test.
+    """
+    import argparse
+    import types
+
+    import scripts.calibrate_scenario as cli
+
+    class _FakeClient:
+        async def aclose(self):  # chat_llm teardown
+            pass
+
+        async def close(self):  # judge teardown
+            pass
+
+    golden = types.SimpleNamespace(
+        passed=True,
+        reviewed_fixture=False,
+        negative_total=5,
+        negative_failures=[],
+        negative_warnings=[],
+        positive_total=0,
+        positive_met=0,
+    )
+    calibration = types.SimpleNamespace(
+        passed=True,
+        difficulty="easy",
+        band=(60, 80),
+        n=1,
+        cooperative_rate=70.0,
+        offtopic_rate=0.0,
+        band_verdict="in_band",
+        guardrail_ok=True,
+    )
+
+    async def _fake_run_golden(**kwargs):
+        return golden
+
+    async def _fake_run_calibration(**kwargs):
+        return calibration
+
+    saved: dict = {}
+    monkeypatch.setattr(engine, "load_llm_settings", lambda: object())
+    monkeypatch.setattr(engine, "list_scenarios", lambda: ["fake_test_01"])
+    monkeypatch.setattr(
+        engine, "build_live_clients", lambda settings: (_FakeClient(), _FakeClient())
+    )
+    monkeypatch.setattr(engine, "ResilientJudge", lambda inner, **kw: inner)
+    monkeypatch.setattr(engine, "ResilientChat", lambda inner, **kw: inner)
+    monkeypatch.setattr(engine, "load_ledger", lambda: {})
+    monkeypatch.setattr(engine, "compute_scenario_hash", lambda sid: "hash123")
+    monkeypatch.setattr(
+        engine,
+        "load_scenario_data",
+        lambda sid: _scenario_data(checkpoints=[_cp("greet")]),
+    )
+    monkeypatch.setattr(engine, "run_golden", _fake_run_golden)
+    monkeypatch.setattr(engine, "run_calibration", _fake_run_calibration)
+    monkeypatch.setattr(engine, "write_report", lambda verdict: tmp_path / "r.json")
+    monkeypatch.setattr(
+        engine, "save_ledger", lambda ledger, **kw: saved.update(led=ledger)
+    )
+    # combine_verdict + record_verdict stay REAL — they are what the bug hit.
+
+    args = argparse.Namespace(
+        scenario_id="fake_test_01",
+        scenarios="",
+        force=False,
+        golden_only=False,
+        generate_golden=False,
+        n=1,
+        max_turns=12,
+        no_ledger=False,
+        throttle_ms=0,
+        retries=0,
+    )
+
+    rc = _run(cli._amain(args))
+
+    assert rc == 0
+    assert "fake_test_01" in saved["led"]
+    assert saved["led"]["fake_test_01"]["verdict"] == "PASS"
+
+
+def test_golden_inconclusive_flags_rate_limited_judge():
+    """Regression (review 2026-06-02): an all-unsure golden run (rate-limited judge)
+    must read as INCONCLUSIVE, not a PASS — the build_scenario --validate CLI path
+    uses this shared guard (the wizard already had its own)."""
+    import types
+
+    all_unsure = types.SimpleNamespace(negative_warnings=[1, 2, 3, 4], negative_total=4)
+    one_warning = types.SimpleNamespace(negative_warnings=[1], negative_total=4)
+    no_warning = types.SimpleNamespace(negative_warnings=[], negative_total=4)
+    assert engine.golden_inconclusive(all_unsure) is True
+    assert engine.golden_inconclusive(one_warning) is False
+    assert engine.golden_inconclusive(no_warning) is False
+
+
+def test_load_golden_fixture_raises_on_corrupt_json(tmp_path):
+    """Regression: a corrupt fixture must fail LOUD, not be silently treated as
+    absent (which would drop gating coverage → false PASS)."""
+    (tmp_path / "broken_01.json").write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        engine.load_golden_fixture("broken_01", fixture_dir=tmp_path)
+
+
+def test_fixture_cases_raises_on_missing_required_key():
+    """Regression: a partial fixture case must raise a clear error, not a bare
+    KeyError mid-run."""
+    fixture = {"cases": [{"kind": "positive", "user_text": "hi"}]}  # no checkpoint_id
+    with pytest.raises(ValueError, match="missing required field"):
+        engine._fixture_cases(fixture)

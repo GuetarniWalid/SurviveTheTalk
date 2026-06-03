@@ -287,6 +287,33 @@ def test_parse_json_array_handles_array_and_wrapper():
 # ============================================================
 
 
+def test_select_voice_keeps_default_when_no_gender_match():
+    """Regression (review 2026-06-02): if no catalog voice matches required_gender,
+    keep the DEFAULT voice (AC2 — a female puppet must not get a male voice)
+    instead of silently widening to the full catalog."""
+    voices = [
+        {
+            "id": "v1",
+            "name": "Bob",
+            "gender": "masculine",
+            "country": "US",
+            "description": "deep",
+        }
+    ]
+    vid, reason = _run(
+        builder.select_voice(
+            brief=_brief(),
+            voices=voices,
+            llm=ScriptedLLM(
+                ["{}"]
+            ),  # never reached — empty feminine pool returns first
+            required_gender="feminine",
+        )
+    )
+    assert vid is None
+    assert "feminine" in reason
+
+
 def test_finalize_build_produces_valid_loadable_scenario():
     result = builder.finalize_build(
         brief=_brief(20),
@@ -298,6 +325,36 @@ def test_finalize_build_produces_valid_loadable_scenario():
     )
     assert result.structural_problems == []
     assert len(result.checkpoints) == 20
+
+
+def test_finalize_build_flags_checkpoint_count_mismatch():
+    """Regression (review 2026-06-02): AC3 requires EXACTLY N checkpoints. A
+    short/long generation must surface as a structural problem (which blocks the
+    write in build_scenario.py), not ship silently."""
+    result = builder.finalize_build(
+        brief=_brief(2),
+        checkpoints=_checkpoints(2),  # generator produced 2...
+        scenario_id="cop_interrogation_01",
+        title="The Suspect",
+        difficulty="hard",
+        rive_character="cop",
+        expected_checkpoints=20,  # ...but 20 were requested
+    )
+    assert any("expected exactly 20" in p for p in result.structural_problems)
+
+
+def test_finalize_build_no_count_problem_when_count_matches():
+    """The AC3 count check must not false-positive when the count is right."""
+    result = builder.finalize_build(
+        brief=_brief(20),
+        checkpoints=_checkpoints(20),
+        scenario_id="cop_interrogation_01",
+        title="The Suspect",
+        difficulty="hard",
+        rive_character="cop",
+        expected_checkpoints=20,
+    )
+    assert result.structural_problems == []
     reloaded = yaml.safe_load(result.yaml_text)
     assert builder.validate_structure(reloaded) == []
 

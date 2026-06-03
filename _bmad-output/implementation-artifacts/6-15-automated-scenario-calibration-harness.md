@@ -193,7 +193,7 @@ summary per scenario plus a final tally, and the process exit code reflects the 
 ## Validation (mostly automated — the point of this story)
 
 - [x] **Golden net catches the bug it exists for.** Proven as a permanent unit test rather than a manual prompt-revert: `test_run_golden_lenient_judge_fails_the_net` drives a deliberately over-lenient judge (returns `met` for everything — equivalent to the old "Default to MET" prompt) through `run_golden`; the universal off-topic seed FAILS it (`negative_failures > 0`). `test_run_golden_correct_judge_passes_the_seed` is the restore case.
-  - _Proof:_ `pytest tests/test_calibration_engine.py` — 28 passed (the two golden tests included).
+  - _Proof:_ `pytest tests/test_calibration_engine.py` — 39 passed (the two golden tests + the 2026-06-02 review regression nets included).
 - [ ] **Waiter calibrates in-band.** `calibrate_scenario waiter_easy_01` → completion rate inside the easy band (60-80%); `off_topic` learner does NOT complete. _(Walid-owned — needs `GROQ_API_KEY`; live-LLM run, gated out of pytest per AC6.)_
   - _Proof:_ <!-- live report artifact, run by Walid -->
 - [ ] **All-scenario sweep runs.** `calibrate_scenario` (no arg) produces a report + band verdict for all 5 scenarios. _(Walid-owned — live run.)_
@@ -224,7 +224,7 @@ summary per scenario plus a final tally, and the process exit code reflects the 
 
 ### Phase 4 — Tests + gates
 
-- [x] **Task 8 — Mocked-LLM unit tests** (AC6) — `tests/test_calibration_engine.py` (28 tests): bands, calibration gate, staleness hash, ledger, learner prompt, golden gate, simulator-with-fakes, report, failure-md, fixture shape.
+- [x] **Task 8 — Mocked-LLM unit tests** (AC6) — `tests/test_calibration_engine.py` (39 tests): bands, calibration gate, staleness hash, ledger, learner prompt, golden gate, simulator-with-fakes, report, failure-md, fixture shape, + 2026-06-02 review regression nets (CLI record_verdict wiring, corrupt-fixture guard, missing-key guard).
 - [x] **Task 9 — Pre-commit gates** (AC7) + cost/determinism doc (AC6) — ruff clean; safe test subset green (full pytest reserved for Walid — sandbox livekit import hang); cost in `server/CLAUDE.md` §6 + module docstrings.
 
 ### Phase 5 — Validation-engine layer (scope extension AC9–AC13)
@@ -293,8 +293,8 @@ claude-opus-4-8[1m] (`/bmad-dev-story`, 2026-06-01).
 ### Debug Log References
 
 - Refactor regression net: `pytest tests/test_checkpoint_manager.py tests/test_patience_tracker.py` → 96 passed (Task 10 is behaviour-preserving).
-- Engine logic: `pytest tests/test_calibration_engine.py` → 28 passed (incl. the AC2 lenient-judge-fails-the-net proof + the AC1 no-re-implementation guard).
-- Safe subset (all changed surfaces, non-livekit): `pytest tests/test_calibration_engine.py tests/test_checkpoint_manager.py tests/test_patience_tracker.py tests/test_exchange_classifier.py tests/test_benchmark_classifier.py tests/test_config.py` → 184 passed.
+- Engine logic: `pytest tests/test_calibration_engine.py` → 39 passed (incl. the AC2 lenient-judge-fails-the-net proof + the AC1 no-re-implementation guard + the 2026-06-02 review regression nets).
+- Safe subset (all changed surfaces, non-livekit): `pytest tests/test_calibration_engine.py tests/test_checkpoint_manager.py tests/test_patience_tracker.py tests/test_exchange_classifier.py tests/test_benchmark_classifier.py tests/test_config.py` → 197 passed (194 + 3 review regression nets, 2026-06-02).
 - `ruff check .` + `ruff format --check .` → clean (83 files).
 
 ### Completion Notes List
@@ -303,7 +303,7 @@ claude-opus-4-8[1m] (`/bmad-dev-story`, 2026-06-01).
 - **Sacred reuse-prod-paths (AC1).** The engine drives the EXACT prod judge (`classify_multi`), the pure `advance_goals` + `step_patience` (extracted in Task 10, prod calls them too — zero fork), `compose_goal_system_instruction` + `COHERENCE_CHARTER`, and the YAML loaders. Only the transport (audio/STT/TTS/LiveKit) is replaced by text. Character LLM driven via the raw `openai` SDK (Deviation #1) with the SAME provider/model/temperature constants. A guard test asserts the engine's symbols ARE the prod objects.
 - **Golden net = universal off-topic seed (zero authoring, always gating) + auto-gen-then-reviewed per-checkpoint cases** (Walid's choice). The seed encodes the 2026-05-30 "judge passes everything" bug as a permanent assertion that every new scenario inherits for free; a lenient judge provably FAILS it.
 - **Calibration = N=10 cooperative (band) + N=10 off_topic (inverse guardrail).** Band derived from `difficulty` (rigor-in-engine, AC12; easy 60-80 / medium 35-55 / hard 15-35 from `difficulty-calibration.md` §4.3); ±5 pts = ⚠️ warning that still passes.
-- **Cost-gated like `benchmark_classifier.py`.** Live LLM runs need `GROQ_API_KEY` + the CLI; never imported by prod. Engine LOGIC has 28 mocked-LLM unit tests in the default `pytest`.
+- **Cost-gated like `benchmark_classifier.py`.** Live LLM runs need `GROQ_API_KEY` + the CLI; never imported by prod. Engine LOGIC has 39 mocked-LLM unit tests in the default `pytest`.
 - **Walid-owned follow-up:** run `calibrate_scenario` live with `GROQ_API_KEY` to (a) confirm the Waiter calibrates in-band, (b) `--generate-golden` + review the 4 non-Waiter fixtures, (c) eyeball the first sweep's reports. No device call needed (the point of the story).
 - **Pre-commit:** full `pytest` reserved for Walid before `/commit` (the dev-sandbox `from livekit import api` deadlock makes the livekit-importing tests hang locally — env-specific, not a code bug; see `memory/feedback_sandbox_livekit_import_hang.md`). Everything not transitively importing livekit is green locally.
 
@@ -317,9 +317,10 @@ claude-opus-4-8[1m] (`/bmad-dev-story`, 2026-06-01).
 **New — the validation engine:**
 - `server/scripts/calibration_engine.py` — the reusable library (simulator, golden net + generator, learner, calibrator, bands, ledger + staleness hash + engine_version, report + copy-pasteable failure diagnostic).
 - `server/scripts/calibrate_scenario.py` — the one operator command (yes/no verdict, smart sweep, `--force`, `--golden-only`, `--generate-golden`, exit codes).
+- `server/scripts/calibrate.cmd` — Windows venv wrapper for `calibrate_scenario.py` (added to this list by the 2026-06-02 review — was previously omitted).
 - `server/scripts/simulate_conversation.py` — debug CLI: drive + print one text conversation.
 - `server/tests/fixtures/golden/waiter_easy_01.json` — hand-authored reviewed golden fixture (worked example + template).
-- `server/tests/test_calibration_engine.py` — 28 mocked-LLM unit tests.
+- `server/tests/test_calibration_engine.py` — 39 mocked-LLM unit tests.
 
 **Docs / tracking:**
 - `server/CLAUDE.md` — new §6 (validation engine = the scenario-creation step + cost/determinism).
@@ -328,6 +329,50 @@ claude-opus-4-8[1m] (`/bmad-dev-story`, 2026-06-01).
 
 ## Change Log
 
-- 2026-06-01 — Dev-story COMPLETE, `in-progress` → `review`. Built the full validation engine: pure-decision refactor (`advance_goals`/`step_patience`/`CHARACTER_*` constants, 96 prod tests green), `scripts/calibration_engine.py` (simulator + golden seed/gen/runner + learner + calibrator + bands + ledger/staleness-hash/engine_version + report + copy-pasteable failure diagnostic), `scripts/calibrate_scenario.py` + `scripts/simulate_conversation.py` CLIs, the reviewed Waiter golden fixture, 28 mocked-LLM unit tests (incl. the lenient-judge-fails-the-net proof + the no-re-implementation guard), and `server/CLAUDE.md` §6. ruff clean; safe non-livekit subset 184 passed. Live calibration sweep + non-Waiter `--generate-golden` review reserved for Walid (`GROQ_API_KEY`); full `pytest` reserved for Walid before `/commit` (sandbox livekit import hang). All 13 ACs delivered.
+- 2026-06-01 — Dev-story COMPLETE, `in-progress` → `review`. Built the full validation engine: pure-decision refactor (`advance_goals`/`step_patience`/`CHARACTER_*` constants, 96 prod tests green), `scripts/calibration_engine.py` (simulator + golden seed/gen/runner + learner + calibrator + bands + ledger/staleness-hash/engine_version + report + copy-pasteable failure diagnostic), `scripts/calibrate_scenario.py` + `scripts/simulate_conversation.py` CLIs, the reviewed Waiter golden fixture, 39 mocked-LLM unit tests (incl. the lenient-judge-fails-the-net proof + the no-re-implementation guard), and `server/CLAUDE.md` §6. ruff clean; safe non-livekit subset 184 passed. Live calibration sweep + non-Waiter `--generate-golden` review reserved for Walid (`GROQ_API_KEY`); full `pytest` reserved for Walid before `/commit` (sandbox livekit import hang). All 13 ACs delivered.
 - 2026-06-01 — Scope extension (Walid sign-off, `/bmad-dev-story`). Reframed from "automated test" to a **validation engine/tool**: added AC9 (yes/no verdict + agent-friendly exit code), AC10 (validation ledger + staleness hash + `engine_version` revalidate-only-what-changed), AC11 (copy-pasteable failure diagnostic for human/AI), AC12 (rigor-in-engine: band derived from `difficulty`, universal off-topic seed, no required new YAML field), AC13 (catalogue sweep). 3 decisions taken: golden net = auto-gen + review (with universal seed floor); calibration N=10 (±5 pts = warning, not fail); ship the complete tool. Added Tasks 10–15 (Phase 5) + 5 up-front deviations. Status `ready-for-dev` → `in-progress`.
 - 2026-05-30 — Spec drafted (Walid ask) after the "judge passes every checkpoint" bug needed several manual device calls to catch. Automates the existing manual calibration (Story 3.0 tools + 6.8 bands + 6.9b corpus/bench) into a text-driven harness: prod-code-path conversation simulator (no audio/LiveKit) + deterministic per-checkpoint golden net (the regression guard) + AI learner-agent + stochastic band-calibration + one `calibrate_scenario` command to run at each scenario creation. Foundation for scaling scenario authoring. Awaiting Walid sign-off / `/bmad-dev-story`.
+
+## Review Findings — /bmad-code-review (2026-06-02)
+
+Three adversarial layers (Blind Hunter diff-only + Edge Case Hunter + Acceptance Auditor) on the Story 6.15-scoped diff (`137c577..HEAD`, 10 files, +3024/-32). The Acceptance Auditor confirmed all 13 ACs delivered — AC1 reuse-prod-paths is genuinely satisfied (identity-asserted guard test), AC2 lenient-judge proof is genuine (not a tautology), AC9/AC10/AC12 correct. **1 CRITICAL functional bug found** (the primary CLI command crashes), plus 4 minor patches, 12 deferred, 10 dismissed as noise/false-positive.
+
+**Why it matters:** the CRITICAL bug means the story's own AC8 live-validation (`calibrate_scenario waiter_easy_01`) would crash before completing — the tool never ran end-to-end. Must be fixed before the Walid-owned live calibration smoke gate.
+
+**Resolution:** all 5 patches were applied 2026-06-02 (+3 regression tests). Gates green on the changed surface — `ruff check` + `ruff format` clean; the safe non-livekit pytest subset is **197 passed**. Full `pytest` + the live `calibrate_scenario` validation remain Walid-owned (sandbox livekit import hang; live run needs `GROQ_API_KEY`).
+
+### Patch (action items)
+
+- [x] [Review][Patch] 🔴 **CRITICAL — `record_verdict` called with wrong arity crashes `calibrate_scenario <id>` and the no-arg sweep** [server/scripts/calibrate_scenario.py:215] — call is `engine.record_verdict(verdict, report_path=...)` but the signature is `record_verdict(ledger, verdict, *, report_path="")` (calibration_engine.py:1242); `verdict` binds to `ledger` and the required `verdict` arg is missing → `TypeError` right after the (paid) calibration, before the ledger is written or the verdict printed. Hidden because the live path is gated out of `pytest` (AC6) and the unit test calls the function with the correct `(ledger, verdict)` order. Fix: pass `ledger` first; add a CLI-wiring regression test.
+- [x] [Review][Patch] **Unknown scenario id raises an unhandled `FileNotFoundError` traceback** [server/scripts/calibrate_scenario.py:176] — `compute_scenario_hash(sid)` runs before the `try/except` (line 197); the informative message is buried in a stack trace and one bad id aborts a multi-id run. Fix: validate ids up front or wrap with a clean per-scenario error + continue.
+- [x] [Review][Patch] **`load_golden_fixture` does not guard corrupt JSON** [server/scripts/calibration_engine.py:730] — `json.loads(path.read_text(...))` with no guard crashes every golden run for that scenario, whereas `load_ledger` (line 1213) already catches `JSONDecodeError`. Fix: mirror the ledger's guard.
+- [x] [Review][Patch] **`_fixture_cases` `KeyError` on a partial fixture** [server/scripts/calibration_engine.py:733] — required keys read via `c["checkpoint_id"]`/`c["kind"]`/`c["user_text"]`; a partial fixture aborts the net with a bare `KeyError`. Fix: validate keys + surface a readable error.
+- [x] [Review][Patch] **Dev Agent Record accuracy** [6-15-...md / server/CLAUDE.md] — DAR counts corrected to verified post-review numbers — test file **39** (claimed 28; was 36 pre-review + 3 review nets), safe subset **197** (claimed 184; was 194); added `calibrate.cmd` to the File List. ✅ applied 2026-06-02.
+
+### Deferred (logged to deferred-work.md)
+
+- [x] [Review][Defer] Golden net evaluates one goal in isolation, not the multi-goal turn of the 2026-05-30 bug [server/scripts/calibration_engine.py:803] — deferred, strength gap (multi-goal partially covered by calibration runs)
+- [x] [Review][Defer] Simulated turn-1 sends a system-only message + fabricates the opener vs prod's scripted opening line [server/scripts/calibration_engine.py:585] — deferred, live-run realism
+- [x] [Review][Defer] `LlmSettings` duck-type drift risk (hand-copied model defaults) [server/scripts/calibration_engine.py] — deferred, add a sync-guard test
+- [x] [Review][Defer] `generate_golden_fixture` brittle parsing + silent case drops [server/scripts/calibration_engine.py:901] — deferred, --generate-golden output is human-reviewed
+- [x] [Review][Defer] Ledger write non-atomic + silent reset on corruption [server/scripts/calibration_engine.py:1220] — deferred, re-validation is safe
+- [x] [Review][Defer] Judge HTTP client may leak if `ExchangeClassifier` lacks `close` [server/scripts/calibration_engine.py] — deferred, dev tool exits anyway
+- [x] [Review][Defer] `ResilientChat` retries all exceptions + throttle not concurrency-safe [server/scripts/calibration_engine.py] — deferred, sequential use today
+- [x] [Review][Defer] `effective_max_turns` silently raises `--max-turns` [server/scripts/calibration_engine.py:1076] — deferred, add a notice
+- [x] [Review][Defer] CLI prints multi-line Markdown to stdout with verdict lines [server/scripts/calibrate_scenario.py:223] — deferred, exit code is the real CI contract
+- [x] [Review][Defer] `compute_scenario_hash` computed twice per scenario per sweep [server/scripts/calibrate_scenario.py:176] — deferred, minor I/O + TOCTOU
+- [x] [Review][Defer] `force_utf8_stdio` best-effort; first emoji print can still crash on a non-UTF-8 stream [server/scripts/calibration_engine.py] — deferred, env-specific
+- [x] [Review][Defer] Optional `calibration.target_band` documented but never wired from YAML [server/scripts/calibration_engine.py:1058] — deferred, wire or de-document
+
+### Dismissed (10 — false positives / working-as-specified)
+
+- BH#9 success-bonus "skipped" on the all-met turn — **prod does the same** (checkpoint_manager.py:755-765 routes to `schedule_completion`, no `apply_exchange_outcome`); harness matches prod. Verified.
+- BH#10 `self._goals` rebind breaks an alias — **no durable alias exists** (4 read sites re-read the attribute; `get_goals` returns a copy). Verified.
+- BH#15 polite off_topic learner trips the guardrail — **survival requires ALL goals**; one social-checkpoint trip never completes. Verified.
+- BH#21 Waiter `clarify` has 3 disjoint positives — each golden case is judged **independently** with its own `character_line` + a single goal; the 90% threshold absorbs a flip. Verified.
+- BH#16 lenient-judge test is a tautology — it's a **valid guard** (empty/removed seed → test fails); Auditor confirmed it feeds real off-topic text through `classify_multi`.
+- BH#17 no patience assertion on the survive path — moot once BH#9 is dismissed.
+- BH#1 "forked pass rule" — golden-only is a distinct mode (no calibration), not a duplicated rule.
+- BH#3 ±5 warning widens the band — that's the **specified** behaviour (AC9 "±5 = warning, still passes").
+- BH#4 band-edge float compare — immaterial given the ±5 margin (and N=10 divides exactly).
+- AA#4 `TurnRecord` lacks `scheduled_end_reason` — the spec marks that field optional (`?`); outcome is captured at `ConversationResult` level.
