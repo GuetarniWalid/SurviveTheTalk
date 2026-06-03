@@ -155,6 +155,18 @@ class Settings(BaseSettings):
     # via `pipeline.llm_provider.resolve_llm_api_key`.
     llm_api_key: str = ""  # LLM_API_KEY
 
+    # Story 6.18 — dynamic, in-character exit + patience-warning line
+    # generation. Default ON. When True, `bot.py` injects a generator into
+    # PatienceTracker that regenerates the hang-up / patience-warning line
+    # from the ACTUAL transcript + reason (COHERENCE_CHARTER-governed) so the
+    # closing words can't fabricate events (cop call_id=212 accused the user
+    # of "three versions" via a canned YAML line). The YAML `exit_lines` stay
+    # as the fast fallback whenever generation is slow/fails. Set
+    # `HANGUP_LINE_GENERATION=0` to flip the WHOLE feature back to the canned
+    # lines with no logic redeploy (AC7 kill-switch). Pydantic parses the
+    # usual bool forms (`0`/`1`/`true`/`false`).
+    hangup_line_generation: bool = True  # HANGUP_LINE_GENERATION
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #

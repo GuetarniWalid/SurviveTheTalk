@@ -580,3 +580,45 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
     # goals (one entry per checkpoint on the first turn).
     pending = invoked_with[0]["pending_goals"]
     assert [g["id"] for g in pending] == ["cp0"]
+
+
+# ============================================================
+# Story 6.18 — dynamic exit/patience-warning line generator wiring
+# ============================================================
+
+
+def test_bot_wires_dynamic_exit_line_generator_into_patience_tracker() -> None:
+    """Story 6.18 — `bot.py` must:
+      - import `generate_exit_line` from `pipeline.exit_line_generator`;
+      - gate the feature on `settings.hangup_line_generation` (AC7 kill-switch);
+      - build a closure that calls `generate_exit_line(...)` reading the LIVE
+        transcript (`context.get_messages()`) + the bare persona + charter;
+      - thread the resulting callable into PatienceTracker via
+        `hang_up_line_generator=...`.
+
+    Source-text matching is fragile (renames break it) — when bot.py refactors,
+    re-verify these assertions.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    assert "from pipeline.exit_line_generator import generate_exit_line" in source
+
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    # AC7 kill-switch — the whole feature is gated on the Settings flag.
+    assert "settings.hangup_line_generation" in code, (
+        "bot.py must gate dynamic exit-line generation on "
+        "settings.hangup_line_generation (HANGUP_LINE_GENERATION env toggle)"
+    )
+    # The closure must actually call the generator with the live transcript.
+    assert "generate_exit_line(" in code
+    assert "transcript=context.get_messages()" in code, (
+        "the generator closure must read the LIVE transcript at hang-up time "
+        "so the line reflects what actually happened"
+    )
+    # The callable is threaded into PatienceTracker (a missing thread would
+    # silently leave the canned-line-only behaviour).
+    assert "hang_up_line_generator=hang_up_line_generator" in code, (
+        "bot.py must thread the generator into PatienceTracker via "
+        "hang_up_line_generator=..."
+    )

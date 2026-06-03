@@ -103,7 +103,8 @@ breaks the LLM/TTS path).
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable
+import time
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -208,6 +209,12 @@ _VALID_REASONS = frozenset(
     }
 )
 
+# Story 6.18 — pseudo-reason for the one-shot patience-WARNING line. NOT a
+# hang-up reason (deliberately excluded from `_VALID_REASONS` so it can never
+# reach `_schedule_hang_up`); used only to pick the warning variant of the
+# generation guidance in `_resolve_exit_line` / `_emit_patience_warning`.
+_REASON_PATIENCE_WARNING = "patience_warning"
+
 
 def step_patience(
     meter: int,
@@ -274,6 +281,15 @@ class PatienceTracker(FrameProcessor):
         escalation_thresholds: Patience-meter breakpoints for the
             visual escalation ladder. Stored for Story 6.7
             (`CheckpointManager`) consumption; NOT applied in Story 6.4.
+        hang_up_line_generator: Story 6.18 — optional async callable
+            `(reason) -> str | None` that regenerates the exit /
+            patience-warning line IN CHARACTER from the live transcript
+            (injected in `bot.py`, closure over `llm_context` + the LLM
+            config; the LLM wiring stays out of this transport-free
+            processor). `None` (default) → the canned YAML lines are used
+            unchanged (also the `HANGUP_LINE_GENERATION=0` kill-switch
+            path). A `None` RETURN or any error → fall back to the canned
+            line; the generator must never wedge or crash the hang-up.
 
     Raises:
         ValueError: If `initial_patience <= 0`. The survival-percent
@@ -305,6 +321,7 @@ class PatienceTracker(FrameProcessor):
             "*sighs* Look, are you ordering or not? Last chance."
         ),
         abuse_classifier: Callable[[str], bool] | None = None,
+        hang_up_line_generator: Callable[[str], Awaitable[str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -386,6 +403,11 @@ class PatienceTracker(FrameProcessor):
         # `_hang_up_task`).
         self._warning_task: asyncio.Task[None] | None = None
         self._abuse_classifier = abuse_classifier
+        # Story 6.18 — optional dynamic exit/warning-line generator. None
+        # keeps the canned YAML lines (the kill-switch path); a callable
+        # regenerates the line in-character from the live transcript, with
+        # the canned line as fallback. See `_resolve_exit_line`.
+        self._hang_up_line_generator = hang_up_line_generator
         # Story 6.6 — survival_pct override threaded by
         # `schedule_completion` so the `_run_hang_up` arithmetic
         # produces 100 (checkpoints-passed) instead of the meter
@@ -452,6 +474,14 @@ class PatienceTracker(FrameProcessor):
             silence_hangup_seconds,
             self._escalation_thresholds,
             total_checkpoints,
+        )
+        # Story 6.18 (AC7) — confirm in journalctl whether dynamic exit-line
+        # generation is wired for this call (driven by HANGUP_LINE_GENERATION
+        # in bot.py). The per-hang-up `source=generated|fallback` log lands at
+        # the substitution point in `_resolve_exit_line`.
+        logger.info(
+            "PatienceTracker hang_up_line_generation={}",
+            self._hang_up_line_generator is not None,
         )
 
     # ---------- Public read-only properties (Story 6.6 Deviation #7) ----------
@@ -795,6 +825,10 @@ class PatienceTracker(FrameProcessor):
         push failure (TTS down, transport error) is logged and
         swallowed instead of dying silently inside the spawned task.
 
+        Story 6.18 — the spoken line is regenerated in-character from the
+        live transcript (`_resolve_exit_line`, `patience_warning` variant)
+        with the canned `_patience_warning_line` as fallback.
+
         Review patch — `_warning_emitted` flips to True only AFTER the
         push lands successfully. If the push raises synchronously
         (transport closed during pipeline teardown), the flag stays
@@ -804,9 +838,17 @@ class PatienceTracker(FrameProcessor):
         post-success vs. post-failure semantics never produce two
         in-flight warnings.
         """
+        # Story 6.18 — regenerate the warning line in-character from the live
+        # transcript so it points at what is ACTUALLY still missing (the
+        # call-212 canned warning asked "where were you at 8:30?" before the
+        # conversation had reached the alibi). Falls back to the canned
+        # `_patience_warning_line`; `_resolve_exit_line` never raises.
+        line = await self._resolve_exit_line(
+            _REASON_PATIENCE_WARNING, self._patience_warning_line
+        )
         try:
             await self.push_frame(
-                TTSSpeakFrame(text=self._patience_warning_line),
+                TTSSpeakFrame(text=line),
                 FrameDirection.DOWNSTREAM,
             )
         except asyncio.CancelledError:
@@ -998,6 +1040,54 @@ class PatienceTracker(FrameProcessor):
         self._cancel_silence_timer()
         self._hang_up_task = asyncio.create_task(self._run_hang_up(reason))
 
+    async def _resolve_exit_line(self, reason: str, fallback: str) -> str:
+        """Story 6.18 — return the dynamic, in-character line for `reason`,
+        or `fallback` (the canned YAML line) when generation is disabled,
+        slow, empty, or fails. NEVER raises — a canned line beats a crashed
+        hang-up. Logs `hangup_line source=generated|fallback latency_ms=…` at
+        this substitution point so a journalctl tail confirms the feature
+        worked vs fell back (AC7).
+
+        `gen` (the injected `generate_exit_line` closure from `bot.py`) is
+        itself fire-tolerant (returns None on any error / timeout / empty
+        transcript), but the `try/except` here also guards an arbitrary
+        injected stub so an unexpected raise still degrades to the canned
+        line (AC2).
+        """
+        gen = self._hang_up_line_generator
+        if gen is None:
+            logger.info(
+                "hangup_line source=fallback reason={} (generation disabled)",
+                reason,
+            )
+            return fallback
+        start = time.monotonic()
+        try:
+            line = await gen(reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "hangup_line generation raised; using fallback reason={}", reason
+            )
+            return fallback
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if line:
+            logger.info(
+                "hangup_line source=generated reason={} latency_ms={} text={!r}",
+                reason,
+                latency_ms,
+                line,
+            )
+            return line
+        logger.info(
+            "hangup_line source=fallback reason={} latency_ms={} "
+            "(generation returned None)",
+            reason,
+            latency_ms,
+        )
+        return fallback
+
     async def _run_hang_up(self, reason: str) -> None:
         # 3-way exit-line selection. Deviation #1 from Story 6.6: the
         # completion path speaks its own line (YAML `exit_lines.completion`
@@ -1041,6 +1131,17 @@ class PatienceTracker(FrameProcessor):
                     InterruptionFrame(),
                     FrameDirection.DOWNSTREAM,
                 )
+
+            # Story 6.18 — regenerate the exit line IN CHARACTER from the live
+            # transcript (charter-governed → coherent with what actually
+            # happened), falling back to the canned `line` selected above when
+            # generation is disabled/slow/failed. Time-boxed (~1.5 s, AC3)
+            # inside `_resolve_exit_line` → `generate_exit_line`; never raises.
+            # Done AFTER the noisy_environment InterruptionFrame so the
+            # interrupt still flushes the in-flight reply first (AC6 ordering
+            # preserved); the generated text is spoken in the same TTSSpeakFrame
+            # the canned line would have used.
+            line = await self._resolve_exit_line(reason, line)
 
             # Create the event BEFORE pushing the TTSSpeakFrame so the
             # bot-stopped handler always has a non-None target.

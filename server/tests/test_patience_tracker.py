@@ -1918,3 +1918,291 @@ def test_schedule_noisy_environment_exit_is_idempotent(
         and f.message.get("type") == "call_end"
     ]
     assert len(call_end) == 1, "idempotent — only one call_end envelope"
+
+
+# ============================================================
+# Story 6.18 — dynamic exit + patience-warning line generation
+# ============================================================
+
+
+def _recording_gen(line: str | None, record: list[str]):
+    """An injected hang_up_line_generator that records the reason it was
+    asked for and returns `line`."""
+
+    async def _gen(reason: str) -> str | None:
+        record.append(reason)
+        return line
+
+    return _gen
+
+
+def _raising_gen():
+    async def _gen(reason: str) -> str | None:
+        raise RuntimeError("generation boom")
+
+    return _gen
+
+
+def test_run_hang_up_speaks_generated_line_when_generator_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC1 — when the generator returns a line, the hang-up speaks THAT line,
+    not the canned YAML one."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            hang_up_line_silence="CANNED silence goodbye.",
+            hang_up_line_generator=_recording_gen("Dynamic. Goodbye.", record),
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1
+    assert tts[0].text == "Dynamic. Goodbye.", "must speak the generated line"
+    assert record == ["character_hung_up"], "generator called with the hang-up reason"
+    # The canned line must NOT have been spoken.
+    assert all(f.text != "CANNED silence goodbye." for f in tts)
+
+
+def test_run_hang_up_falls_back_to_canned_when_generator_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC2 — a None return (generation disabled/slow/empty transcript) falls
+    back to the canned YAML line — there is always a final line."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            hang_up_line_silence="CANNED silence goodbye.",
+            hang_up_line_generator=_recording_gen(None, record),
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1
+    assert tts[0].text == "CANNED silence goodbye."
+    assert record == ["character_hung_up"]
+
+
+def test_run_hang_up_falls_back_to_canned_when_generator_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC2 — a generator that raises must NOT crash the hang-up; the canned
+    line is spoken and call_end still fires."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            hang_up_line_silence="CANNED silence goodbye.",
+            hang_up_line_generator=_raising_gen(),
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1
+    assert tts[0].text == "CANNED silence goodbye.", "raise → canned fallback"
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1, "hang-up must complete despite generation error"
+
+
+def test_run_hang_up_uses_canned_line_when_no_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC7 kill-switch — with no generator injected (HANGUP_LINE_GENERATION=0
+    path), the canned YAML line is spoken unchanged."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(hang_up_line_silence="CANNED silence goodbye.")
+    )
+    assert tracker._hang_up_line_generator is None
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1
+    assert tts[0].text == "CANNED silence goodbye."
+
+
+def test_generator_receives_survived_reason_on_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC4 — the completion path generates with reason='survived' and the
+    generated line is spoken; survival_pct math (Deviation #1) is unchanged."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_survived="CANNED survived.",
+            hang_up_line_generator=_recording_gen("You did it. Take care.", record),
+        )
+    )
+    tracker._patience = 5  # would be survival_pct=5 under the meter ratio
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.set_checkpoints_passed(6)
+        tracker.schedule_completion(survival_pct=100)
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1
+    assert tts[0].text == "You did it. Take care."
+    assert record == ["survived"]
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert call_end[0].message["data"]["survival_pct"] == 100, (
+        "Deviation #1 survival_pct math must be unchanged by the dynamic line"
+    )
+
+
+def test_generator_receives_noisy_reason_and_interruption_precedes_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC6 — the noisy_environment InterruptionFrame still precedes the
+    (now generated) exit line."""
+    from pipecat.frames.frames import InterruptionFrame
+
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            hang_up_line_noisy_environment="CANNED noisy.",
+            hang_up_line_generator=_recording_gen("Can't hear you. Bye.", record),
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_noisy_environment_exit()
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert record == ["noisy_environment"]
+    interrupt_idx = next(
+        (i for i, f in enumerate(captured) if isinstance(f, InterruptionFrame)), None
+    )
+    line_idx = next(
+        (
+            i
+            for i, f in enumerate(captured)
+            if isinstance(f, TTSSpeakFrame) and f.text == "Can't hear you. Bye."
+        ),
+        None,
+    )
+    assert interrupt_idx is not None and line_idx is not None
+    assert interrupt_idx < line_idx, (
+        "InterruptionFrame must still flush in-flight speech BEFORE the "
+        "generated exit line (AC6)"
+    )
+
+
+def test_patience_warning_speaks_generated_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC4 — the one-shot patience warning is also dynamic, generated with
+    reason='patience_warning' and falling back to the canned line otherwise."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            fail_penalty=-10,
+            patience_warning_line="CANNED warning.",
+            hang_up_line_generator=_recording_gen("Last chance — answer me.", record),
+        )
+    )
+    tracker._patience = 30  # one fail → 20 (warning band, > 0)
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+
+    _run(_drive())
+
+    warnings = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(warnings) == 1
+    assert warnings[0].text == "Last chance — answer me."
+    assert record == ["patience_warning"]
+    assert tracker._warning_emitted is True
+
+
+def test_patience_warning_falls_back_to_canned_when_generator_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC2 — the warning falls back to the canned line when generation
+    returns None."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            fail_penalty=-10,
+            patience_warning_line="CANNED warning.",
+            hang_up_line_generator=_recording_gen(None, []),
+        )
+    )
+    tracker._patience = 30
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.apply_exchange_outcome(False)
+        if tracker._warning_task is not None:
+            await asyncio.gather(tracker._warning_task, return_exceptions=True)
+
+    _run(_drive())
+
+    warnings = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(warnings) == 1
+    assert warnings[0].text == "CANNED warning."

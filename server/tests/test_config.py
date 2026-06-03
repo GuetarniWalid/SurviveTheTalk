@@ -155,6 +155,32 @@ def test_settings_boots_without_openrouter_key() -> None:
         assert s.groq_api_key == "test-groq-key"
 
 
+# ---------- Story 6.18 — dynamic exit/warning-line generation toggle --------
+
+
+def test_settings_hangup_line_generation_defaults_to_on() -> None:
+    """Story 6.18 — dynamic exit/patience-warning line generation is ON by
+    default (Walid decision). bot.py only injects the generator into
+    PatienceTracker when this is True."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.hangup_line_generation is True
+
+
+def test_settings_hangup_line_generation_kill_switch_via_env() -> None:
+    """AC7 — `HANGUP_LINE_GENERATION=0` flips the whole feature back to the
+    canned YAML exit_lines with no logic redeploy."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "HANGUP_LINE_GENERATION": "0",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.hangup_line_generation is False
+
+
 # ---------- Story 6.13 Phase 4b — TTS provider switch -----------------------
 
 

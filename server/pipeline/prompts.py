@@ -304,3 +304,105 @@ or simply not addressing it).
 - "unsure" — you truly cannot tell even after careful reading. Use RARELY: a borderline \
 response that does not clearly accomplish the objective is "unmet", NOT "unsure".
 """
+
+
+# ============================================================
+# Story 6.18 — dynamic, in-character exit + patience-warning lines
+# ============================================================
+#
+# The COHERENCE_CHARTER governs every GENERATED character turn so it can't
+# invent facts — but the hang-up and patience-warning lines were hardcoded
+# YAML strings (`exit_lines.*` / `patience_warning`) selected purely by the
+# hang-up REASON. They are written for an "ideal" failure, so the engine
+# plays the same accusation whether the user contradicted themselves, gave
+# nothing, or went silent. Cop call_id=212 (2026-06-03) spoke the canned
+# "your story's changed... innocent people don't need three versions" after
+# the user never gave a single version → incoherent.
+#
+# Story 6.18 regenerates the closing/warning line IN CHARACTER from the
+# ACTUAL transcript + the reason (charter-governed → it can only reference
+# what really happened). `pipeline/exit_line_generator.py` fills this prompt
+# and POSTs it to the character LLM; the YAML lines stay as the fast
+# fallback. See `6-18-dynamic-contextual-exit-lines.md`.
+
+# Per-reason guidance slotted into `EXIT_LINE_GENERATION_PROMPT`. Keyed by
+# the PatienceTracker reason tokens (`character_hung_up` covers BOTH the
+# silence-ladder hang-up and the meter-zero hang-up) plus `patience_warning`
+# for the one-shot warning line (which does NOT end the call).
+EXIT_LINE_REASON_GUIDANCE: dict[str, str] = {
+    "character_hung_up": (
+        "You have run out of patience and are ENDING the call right now. The "
+        "user has not been giving you the clear, on-topic answers you needed. "
+        "Deliver your final parting line — make it clear you are done."
+    ),
+    "inappropriate_content": (
+        "You are ENDING the call right now because the user said something "
+        "inappropriate, abusive, or offensive. Deliver a short, firm parting "
+        "line that shuts the conversation down. Do NOT repeat or quote what "
+        "they said."
+    ),
+    "noisy_environment": (
+        "You are ENDING the call right now because you genuinely cannot hear "
+        "the user over loud background noise. Deliver a short parting line that "
+        "says you can't hear them and they should try again from somewhere "
+        "quieter."
+    ),
+    "survived": (
+        "The conversation has reached a natural, SUCCESSFUL end — the user got "
+        "what this conversation was about. Deliver a short closing line that "
+        "wraps things up. It can be grudging or warm depending on who you are, "
+        "but it acknowledges you are finished."
+    ),
+    "patience_warning": (
+        "You are LOSING PATIENCE but NOT ending the call yet — you are giving "
+        "the user ONE last chance. Deliver a short warning line that makes "
+        "clear they need to give you a real answer now. Base it on what is "
+        "actually still missing in this conversation; do NOT introduce a topic "
+        "that has not come up."
+    ),
+}
+
+# Fallback guidance for an unmapped reason (defensive — every shipping caller
+# passes a mapped reason).
+EXIT_LINE_GUIDANCE_DEFAULT = (
+    "The call is ending now. Deliver a short, in-character closing line based "
+    "only on how this conversation actually went."
+)
+
+# Universal coherence + format rules appended to EVERY exit-line generation.
+# The anti-fabrication clause is the heart of the Story 6.18 fix (cop
+# call_id=212 invented "three versions"): the line may only reference what is
+# in the transcript.
+EXIT_LINE_CONSTRAINT = """\
+STRICT RULES — follow ALL of them:
+- Stay completely in character. Never mention being an AI or a scenario, and \
+never break the fourth wall.
+- Reply with ONLY the words the character speaks next — no surrounding \
+quotation marks, no narrator description, no "NAME:" label.
+- Keep it to TWO SHORT SENTENCES OR FEWER.
+- Reference ONLY what actually happened in the conversation above. Do NOT \
+invent events, accusations, alibis, orders, names, or contradictions that did \
+not occur. For example, do NOT accuse the user of changing their story or \
+giving multiple versions unless they genuinely gave conflicting answers in the \
+transcript above."""
+
+# Single-shot generation prompt (ONE user message, classifier-style: the
+# transcript is embedded as text inside <transcript> tags rather than as chat
+# roles, so the closing instruction is the last thing the model reads). Filled
+# by `exit_line_generator.generate_exit_line`. Every substituted value is
+# brace-escaped before `.format()` because user speech can contain literal
+# braces (mirrors `exchange_classifier._escape_format_braces`).
+EXIT_LINE_GENERATION_PROMPT = """\
+{persona}
+
+{charter}
+
+{reason_guidance}
+
+Here is the full conversation so far between you (CHARACTER) and the person you \
+are talking to (USER):
+<transcript>
+{transcript}
+</transcript>
+
+{constraint}"""

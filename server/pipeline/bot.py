@@ -45,6 +45,7 @@ from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
+from pipeline.exit_line_generator import generate_exit_line
 from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
 from pipeline.llm_warmup import warm_up_llm
@@ -124,6 +125,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # coherence. In practice the env-var branch is dead since
     # `scenario_id` always resolves (TUTORIAL_SCENARIO_ID fallback).
     env_system_prompt = os.environ.get("SYSTEM_PROMPT")
+    # Story 6.18 — the BARE persona (no COHERENCE_CHARTER, no goal decoration)
+    # handed to the dynamic exit-line generator; it slots the charter back in
+    # itself so the closing/warning line stays in-voice but can't fabricate
+    # events. Tracked alongside `initial_system_prompt` so all three branches
+    # stay in lockstep.
     if scenario_base_prompt and scenario_checkpoints:
         initial_system_prompt = (
             scenario_base_prompt.rstrip()
@@ -134,10 +140,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
             + "\n\n"
             + format_suggested_focus_block(scenario_checkpoints[0])
         )
+        exit_line_persona = scenario_base_prompt.rstrip()
     elif env_system_prompt:
         initial_system_prompt = env_system_prompt + "\n\n" + COHERENCE_CHARTER
+        exit_line_persona = env_system_prompt
     else:
         initial_system_prompt = SARCASTIC_CHARACTER_PROMPT + "\n\n" + COHERENCE_CHARTER
+        exit_line_persona = SARCASTIC_CHARACTER_PROMPT
 
     # Story 6.9 — DTLN noise suppression on the input audio path. Wraps
     # `livekit.plugins.dtln.DTLNNoiseSuppressor` (Aloware, MIT, ~4 MB ONNX
@@ -379,6 +388,36 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # `escalation_thresholds` are stored dormant for Stories 6.6 / 6.7 /
     # DW1 consumption. Wired explicitly so a future preset-key rename
     # surfaces here as a KeyError instead of silently dropping a field.
+    #
+    # Story 6.18 — build the dynamic exit/patience-warning line generator and
+    # inject it into PatienceTracker. The closure reads the LIVE transcript
+    # (`context.get_messages()`) at hang-up time and POSTs it to the character
+    # LLM via the shared provider resolvers (same Groq config as the main
+    # brain + warm-up). Keeping the LLM/context wiring HERE (not inside
+    # PatienceTracker) leaves that processor transport-free + unit-testable.
+    # `HANGUP_LINE_GENERATION=0` flips the whole feature back to the canned
+    # YAML `exit_lines` with no logic redeploy (AC7) by injecting `None`.
+    if settings.hangup_line_generation:
+
+        async def _generate_hang_up_line(reason: str) -> str | None:
+            return await generate_exit_line(
+                reason=reason,
+                transcript=context.get_messages(),
+                persona=exit_line_persona,
+                charter=COHERENCE_CHARTER,
+                api_key=resolve_llm_api_key(settings),
+                model=settings.character_model,
+                base_url=resolve_llm_chat_url(settings),
+            )
+
+        hang_up_line_generator = _generate_hang_up_line
+    else:
+        hang_up_line_generator = None
+        logger.info(
+            "HANGUP_LINE_GENERATION=0 — dynamic exit/warning lines DISABLED "
+            "(canned YAML exit_lines used; AC7 kill-switch)"
+        )
+
     patience_tracker = PatienceTracker(
         initial_patience=patience_config["initial_patience"],
         fail_penalty=patience_config["fail_penalty"],
@@ -402,6 +441,9 @@ async def run_bot(url: str, room: str, token: str) -> None:
             "hang_up_line_noisy_environment"
         ],
         patience_warning_line=patience_config["patience_warning_line"],
+        # Story 6.18 — dynamic exit/warning-line generator (None when
+        # HANGUP_LINE_GENERATION=0 → canned YAML lines).
+        hang_up_line_generator=hang_up_line_generator,
     )
 
     # Story 6.11 — EnvironmentMonitor observes the user's finalized

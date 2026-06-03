@@ -1,6 +1,6 @@
 # Story 6.18: Dynamic / contextual character hang-up + warning lines
 
-Status: ready-for-dev
+Status: review
 
 > Design decisions RESOLVED with Walid 2026-06-03 — see `## Decisions`. Final version, ready for `/bmad-dev-story`.
 
@@ -64,14 +64,14 @@ See `## Smoke Test Gate` — a device call that ends in a hang-up must produce a
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Out-of-band generation helper** (AC1, AC2, AC3) — a standalone async function that, given (transcript, reason, system_instruction/persona, charter), calls the character LLM for ONE short line. **Mirror `pipeline/llm_warmup.py::warm_up_llm`**: direct `httpx` to the Groq endpoint via `llm_provider.resolve_llm_chat_url` / `resolve_llm_api_key` + `settings.character_model` + `CHARACTER_TEMPERATURE`/short `max_tokens`; time-boxed (`asyncio.wait_for`); never raises (returns `None` on any error). Parse + validate the line (≤2 sentences, non-empty) with an `exchange_classifier._parse_*`-style guard.
-- [ ] **Task 2 — Reason-specific generation prompts** (AC4, AC5) — module constants in `prompts.py` (one prompt shape, parametrised by reason) that include the `COHERENCE_CHARTER` + persona + the last-N transcript turns + an explicit "describe ONLY what actually happened; do not invent contradictions/events" instruction. Distinct guidance per reason (silence / inappropriate / noisy / survived / warning).
-- [ ] **Task 3 — Wire generation into `_run_hang_up`** (AC1-AC3, AC6) — in `patience_tracker.py::_run_hang_up`, BEFORE the `TTSSpeakFrame(text=line)` push (~line 1047), call the generator with the reason; on success use the generated text, on `None`/timeout fall back to the existing `line` selected at 1006-1014. Keep the 6s TTS bound + the `noisy_environment` InterruptionFrame-first ordering.
-- [ ] **Task 4 — Wire generation into `_emit_patience_warning`** (AC4) — same generator (warning variant) for the one-shot warning line; fall back to `_patience_warning_line`.
-- [ ] **Task 5 — Thread the generator + LLM access into PatienceTracker** (design — see Decisions) — give PatienceTracker what it needs to generate (a callable injected at construction in `bot.py:382-405`, or access to the `llm` + `llm_context`). Prefer a small injected `hang_up_line_generator` callable so PatienceTracker stays testable and the LLM wiring lives in `bot.py`.
-- [ ] **Task 6 — Env toggle + logging** (AC7) — `HANGUP_LINE_GENERATION` in `config.py`; log `hangup_line source=generated|fallback latency_ms=…` at the push site.
-- [ ] **Task 7 — Mocked-LLM unit tests** (AC8) — generation success / timeout→fallback / failure→fallback / ≤2-sentence enforcement / the AC5 no-contradiction guard / the existing 4-reason + survival_pct tests still green.
-- [ ] **Task 8 — Pre-commit + smoke gate** (AC9, AC10).
+- [x] **Task 1 — Out-of-band generation helper** (AC1, AC2, AC3) — a standalone async function that, given (transcript, reason, system_instruction/persona, charter), calls the character LLM for ONE short line. **Mirror `pipeline/llm_warmup.py::warm_up_llm`**: direct `httpx` to the Groq endpoint via `llm_provider.resolve_llm_chat_url` / `resolve_llm_api_key` + `settings.character_model` + `CHARACTER_TEMPERATURE`/short `max_tokens`; time-boxed (`asyncio.wait_for`); never raises (returns `None` on any error). Parse + validate the line (≤2 sentences, non-empty) with an `exchange_classifier._parse_*`-style guard. → `pipeline/exit_line_generator.py`.
+- [x] **Task 2 — Reason-specific generation prompts** (AC4, AC5) — module constants in `prompts.py` (one prompt shape, parametrised by reason) that include the `COHERENCE_CHARTER` + persona + the last-N transcript turns + an explicit "describe ONLY what actually happened; do not invent contradictions/events" instruction. Distinct guidance per reason (silence / inappropriate / noisy / survived / warning). → `EXIT_LINE_REASON_GUIDANCE` + `EXIT_LINE_CONSTRAINT` + `EXIT_LINE_GENERATION_PROMPT`.
+- [x] **Task 3 — Wire generation into `_run_hang_up`** (AC1-AC3, AC6) — in `patience_tracker.py::_run_hang_up`, BEFORE the `TTSSpeakFrame(text=line)` push, call the generator with the reason; on success use the generated text, on `None`/timeout fall back to the existing `line` selected from the reason switch. Keep the 6s TTS bound + the `noisy_environment` InterruptionFrame-first ordering (generation runs AFTER the interrupt). → `_resolve_exit_line`.
+- [x] **Task 4 — Wire generation into `_emit_patience_warning`** (AC4) — same generator (warning variant, `reason="patience_warning"`) for the one-shot warning line; fall back to `_patience_warning_line`.
+- [x] **Task 5 — Thread the generator + LLM access into PatienceTracker** (design — see Decisions) — chose the small injected `hang_up_line_generator` callable (async `(reason) -> str | None`); the closure lives in `bot.py` (captures `context`/`settings`/persona/charter, reads the live transcript at hang-up time) so PatienceTracker stays transport-free + unit-testable.
+- [x] **Task 6 — Env toggle + logging** (AC7) — `HANGUP_LINE_GENERATION` in `config.py` (default ON); `bot.py` injects `None` when off; `hangup_line source=generated|fallback latency_ms=…` logged at the push site in `_resolve_exit_line` + a `hang_up_line_generation={bool}` init log.
+- [x] **Task 7 — Mocked-LLM unit tests** (AC8) — generation success / timeout→fallback / failure→fallback / ≤2-sentence enforcement / the AC5 no-contradiction prompt guard / the existing 4-reason + survival_pct tests still green. → `test_exit_line_generator.py` (16) + `test_patience_tracker.py` (+9) + wiring (+1) + config (+2).
+- [x] **Task 8 — Pre-commit gates** (AC9) GREEN: `ruff check .` + `ruff format --check .` clean, `pytest` 601 passed. **Smoke gate (AC10)** is Walid-owned per Story 6.5 D6 — see `## Smoke Test Gate` (pending; device call required).
 
 ## Dev Notes
 
@@ -110,14 +110,105 @@ See `## Smoke Test Gate` — a device call that ends in a hang-up must produce a
 ## Dev Agent Record
 
 ### Agent Model Used
-_(to be filled by dev)_
+Claude Opus 4.8 (1M context) — `/bmad-dev-story`, 2026-06-03.
+
+### Implementation Plan
+Server-only coherence story. New standalone generator module + a small
+injected callable into `PatienceTracker`; the LLM/context wiring stays in
+`bot.py` so the processor remains transport-free and unit-testable.
+
+1. `prompts.py` — per-reason guidance dict + universal anti-fabrication
+   constraint + single-shot generation template (classifier-style: persona +
+   charter + reason guidance + transcript-in-tags + constraint).
+2. `pipeline/exit_line_generator.py` — `generate_exit_line(...)` mirroring
+   `llm_warmup.py` (standalone time-boxed httpx, never raises, returns `None`
+   on any failure/empty-transcript) + transcript normalize + ≤2-sentence /
+   quote-strip validation.
+3. `config.py` — `hangup_line_generation: bool = True` (`HANGUP_LINE_GENERATION`).
+4. `patience_tracker.py` — `hang_up_line_generator` kwarg + `_resolve_exit_line`
+   helper (logs `source=generated|fallback latency_ms=…`, never raises); wired
+   into `_run_hang_up` (all 4 reasons, AFTER the noisy-env InterruptionFrame)
+   and `_emit_patience_warning` (`patience_warning` variant).
+5. `bot.py` — build the generator closure (captures `context`/`settings`/bare
+   persona/charter; reads `context.get_messages()` live) gated on the toggle;
+   thread it into `PatienceTracker`.
 
 ### Completion Notes List
-_(to be filled by dev)_
+- **AC1** — exit line generated from the real transcript via the injected
+  closure reading `context.get_messages()` at hang-up time; charter + persona
+  in the prompt so it stays in-voice and can't invent events.
+- **AC2** — `_resolve_exit_line` returns the canned YAML `line`/`_patience_warning_line`
+  on no-generator / `None` return / any exception → there is ALWAYS a final
+  line; generation failures logged at WARNING and swallowed (mirrors
+  `llm_warmup`).
+- **AC3** — outer `asyncio.wait_for(timeout=1.5s)` + inner httpx `1.3s`;
+  `_truncate_to_sentences` caps to 2 sentences; `max_tokens=80`. Generation
+  runs before the TTS push, so it adds ≤1.5s ahead of the line and does NOT
+  eat into the 6s `_HANG_UP_TTS_TIMEOUT_SECONDS` BotStoppedSpeaking wait.
+- **AC4** — 5 reason-keyed guidances (`character_hung_up` covers silence +
+  meter-zero; `inappropriate_content`; `noisy_environment`; `survived`;
+  `patience_warning`). Both `_run_hang_up` and `_emit_patience_warning` route
+  through the same generator. Tests assert the correct reason is passed per
+  path.
+- **AC5** — enforced via the `EXIT_LINE_CONSTRAINT` anti-fabrication clause
+  ("do NOT invent … do NOT accuse the user of changing their story … unless
+  they genuinely gave conflicting answers") + the `COHERENCE_CHARTER`, both
+  proven present in the composed prompt by `test_prompt_includes_persona_charter_transcript_and_anti_fabrication`.
+  The *behavioral* half (the cop no longer says "3 versions" on a clean
+  transcript) is intentionally a SMOKE-GATE check (AC10) — it can't be unit-
+  tested without a live LLM, which AC8 forbids; same convention as the
+  classifier's principle-text tests.
+- **AC6** — for `noisy_environment` the `InterruptionFrame` is pushed first,
+  THEN generation, THEN the line; regression test asserts `interrupt_idx <
+  line_idx`.
+- **AC7** — `HANGUP_LINE_GENERATION` env toggle (default ON; `=0` injects
+  `None` → canned lines, no logic redeploy); `hangup_line source=…
+  latency_ms=…` logged at the substitution point + a `hang_up_line_generation=`
+  init log.
+- **AC8** — all tests mocked (httpx `MockTransport` factory); no live LLM call
+  in `pytest`.
+- **AC9** — `ruff check .` clean, `ruff format --check .` clean (89 files),
+  `pytest` **601 passed** (warmed sandbox).
+- **AC10** — Walid-owned device smoke gate (see `## Smoke Test Gate`),
+  pending; `review → done` follows per Story 6.5 D6.
+- **Known characteristic (not a defect):** on the `survived` path the terminal
+  user turn is suppressed by CheckpointManager (Deviation #7) so it is NOT in
+  `context.get_messages()` — the survived line is generated from the
+  conversation up to (not including) the final winning turn. Acceptable; prior
+  context is still rich. Flagged for the smoke-gate `survived` spot-check.
+- **Deviation #1 untouched** — the generated line is text only; the
+  `survival_pct` envelope math (100 for survived, meter-ratio otherwise) is
+  unchanged (asserted in `test_generator_receives_survived_reason_on_completion`).
 
 ### File List
-_(to be filled by dev)_
+- `server/pipeline/exit_line_generator.py` — **NEW** (generator helper).
+- `server/pipeline/prompts.py` — added `EXIT_LINE_REASON_GUIDANCE`,
+  `EXIT_LINE_GUIDANCE_DEFAULT`, `EXIT_LINE_CONSTRAINT`,
+  `EXIT_LINE_GENERATION_PROMPT`.
+- `server/config.py` — added `hangup_line_generation` field.
+- `server/pipeline/patience_tracker.py` — `hang_up_line_generator` kwarg +
+  `_resolve_exit_line` + `_REASON_PATIENCE_WARNING` + wiring into
+  `_run_hang_up` / `_emit_patience_warning` + `time`/`Awaitable` imports +
+  init log.
+- `server/pipeline/bot.py` — import `generate_exit_line`; `exit_line_persona`;
+  toggle-gated generator closure; `hang_up_line_generator=` thread into
+  `PatienceTracker`.
+- `server/tests/test_exit_line_generator.py` — **NEW** (16 tests).
+- `server/tests/test_patience_tracker.py` — +9 generation tests.
+- `server/tests/test_bot_pipeline_wiring.py` — +1 wiring test.
+- `server/tests/test_config.py` — +2 toggle tests.
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — status flips.
 
 ## Change Log
+- 2026-06-03 — `/bmad-dev-story` COMPLETE (`in-progress` → `review`). Dynamic
+  in-character exit + patience-warning line generation: new
+  `pipeline/exit_line_generator.py` (mirrors `llm_warmup` — standalone,
+  time-boxed ≤1.5s, never raises) fed from the live transcript + reason +
+  persona + `COHERENCE_CHARTER`; canned YAML `exit_lines` kept as the
+  guaranteed fallback. Wired into `PatienceTracker._run_hang_up` (4 reasons)
+  + `_emit_patience_warning` via an injected `hang_up_line_generator` callable
+  built in `bot.py`. `HANGUP_LINE_GENERATION` kill-switch (default ON).
+  Server-only; difficulty unchanged. Gates: ruff clean + pytest 601. Smoke
+  gate (AC10) reserved for Walid (Story 6.5 D6).
 - 2026-06-03 — Decisions RESOLVED (Walid): generation BLOCKING ~1.5s + canned fallback; patience-warning dynamic too; default ON; `survived` line also dynamic (all reasons generated). Spec final, ready for `/bmad-dev-story`.
 - 2026-06-03 — Spec drafted via `/bmad-create-story` (parallel research workflow). Triggered by cop call_id=212 hardcoded-exit-line incoherence. Server-only coherence story; difficulty unchanged (the selector is Story 6.19).
