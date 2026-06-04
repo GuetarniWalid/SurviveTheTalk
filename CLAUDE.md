@@ -12,6 +12,16 @@ Do **not** pre-emptively hand a runnable command to Walid "to be safe." If you c
 
 This explicitly retires the old habit of deferring the full server `pytest` to Walid: that was based on a stale "sandbox livekit import hang" note. The full suite runs fine in-sandbox once warmed (**574 passed, verified 2026-06-03**); see `memory/feedback_sandbox_livekit_import_hang.md` (cold-start Defender-scan quirk only — warm once with `import aiohttp`, then run).
 
+## Voice Smoke Tests — always hand Walid a ready-to-play script
+
+**RULE (Walid 2026-06-04): whenever a change needs Walid to run a voice test himself (Pixel 9 smoke gate, on-device call, any live mic test), you MUST proactively hand him a ready-to-play script BEFORE he calls — never make him improvise or think up what to say.** Walid wants to just read lines and watch, not design the test. Every single time, provide:
+
+1. **Which scenario to open** (exact name as it appears in the app).
+2. **The exact lines to say, turn by turn, in order** — verbatim phrases he reads aloud, each one engineered to exercise the specific behaviour under test (e.g. to validate a given checkpoint, or to trigger the exact edge case the change is about — out-of-order crediting, a hang-up, a redirect, etc.).
+3. **The approximate response to expect** after each line (the gist of what the character should say) **+ what to watch on the HUD** (which checkpoint should tick, whether the on-screen step moves or holds). Say plainly that responses are approximate — it is a live LLM, not 100% deterministic; the goal is a no-think replay, not an exact prediction.
+
+Call out the **"money" moment** explicitly — the one turn where the behaviour the change is about actually happens — so Walid knows exactly what to look for. Keep it copy-pasteable and minimal. This applies on top of the smoke-gate analysis-mode rule (`memory/feedback_smoke_gate_analysis_mode.md`): hand the script first, then stay silent during the call and compile one report at the end.
+
 ## Git Commit Messages
 
 **IMPORTANT**: Do NOT add "Co-Authored-By" lines to any commits in this project.
