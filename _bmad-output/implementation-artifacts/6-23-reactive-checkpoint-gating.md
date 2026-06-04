@@ -1,0 +1,175 @@
+# Story 6.23: Reactive-checkpoint precondition gating (stop out-of-context crediting)
+
+Status: ready-for-dev
+
+> **Design-surfaced story (drafted via a 9-agent design workflow, 2026-06-04).** Motivated by the Story 6.21 smoke gate (cop call_id=222): a far-later **trap** checkpoint (`correct_misquoted_time`) was credited at turn 3 by a bare "actually + a time" alibi, before the trap was ever played. We hand-patched that one beat's criteria — but Walid correctly flagged that the *manual, per-beat* patch does not scale: the same **class** recurs for every reactive beat (the cop scenario alone has ~7-10) and every future builder-generated scenario. This story makes the class **structurally impossible**, not patched case-by-case.
+>
+> **Recommended approach (one concept):** a checkpoint may declare `requires: <prior_checkpoint_id>`. A beat with `requires` is **reactive** and is simply *not eligible to be judged/credited* until the required beat is `met`. No `requires` = **proactive** = today's any-order behaviour, byte-for-byte. The guarantee lives in the engine (one pure helper at the single crediting choke point), the taxonomy lives as data in YAML, the proof lives in the golden net, and the builder auto-populates the field. **Decisions RESOLVED 2026-06-04 (Walid): all 6 → option A (the recommendations). Story is decision-complete → ready for `/bmad-dev-story` (see `## Design Decisions`).**
+
+## Story
+
+As the learner,
+I want each scenario beat to be credited **only when it actually happens in context** — so a trap, reveal, or circle-back can never be ticked off before the character has even played it —
+so that my on-screen progress and my met/total score honestly reflect what I demonstrated, and the hard "gotcha" beats still land later as designed instead of being silently dead.
+
+(Process angle, for the author/maintainer: I want this guaranteed by the engine + validated automatically, so that I never have to hand-patch criteria beat-by-beat to stop premature crediting.)
+
+## Background
+
+**The bug class.** The goal-based engine (Story 6.10) judges **every** pending checkpoint against **every** user turn, independently and any-order, using each beat's `success_criteria` **text alone** (`checkpoint_manager.py` `_classify_and_flip_goals` passes `{id, success_criteria}` per pending goal to `classify_multi`; `advance_goals` flips any beat whose verdict is `True`, regardless of position). That any-order design is **correct and intentional for PROACTIVE beats** — information the learner may truthfully volunteer at any time (give your name, state your alibi). But many beats are **REACTIVE**: they only make sense as a *response* to a specific prior **character** action (a misquote trap, a named-associate confrontation, an inside-handle reveal, a circle-back recall, a go-silent draw, a cited CCTV timestamp). When a reactive beat's `success_criteria` is written as a self-contained **lexical** pattern that does not encode its precondition, an unrelated earlier turn that superficially matches credits it **prematurely**.
+
+**The live incident (cop_interrogation_01, call_id=222).** The learner's turn-3 alibi *"actually at half past 8… at Jos's diner on 5th Avenue"* correctly credited the proactive `state_where_at_830` (CP5) — but **also** falsely credited the far-later trap `correct_misquoted_time` (CP9), whose criteria was a bare *"correction marker ('actually', 'no I said') + a time"*. No misquote had been delivered, so the trap fired **before it existed**; it is now permanently dead when Mercer later springs it, and the met-set misrepresents what the learner demonstrated.
+
+**Why a process fix, not another patch.** We tightened CP9's prose to require a real prior misquote. But the prose approach is brittle: it relies on the judge inferring from `last_character_line` (the **single** most recent assistant line) whether a trap fired several turns back — which it usually cannot see. `cop_interrogation_01` alone has ~7-10 reactive beats exposed to this exact class, and the problem **scales linearly** with every future builder-generated multi-trap scenario. Walid: *"c'est trop manuel et isolé… il faut un process qui fait que ça ne se répète plus."*
+
+**The key reframing.** Not all checkpoints are equal. **Proactive** beats stay fully any-order (preserving the 6.10 win). **Reactive** beats have a real ordering dependency on a character action — and a reactive beat *literally cannot occur before its trigger*, so gating it removes nothing legitimate and does **not** re-impose ordering on proactive beats.
+
+## Design Decisions (RESOLVED 2026-06-04 — Walid: all 6 = option A)
+
+**Recommended approach — a layered fix anchored on ONE new concept (`requires`), enforced structurally at runtime:**
+
+- **Keystone — runtime trigger gate (engine + data model).** Add one optional checkpoint field `requires: <prior_checkpoint_id>`. A beat is **reactive iff** it carries a `requires` edge; absence == **proactive** == today's behaviour byte-for-byte. Introduce a tiny module-level **pure** helper `judgeable_goals(checkpoints, goals_state) -> list[dict]` returning pending checkpoints whose `requires` id (if any) is already `met`. In `_classify_and_flip_goals`, change the single line that builds the judge payload from `pending = self.pending_goals` to `pending = judgeable_goals(...)`. A gated reactive beat is **never in the judge payload**, so it **cannot flip** — the guarantee is **structural and upstream of the LLM**, immune to criteria wording. `advance_goals` (the frozen pure flip rule shared verbatim with the Story 6.15 harness) stays **untouched** — the gate lives in the *selection of what to judge*, not in the flip rule.
+- **Keep the UN-gated `pending_goals`** driving the character steering prompt + the terminal-turn count: the character should still *pursue* a reactive beat (it is the one that delivers the trigger), and a gated beat stays pending so the call can't complete with an un-sprung trap.
+- **Layer 2 — golden-net premature-credit assertion (cheap, NON-LLM).** For each beat with `requires`, the calibration engine asserts (pure function over the gate, no extra classify calls) that it is **not** in `judgeable_goals` until its required beat is met. Bump `ENGINE_VERSION` so the ledger force-revalidates every scenario and surfaces any reactive-but-ungated beat already shipped.
+- **Layer 3 — builder auto-populates `requires` (light).** The DRAFT LLM already has the time-ordered arc; add ONE rule to `CHECKPOINTS_PROMPT` and stop `sanitize_checkpoints` from dropping the key, so generated scenarios emit `requires` for free (human-confirmed). **Do NOT** add a 4th critique mode or a bare-marker lint as gating machinery in v1 — the runtime gate makes loose criteria *safe*, so the lint is redundant for correctness (it can be a later advisory warning).
+- **Discipline — loader fail-fast.** The loader rejects a `requires` pointing at a non-existent or non-earlier (cyclic) id, at call init — same posture as the existing duplicate-id guard.
+
+**Why this is the most elegant.** It fixes the **cause** (a category error in the data model: the engine treated a reactive beat as proactive because the model had no way to say *"this beat is a RESPONSE"*) with one concept and one changed hot-path line. The other sites all fight downstream of that missing concept. The `requires` gate makes *"a reactive beat cannot be credited before its trigger"* a hard property of the crediting path, immune to wording. It is **backward-compatible** (no `requires` = identical code path; all 5 simple scenarios + every proactive beat untouched), **faithful to 6.10 any-order**, and it **inverts the maintenance burden** — net authoring text goes **down**, because the brittle *"PASS only AFTER Mercer has ALREADY…"* clauses get **deleted** and replaced by one structural edge the loader validates.
+
+### Decisions — RESOLVED 2026-06-04 (Walid chose option A on all six; the recommendations below ARE the decisions)
+
+1. **WHERE the guarantee lives — runtime gate vs author-time prose.** (A) Structural `requires` gate in the engine **[RECOMMENDED]**; or (B) keep encoding preconditions in `success_criteria` prose + a builder lint. → **A.** B is judge-dependent and blind to traps beyond the single `last_character_line`; A is wording-immune and lets criteria get *simpler*. The hand-patches are the fragile status quo we are retiring.
+2. **SCOPE of `requires` value — single id vs list/OR now.** (A) Ship single-id (AND-able later as a list) **[RECOMMENDED]**; or (B) build the OR-grammar up front. → **A.** Single-id covers every current at-risk beat; gating `answer_biggest_hole` on the single CCTV beat is a safe, slightly-stricter approximation. YAGNI on the grammar.
+3. **NON-CHECKPOINT triggers — build `requires_action` now vs defer.** (A) Defer (Phase 2) **[RECOMMENDED]**; or (B) add a character-action signal (a steering-prompt marker read off `last_character_line`) in v1. → **A.** In this catalogue every trigger is itself a credited checkpoint, so Phase 1 is complete.
+4. **BUILDER enforcement — light vs also-gating-lint.** (A) Light builder (emit `requires`, un-drop the key) + rely on the runtime gate + golden assertion **[RECOMMENDED]**; or (B) also add the deterministic bare-marker lint + a 4th critique mode as build **blockers**. → **A.** Once the engine gate makes loose criteria safe, the lint is redundant for correctness and risks false positives on legitimate proactive criteria.
+5. **"Trigger MET" vs "trigger DELIVERED" gap.** The required beat must be **credited**, not merely **delivered** — the character may spring a trap on a turn where the learner doesn't satisfy the trigger beat's own criteria, leaving the reactive beat gated though the trap is on the table. (A) Accept this and point `requires` at an earlier, reliably-met beat when it bites **[RECOMMENDED]**; or (B) add a separate per-beat "delivered" flag set from the steering prompt. → **A.** In the cop arc triggers are themselves learner-response beats that get credited as the conversation advances; revisit only if a real call strands a beat.
+6. **EXISTING scenario migration — hand-add edges vs re-build.** (A) Hand-add ~7 `requires` edges to `cop_interrogation_01` and **delete the brittle prose clauses** (incl. the CP9 hand-patch) **[RECOMMENDED]**; or (B) re-run the builder to regenerate. → **A.** ~7 one-line edits, lets us verify the gate against the known incident, and the prose was already hand-patched so a regenerate buys little.
+
+## Acceptance Criteria (BDD)
+
+### AC1 — The incident, fixed
+Given `cop_interrogation_01` with `correct_misquoted_time` carrying `requires: <departure-time beat>`, when the learner's turn-3 alibi *"actually at half past 8… at Jos's diner"* is processed and the misquote trap has NOT yet been delivered/credited, then `correct_misquoted_time` is **not** in the judge payload and is **not** credited (only the proactive location beat flips).
+
+### AC2 — Trigger fires, beat becomes live
+Given the same scenario, when the required departure beat is credited and Mercer later springs the misquote, then `correct_misquoted_time` becomes judgeable and a genuine correction credits it.
+
+### AC3 — Proactive untouched (no regression)
+Given any checkpoint WITHOUT `requires`, when judged, then behaviour is **byte-identical** to pre-change (any-order preserved); all 5 simple scenarios pass unchanged.
+
+### AC4 — Golden == prod (no fork)
+Given the calibration harness, when it derives its pending set, then it uses the **same** `judgeable_goals` helper as prod, so a reactive beat gated in prod is gated in the harness.
+
+### AC5 — Loader fail-fast
+Given a `requires` pointing at a non-existent id or a later/cyclic beat, when the scenario loads, then it raises at call init with a clear message (like the duplicate-id guard).
+
+### AC6 — Golden assertion + recurrence sweep
+Given a scenario with a `requires` beat, when `calibrate_scenario --golden-only` runs, then it asserts that beat is un-judgeable until its trigger is met and FAILs if not; the `ENGINE_VERSION` bump forces a full catalogue re-sweep (surfacing any reactive-but-ungated beat already shipped).
+
+### AC7 — Criteria simplification
+Given `correct_misquoted_time`, when its prose precondition is **reverted** to a clean lexical test, then AC1/AC2 still hold (the engine, not the prose, holds the precondition).
+
+### AC8 — No stranded call
+Given a reactive beat that is never triggered, when the call would otherwise complete, then the gated beat keeps the call from completing only as designed (terminal-turn count still includes it), and there is no regression in normal completion for fully-triggered runs.
+
+### AC9 — Pure unit tests (no live LLM)
+`judgeable_goals` + the loader validation + the golden assertion are covered in `pytest` with the fake judge, **zero network**. Plus a fake-judge regression test reproducing the call_id=222 alibi and asserting CP9 does NOT credit.
+
+### AC10 — Pre-commit gates
+Server: `ruff check . && ruff format --check . && pytest` green (incl. `test_migrations` — though this story adds **no** migration). Client untouched.
+
+### AC11 — Smoke gate (device)
+On a cop call, jump to the alibi early with "actually …": CP9 must NOT tick at that turn; later, once the misquote trap is genuinely sprung + answered, the beat ticks. See `## Smoke Test Gate`.
+
+## Tasks / Subtasks
+
+- [ ] **T1 — Engine gate.** Add module-level pure `judgeable_goals(checkpoints, goals_state)` in `checkpoint_manager.py`; switch the judge-payload line in `_classify_and_flip_goals` to use it. Leave `advance_goals` and `pending_goals` (prompt/terminal-count) **untouched**. Unit-test the helper (gated / un-gated / no-`requires`).
+- [ ] **T2 — Harness mirror (the load-bearing coupling).** Adopt the **same** `judgeable_goals` at the harness pending-derivation site (`calibration_engine.py` ~`:586`) so golden == prod. Add a parity test.
+- [ ] **T3 — Loader validation.** Add optional-field validation in `scenarios.py` (existence + earlier-in-author-order / acyclic); raise on malformed. Unit-test pass/fail. Add `requires` to the checkpoint loader projection so it reaches the runtime.
+- [ ] **T4 — Data (cop scenario migration).** Add `requires` edges to the ~7 reactive beats in `cop-interrogation-01.yaml`; **revert** `correct_misquoted_time` (and the other hand-patched beats) to clean lexical criteria now that the engine holds the precondition.
+- [ ] **T5 — Golden net.** Add the pure premature-credit assertion over `requires`; add `requires` to `compute_scenario_hash`'s per-checkpoint projection; bump `ENGINE_VERSION`; run a `--golden-only` sweep.
+- [ ] **T6 — Builder.** Add one `CHECKPOINTS_PROMPT` rule to emit `requires` for reactive beats; stop `sanitize_checkpoints` dropping it; thread through `assemble_scenario` (verbatim). Fake-LLM unit test: a reactive draft emits a `requires`, a proactive one omits it.
+- [ ] **T7 — Docs.** Add a `server/CLAUDE.md` §6 note + a memory entry on reactive-beat gating.
+- [ ] **T8 — Verify + smoke gate.** Full `pytest` green; targeted `calibrate_scenario cop_interrogation_01 --golden-only`; Pixel 9 smoke gate (AC11).
+
+## Dev Notes
+
+**The one-concept data model (backward-compatible, additive, YAML-only — no DB/migration):**
+```yaml
+- id: correct_misquoted_time
+  requires: lock_arrival_and_departure   # NEW optional field: this beat is REACTIVE,
+  hint_text: ...                         #   gated until lock_arrival_and_departure is met.
+  prompt_segment: ...
+  success_criteria: ...                  # can now be a CLEAN lexical test again
+```
+Field absent ⇒ proactive ⇒ unchanged. The field's **mere presence is the taxonomy** — no `beat_type` enum, no free-prose `precondition`, no `requires_action`.
+
+**Proposed cop edges (illustrative — dev to finalise against the YAML; decision 5 may nudge a target to an earlier reliably-met beat):**
+| reactive beat | `requires` |
+|---|---|
+| `correct_misquoted_time` | `lock_arrival_and_departure` |
+| `address_named_associate` | `deny_knowing_crew` |
+| `explain_prints_on_inside_handle` | `react_to_fingerprint_accusation` |
+| `elaborate_through_silence` | `explain_prints_on_inside_handle` |
+| `reconcile_cctv_timestamp` | `deny_grey_hood_witness` |
+| `hold_consistency_on_recall` | `name_who_was_with_them` |
+| `answer_biggest_hole` | `reconcile_cctv_timestamp` (single-id approximation of "CCTV gap OR door-touch") |
+
+**Code references (verify line numbers — from the design-workflow code map):**
+- `server/pipeline/checkpoint_manager.py` — `_classify_and_flip_goals` builds the judge payload from `pending_goals` (the single line to switch, ~`:733`); `advance_goals` is the **frozen** pure flip rule shared with the harness (**do NOT touch**); `pending_goals` property (~`:464`) stays for the character prompt; terminal-turn count (~`:533`); `_last_character_line` (~`:976`) is the single most-recent assistant line (why prose preconditions are blind to older traps).
+- `server/pipeline/exchange_classifier.py` — `classify_multi`; `server/pipeline/prompts.py` — `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.
+- `server/pipeline/scenarios.py` — checkpoint loader + `required` field tuple + the duplicate-id fail-fast guard (~`:435`) to mirror for the `requires` validation.
+- `server/scripts/calibration_engine.py` — **harness pending derivation (~`:586`) MUST adopt `judgeable_goals` (golden==prod, the load-bearing coupling)**; `run_golden` (off-topic seed ~`:700-716`, `:787`); `compute_scenario_hash` per-checkpoint projection (~`:1201`); `ENGINE_VERSION` (currently `1` → bump).
+- `server/scripts/scenario_builder.py` — `CHECKPOINTS_PROMPT` (~`:192`); `sanitize_checkpoints` (~`:331`, the **whitelist that silently drops new keys** — the load-bearing builder edit); `CRITIQUE_PROMPT` (~`:216`, note its mode-2 *circularity* pass actively launders ordering dependencies OUT — must EXEMPT reactive beats); `validate_structure` (~`:554`); `assemble_scenario` (~`:484`).
+
+**Reuse / do-not-reinvent:**
+- The `judgeable_goals` helper is the **same idiom** as `advance_goals`: a module-level pure function shared verbatim by prod and the Story 6.15 harness. The gate is in the **selection** of what to judge, NOT in the flip rule — so the "harness does NOT re-implement the advance rule" contract holds.
+- The loader `requires` validation mirrors the existing duplicate-id fail-fast (same posture, same place).
+
+**Gotchas (do NOT trip these):**
+- **Golden==prod fork is the #1 risk.** If `calibration_engine.py` is not updated to the shared `judgeable_goals`, gated beats are judged in validation but not prod (false-green). Extract ONE helper, adopt at BOTH call sites, add a parity test.
+- **Ship engine + loader + golden + data together (T1–T5) in one commit.** A YAML `requires` field the runtime ignores is *worse* than none (false confidence). The builder (T6) is additive and safe to land in the same change.
+- **Do NOT touch `advance_goals`** — the pure flip rule and its golden==prod contract stay byte-for-byte.
+- **The builder's CRITIQUE_PROMPT (mode 2) currently rewrites "any-order" dependencies away** — this is plausibly how CP9 became a standalone lexical test. The new builder rule must EXEMPT reactive beats from "make it any-order."
+
+### Project Structure Notes
+- Server-only (engine + loader + calibration + builder + cop YAML). **No DB migration** (additive YAML field). Client untouched (HUD already renders met-set; gating only changes *when* a beat enters that set).
+- Not in `epics.md` — design-surfaced story (same path as 6.18–6.22).
+
+### Non-goals (explicit)
+- Do **NOT** re-impose ordering on PROACTIVE beats — Story 6.10 any-order is preserved verbatim; only beats with an explicit `requires` are gated.
+- Do **NOT** undo Story 6.21 character-enforced pursuit (that steers what the character *asks*; this gates only what gets *credited*).
+- Do **NOT** add the heavy author-time machinery (4th critique mode + gating bare-marker lint) in v1.
+- Do **NOT** build `requires_action` (non-checkpoint triggers), list/OR grammar, or a "delivered" flag now — all YAGNI for the current catalogue.
+
+## References
+- [Source: Story 6.21 smoke gate, cop call_id=222 — the live CP9 premature-credit incident + the manual hand-patch this story systematises]
+- [Source: Story 6.10 `6-10-goal-based-dialogue.md` — the any-order crediting this story preserves for proactive beats]
+- [Source: Story 6.15 `6-15-automated-scenario-calibration-harness.md` — the golden net + the `advance_goals`/`compose` golden==prod sharing idiom this story mirrors]
+- [Source: Story 6.16/6.17 scenario builder — the author-time layer that auto-populates `requires`]
+- [Source: design workflow 2026-06-04 — 4-reader code map + 4-approach panel + synthesis]
+
+## Smoke Test Gate (Server / Deploy Story)
+
+- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
+- [ ] **Premature-credit blocked (the incident):** on the cop scenario, give the alibi early starting with "actually at half past 8 …". The trap beat `correct_misquoted_time` must **NOT** tick at that turn. _Proof:_ device + `journalctl … | grep checkpoint_advanced` shows NO `index=<CP9>` at the alibi turn.
+- [ ] **Trap still lands later:** once Mercer genuinely springs the misquote (repeats your departure time distorted) and you correct him, the beat **does** tick.
+- [ ] **Proactive unchanged:** an ordinary in-order run + an out-of-order proactive volunteer (e.g. alibi before the break-in) behave exactly as in Story 6.21 (out-of-order credit + return-to-skipped-beat intact).
+- [ ] **No stranded completion:** a fully-triggered run can still reach `survived`.
+- [ ] **Server logs clean** on the happy path.
+
+## Dev Agent Record
+
+### Agent Model Used
+_(to be filled by dev)_
+
+### Debug Log References
+
+### Completion Notes List
+_(to be filled by dev)_
+
+### File List
+_(to be filled by dev)_
+
+## Change Log
+- 2026-06-04 — **Decisions RESOLVED (Walid): all 6 → option A** — engine-side `requires` gate (D1), single-id value (D2), defer non-checkpoint triggers (D3), light builder + no gating lint (D4), point `requires` at a reliably-met beat (D5), hand-add cop edges + delete prose preconditions (D6). Story is decision-complete → ready for `/bmad-dev-story`.
+- 2026-06-04 — Drafted via a 9-agent design workflow (4-reader code map of builder/golden-net/engine + survey of at-risk beats → 4-approach panel → architect synthesis). Recommended approach: a single optional `requires` precondition edge, enforced structurally at the engine's crediting choke point (`judgeable_goals`), proven by the golden net (`ENGINE_VERSION` bump), auto-populated by the builder; `advance_goals` and proactive any-order untouched. 6 open decisions documented with recommendations — Walid to confirm the approach before `/bmad-dev-story`.
