@@ -1,6 +1,6 @@
 # Story 6.15: Automated Scenario Calibration Harness (text-driven + AI agents)
 
-Status: review
+Status: done
 
 ## Story
 

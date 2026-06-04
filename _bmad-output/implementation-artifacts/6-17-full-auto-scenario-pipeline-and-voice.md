@@ -1,6 +1,6 @@
 # Story 6.17: Full-auto scenario pipeline + per-scenario voice (incl. accent)
 
-Status: review
+Status: done
 
 ## Story
 

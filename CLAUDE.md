@@ -78,6 +78,22 @@ All three must pass with zero issues.
 
 **The rule**: Only commit if all applicable checks pass completely.
 
+## Sprint-Status — `review → done` Flip Discipline
+
+**RULE (Walid 2026-06-04): a fully-reviewed story must NEVER rot in `review`. The smoke gate stays a real blocker, but the flip is mandatory the instant it clears.**
+
+The convention (Story 6.5 D6) is that `review → done` is gated on Walid's on-device **Pixel 9 smoke gate**, not on the code review finishing. That is why code reviews leave stories in `review`. Keep that gate — but enforce these two non-negotiable halves so stories stop accumulating:
+
+1. **At the END of every code review** (all findings resolved + all automated gates green), if a Pixel 9 smoke gate is still owed, the story STAYS `review` — and the review summary MUST end with an explicit, one-line callout: *"Story X is review-complete; it is now waiting ONLY on your Pixel 9 smoke gate for the `review → done` flip."* Never finish a review silently leaving the status ambiguous.
+
+2. **The MOMENT Walid validates (or explicitly waives) the smoke gate**, the `review → done` flip is **mandatory and immediate**, in the SAME turn, in BOTH places:
+   - `sprint-status.yaml` (the story's status line), AND
+   - the story file's own `Status:` field.
+
+   "Walid says it passed / looks good / ship it / passe-la en done" IS the smoke-gate sign-off — flip immediately, do not wait to be asked twice.
+
+**Corollary — never re-propose a cleared story.** If you ever find a story in `review` whose smoke gate Walid has already signed off (or that he tells you to treat as done), flip it to `done` right away and do NOT surface it as a review target. A `review` status that has already been reviewed + smoke-validated is a bookkeeping bug, not a pending review.
+
 ## Database Migrations — Test Against Production Shape
 
 **CRITICAL RULE**: A test that passes on an empty DB says nothing about production. Any new file under `server/db/migrations/` must keep `tests/test_migrations.py` green — that test replays migrations against `tests/fixtures/prod_snapshot.sqlite` (a sanitised copy of the live VPS DB) and asserts no FK / CHECK / integrity violations. This is the active enforcement layer; `pytest` will fail if you ship a migration that crashes against the real prod shape.

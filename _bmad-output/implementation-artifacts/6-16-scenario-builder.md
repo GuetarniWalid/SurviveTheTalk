@@ -1,6 +1,6 @@
 # Story 6.16: Scenario Builder (fuzzy description → complete validated scenario)
 
-Status: review
+Status: done
 
 ## Story
 
