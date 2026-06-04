@@ -1392,8 +1392,9 @@ def test_envelope_carries_goals_met_indices() -> None:
 
 
 def test_suggested_focus_is_first_pending_in_author_order() -> None:
-    """AC4 — even after an out-of-order flip, the suggested-focus hint +
-    block stay anchored to the author-order-first remaining goal."""
+    """AC1/AC2 (Story 6.21) — even after an out-of-order flip, the
+    suggested-focus block FIRMLY anchors on the author-order-first remaining
+    goal, and the credited-ahead goal drops out of the pursued blocks."""
     checkpoints = _make_checkpoints(4)
 
     def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
@@ -1422,7 +1423,55 @@ def test_suggested_focus_is_first_pending_in_author_order() -> None:
     # the just-flipped cp2.
     assert envelopes[0].message["data"]["next_hint"] == "hint 0"
     si = stub_llm._settings.system_instruction
-    assert "The natural next focus is: prompt segment 0" in si
+    # Story 6.21 — the focus block firmly names the lowest-unmet objective
+    # (cp0) as the only one to pursue next, holding the line until addressed.
+    assert "the only objective you may pursue is: prompt segment 0" in si
+    assert "do not move on" in si
+    # AC2 — cp2 was credited out of order, so it has dropped out of the
+    # pursued/remaining blocks: the character will not re-ask it.
+    assert "prompt segment 2" not in si
+
+
+def test_ordered_pursuit_framing_in_every_system_instruction_swap() -> None:
+    """Story 6.21 AC1 — every recomposed system instruction (init + each
+    flip) carries the FIRM ordered-pursuit framing: work through objectives
+    in author order, hold on the lowest-unmet one until addressed, defer
+    "do not re-ask" to the charter, stay in-character (not robotic), and
+    NAME the current pending_goals[0]."""
+    checkpoints = _make_checkpoints(3)
+    manager, _classifier, _tracker, stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        classify_responses=[True],
+        coherence_charter="CHARTER.",
+    )
+    _capture_pushed(manager)
+
+    def _assert_ordered_framing(si: str, expected_segment: str) -> None:
+        assert "in the exact order" in si  # strict author-order pursuit
+        assert "do not move on" in si  # no-advance-until-addressed hold
+        # acknowledge-then-redirect, anti-robotic (patience/loop gotcha)
+        assert "word-for-word repeated refusal" in si
+        # anti-repetition deferred to the charter, not re-implemented here
+        assert "already settled" in si
+        # smoke-gate hardening (call 221): one ask per turn, no later-objective probes
+        assert "EXACTLY ONE ask this turn" in si
+        # names the current lowest-unmet objective
+        assert f"the only objective you may pursue is: {expected_segment}" in si
+
+    # Init-time composition: lowest unmet is cp0.
+    _assert_ordered_framing(stub_llm._settings.system_instruction, "prompt segment 0")
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        # cp0 met → lowest unmet is now cp1; the framing follows it.
+        _assert_ordered_framing(
+            stub_llm._settings.system_instruction, "prompt segment 1"
+        )
+
+    _run(_drive())
 
 
 def test_pending_goals_property_preserves_author_order() -> None:

@@ -53,7 +53,7 @@ checkpoints:
 - id: respond_to_break_in_news
   hint_text: Say whether you've heard about the Halloran's Electronics break-in on Carver Street.
   prompt_segment: Tell the learner there was a break-in at Halloran's Electronics on Carver Street last night and ask whether they have heard anything about it.
-  success_criteria: PASS if the turn states a clear yes or no about whether the learner had previously heard of THIS specific Halloran's / Carver Street break-in. FAIL on a generic reaction (surprise, 'that's terrible') that never states whether they had heard of the incident.
+  success_criteria: PASS if the turn states a clear yes or no about whether the learner had previously heard of the Halloran's / Carver Street break-in. A clear yes or no given in direct response to Mercer having just named the break-in counts as referring to THIS incident even if the learner says only 'a break-in' or 'it' — judge by the conversational reference, not by whether they repeat 'Halloran's' or 'Carver Street'. FAIL on a generic reaction (surprise, 'that's terrible') that never states whether they had heard of the incident.
 - id: react_to_fingerprint_accusation
   hint_text: Respond to the claim that your fingerprints were at the scene — deny involvement, stay calm.
   prompt_segment: 'Deliver the accusation that the learner''s fingerprints were found at the crime scene and ask them to react. Do NOT reveal where exactly the prints were yet — say ''we''ll get to the details'' if they push, and demand only: were you involved? Press for a reaction.'

@@ -6,9 +6,18 @@ state machine into a goal-tracking engine** (see
 advances 0→1→2→…, the manager owns `self._goals: dict[id, "pending" |
 "met"]` and judges each finalized user turn against ALL pending
 objectives in one `ExchangeClassifier.classify_multi` call. A turn that
-meets ANY pending objective (in any order) is a success; the LLM is free
-to pursue objectives in the order it finds natural, and the system
-simply tracks which ones are achieved.
+meets ANY pending objective is credited as a success in ANY order
+(anti-repetition: a credited-ahead goal drops out of the pending set, so
+the character never re-asks it). **Story 6.21** then makes the character
+PURSUE the remaining objectives strictly in AUTHOR ORDER — after
+acknowledging what the user gave, it returns to the lowest-unmet
+objective and holds there (firm but in-character) instead of roaming
+ahead, so the on-screen step always matches what the character asks. This
+is a STEERING-prompt change only (`format_suggested_focus_block` /
+`format_remaining_goals_block`); the classifier crediting stays
+any-order, so it does NOT re-introduce the strict-classifier unfair-fail
+that Story 6.10 removed (see below). The system tracks which objectives
+are achieved.
 
 Why the shift (call_id=137, 2026-05-20): LLMs are trained on naturally-
 fluid conversation. A state machine that forces a strict question order
@@ -22,7 +31,8 @@ how the LLM actually reasons.
 On a successful turn the manager recomposes the live LLM system
 instruction (`base_prompt + COHERENCE_CHARTER + REMAINING_GOALS_BLOCK +
 SUGGESTED_FOCUS_BLOCK`) so the next bot turn sees the smaller pending set
-plus a soft pointer to the author-order-first remaining objective. After
+plus a FIRM pointer that holds the character on the author-order-first
+remaining objective until it is addressed (Story 6.21). After
 ALL goals are met, routes through
 `PatienceTracker.schedule_completion(survival_pct=100)` to end the call
 with `reason='survived'` and the YAML's `exit_lines.completion` line.
@@ -127,27 +137,64 @@ _MAX_CONSECUTIVE_NONE_VERDICTS = 5
 
 
 def format_remaining_goals_block(pending_goals: list[dict]) -> str:
-    """Enumerate ALL pending objectives (author order) with their
-    `prompt_segment` text, under a goal-agnostic header. The LLM sees
-    everything that is left so it can pursue any of them naturally.
+    """Enumerate ALL pending objectives in AUTHOR ORDER, under a header
+    that tells the character to work through them strictly top-to-bottom.
+
+    Story 6.21 — the header changed from the soft "you may pursue them in
+    any order" to FIRM ordered pursuit (address the FIRST pending objective
+    before any later one). The list holds ONLY unmet objectives — a
+    credited-ahead goal has already dropped out of `pending_goals` — so the
+    "already settled has dropped off" line is a factual reminder, NOT a
+    re-ask instruction; anti-repetition is owned by the COHERENCE_CHARTER
+    (Rule 1), which sits above this block.
     """
-    lines = ["Your remaining objectives (you may pursue them in any order):"]
+    lines = [
+        "Your remaining objectives are listed in the exact order you must "
+        "work through them, top to bottom: pursue the FIRST one below before "
+        "any other, and move down only as each is covered. Anything already "
+        "settled has dropped off this list, so everything shown is still "
+        "outstanding."
+    ]
     for cp in pending_goals:
         lines.append(f"- {cp['prompt_segment'].rstrip()}")
     return "\n".join(lines)
 
 
 def format_suggested_focus_block(first_pending: dict) -> str:
-    """Soft-point the LLM at the author-order-first remaining objective
-    as "the natural next focus", while explicitly permitting it to flow
-    to another remaining objective and circle back. This preserves the
-    scenario author's intended order as a HINT, not a constraint.
+    """Firmly point the LLM at the author-order-first remaining objective
+    and hold it there until addressed — Story 6.21's core steering change.
+
+    Replaces the soft "natural next focus / circle back later" (Story 6.10)
+    with FIRM-but-FLUID ordered pursuit: the character stays on the lowest
+    unmet objective and does not advance until it is addressed, but FIRST
+    acknowledges (in character) anything the user volunteered for a later
+    objective — so the redirect never reads as a deaf, robotic loop (which
+    would also drain patience badly). "Do not re-ask settled items" is
+    deferred to the COHERENCE_CHARTER above, not re-implemented here.
+
+    Smoke-gate hardening (call_id=221): also caps the turn at ONE ask for
+    the current objective and forbids tacking on later-objective probes —
+    when the focused beat was already asked but not yet credited, the
+    character must press/rephrase THIS objective, not roam ahead to fill
+    the turn (the reply-4 forward-leak).
     """
     return (
-        "The natural next focus is: "
+        "Right now the only objective you may pursue is: "
         + first_pending["prompt_segment"].rstrip()
-        + "\nIf the conversation flows toward another remaining objective, "
-        "accept that and circle back to this one later — naturally."
+        + "\nStay on it until it is genuinely addressed, and do not move on "
+        "to anything below it yet. Raise EXACTLY ONE ask this turn — this "
+        "objective only — and never tack on questions that belong to later "
+        "objectives to round out the turn. If you have already asked this "
+        "and their answer fell short, press or rephrase THIS objective "
+        "rather than advancing. If the other person has volunteered "
+        "something that belongs to a later objective, genuinely take it in "
+        'and react in character — a quick nod, a "noted", a flicker of '
+        "interest or irritation, whatever fits you — so you never sound deaf "
+        "or stuck in a loop; then, without re-raising anything already "
+        "settled (the rules above keep you from that), ease the conversation "
+        "back to it as the thing you still need from them. Keep that pull "
+        "firm and fully in character — in your own voice and register, never "
+        "a robotic, word-for-word repeated refusal."
     )
 
 
