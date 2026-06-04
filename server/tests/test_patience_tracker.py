@@ -1925,19 +1925,26 @@ def test_schedule_noisy_environment_exit_is_idempotent(
 # ============================================================
 
 
-def _recording_gen(line: str | None, record: list[str]):
+def _recording_gen(
+    line: str | None,
+    record: list[str],
+    extra_record: list[str | None] | None = None,
+):
     """An injected hang_up_line_generator that records the reason it was
-    asked for and returns `line`."""
+    asked for (and, optionally, the `extra_user_text` it received) and
+    returns `line`."""
 
-    async def _gen(reason: str) -> str | None:
+    async def _gen(reason: str, extra_user_text: str | None = None) -> str | None:
         record.append(reason)
+        if extra_record is not None:
+            extra_record.append(extra_user_text)
         return line
 
     return _gen
 
 
 def _raising_gen():
-    async def _gen(reason: str) -> str | None:
+    async def _gen(reason: str, extra_user_text: str | None = None) -> str | None:
         raise RuntimeError("generation boom")
 
     return _gen
@@ -2101,6 +2108,73 @@ def test_generator_receives_survived_reason_on_completion(
     assert call_end[0].message["data"]["survival_pct"] == 100, (
         "Deviation #1 survival_pct math must be unchanged by the dynamic line"
     )
+
+
+def test_survived_path_threads_winning_user_turn_to_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P0 (Decision #2 / Option A) — the winning user turn passed to
+    schedule_completion is threaded to the generator as extra_user_text on the
+    survived path, so the closing line can ground on the answer that actually
+    won (the turn CheckpointManager suppresses from the LLM context,
+    Deviation #7). The pending value is cleared after consumption."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    extra: list[str | None] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_survived="CANNED survived.",
+            hang_up_line_generator=_recording_gen(
+                "Glad we got there. Take care.", record, extra
+            ),
+        )
+    )
+
+    async def _drive() -> None:
+        tracker.set_checkpoints_passed(6)
+        tracker.schedule_completion(
+            survival_pct=100, winning_user_text="Yes, the alibi checks out."
+        )
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert record == ["survived"]
+    assert extra == ["Yes, the alibi checks out."], (
+        "the survived path must hand the winning user turn to the generator"
+    )
+    assert tracker._pending_winning_user_text is None, "cleared after consumption"
+
+
+def test_non_survived_hang_up_passes_no_extra_user_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P0 — only the survived path threads a winning turn; a
+    character_hung_up (silence/meter-zero) hang-up passes extra_user_text=None
+    so no stale winning turn leaks onto another reason."""
+    _shrink_timers(monkeypatch)
+    record: list[str] = []
+    extra: list[str | None] = []
+    tracker = PatienceTracker(
+        **_fast_easy(
+            hang_up_line_silence="CANNED silence goodbye.",
+            hang_up_line_generator=_recording_gen("Done talking. Bye.", record, extra),
+        )
+    )
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert record == ["character_hung_up"]
+    assert extra == [None]
 
 
 def test_generator_receives_noisy_reason_and_interruption_precedes_line(

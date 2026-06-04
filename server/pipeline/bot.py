@@ -403,10 +403,23 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # YAML `exit_lines` with no logic redeploy (AC7) by injecting `None`.
     if settings.hangup_line_generation:
 
-        async def _generate_hang_up_line(reason: str) -> str | None:
+        async def _generate_hang_up_line(
+            reason: str, extra_user_text: str | None = None
+        ) -> str | None:
+            transcript = context.get_messages()
+            if extra_user_text:
+                # P0 (Decision #2 / Option A) — the survived path passes the
+                # winning user turn CheckpointManager suppressed from the LLM
+                # context (Deviation #7). Append it to a NEW list (never mutate
+                # the live context) so the closing line can reference the
+                # answer that actually won.
+                transcript = [
+                    *transcript,
+                    {"role": "user", "content": extra_user_text},
+                ]
             return await generate_exit_line(
                 reason=reason,
-                transcript=context.get_messages(),
+                transcript=transcript,
                 persona=exit_line_persona,
                 charter=COHERENCE_CHARTER,
                 api_key=resolve_llm_api_key(settings),

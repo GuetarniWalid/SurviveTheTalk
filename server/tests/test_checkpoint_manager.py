@@ -547,7 +547,7 @@ def test_all_goals_met_routes_to_schedule_completion() -> None:
     assert last["index"] == 1
     assert last["goals_met_indices"] == [0, 1]
 
-    tracker.schedule_completion.assert_called_with(survival_pct=100)
+    assert tracker.schedule_completion.call_args.kwargs.get("survival_pct") == 100
     tracker.set_checkpoints_passed.assert_any_call(2)
 
 
@@ -797,7 +797,14 @@ def test_preemptive_completion_suppresses_user_frame_on_last_goal() -> None:
 
     _run(_drive())
 
-    tracker.schedule_completion.assert_called_with(survival_pct=100)
+    assert tracker.schedule_completion.call_args.kwargs.get("survival_pct") == 100
+    # Story 6.18 review (Decision #2 / Option A) — the winning user turn (the
+    # one being suppressed from the LLM context) is threaded to the completion
+    # path so the survived exit line can be generated from it.
+    assert (
+        tracker.schedule_completion.call_args.kwargs.get("winning_user_text")
+        == "Thank you."
+    )
     forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
     assert forwarded == []
     # The last goal's flip emits one envelope with the full met set.
@@ -1231,7 +1238,7 @@ def test_out_of_order_goal_completion() -> None:
 
     assert manager.met_count == 4
     assert all(state == "met" for state in manager.goals_state.values())
-    tracker.schedule_completion.assert_called_with(survival_pct=100)
+    assert tracker.schedule_completion.call_args.kwargs.get("survival_pct") == 100
     # No off-topic fail along the way (every turn met a goal).
     false_calls = [
         c
@@ -1354,7 +1361,7 @@ def test_completion_fires_when_all_goals_met_via_out_of_order_path() -> None:
     _run(_drive())
 
     assert manager.met_count == 6
-    tracker.schedule_completion.assert_called_with(survival_pct=100)
+    assert tracker.schedule_completion.call_args.kwargs.get("survival_pct") == 100
 
 
 def test_envelope_carries_goals_met_indices() -> None:

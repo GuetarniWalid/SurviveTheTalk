@@ -612,9 +612,15 @@ def test_bot_wires_dynamic_exit_line_generator_into_patience_tracker() -> None:
     )
     # The closure must actually call the generator with the live transcript.
     assert "generate_exit_line(" in code
-    assert "transcript=context.get_messages()" in code, (
+    assert "context.get_messages()" in code, (
         "the generator closure must read the LIVE transcript at hang-up time "
         "so the line reflects what actually happened"
+    )
+    # Story 6.18 review (Decision #2 / Option A) — the closure must accept and
+    # append the suppressed winning user turn on the survived path.
+    assert "extra_user_text" in code, (
+        "bot.py closure must accept extra_user_text and append the winning "
+        "user turn to the transcript for the survived path"
     )
     # The callable is threaded into PatienceTracker (a missing thread would
     # silently leave the canned-line-only behaviour).

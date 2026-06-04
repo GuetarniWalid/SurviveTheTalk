@@ -36,13 +36,16 @@ from pipeline.prompts import (
     EXIT_LINE_REASON_GUIDANCE,
 )
 
-# AC3 — the hang-up sequence already budgets up to
-# `_HANG_UP_TTS_TIMEOUT_SECONDS = 6.0 s` for the exit-line TTS; the
-# generation step is time-boxed to ≤1.5 s on top so the full sequence stays
-# within budget. The inner httpx timeout sits just below the outer
-# `asyncio.wait_for` so httpx aborts FIRST with a clean HTTP error rather
-# than an opaque `asyncio.TimeoutError` (same pattern as
-# `exchange_classifier`'s 2.0 s / 1.5 s split).
+# AC3 — the generation step is independently time-boxed to ≤1.5 s and runs
+# SEQUENTIALLY BEFORE the exit-line TTS, so it is ADDITIVE to (not bounded by)
+# the `_HANG_UP_TTS_TIMEOUT_SECONDS = 6.0 s` cap, which covers only the
+# TTS-speaking phase. Worst-case pre-`call_end` wall-clock ≈ 0.5 s pre-TTS
+# delay + ≤1.5 s generation + ≤6.0 s TTS wait. The inner httpx timeout sits
+# just below the outer `asyncio.wait_for`; under normal conditions httpx
+# aborts first with a clean HTTP error, but the ~0.2 s margin is tight, so on
+# event-loop jitter / a slow connect the outer `wait_for` may win instead —
+# both paths return `None` and fall back to the canned line, so neither is
+# fatal (only the log-attributed cause differs).
 _GENERATION_TIMEOUT_SECONDS = 1.5
 _HTTP_TIMEOUT_SECONDS = 1.3
 
@@ -56,6 +59,12 @@ _MAX_TRANSCRIPT_MESSAGES = 16
 _MAX_SENTENCES = 2
 _MAX_TOKENS = 80
 
+# AC3 hard backstop — a run-on / comma-spliced line with NO internal sentence
+# terminator splits into a single part and would otherwise bypass the
+# sentence cap, so a char ceiling (~2 short sentences) trims it on a word
+# boundary. Comfortably under the 6 s TTS ceiling.
+_MAX_LINE_CHARS = 200
+
 # Mirrors `llm_provider.CHARACTER_TEMPERATURE` (0.7) so the closing line has
 # the same in-character warmth as a normal reply. Kept as a local constant
 # (not imported) so this module stays dependency-light like `llm_warmup.py`
@@ -67,10 +76,16 @@ _TEMPERATURE = 0.7
 # clause off an already-too-long line.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-# One layer of matching surrounding quotes the model may wrap the line in
-# (ASCII + smart quotes), despite the prompt asking for none.
-_OPEN_QUOTES = "\"'“‘"
-_CLOSE_QUOTES = "\"'”’"
+# Matched quote PAIRS the model may wrap the line in. ASCII double + both
+# smart-quote pairs only — the ASCII single quote `'` is DELIBERATELY excluded
+# because it is ambiguous with a content apostrophe (a leading elision like
+# 'Cause or a trailing possessive like the kids'), and stripping it would
+# mangle the line. Matched pairs (not independent open/close membership) so a
+# content apostrophe inside a double-quoted line is never touched.
+_QUOTE_PAIRS = (('"', '"'), ("“", "”"), ("‘", "’"))
+# Closing-quote glyphs used to peel a trailing sentence-final punctuation char
+# the model sometimes places OUTSIDE the closing quote (e.g. `"You're done".`).
+_CLOSE_QUOTE_CHARS = '"”’'
 
 
 def _escape_format_braces(value: str) -> str:
@@ -123,25 +138,60 @@ def _normalize_transcript(messages: list, max_messages: int) -> list[str]:
 
 
 def _truncate_to_sentences(text: str, max_sentences: int) -> str:
-    """Trim `text` to at most `max_sentences` sentences (AC3 belt-and-braces)."""
+    """Trim `text` to at most `max_sentences` sentences (AC3 belt-and-braces).
+
+    A run-on / comma-spliced line with no internal sentence terminator splits
+    into ONE part and would otherwise pass uncapped, so a hard `_MAX_LINE_CHARS`
+    backstop trims it on a word boundary to stay under the 6 s TTS ceiling.
+    """
     parts = [p for p in _SENTENCE_SPLIT_RE.split(text.strip()) if p.strip()]
-    if len(parts) <= max_sentences:
-        return text.strip()
-    return " ".join(parts[:max_sentences]).strip()
+    capped = (
+        text.strip()
+        if len(parts) <= max_sentences
+        else " ".join(parts[:max_sentences]).strip()
+    )
+    if len(capped) > _MAX_LINE_CHARS:
+        capped = (
+            capped[:_MAX_LINE_CHARS].rsplit(" ", 1)[0].rstrip(",;:- ")
+            or capped[:_MAX_LINE_CHARS]
+        )
+    return capped
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    """Strip up to a few layers of MATCHED surrounding quote pairs.
+
+    Also handles a trailing sentence-final punctuation char the model
+    sometimes places OUTSIDE the closing quote (e.g. `"You're done".`). Only
+    unwraps on a genuine matched pair, so content apostrophes survive.
+    """
+    for _ in range(3):
+        trailing = ""
+        core = text
+        if len(core) >= 2 and core[-1] in ".!?" and core[-2] in _CLOSE_QUOTE_CHARS:
+            trailing = core[-1]
+            core = core[:-1]
+        for open_q, close_q in _QUOTE_PAIRS:
+            if len(core) >= 2 and core[0] == open_q and core[-1] == close_q:
+                text = (core[1:-1] + trailing).strip()
+                break
+        else:
+            break
+    return text
 
 
 def _clean_line(raw: str | None) -> str | None:
     """Validate + normalize the model's raw line, or `None` if unusable.
 
-    Strips one layer of matching surrounding quotes the model may have added,
-    enforces the ≤2-sentence cap, and returns `None` on empty so the caller
-    falls back to the canned line.
+    Strips matched surrounding quotes the model may have added (without
+    mangling content apostrophes), enforces the ≤2-sentence / `_MAX_LINE_CHARS`
+    caps, and returns `None` on empty so the caller falls back to the canned
+    line.
     """
-    text = (raw or "").strip()
+    text = (raw or "").strip() if isinstance(raw, str) else ""
     if not text:
         return None
-    if len(text) >= 2 and text[0] in _OPEN_QUOTES and text[-1] in _CLOSE_QUOTES:
-        text = text[1:-1].strip()
+    text = _strip_wrapping_quotes(text)
     if not text:
         return None
     text = _truncate_to_sentences(text, _MAX_SENTENCES)
@@ -179,6 +229,15 @@ async def generate_exit_line(
             `base_url` is the FULL chat-completions endpoint (raw httpx POST).
         timeout: Outer wall-clock budget (default ≤1.5 s, AC3).
     """
+    if not isinstance(transcript, list):
+        # Honor the never-raises contract even if a future caller passes a
+        # non-list (today the only caller passes `context.get_messages()`,
+        # always a list). `_normalize_transcript` runs before the try below,
+        # so an unguarded non-iterable would propagate out of this function.
+        logger.info(
+            "exit_line_generation skipped (transcript not a list) reason={}", reason
+        )
+        return None
     rendered = _normalize_transcript(transcript, _MAX_TRANSCRIPT_MESSAGES)
     if not rendered:
         logger.info("exit_line_generation skipped (empty transcript) reason={}", reason)
@@ -255,7 +314,8 @@ async def _generate(
         )
         return None
     try:
-        content = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        content = choice["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         logger.warning(
             "exit_line_generation malformed response: {} ({}) reason={}",
@@ -264,4 +324,19 @@ async def _generate(
             reason,
         )
         return None
+    if choice.get("finish_reason") == "length":
+        # Token-capped mid-thought: a dangling, grammatically-incomplete
+        # fragment is worse than the canned line, so fall back rather than
+        # speak a truncated sentence.
+        logger.info(
+            "exit_line_generation truncated (finish_reason=length) → fallback "
+            "reason={}",
+            reason,
+        )
+        return None
+    if not isinstance(content, str):
+        # Some OpenAI-compatible providers return multi-part content; coerce
+        # to text (mirrors `_extract_text`) rather than crashing into the
+        # outer catch-all with a misleading "failed (non-fatal)" category.
+        content = _extract_text(content)
     return _clean_line(content)

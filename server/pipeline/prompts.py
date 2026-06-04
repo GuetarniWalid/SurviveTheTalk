@@ -331,9 +331,11 @@ response that does not clearly accomplish the objective is "unmet", NOT "unsure"
 # for the one-shot warning line (which does NOT end the call).
 EXIT_LINE_REASON_GUIDANCE: dict[str, str] = {
     "character_hung_up": (
-        "You have run out of patience and are ENDING the call right now. The "
-        "user has not been giving you the clear, on-topic answers you needed. "
-        "Deliver your final parting line — make it clear you are done."
+        "You have run out of patience and are ENDING the call right now. "
+        "Either the user has gone quiet on you, or they stopped giving you the "
+        "clear, on-topic answers you needed — base your parting line on "
+        "whichever the transcript above actually shows. Deliver your final "
+        "parting line and make it clear you are done."
     ),
     "inappropriate_content": (
         "You are ENDING the call right now because the user said something "

@@ -42,7 +42,7 @@ Then each path produces a **reason-appropriate** generated line: `character_hung
 
 ### AC5 — Coherence-by-construction (the 212 regression, as a permanent guard)
 Given the cop-212 failure (accused "3 versions" with zero versions given)
-Then a test drives a hang-up where the transcript contains **no contradictions** and asserts the generated line does **not** claim the user changed/contradicted their story; and the universal rule (no inventing facts) is enforced via the `COHERENCE_CHARTER` in the generation prompt.
+Then the universal rule (no inventing facts) is enforced via the `COHERENCE_CHARTER` + the `EXIT_LINE_CONSTRAINT` anti-fabrication clause in the generation prompt. The guard has two halves: **(unit)** a mocked-LLM test asserts the composed prompt over a clean (no-contradiction) transcript carries the anti-fabrication clause + charter + transcript (`test_prompt_includes_persona_charter_transcript_and_anti_fabrication`); **(behavioral)** the assertion that the *generated line itself* does not claim the user changed their story is owned by the **AC10 device smoke gate**, because AC8 forbids a live LLM in `pytest` and a static mock cannot fabricate (so its output can't be checked for fabrication). _(Amended 2026-06-04 per code-review #27 to reconcile the AC5↔AC8 tension; same convention as the classifier's principle-text tests.)_
 
 ### AC6 — `noisy_environment` interruption preserved
 Given `noisy_environment` is the only reason that can fire while the character is mid-generating a normal reply (Story 6.11 call_id=200), pushing an `InterruptionFrame` before the exit line (`patience_tracker.py:1039-1043`)
@@ -70,8 +70,8 @@ See `## Smoke Test Gate` — a device call that ends in a hang-up must produce a
 - [x] **Task 4 — Wire generation into `_emit_patience_warning`** (AC4) — same generator (warning variant, `reason="patience_warning"`) for the one-shot warning line; fall back to `_patience_warning_line`.
 - [x] **Task 5 — Thread the generator + LLM access into PatienceTracker** (design — see Decisions) — chose the small injected `hang_up_line_generator` callable (async `(reason) -> str | None`); the closure lives in `bot.py` (captures `context`/`settings`/persona/charter, reads the live transcript at hang-up time) so PatienceTracker stays transport-free + unit-testable.
 - [x] **Task 6 — Env toggle + logging** (AC7) — `HANGUP_LINE_GENERATION` in `config.py` (default ON); `bot.py` injects `None` when off; `hangup_line source=generated|fallback latency_ms=…` logged at the push site in `_resolve_exit_line` + a `hang_up_line_generation={bool}` init log.
-- [x] **Task 7 — Mocked-LLM unit tests** (AC8) — generation success / timeout→fallback / failure→fallback / ≤2-sentence enforcement / the AC5 no-contradiction prompt guard / the existing 4-reason + survival_pct tests still green. → `test_exit_line_generator.py` (16) + `test_patience_tracker.py` (+9) + wiring (+1) + config (+2).
-- [x] **Task 8 — Pre-commit gates** (AC9) GREEN: `ruff check .` + `ruff format --check .` clean, `pytest` 601 passed. **Smoke gate (AC10)** is Walid-owned per Story 6.5 D6 — see `## Smoke Test Gate` (pending; device call required).
+- [x] **Task 7 — Mocked-LLM unit tests** (AC8) — generation success / timeout→fallback / failure→fallback / ≤2-sentence enforcement / the AC5 no-contradiction prompt guard / the existing 4-reason + survival_pct tests still green. → `test_exit_line_generator.py` (16) + `test_patience_tracker.py` (+8) + wiring (+2) + config (+5) = +31 net new (corrected 2026-06-04 per code-review #28; +10 more added by the review patches).
+- [x] **Task 8 — Pre-commit gates** (AC9) GREEN: `ruff check .` + `ruff format --check .` clean, full server `pytest` green. **Smoke gate (AC10)** is Walid-owned per Story 6.5 D6 — see `## Smoke Test Gate` (pending; device call required).
 
 ## Dev Notes
 
@@ -168,7 +168,7 @@ injected callable into `PatienceTracker`; the LLM/context wiring stays in
 - **AC8** — all tests mocked (httpx `MockTransport` factory); no live LLM call
   in `pytest`.
 - **AC9** — `ruff check .` clean, `ruff format --check .` clean (89 files),
-  `pytest` **601 passed** (warmed sandbox).
+  full server `pytest` green (warmed sandbox).
 - **AC10** — Walid-owned device smoke gate (see `## Smoke Test Gate`),
   pending; `review → done` follows per Story 6.5 D6.
 - **Known characteristic (not a defect):** on the `survived` path the terminal
@@ -194,12 +194,13 @@ injected callable into `PatienceTracker`; the LLM/context wiring stays in
   toggle-gated generator closure; `hang_up_line_generator=` thread into
   `PatienceTracker`.
 - `server/tests/test_exit_line_generator.py` — **NEW** (16 tests).
-- `server/tests/test_patience_tracker.py` — +9 generation tests.
+- `server/tests/test_patience_tracker.py` — +8 generation tests (corrected from +9, code-review #28).
 - `server/tests/test_bot_pipeline_wiring.py` — +1 wiring test.
 - `server/tests/test_config.py` — +2 toggle tests.
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` — status flips.
 
 ## Change Log
+- 2026-06-04 — `/bmad-code-review` COMPLETE (adversarial 3-layer + on-disk verification; 59 raw → 33 unique). **16 patches applied, 1 skipped (#18, needs judgment), 5 deferred, 11 dismissed.** Decision #2 resolved → **Option A** (survived path now threads the suppressed winning user turn into generation: `CheckpointManager.schedule_completion(winning_user_text=…)` → `PatienceTracker._pending_winning_user_text` → `_resolve_exit_line(extra_user_text=…)` → the `bot.py` closure appends it to the transcript). Headline behavioral patch #3: exit-line generation is now **pre-scheduled as a task** so the ≤1.5 s LLM round-trip overlaps the pre-TTS delay + InterruptionFrame (kills the post-cutoff dead air on the noisy hang-up; AC6 ordering preserved). Plus generator hardening (run-on char cap, `finish_reason=length`→fallback, matched-pair quote stripping, non-list/non-string guards, broadened `character_hung_up` guidance), observability (generated line → DEBUG, `source=`/`latency=` on the except path, reason↔guidance CI cross-check, temperature parity test), and doc/comment accuracy (AC5↔AC8 reconciliation, additive-latency wording, test-count fixes). +10 review tests. Gates GREEN: `ruff check` + `ruff format --check` clean (89 files), full server `pytest` **615 passed**. Findings + per-item triage in `## Review Findings`; defers in `deferred-work.md`. Status stays `review` — `review → done` + the Pixel 9 smoke gate remain Walid's (Story 6.5 D6); the #3 + P0 behavioral changes (noisy-path timing, survived line) MUST be re-validated on device.
 - 2026-06-03 — `/bmad-dev-story` COMPLETE (`in-progress` → `review`). Dynamic
   in-character exit + patience-warning line generation: new
   `pipeline/exit_line_generator.py` (mirrors `llm_warmup` — standalone,
@@ -208,7 +209,47 @@ injected callable into `PatienceTracker`; the LLM/context wiring stays in
   guaranteed fallback. Wired into `PatienceTracker._run_hang_up` (4 reasons)
   + `_emit_patience_warning` via an injected `hang_up_line_generator` callable
   built in `bot.py`. `HANGUP_LINE_GENERATION` kill-switch (default ON).
-  Server-only; difficulty unchanged. Gates: ruff clean + pytest 601. Smoke
-  gate (AC10) reserved for Walid (Story 6.5 D6).
+  Server-only; difficulty unchanged. Gates: ruff clean + full pytest green.
+  Smoke gate (AC10) reserved for Walid (Story 6.5 D6).
 - 2026-06-03 — Decisions RESOLVED (Walid): generation BLOCKING ~1.5s + canned fallback; patience-warning dynamic too; default ON; `survived` line also dynamic (all reasons generated). Spec final, ready for `/bmad-dev-story`.
 - 2026-06-03 — Spec drafted via `/bmad-create-story` (parallel research workflow). Triggered by cop call_id=212 hardcoded-exit-line incoherence. Server-only coherence story; difficulty unchanged (the selector is Story 6.19).
+
+## Review Findings
+
+> `/bmad-code-review` 2026-06-04 — adversarial 3-layer review (3 Blind Hunters diff-only + 2 Edge Case Hunters + 2 Acceptance Auditors) → dedup → on-disk verification with double-confirmation. 59 raw → 33 unique → **1 decision-needed, 16 patch, 5 defer, 11 dismissed (verified false positives)**. The Acceptance Auditor positively confirmed AC1/AC2/AC3/AC6/AC7/AC8/AC10 primary claims + Deviation #1 (survival_pct math) hold against the code; gates green.
+
+### Decision-needed (RESOLVED)
+
+- [x] [Review][Decision] `survived` exit line is generated from a transcript missing the user's winning turn — CheckpointManager Deviation #7 suppresses the terminal user turn BEFORE it reaches the LLM context aggregator (pipeline order: checkpoint_manager → patience_tracker → context_aggregator.user()), so the survived-path closure reads `context.get_messages()` AFTER suppression and the closing line on the most positive, user-visible ending literally cannot reference the user's winning answer. **RESOLVED 2026-06-04 (Walid): Option A** — capture the winning user turn at suppression time in CheckpointManager and thread it through `schedule_completion` → `_run_hang_up` → the survived-path generation so the line can ground on the user's actual winning answer; add a behavioral test driving the real survived suppression path. → now a Patch (P0 below). [checkpoint_manager.py:511-540 + patience_tracker.py:1144 + bot.py:406-415]
+
+### Patch
+
+- [x] [Review][Patch] (P0, from Decision #2 — Option A) `survived` line: thread the suppressed winning user turn into the survived-path generation so the closing line can reference the user's actual winning answer; add a behavioral test exercising the real suppression path (not the stub) [checkpoint_manager.py:511-540 + patience_tracker.py + bot.py:406-415]
+- [x] [Review][Patch] noisy_environment: up to ~1.5s of dead air between the InterruptionFrame and the exit line; same await is additive to every hang-up reason — pre-schedule generation as a task so it overlaps the pre-TTS delay + interrupt flush (preserves AC6 ordering; also mitigates the cancel-window finding) [patience_tracker.py:1091-1152]
+- [x] [Review][Patch] max_tokens=80 mid-sentence cutoff yields a dangling exit line — return None when `finish_reason=="length"` so the canned line speaks instead [exit_line_generator.py:257-267]
+- [x] [Review][Patch] Run-on / unpunctuated line bypasses the 2-sentence cap (only max_tokens bounds it) — add a hard char backstop in `_truncate_to_sentences` [exit_line_generator.py:125-130]
+- [x] [Review][Patch] `_clean_line` quote-stripping is single-layer with independent open/close sets (leaks NAME:/narration, mangles content apostrophes) — use matched pairs + strip a leading NAME: label [exit_line_generator.py:133-148]
+- [x] [Review][Patch] `generate_exit_line` can raise TypeError on a non-list/None transcript — `_normalize_transcript` call sits OUTSIDE the try, breaking the never-raises contract (unreachable in prod today; double-guarded by `_resolve_exit_line`) [exit_line_generator.py:182]
+- [x] [Review][Patch] Non-string `choices[0].message.content` (multimodal list) crashes into the catch-all with wrong log category — coerce via `_extract_text` inside the parse try [exit_line_generator.py:258]
+- [x] [Review][Patch] AC4 `character_hung_up` guidance omits the "you've gone quiet" silence sub-case (shared token covers silence + meter-zero) — broaden the guidance string [prompts.py:333-337]
+- [x] [Review][Patch] Generated character line (transcript-derived) logged verbatim at INFO — demote text to DEBUG, keep source/latency at INFO [patience_tracker.py:1076-1081]
+- [x] [Review][Patch] No cross-check that every hang-up reason has exit-line guidance — add a CI test `_VALID_REASONS ∪ {patience_warning} ⊆ EXIT_LINE_REASON_GUIDANCE` [tests/test_exit_line_generator.py]
+- [x] [Review][Patch] `_TEMPERATURE=0.7` will silently drift from `llm_provider.CHARACTER_TEMPERATURE` — add a parity regression test [tests/test_exit_line_generator.py]
+- [x] [Review][Patch] `_resolve_exit_line` except branch omits the structured `source=fallback latency_ms=` tokens (AC7) — emit them before returning the fallback [patience_tracker.py:1069-1073]
+- [ ] [Review][Patch][SKIPPED — needs judgment] Broad `except Exception` in `generate_exit_line` masks our own bugs as transient fallbacks — narrow to the expected-failure set (httpx/Value/Key/Index/Type). NOT applied in the batch: narrowing would contradict the module's deliberate "never raises" contract (AC2, mirrored from `llm_warmup`) and its docstring; left as an optional action item. [exit_line_generator.py:206-214]
+- [x] [Review][Patch] Comment overstates "httpx aborts FIRST / same pattern as the 2.0/1.5 split" — the margin is only 0.2s (vs 0.5s); correct the comment (or widen the gap) [exit_line_generator.py:39-47]
+- [x] [Review][Patch] Docs imply generation is absorbed by the 6s TTS cap — it is serial-ADDITIVE; correct the AC3/Decision/comment wording [exit_line_generator.py:39-47 + AC3]
+- [x] [Review][Patch] AC5 wording vs AC8 tension — amend AC5 to state the behavioral no-contradiction half is smoke-gate-owned (AC8 forbids a live LLM in pytest; the prompt-presence test covers the unit half) [story AC5]
+- [x] [Review][Patch] Dev-Record test-count drift — `test_patience_tracker.py (+9)` is actually +8; true net-new is ~+31 (16 generator + 8 patience + 2 wiring + 5 config); "pytest 601 passed" is now 605 — fix the breakdown + count [story + sprint-status.yaml]
+
+### Defer
+
+- [x] [Review][Defer] `inappropriate_content` embeds the offensive turn verbatim while guidance says "do not quote" — model may echo abuse [prompts.py:338-343 + exit_line_generator.py:102-122] — deferred: path is DORMANT in prod (`abuse_classifier=None`); MUST bypass generation or redact the turn before any abuse classifier is wired
+- [x] [Review][Defer] Line-less hang-up if the task is cancelled during the ~1.5s generation window (teardown race) [patience_tracker.py:1091-1152] — deferred: mostly mitigated by the pre-schedule patch; residual is the pre-existing 0.5s pre-TTS-delay cancel-window class
+- [x] [Review][Defer] Fresh `httpx.AsyncClient` (TCP+TLS handshake) created per hang-up [exit_line_generator.py:245-246] — deferred: negligible at once-per-call frequency; no amortization benefit (unlike the per-turn classifier)
+- [x] [Review][Defer] `_resolve_exit_line` except logs at ERROR vs AC2's literal WARNING [patience_tracker.py:1069-1073] — deferred: unreachable by real generation failures (only a buggy injected stub); optional log-level alignment
+- [x] [Review][Defer] Cop's canned fallback is still the accusatory "three versions" line — on generation timeout/empty transcript the call-212 line can replay [cop-interrogation-01.yaml + patience_tracker fallback] — deferred: a neutral per-reason fallback for accusation-bearing reasons on an empty transcript would close the residual (the canned fallback itself is the AC2-mandated, pre-6.18 behavior)
+
+### Dismissed (11, verified false positives)
+
+#1 missing import (both resolvers imported at bot.py:26-30) · #4/#5/#7 noisy-path/warning races (guarded by InputGate + the `_warning_task` in-flight guard) · #12 base_url 404 (`resolve_llm_chat_url` returns the full endpoint) · #13 `completion` vs `survived` naming (only `survived` is ever passed) · #15/#20 transcript window/torn-read (handled / single-threaded frame loop) · #22 empty fallback line (validated one layer up) · #25 thin-transcript "CHARACTER-only" path (unreachable; empty-transcript fallback is the AC2-mandated, pre-6.18 behavior) · #33 positive AC confirmation.

@@ -301,3 +301,135 @@ def test_clean_line_handles_quotes_sentences_and_empty() -> None:
     assert _clean_line('"quoted"') == "quoted"
     assert _clean_line("“smart quoted”") == "smart quoted"
     assert _clean_line("One. Two. Three.") == "One. Two."
+
+
+# ---------- code-review patches (2026-06-04) ------------------------------
+
+
+def test_temperature_matches_character_temperature() -> None:
+    """Review #11 — the generator's hardcoded temperature must stay in parity
+    with the main character LLM so closing lines keep the same in-character
+    warmth. Catches a future retune of CHARACTER_TEMPERATURE."""
+    from pipeline.llm_provider import CHARACTER_TEMPERATURE
+
+    assert elg_mod._TEMPERATURE == CHARACTER_TEMPERATURE
+
+
+def test_every_valid_reason_plus_warning_has_guidance() -> None:
+    """Review #24 — every hang-up reason (+ patience_warning) must have its own
+    exit-line guidance key, else it silently degrades to EXIT_LINE_GUIDANCE_
+    DEFAULT (a generic, non-reason-specific line). Derived FROM _VALID_REASONS
+    so adding a reason without guidance turns this red."""
+    from pipeline import patience_tracker as pt
+
+    required = set(pt._VALID_REASONS) | {pt._REASON_PATIENCE_WARNING}
+    missing = required - set(EXIT_LINE_REASON_GUIDANCE)
+    assert not missing, (
+        f"reasons without exit-line guidance: {sorted(missing)} — add a key to "
+        "EXIT_LINE_REASON_GUIDANCE or they fall back to EXIT_LINE_GUIDANCE_DEFAULT"
+    )
+
+
+def test_generate_caps_run_on_line_without_terminator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #8 — a long run-on line with NO internal sentence terminator
+    can't be split by the 2-sentence cap, so the _MAX_LINE_CHARS backstop must
+    bound it on a word boundary (else a 60-word line blows the 6 s TTS ceiling)."""
+    run_on = (
+        "you know I really thought you were going to give me something real "
+        "today but instead you just sat there wasting both our time and now I "
+        "am completely and utterly done with this whole pointless conversation"
+    )
+    _mock_http(monkeypatch, handler=_ok(run_on))
+    out = _run(generate_exit_line(**_kwargs()))
+    assert out is not None
+    assert len(out) <= elg_mod._MAX_LINE_CHARS
+    assert not out.endswith(" ")  # trimmed on a word boundary
+
+
+def test_generate_returns_none_on_length_truncated_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #9 — a token-capped (finish_reason=length) completion is a
+    dangling mid-thought fragment, so the generator returns None and the caller
+    speaks the canned line instead of a truncated sentence."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "You know, I really thought you were"},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    assert _run(generate_exit_line(**_kwargs())) is None
+
+
+def test_generate_coerces_multipart_text_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #23 — a multimodal content LIST with a text part is coerced to
+    that text (via _extract_text) instead of crashing into the catch-all."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": [{"type": "text", "text": "We are done here."}]
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    assert _run(generate_exit_line(**_kwargs())) == "We are done here."
+
+
+def test_generate_returns_none_on_unrenderable_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #23 — a non-string content with no text part coerces to "" and
+    returns None (canned fallback) rather than raising an AttributeError."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": [{"foo": "bar"}]}}]}
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    assert _run(generate_exit_line(**_kwargs())) is None
+
+
+def test_generate_returns_none_on_non_list_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #21 — a non-list/None transcript must NOT raise (the documented
+    never-raises contract); it returns None so the caller uses the canned line."""
+    _mock_http(monkeypatch, handler=_ok("should not be reached"))
+    assert _run(generate_exit_line(**_kwargs(transcript=None))) is None
+    assert _run(generate_exit_line(**_kwargs(transcript="not a list"))) is None
+
+
+def test_clean_line_matched_pairs_preserve_apostrophes() -> None:
+    """Review #10 — matched-pair quote handling: strip a surrounding double /
+    smart pair (incl. a trailing period placed outside the close quote), but
+    NEVER strip an ASCII single quote (ambiguous with a content apostrophe)."""
+    # trailing period OUTSIDE the closing double quote
+    assert _clean_line('"You are done here".') == "You are done here."
+    # leading elision apostrophe + trailing possessive — must survive intact
+    assert _clean_line("'Cause I'm done with the kids'") == (
+        "'Cause I'm done with the kids'"
+    )
+    # smart single pair IS stripped (unambiguous)
+    assert _clean_line("‘Get out.’") == "Get out."

@@ -282,14 +282,17 @@ class PatienceTracker(FrameProcessor):
             visual escalation ladder. Stored for Story 6.7
             (`CheckpointManager`) consumption; NOT applied in Story 6.4.
         hang_up_line_generator: Story 6.18 — optional async callable
-            `(reason) -> str | None` that regenerates the exit /
-            patience-warning line IN CHARACTER from the live transcript
-            (injected in `bot.py`, closure over `llm_context` + the LLM
-            config; the LLM wiring stays out of this transport-free
-            processor). `None` (default) → the canned YAML lines are used
-            unchanged (also the `HANGUP_LINE_GENERATION=0` kill-switch
-            path). A `None` RETURN or any error → fall back to the canned
-            line; the generator must never wedge or crash the hang-up.
+            `(reason, extra_user_text=None) -> str | None` that regenerates
+            the exit / patience-warning line IN CHARACTER from the live
+            transcript (injected in `bot.py`, closure over `llm_context` + the
+            LLM config; the LLM wiring stays out of this transport-free
+            processor). `extra_user_text` lets the survived path append the
+            winning user turn that CheckpointManager suppressed from the LLM
+            context (Deviation #7) so the closing line can ground on it.
+            `None` (default) → the canned YAML lines are used unchanged (also
+            the `HANGUP_LINE_GENERATION=0` kill-switch path). A `None` RETURN
+            or any error → fall back to the canned line; the generator must
+            never wedge or crash the hang-up.
 
     Raises:
         ValueError: If `initial_patience <= 0`. The survival-percent
@@ -321,7 +324,7 @@ class PatienceTracker(FrameProcessor):
             "*sighs* Look, are you ordering or not? Last chance."
         ),
         abuse_classifier: Callable[[str], bool] | None = None,
-        hang_up_line_generator: Callable[[str], Awaitable[str | None]] | None = None,
+        hang_up_line_generator: Callable[..., Awaitable[str | None]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -413,6 +416,11 @@ class PatienceTracker(FrameProcessor):
         # produces 100 (checkpoints-passed) instead of the meter
         # ratio. None on the silence/abuse paths (meter ratio wins).
         self._pending_survival_pct: int | None = None
+        # Story 6.18 review (Decision #2 / Option A) — the winning user turn
+        # CheckpointManager suppressed from the LLM context (Deviation #7),
+        # threaded by `schedule_completion` so the survived exit line can be
+        # generated FROM the answer that actually won. None on all other paths.
+        self._pending_winning_user_text: str | None = None
 
         # Dormant fields — wired for forward-compat with Stories 6.6
         # / 6.7 / DW1. Stored on the instance so the constructor
@@ -870,7 +878,9 @@ class PatienceTracker(FrameProcessor):
         """
         self._checkpoints_passed = count
 
-    def schedule_completion(self, survival_pct: int) -> None:
+    def schedule_completion(
+        self, survival_pct: int, winning_user_text: str | None = None
+    ) -> None:
         """Route to `_run_hang_up` with `reason='survived'` and the YAML's
         `exit_lines.completion` line. Idempotent re-call swallowed.
 
@@ -881,6 +891,13 @@ class PatienceTracker(FrameProcessor):
                 the user passed but with multiple `fail_penalty`
                 hits along the way). Bounded to `[0, 100]` inside
                 `_run_hang_up` before being emitted.
+            winning_user_text: Story 6.18 review (Decision #2 / Option A) —
+                the final winning user utterance that CheckpointManager
+                suppressed from the LLM context (Deviation #7). Threaded so
+                the survived exit line can be generated FROM the answer that
+                actually won, instead of a transcript that ends on the
+                character's unanswered question. `None` → generate from the
+                context as-is.
         """
         if self._hang_up_in_progress:
             return
@@ -889,6 +906,7 @@ class PatienceTracker(FrameProcessor):
         # only on the survived path; other paths leave it None and
         # use the meter-ratio calculation.
         self._pending_survival_pct = survival_pct
+        self._pending_winning_user_text = winning_user_text
         self._schedule_hang_up(_REASON_SURVIVED)
 
     def schedule_noisy_environment_exit(self) -> None:
@@ -1040,13 +1058,19 @@ class PatienceTracker(FrameProcessor):
         self._cancel_silence_timer()
         self._hang_up_task = asyncio.create_task(self._run_hang_up(reason))
 
-    async def _resolve_exit_line(self, reason: str, fallback: str) -> str:
+    async def _resolve_exit_line(
+        self, reason: str, fallback: str, extra_user_text: str | None = None
+    ) -> str:
         """Story 6.18 — return the dynamic, in-character line for `reason`,
         or `fallback` (the canned YAML line) when generation is disabled,
         slow, empty, or fails. NEVER raises — a canned line beats a crashed
         hang-up. Logs `hangup_line source=generated|fallback latency_ms=…` at
         this substitution point so a journalctl tail confirms the feature
         worked vs fell back (AC7).
+
+        `extra_user_text` (survived path) is the winning user turn that
+        CheckpointManager suppressed (Deviation #7); the generator appends it
+        to the transcript so the closing line can reference what actually won.
 
         `gen` (the injected `generate_exit_line` closure from `bot.py`) is
         itself fire-tolerant (returns None on any error / timeout / empty
@@ -1063,22 +1087,33 @@ class PatienceTracker(FrameProcessor):
             return fallback
         start = time.monotonic()
         try:
-            line = await gen(reason)
+            line = await gen(reason, extra_user_text)
         except asyncio.CancelledError:
             raise
         except Exception:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            # AC7 (review #32) — keep the structured `source=fallback
+            # latency_ms=` shape on this path too (the None-return / disabled
+            # paths already carry it). Log level stays ERROR via
+            # logger.exception; the WARNING-alignment nit is deferred (#30).
             logger.exception(
-                "hangup_line generation raised; using fallback reason={}", reason
+                "hangup_line source=fallback reason={} latency_ms={} "
+                "(generation raised)",
+                reason,
+                latency_ms,
             )
             return fallback
         latency_ms = int((time.monotonic() - start) * 1000)
         if line:
+            # AC7 — source + latency at INFO (the journalctl signal); the
+            # verbatim line is transcript-derived, so it goes to DEBUG only
+            # (review #19 — keep user-derived content out of INFO logs).
             logger.info(
-                "hangup_line source=generated reason={} latency_ms={} text={!r}",
+                "hangup_line source=generated reason={} latency_ms={}",
                 reason,
                 latency_ms,
-                line,
             )
+            logger.debug("hangup_line generated text reason={} text={!r}", reason, line)
             return line
         logger.info(
             "hangup_line source=fallback reason={} latency_ms={} "
@@ -1102,6 +1137,24 @@ class PatienceTracker(FrameProcessor):
             line = self._hang_up_line_noisy_environment
         else:  # _REASON_SURVIVED — validated by _schedule_hang_up
             line = self._hang_up_line_survived
+
+        # Story 6.18 review (#3) — start exit-line generation NOW as a task so
+        # the ≤1.5 s LLM round-trip overlaps the pre-TTS delay + (for
+        # noisy_environment) the InterruptionFrame flush, instead of running
+        # serially AFTER the pipeline is silenced (which injected up to ~1.5 s
+        # of dead air right after cutting the user off). AC6 ordering holds:
+        # the InterruptionFrame is still pushed before the TTSSpeakFrame; only
+        # the generation RESULT is consumed after the interrupt. P0 (Decision
+        # #2 / Option A): on the survived path, hand the generator the winning
+        # user turn CheckpointManager suppressed (Deviation #7) so the closing
+        # line can ground on the answer that actually won.
+        winning_user_text = (
+            self._pending_winning_user_text if reason == _REASON_SURVIVED else None
+        )
+        exit_line_task = asyncio.create_task(
+            self._resolve_exit_line(reason, line, extra_user_text=winning_user_text)
+        )
+        self._pending_winning_user_text = None
         try:
             await self.push_frame(
                 OutputTransportMessageFrame(
@@ -1132,16 +1185,15 @@ class PatienceTracker(FrameProcessor):
                     FrameDirection.DOWNSTREAM,
                 )
 
-            # Story 6.18 — regenerate the exit line IN CHARACTER from the live
-            # transcript (charter-governed → coherent with what actually
-            # happened), falling back to the canned `line` selected above when
-            # generation is disabled/slow/failed. Time-boxed (~1.5 s, AC3)
-            # inside `_resolve_exit_line` → `generate_exit_line`; never raises.
-            # Done AFTER the noisy_environment InterruptionFrame so the
-            # interrupt still flushes the in-flight reply first (AC6 ordering
-            # preserved); the generated text is spoken in the same TTSSpeakFrame
-            # the canned line would have used.
-            line = await self._resolve_exit_line(reason, line)
+            # Story 6.18 — consume the pre-scheduled generation (started above
+            # so it overlapped the delay + interrupt instead of injecting dead
+            # air). `_resolve_exit_line` never raises: a disabled/slow/failed
+            # generation yields the canned `line` selected above. Awaited AFTER
+            # the noisy_environment InterruptionFrame so the interrupt still
+            # flushes the in-flight reply first (AC6 ordering preserved); the
+            # generated text is spoken in the same TTSSpeakFrame the canned
+            # line would have used.
+            line = await exit_line_task
 
             # Create the event BEFORE pushing the TTSSpeakFrame so the
             # bot-stopped handler always has a non-None target.
@@ -1236,6 +1288,11 @@ class PatienceTracker(FrameProcessor):
         except asyncio.CancelledError:
             raise
         finally:
+            # Story 6.18 review (#3) — if a teardown/exception cut the sequence
+            # short before the pre-scheduled generation was consumed, reap the
+            # task so it is not orphaned.
+            if not exit_line_task.done():
+                exit_line_task.cancel()
             # Clear the flag even on error: a transient `push_frame`
             # failure must not wedge the tracker in "hang-up active"
             # forever (which would block any later `_schedule_hang_up`

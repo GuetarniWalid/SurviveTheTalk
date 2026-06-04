@@ -761,7 +761,15 @@ class CheckpointManager(FrameProcessor):
             logger.info(
                 "checkpoint_completion all_passed total={}", len(self._checkpoints)
             )
-            self._patience_tracker.schedule_completion(survival_pct=100)
+            # Story 6.18 review (Decision #2 / Option A) — hand the winning
+            # user turn to the completion path. This turn is the one being
+            # SUPPRESSED from the LLM context (Deviation #7), so the survived
+            # exit line is otherwise generated from a transcript that ends on
+            # the character's unanswered question; passing it lets the closing
+            # line reference the answer that actually won.
+            self._patience_tracker.schedule_completion(
+                survival_pct=100, winning_user_text=user_text
+            )
             return
 
         # Partial / intermediate success (AC8 — recovery_bonus applies on
