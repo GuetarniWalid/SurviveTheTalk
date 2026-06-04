@@ -1,8 +1,10 @@
 # Story 6.18: Dynamic / contextual character hang-up + warning lines
 
-Status: review
+Status: done
 
 > Design decisions RESOLVED with Walid 2026-06-03 — see `## Decisions`. Final version, ready for `/bmad-dev-story`.
+>
+> **DONE 2026-06-04** — Pixel 9 smoke gate PASSED (Walid). Generated cop hang-up coherent with NO "3 versions" accusation (call_id=217); survived line references the real order "grilled chicken and cola" (call_id=218, P0/Option A validated); kill-switch fallback works (call_id=219). Latencies 347/366/306 ms. The overlapping-reply + 6 s TTS timeout seen on the kill-switch call (219) is a SEPARATE pre-existing bug (a post-hang-up user turn gets a normal reply over the exit line — `checkpoint_manager` `is_terminal_turn` gating) → spun off as **Story 6.22**, NOT a 6.18 regression.
 
 ## Story
 
@@ -101,11 +103,11 @@ See `## Smoke Test Gate` — a device call that ends in a hang-up must produce a
 
 ## Smoke Test Gate (Server / Deploy Story)
 
-- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
-- [ ] **Coherent hang-up (the 212 regression):** on a `hard` cop call, fail by giving no real answers → the character hangs up with a line that matches ("I'm not getting straight answers from you…"), and **does NOT** accuse you of changing your story / giving multiple versions. _Command:_ device call on Pixel 9 + `journalctl -u pipecat.service | grep -E 'hangup_line|_run_hang_up'` (confirm `source=generated`).
-- [ ] **Fallback works:** with `HANGUP_LINE_GENERATION=0`, the call still ends with the canned YAML line (no regression). _Command:_ flip env + `systemctl restart pipecat.service` + one call.
-- [ ] **Latency:** the hang-up sequence still feels prompt (generation ≤~1.5s; no 6s-timeout WARNING in logs). _Command:_ `journalctl … | grep 'hang-up TTS timeout'` → none.
-- [ ] **All 4 reasons** produce a coherent line (silence, inappropriate, survived, noisy_environment) — spot-check at least silence + survived.
+- [x] **Deployed** to the VPS (`deploy-server.yml` git_sha match). — `git_sha 3bee838`, 2026-06-04.
+- [x] **Coherent hang-up (the 212 regression):** on a `hard` cop call, fail by giving no real answers → the character hangs up with a line that matches, and **does NOT** accuse you of changing your story / multiple versions. — ✅ call_id=217: `source=generated`, line "This conversation is going nowhere, and I'm done wasting my time. We'll be taking this downtown…" (no "3 versions").
+- [x] **Fallback works:** with `HANGUP_LINE_GENERATION=0`, the call still ends with the canned YAML line (no regression). — ✅ call_id=219: `source=fallback`, canned lines spoken, no crash.
+- [x] **Latency:** generation ≤~1.5s; no 6s-timeout on the generated calls. — ✅ 347/366/306 ms; the 6 s timeout on the canned call_id=219 was caused by the Story-6.22 overlap, not the feature.
+- [x] **All 4 reasons** produce a coherent line — spot-checked: `character_hung_up` ✅ (217), `survived` ✅ (218, references the real order — P0 validated); `inappropriate` is dormant in prod (N/A), `noisy_environment` not spot-checked this gate.
 
 ## Dev Agent Record
 
