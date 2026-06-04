@@ -1,6 +1,6 @@
 # Story 6.21: Character-enforced checkpoint ordering (universal guided flow)
 
-Status: review
+Status: done
 
 > Design decisions RESOLVED with Walid 2026-06-04 — see `## Design Decisions`. This is **THE** fix for the consigne↔character desync. Story 6.20 is reduced to its independent robustness items (the HUD "frontier" idea was dropped — see below). Nothing coded yet.
 
@@ -92,13 +92,15 @@ On a cop call: answer a **later** beat first → it ticks (credited) **and** the
 
 ## Smoke Test Gate (Server / Deploy Story)
 
-- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
-- [ ] **Ordered pursuit (the core):** on the cop scenario, answer a *later* beat first. The cop must **credit it** (HUD ticks) **and** acknowledge it then **return to the skipped earlier beat**, not move on. _Proof:_ device + `journalctl … | grep checkpoint_advanced` (later goal flips) + the cop audibly returns to the earlier beat.
-- [ ] **Anti-repetition (the 6.10 win preserved):** volunteer a later beat's info → the character does NOT re-ask it later.
-- [ ] **Consigne coherence:** the on-screen step tracks the lowest unmet beat and matches what the character asks, throughout.
-- [ ] **Firm but fluid / no unfair drain:** the redirect is in-character (acknowledges first) and the held beat doesn't tank patience faster than a normal off-topic turn.
-- [ ] **In-order regression:** a straight in-order run flows normally and can reach `survived`.
-- [ ] **Server logs clean** on the happy path.
+> ✅ **VALIDATED on Walid's Pixel 9 — re-test call_id=222 (git_sha b07947f), 2026-06-04.** Confirmed from the device + `journalctl` via a 3-lens adversarial analysis; `review → done`. (First pass call_id=221 surfaced a reply-4 forward-leak + a CP3 under-credit; both fixed and re-validated on 222.)
+
+- [x] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
+- [x] **Ordered pursuit (the core):** on the cop scenario, answer a *later* beat first. The cop must **credit it** (HUD ticks) **and** acknowledge it then **return to the skipped earlier beat**, not move on. _Proof:_ device + `journalctl … | grep checkpoint_advanced` (later goal flips) + the cop audibly returns to the earlier beat.
+- [x] **Anti-repetition (the 6.10 win preserved):** volunteer a later beat's info → the character does NOT re-ask it later.
+- [x] **Consigne coherence:** the on-screen step tracks the lowest unmet beat and matches what the character asks, throughout.
+- [x] **Firm but fluid / no unfair drain:** the redirect is in-character (acknowledges first) and the held beat doesn't tank patience faster than a normal off-topic turn.
+- [x] **In-order regression:** a straight in-order run flows normally and can reach `survived`.
+- [x] **Server logs clean** on the happy path.
 
 ## Dev Agent Record
 
