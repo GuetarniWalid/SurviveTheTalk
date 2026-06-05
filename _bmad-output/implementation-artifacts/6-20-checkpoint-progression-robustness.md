@@ -1,6 +1,6 @@
 # Story 6.20: Checkpoint progression robustness & envelope cleanup
 
-Status: review
+Status: done
 
 > Design decisions RESOLVED with Walid 2026-06-04. **Scope note:** the consigne↔character *alignment* fix moved to **Story 6.21** (character-enforced ordering) — Walid clarified the app is always guided/ordered, so the HUD's lowest-unmet display was already correct and the "frontier" idea is dropped. This story keeps only the **independent robustness + cleanup** items the alignment audit surfaced. Nothing coded yet.
 
@@ -141,6 +141,7 @@ claude-opus-4-8 (`/bmad-dev-story`, ultracode multi-agent review pass)
 - `client/test/features/call/views/call_screen_test.dart` — AC2 `hintText` removal; AC3 SET-preference test.
 
 ## Change Log
+- 2026-06-05 — **review → done.** Walid Pixel 9 smoke gate PASSED. AC1 (fast re-speak) validated on call_id=229: "Steak." then "And a cola." spoken back-to-back (LLM context shows two consecutive user turns with no assistant turn between = the in-flight race) → BOTH `main_course` AND `drink` ticked (`goals_met_indices [0]→[0,1]→[0,1,3]`), the `main_course` flip was NOT dropped (the old cancel-path would have lost it). AC3 out-of-order set carried correctly on call_id=228 (`[0,1,2,4]` — confirm before drink) + 229 (`[0,1,3]`); AC2/AC5/AC6 confirmed (all ticks landed, HUD fine, clean completion). Deployed git_sha 5612ec1. (Unrelated issues surfaced during the same smoke session — over-crediting `drink`/`confirm`, the non-goodbye exit line [fixed separately, 5612ec1], and the post-hang-up extra turn [Story 6.22] — are NOT 6.20 and tracked separately.)
 - 2026-06-04 — `/bmad-dev-story` implementation (ultracode). AC1 non-terminal classify serialized (`_serialize_then_classify`, await-not-cancel — no dropped goal on fast re-speak); AC2 dead `next_hint`/`hintText` removed server+client; AC3 `call_end` carries real `goals_met_indices` + client prefers the SET (walk-up-only) over the count; AC4 `hint_text`↔`prompt_segment` drift lint in the 6.16 builder (+CLI warning); AC5 per-flip `checkpoint_advanced` also emitted as a reliable queued copy (lost-tail self-heal, client dedupes). Gates green: server ruff + `pytest 622`, client `flutter analyze` clean + `flutter test 405`. Ultracode 4-lens adversarial review (17 raised → 2 confirmed → both fixed: a terminal-suppression race AC1 re-opened + a stale dartdoc). Status → review; Pixel 9 smoke gate (AC8) reserved for Walid.
 - 2026-06-04 — Refocused (Walid): the consigne↔character alignment fix moved to Story 6.21 (app is always guided/ordered → HUD lowest-unmet was already correct, "frontier" idea dropped). This story keeps only the independent robustness + cleanup items: dropped-goal serialize, dead `next_hint` cleanup, `call_end` SET-based reconcile, hint/prompt authoring lint, lost-envelope resend. Renamed from `6-20-checkpoint-hud-alignment`.
 - 2026-06-03 — Spec drafted via `/bmad-create-story` from a 32-agent alignment audit run during Story 6.18's smoke gate (call_id=216).
