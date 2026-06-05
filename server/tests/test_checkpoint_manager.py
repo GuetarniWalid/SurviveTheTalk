@@ -1634,6 +1634,67 @@ def test_each_flip_emits_urgent_and_reliable_duplicate() -> None:
     assert reliable[0].message["data"]["goals_met_indices"] == [0]
 
 
+def test_multi_flip_emits_n_reliable_duplicates_matching_urgent() -> None:
+    """Story 6.20 AC5 (multi-flip coverage, code-review 2026-06-05) — a turn
+    that flips N goals at once must push N URGENT frames AND N queued reliable
+    duplicates, each reliable copy value-equal to its URGENT twin. Guards the
+    per-flip pairing invariant for N>=2: the single-flip
+    `test_each_flip_emits_urgent_and_reliable_duplicate` alone stays green even
+    if a regression drops the reliable copy on all-but-the-last mid-turn flip
+    (e.g. hoisting the reliable push out of the per-flip loop)."""
+    checkpoints = _make_checkpoints(4)
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # Flip cp2 AND cp3 in the SAME turn (two mid-turn flips, not a
+        # completion — only 2 of 4 goals).
+        return {g["id"]: (g["id"] in ("cp2", "cp3")) or None for g in pending}
+
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        multi_response_fn=_fn,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("Grilled chicken with a cola, please."),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    urgent = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageUrgentFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    reliable = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and not isinstance(f, OutputTransportMessageUrgentFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    # Two flips → exactly two URGENT + two reliable duplicates (not 1, not 3).
+    assert len(urgent) == 2
+    assert len(reliable) == 2
+
+    # Each reliable copy is value-equal to an URGENT twin (same full-state
+    # payload), so the multiset of (index, met-set) pairs matches.
+    def _payload_key(frame: Frame) -> tuple[int, tuple[int, ...]]:
+        data = frame.message["data"]
+        return data["index"], tuple(data["goals_met_indices"])
+
+    assert sorted(_payload_key(f) for f in urgent) == sorted(
+        _payload_key(f) for f in reliable
+    )
+    # Both flips carry the SAME full met set [2, 3].
+    for f in reliable:
+        assert f.message["data"]["goals_met_indices"] == [2, 3]
+
+
 def test_set_goals_met_indices_synced_to_tracker_on_flip() -> None:
     """Story 6.20 AC3 — on every successful flip the manager mirrors the REAL
     met SET (author-order indices) to the PatienceTracker so the `call_end`

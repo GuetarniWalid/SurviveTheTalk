@@ -782,8 +782,15 @@ class CheckpointManager(FrameProcessor):
         silently dropped a goal the user had genuinely completed when they
         spoke again within the ~0.2-0.5 s classify window.
 
-        Because `process_frame` is serialized per pipecat processor, awaiting
-        the prior task here is safe (no re-entrancy). The prior task runs to
+        Re-entrancy: two USER turns cannot overlap here — `TranscriptionFrame`
+        is a non-system frame, so pipecat drains it on the single per-processor
+        process task (one user turn at a time). SystemFrames (e.g.
+        Bot{Started,Stopped}SpeakingFrame) ARE dispatched on a separate input
+        task and CAN re-enter `process_frame` while this await is parked, but
+        those branches only set `self._bot_speaking` — they never touch
+        `_in_flight` / `_generation` / `_goals`, and this turn's echo-guard
+        decision was already read before the await, so awaiting the prior task
+        here is safe. The prior task runs to
         its natural end (NOT cancelled), so its `self._goals` mutation lands;
         the fresh classify created below is then judged against that updated
         state. The generation counter is only bumped AFTER the await, so the

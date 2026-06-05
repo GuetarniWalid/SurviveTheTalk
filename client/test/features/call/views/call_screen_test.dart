@@ -1083,6 +1083,101 @@ void main() {
     );
 
     testWidgets(
+      'call_end SET reconcile UNIONS with current — keeps local-only ticks '
+      'and adds server-only ones (never shrinks)',
+      (tester) async {
+        // Story 6.20 AC3 (code-review 2026-06-05) — the SET branch must UNION
+        // the server `goals_met_indices` with what the HUD already shows, so a
+        // server set that is smaller-than / partially-disjoint-from the local
+        // set never erases a locally-rendered tick. Local {0,1,2,3} + server
+        // SET [0,1,4] -> [0,1,2,3,4] (keeps 2,3; adds 4). A regression that
+        // dropped the union (used the raw server set) would NOT add 4 here —
+        // the only other SET test uses a pure superset and can't catch it.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+        void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugPlaybackDrainBuffer: Duration.zero,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+                required onEnvWarning,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                capturedOnCallEnd = onCallEnd;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        // Local HUD shows {0, 1, 2, 3} (count 4).
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'clarify',
+            index: 3,
+            total: 6,
+            goalsMetIndices: [0, 1, 2, 3],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(notifier.value?.metIndices, [0, 1, 2, 3]);
+
+        // call_end carries a SET partially disjoint from + the same size as a
+        // strict-subset case: [0, 1, 4]. Union must KEEP 2,3 and ADD 4.
+        capturedOnCallEnd!('survived', <String, dynamic>{
+          'reason': 'survived',
+          'survival_pct': 100,
+          'checkpoints_passed': 3,
+          'total_checkpoints': 6,
+          'goals_met_indices': [0, 1, 4],
+        });
+        await tester.pump();
+
+        expect(
+          notifier.value?.metIndices,
+          [0, 1, 2, 3, 4],
+          reason: 'AC3 — the SET branch unions with the current set: '
+              'local-only ticks (2,3) are kept and the server-only tick (4) '
+              'is added; the reconcile never shrinks what the HUD showed',
+        );
+        expect(notifier.value?.justFlippedIndex, isNull);
+
+        final bloc =
+            tester.element(find.byType(Scaffold).first).read<CallBloc>();
+        bloc.add(const PlaybackDrained());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
       'call_end with checkpoints_passed LOWER than current does NOT walk back',
       (tester) async {
         // Defensive: never reconcile DOWN — that would mask a genuine
