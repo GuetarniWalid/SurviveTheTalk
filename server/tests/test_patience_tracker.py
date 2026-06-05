@@ -316,6 +316,8 @@ def test_ten_second_silence_hang_up_full_sequence(
     assert data["reason"] == "character_hung_up"
     assert data["checkpoints_passed"] == 0
     assert data["total_checkpoints"] == 6
+    # Story 6.20 AC3 — the real met SET ships in call_end (empty here: no flip).
+    assert data["goals_met_indices"] == []
     assert 0 <= data["survival_pct"] <= 100
 
     end_frames = [f for f in captured if isinstance(f, EndFrame)]
@@ -1094,8 +1096,11 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
         # Story 6.7 review (2026-05-20) — CheckpointManager calls
         # `set_checkpoints_passed(total)` immediately before
         # `schedule_completion` on the terminal path. Mirror it here so
-        # the envelope assertion below reflects production wiring.
+        # the envelope assertion below reflects production wiring. Story
+        # 6.20 AC3 — it also mirrors the real met SET via
+        # `set_goals_met_indices`.
         tracker.set_checkpoints_passed(6)
+        tracker.set_goals_met_indices([0, 1, 2, 3, 4, 5])
         tracker.schedule_completion(survival_pct=100)
         await asyncio.sleep(0.02)
         # Release the exit-line wait.
@@ -1130,6 +1135,8 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
         "legacy hardcoded 0 retired 2026-05-20."
     )
     assert data["total_checkpoints"] == 6
+    # Story 6.20 AC3 — the REAL met SET ships alongside the count.
+    assert data["goals_met_indices"] == [0, 1, 2, 3, 4, 5]
 
 
 def test_set_checkpoints_passed_threads_through_character_hung_up_envelope(

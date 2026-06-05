@@ -132,6 +132,19 @@ async def _amain(args: argparse.Namespace) -> int:
             for a, b, jac in result.overlap_pairs:
                 print(f"      {a} ~ {b}  (jaccard {jac})")
 
+        # Story 6.20 AC4 — authoring-drift lint: hint_text (learner-facing) and
+        # prompt_segment (character-facing) share too few salient tokens, so the
+        # on-screen consigne may not match what the character actually pursues.
+        # Advisory only — does NOT block the write.
+        if result.hint_prompt_drift:
+            print(
+                "\n  ⚠️  hint_text ↔ prompt_segment drift "
+                "(low keyword overlap — the consigne may not match what the "
+                "character asks; review):"
+            )
+            for cid, overlap in result.hint_prompt_drift:
+                print(f"      {cid}  (overlap {overlap})")
+
         if args.dry_run:
             print("\n--- scenario YAML (dry run, not written) ---\n")
             print(result.yaml_text)

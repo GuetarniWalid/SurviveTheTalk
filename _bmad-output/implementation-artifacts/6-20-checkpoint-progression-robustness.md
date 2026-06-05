@@ -1,6 +1,6 @@
 # Story 6.20: Checkpoint progression robustness & envelope cleanup
 
-Status: ready-for-dev
+Status: review
 
 > Design decisions RESOLVED with Walid 2026-06-04. **Scope note:** the consigne↔character *alignment* fix moved to **Story 6.21** (character-enforced ordering) — Walid clarified the app is always guided/ordered, so the HUD's lowest-unmet display was already correct and the "frontier" idea is dropped. This story keeps only the **independent robustness + cleanup** items the alignment audit surfaced. Nothing coded yet.
 
@@ -58,12 +58,12 @@ See `## Smoke Test Gate`: fast re-speak does not lose a just-completed tick (AC1
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Serialize non-terminal classify (AC1)** — in `checkpoint_manager.py::_schedule_classification` (L610-621), on the non-terminal path **await** the prior in-flight classify (let it apply flips + recompose + emit) before scheduling the new one, instead of `prior.cancel()`. Keep the terminal-turn path + generation guard intact. Regression test: two finalized frames back-to-back through the real pipeline with a slow stub classifier → the first turn's flip is NOT lost.
-- [ ] **Task 2 — Dead `next_hint` cleanup (AC2)** — remove `next_hint` from the server emit (`checkpoint_manager.py:565,773,806`) + `hintText` from `CheckpointAdvancedPayload` + the handler parse (`data_channel_handler.dart:140-153`). Update any tests that asserted the field.
-- [ ] **Task 3 — `call_end` SET-based reconcile (AC3)** — add `goals_met_indices` to the `call_end` envelope (`patience_tracker.py` ~L1205, sourced from `CheckpointManager._goals_met_indices()`); in `call_screen.dart` `onCallEnd` (~L614-630) prefer the real set (walk-up-only), falling back to the count-based path when absent.
-- [ ] **Task 4 — Authoring lint (AC4)** — in the Story 6.16 scenario builder / `scenarios.py` load path, flag checkpoints whose `hint_text` and `prompt_segment` share too few salient tokens (keyword-overlap threshold).
-- [ ] **Task 5 — Lost-tail envelope self-heal (AC5)** — also emit the full-state `checkpoint_advanced` on the reliable LiveKit datachannel (or a periodic idempotent full-state resend); keep the URGENT copy.
-- [ ] **Task 6 — Pre-commit gates + smoke gate (AC7, AC8).**
+- [x] **Task 1 — Serialize non-terminal classify (AC1)** — in `checkpoint_manager.py::_schedule_classification` (L610-621), on the non-terminal path **await** the prior in-flight classify (let it apply flips + recompose + emit) before scheduling the new one, instead of `prior.cancel()`. Keep the terminal-turn path + generation guard intact. Regression test: two finalized frames back-to-back through the real pipeline with a slow stub classifier → the first turn's flip is NOT lost.
+- [x] **Task 2 — Dead `next_hint` cleanup (AC2)** — remove `next_hint` from the server emit (`checkpoint_manager.py:565,773,806`) + `hintText` from `CheckpointAdvancedPayload` + the handler parse (`data_channel_handler.dart:140-153`). Update any tests that asserted the field.
+- [x] **Task 3 — `call_end` SET-based reconcile (AC3)** — add `goals_met_indices` to the `call_end` envelope (`patience_tracker.py` ~L1205, sourced from `CheckpointManager._goals_met_indices()`); in `call_screen.dart` `onCallEnd` (~L614-630) prefer the real set (walk-up-only), falling back to the count-based path when absent.
+- [x] **Task 4 — Authoring lint (AC4)** — in the Story 6.16 scenario builder / `scenarios.py` load path, flag checkpoints whose `hint_text` and `prompt_segment` share too few salient tokens (keyword-overlap threshold).
+- [x] **Task 5 — Lost-tail envelope self-heal (AC5)** — also emit the full-state `checkpoint_advanced` on the reliable LiveKit datachannel (or a periodic idempotent full-state resend); keep the URGENT copy.
+- [x] **Task 6 — Pre-commit gates + smoke gate (AC7, AC8).** — Server `ruff check`/`ruff format`/`pytest` green (621 passed); client `flutter analyze` clean + `flutter test` green (405 passed). Smoke gate (AC8) reserved for Walid's Pixel 9 device.
 
 ## Dev Notes
 
@@ -101,16 +101,46 @@ See `## Smoke Test Gate`: fast re-speak does not lose a just-completed tick (AC1
 ## Dev Agent Record
 
 ### Agent Model Used
-_(to be filled by dev)_
+claude-opus-4-8 (`/bmad-dev-story`, ultracode multi-agent review pass)
 
 ### Debug Log References
+- Server gates: `ruff check .` clean, `ruff format --check .` clean (89 files), full `pytest` **622 passed** (was ~615 pre-story; +7 net new tests).
+- Client gates: `flutter analyze` → "No issues found!"; `flutter test` → **405 passed** (was 404; +1 net new AC3 reconcile test).
+
+### Review (ultracode, 2026-06-04)
+4-lens adversarial review (AC-coverage / async-correctness / regression / test-quality) with every raised finding skeptic-verified: **17 raised → 2 confirmed real → both FIXED**, 15 dismissed (verified false positives / out-of-scope / nits).
+- **HIGH (fixed):** AC1's await-not-cancel re-opened a terminal-suppression race the old cancel path structurally avoided. When turn 1 flips the FINAL goal(s) (→ `schedule_completion`) while turn 2 is already committed to the non-terminal path (its terminal precheck read a stale `met_count`), turn 2's user frame would be forwarded to the LLM and race the survived exit line (Deviation #7 double-utterance). Fix: after `_serialize_then_classify`, suppress the frame when `met_count == total` (call completing); `_serialize_then_classify` also skips scheduling a no-op classify once `pending_goals` is empty. Both signals are mock-independent (real instance state). New regression test `test_fast_respeak_into_completion_suppresses_second_user_frame`. (The verifier confirmed the symmetric patience-hangup sub-case is UNREACHABLE on the non-terminal path — a non-terminal precheck means one more fail cannot zero the meter — so only the completion case needed handling.)
+- **LOW (fixed):** stale `[hintText]` dartdoc reference in `checkpoint_advanced_payload.dart` contradicting AC2 → corrected to "HUD renders nothing when `hints` empty".
 
 ### Completion Notes List
-_(to be filled by dev)_
+
+**AC1 — serialize non-terminal classify.** Added `CheckpointManager._serialize_then_classify` (new non-terminal path): it `await`s the in-flight classify to natural completion (flips + recompose + envelope land) before bumping the generation counter and scheduling the fresh classify, replacing the old `prior.cancel()` that discarded a genuinely-met goal on fast re-speak. `process_frame` is serialized per pipecat processor, so awaiting the prior task inside it is re-entrancy-safe; the await also correctly defers the LLM forward until the recomposed (smaller) pending set lands. The terminal blocking path (`_run_classifier_blocking` → cancel-based `_schedule_classification`) and the generation guard are untouched.
+
+**AC2 — dead `next_hint` removed.** Dropped from `build_initial_envelope` + `_emit_checkpoint_advanced` (and deleted the now-unused `_suggested_focus_hint`) on the server; removed `hintText` from `CheckpointAdvancedPayload` + the `data_channel_handler.dart` parse/validation. The HUD already computed the active step locally from `goals_met_indices` + `hints`.
+
+**AC3 — `call_end` SET-based reconcile.** New `PatienceTracker.set_goals_met_indices` (mirrors `set_checkpoints_passed`), called by `CheckpointManager` on every flip; `call_end` now carries `goals_met_indices`. `call_screen.dart` `onCallEnd` prefers the real set (union with current → walk-up-only / never shrink), falling back to the count-based `[0..passed)` reconstruction when the field is absent (pre-6.20 server).
+
+**AC4 — authoring drift lint.** New pure `hint_prompt_drift_pairs` in `scenario_builder.py` (refactored a shared `_salient_tokens` + `_SALIENT_STOPWORDS` out of `lexical_overlap_pairs`); flags any checkpoint whose `hint_text`↔`prompt_segment` salient-token overlap is below 0.2. Surfaced as a `BuildResult.hint_prompt_drift` field + an advisory `build_scenario.py` CLI warning (never blocks the write). Static / authoring-time only — no runtime change.
+
+**AC5 — lost-tail self-heal.** `_emit_checkpoint_advanced` now pushes the SAME full-state envelope BOTH as the existing URGENT `OutputTransportMessageUrgentFrame` (immediate, queue-jumping) AND as a queued `OutputTransportMessageFrame` (ordered media-sender path) — a second independent delivery so a lost tail flip eventually lands. Both ride `send_data(reliable=True)` in this pipecat build; the client dedupes via `_animatedMet` (an identical full-state snapshot is a value-equal no-op). The terminal/hang-up tail is additionally backstopped by the AC3 `call_end` reconcile.
+
+**Test-helper note.** Added `_flip_envelopes` (URGENT-only) in `test_checkpoint_manager.py` so per-flip count/index assertions aren't doubled by the AC5 reliable copy; `_advance_envelopes` still matches all frames (used by initial-state + the AC5-duplicate assertion). The former `test_stale_verdict_dropped_by_generation_guard` was split into `test_fast_respeak_serializes_prior_classify_no_dropped_goal` (AC1, both flips land) + `test_generation_guard_drops_stale_verdict` (direct guard coverage).
 
 ### File List
-_(to be filled by dev)_
+- `server/pipeline/checkpoint_manager.py` — AC1 `_serialize_then_classify` + non-terminal path; AC2 `next_hint`/`_suggested_focus_hint` removal; AC3 `set_goals_met_indices` call; AC5 reliable-copy emit.
+- `server/pipeline/patience_tracker.py` — AC3 `_goals_met_indices` field + `set_goals_met_indices` setter + `goals_met_indices` in the `call_end` envelope.
+- `server/scripts/scenario_builder.py` — AC4 `_SALIENT_STOPWORDS` + `_salient_tokens` + `hint_prompt_drift_pairs` + `BuildResult.hint_prompt_drift` (computed in `finalize_build`).
+- `server/scripts/build_scenario.py` — AC4 CLI drift warning.
+- `client/lib/features/call/services/checkpoint_advanced_payload.dart` — AC2 `hintText` removal.
+- `client/lib/features/call/services/data_channel_handler.dart` — AC2 `next_hint` parse/validation removal.
+- `client/lib/features/call/views/call_screen.dart` — AC3 SET-based `onCallEnd` reconcile.
+- `server/tests/test_checkpoint_manager.py` — `_flip_envelopes` helper; AC1/AC2/AC3/AC5 tests; `next_hint` assertion removals.
+- `server/tests/test_patience_tracker.py` — AC3 `goals_met_indices` assertions.
+- `server/tests/test_scenario_builder.py` — AC4 drift-lint tests.
+- `client/test/features/call/services/data_channel_handler_test.dart` — AC2 `next_hint`/`hintText` removal.
+- `client/test/features/call/views/call_screen_test.dart` — AC2 `hintText` removal; AC3 SET-preference test.
 
 ## Change Log
+- 2026-06-04 — `/bmad-dev-story` implementation (ultracode). AC1 non-terminal classify serialized (`_serialize_then_classify`, await-not-cancel — no dropped goal on fast re-speak); AC2 dead `next_hint`/`hintText` removed server+client; AC3 `call_end` carries real `goals_met_indices` + client prefers the SET (walk-up-only) over the count; AC4 `hint_text`↔`prompt_segment` drift lint in the 6.16 builder (+CLI warning); AC5 per-flip `checkpoint_advanced` also emitted as a reliable queued copy (lost-tail self-heal, client dedupes). Gates green: server ruff + `pytest 622`, client `flutter analyze` clean + `flutter test 405`. Ultracode 4-lens adversarial review (17 raised → 2 confirmed → both fixed: a terminal-suppression race AC1 re-opened + a stale dartdoc). Status → review; Pixel 9 smoke gate (AC8) reserved for Walid.
 - 2026-06-04 — Refocused (Walid): the consigne↔character alignment fix moved to Story 6.21 (app is always guided/ordered → HUD lowest-unmet was already correct, "frontier" idea dropped). This story keeps only the independent robustness + cleanup items: dropped-goal serialize, dead `next_hint` cleanup, `call_end` SET-based reconcile, hint/prompt authoring lint, lost-envelope resend. Renamed from `6-20-checkpoint-hud-alignment`.
 - 2026-06-03 — Spec drafted via `/bmad-create-story` from a 32-agent alignment audit run during Story 6.18's smoke gate (call_id=216).

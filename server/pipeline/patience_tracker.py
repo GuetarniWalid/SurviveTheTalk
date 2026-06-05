@@ -380,6 +380,13 @@ class PatienceTracker(FrameProcessor):
         # by both the survived (count == total) and hang_up
         # (count < total) paths in `_run_hang_up`.
         self._checkpoints_passed: int = 0
+        # Story 6.20 AC3 — the REAL set of met-goal indices (author order),
+        # mirrored from CheckpointManager alongside `_checkpoints_passed` so
+        # the `call_end` envelope carries WHICH goals were met, not just how
+        # many. A future debrief can then reconstruct the exact set even when
+        # goals flipped out of order (the count alone would mislabel them as
+        # the first N). Empty until the first flip.
+        self._goals_met_indices: list[int] = []
         self._silence_prompt_line = silence_prompt_line
         self._hang_up_line_silence = hang_up_line_silence
         self._hang_up_line_inappropriate = hang_up_line_inappropriate
@@ -878,6 +885,19 @@ class PatienceTracker(FrameProcessor):
         """
         self._checkpoints_passed = count
 
+    def set_goals_met_indices(self, indices: list[int]) -> None:
+        """Record the current set of met-goal indices (author order).
+
+        Story 6.20 AC3 — called by CheckpointManager on every successful
+        flip alongside `set_checkpoints_passed`, so the `call_end` envelope
+        carries the REAL met set (`goals_met_indices`), not just a count.
+        The client reconcile prefers this exact set (walk-up-only) and falls
+        back to the count-based `[0..count)` when a pre-6.20 server omits it.
+        Stored as a defensive copy so a later mutation of the manager's list
+        can't retroactively change what `call_end` reports.
+        """
+        self._goals_met_indices = list(indices)
+
     def schedule_completion(
         self, survival_pct: int, winning_user_text: str | None = None
     ) -> None:
@@ -1256,6 +1276,12 @@ class PatienceTracker(FrameProcessor):
                             "survival_pct": survival_pct,
                             "checkpoints_passed": self._checkpoints_passed,
                             "total_checkpoints": self._total_checkpoints,
+                            # Story 6.20 AC3 — the REAL met set (author order),
+                            # so a future debrief can't mislabel WHICH goals
+                            # were met when they flipped out of order. The
+                            # client prefers this over the count-based
+                            # `[0..checkpoints_passed)` reconstruction.
+                            "goals_met_indices": list(self._goals_met_indices),
                         },
                     }
                 ),

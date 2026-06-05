@@ -602,30 +602,60 @@ class _CallScreenState extends State<CallScreen> {
               //
               // Story 6.7 Deviation #2 — BEFORE dispatching the bloc
               // event, reconcile the HUD UP to the server-authoritative
-              // checkpoints_passed count. Closes the "cancel-mid-flight
-              // envelope-lost race" (Story 6.6 deferred-work line 406):
-              // if N `checkpoint_advanced` pushes succeeded but the final
-              // one was cancelled by the pipeline shutdown, the local met
-              // count would lag the server. Story 6.10 — reconcile by
-              // marking the first `pi` indices met (sequential best-guess;
-              // the server only sends the COUNT here, not the set), with
-              // `justFlippedIndex: null` so no completion animation fires
-              // on the reconcile. Only walk UP — never back.
+              // met state. Closes the "cancel-mid-flight envelope-lost
+              // race" (Story 6.6 deferred-work line 406): if N
+              // `checkpoint_advanced` pushes succeeded but the final one
+              // was cancelled by the pipeline shutdown, the local met count
+              // would lag the server.
+              //
+              // Story 6.20 AC3 — prefer the REAL met SET when the server
+              // sends `goals_met_indices`, so a future debrief can't
+              // mislabel WHICH goals were met when they flipped out of
+              // order. Fall back to the count-based `[0..passed)`
+              // reconstruction only when the field is absent (pre-6.20
+              // server, rolling deploy). Either way only walk UP — union
+              // with the current set so the reconcile never SHRINKS what
+              // the HUD already showed. `justFlippedIndex: null` so no
+              // completion animation fires on the reconcile.
               onCallEnd: (reason, data) {
                 if (!context.mounted) return;
-                final passed = data['checkpoints_passed'];
                 final total = data['total_checkpoints'];
                 final current = _checkpointNotifier.value;
-                if (passed is num && total is num && current != null) {
-                  final pi = passed.toInt();
+                if (total is num && current != null) {
                   final ti = total.toInt();
-                  if (pi > current.metCount && ti > 0 && pi <= ti) {
-                    _checkpointNotifier.value = CheckpointSnapshot(
-                      hints: current.hints,
-                      metIndices: [for (var i = 0; i < pi; i++) i],
-                      total: ti,
-                      justFlippedIndex: null,
-                    );
+                  if (ti > 0) {
+                    // Build the server-authoritative met set: prefer the
+                    // real index set, else the count-based fallback.
+                    final List<int> serverMet;
+                    final rawSet = data['goals_met_indices'];
+                    if (rawSet is List) {
+                      final seen = <int>{};
+                      for (final e in rawSet) {
+                        if (e is num) {
+                          final i = e.toInt();
+                          if (i >= 0 && i < ti) seen.add(i);
+                        }
+                      }
+                      serverMet = seen.toList();
+                    } else {
+                      final passed = data['checkpoints_passed'];
+                      final pi = passed is num ? passed.toInt() : 0;
+                      final clamped = pi < 0 ? 0 : (pi > ti ? ti : pi);
+                      serverMet = [for (var i = 0; i < clamped; i++) i];
+                    }
+                    // Walk UP only: union with what the HUD already shows so
+                    // a (theoretically) smaller server set never erases a
+                    // locally-rendered tick.
+                    final union = {...current.metIndices, ...serverMet}.toList()
+                      ..sort();
+                    if (union.length > current.metCount) {
+                      _checkpointNotifier.value = CheckpointSnapshot(
+                        hints: current.hints,
+                        metIndices: union,
+                        total: ti,
+                        justFlippedIndex: null,
+                      );
+                    }
                   }
                 }
                 context.read<CallBloc>().add(RemoteCallEnded(reason, data));

@@ -789,7 +789,6 @@ void main() {
             checkpointId: 'order_item',
             index: 1,
             total: 6,
-            hintText: 'Tell the waiter what you want to drink.',
             goalsMetIndices: [0, 1],
             hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
@@ -852,7 +851,6 @@ void main() {
             checkpointId: 'drink',
             index: 3,
             total: 6,
-            hintText: 'Clarify the cooking style.',
             goalsMetIndices: [0, 3],
             hints: ['greet', 'order', 'clarify', 'drink', 'confirm', 'thanks'],
           ),
@@ -930,7 +928,6 @@ void main() {
             checkpointId: 'greet',
             index: 0,
             total: 6,
-            hintText: 'Tell the waitress you want to order.',
             goalsMetIndices: [0],
             hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
@@ -940,7 +937,6 @@ void main() {
             checkpointId: 'order_item',
             index: 1,
             total: 6,
-            hintText: 'Tell the waitress what you want to drink.',
             goalsMetIndices: [0, 1],
             hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),
@@ -997,6 +993,96 @@ void main() {
     );
 
     testWidgets(
+      'call_end prefers the real goals_met_indices SET over the count',
+      (tester) async {
+        // Story 6.20 AC3 — when call_end carries `goals_met_indices`, the
+        // reconcile must use that EXACT set (so out-of-order completions
+        // are labelled correctly), NOT the count-based `[0..passed)`
+        // reconstruction which would mislabel WHICH goals were met.
+        final mock = MockDataChannelHandler();
+        when(() => mock.dispose()).thenAnswer((_) async {});
+
+        void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+        void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+
+        final fixture = _buildRoomFastConnect();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CallScreen(
+              scenario: _scenario,
+              callSession: _session,
+              room: fixture.room,
+              debugCanvasFallback: false,
+              debugPlaybackDrainBuffer: Duration.zero,
+              debugEndCallResultTimeout: Duration.zero,
+              debugHandlerBuilder: ({
+                required room,
+                required onEmotion,
+                required onHangUpWarning,
+                required onCallEnd,
+                required onBotSpeakingEnded,
+                required onCheckpointAdvanced,
+                required onEnvWarning,
+              }) {
+                capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                capturedOnCallEnd = onCallEnd;
+                return mock;
+              },
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 1100));
+
+        // Local HUD shows an out-of-order pair {0, 3} (count 2).
+        capturedOnCheckpointAdvanced!(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'drink',
+            index: 3,
+            total: 6,
+            goalsMetIndices: [0, 3],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
+          ),
+        );
+        await tester.pump();
+
+        final state = tester.state<State<CallScreen>>(find.byType(CallScreen))
+            // ignore: invalid_use_of_visible_for_testing_member
+            as dynamic;
+        final ValueNotifier<CheckpointSnapshot?> notifier =
+            state.checkpointNotifierForTest as ValueNotifier<CheckpointSnapshot?>;
+        expect(notifier.value?.metIndices, [0, 3]);
+
+        // call_end carries the REAL set {0, 3, 5} (one more lost-tail flip),
+        // plus a count that would WRONGLY map to [0, 1, 2]. The SET wins.
+        capturedOnCallEnd!('survived', <String, dynamic>{
+          'reason': 'survived',
+          'survival_pct': 100,
+          'checkpoints_passed': 3,
+          'total_checkpoints': 6,
+          'goals_met_indices': [0, 3, 5],
+        });
+        await tester.pump();
+
+        expect(
+          notifier.value?.metIndices,
+          [0, 3, 5],
+          reason: 'AC3 — the exact met SET is preferred over the count, so '
+              'out-of-order completions are never mislabelled as [0..N)',
+        );
+        expect(notifier.value?.justFlippedIndex, isNull);
+
+        final bloc =
+            tester.element(find.byType(Scaffold).first).read<CallBloc>();
+        bloc.add(const PlaybackDrained());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
       'call_end with checkpoints_passed LOWER than current does NOT walk back',
       (tester) async {
         // Defensive: never reconcile DOWN — that would mask a genuine
@@ -1041,7 +1127,6 @@ void main() {
             checkpointId: 'late',
             index: 3,
             total: 6,
-            hintText: 'late hint',
             goalsMetIndices: [0, 1, 2, 3],
             hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
           ),

@@ -2,16 +2,18 @@
 /// envelope (server-side emitter: `server/pipeline/checkpoint_manager.py`).
 ///
 /// Wire format: `{type: "checkpoint_advanced", data: {checkpoint_id,
-/// index, total, next_hint}}`. The `data` map is validated by
-/// [DataChannelHandler] before this class is constructed; consumers
+/// index, total, goals_met_indices, hints}}`. The `data` map is validated
+/// by [DataChannelHandler] before this class is constructed; consumers
 /// receive a fully-shaped, non-null instance.
 ///
 /// `index` is the author-order index of the goal that JUST flipped to met
 /// (Story 6.10 — under goal-based dialogue goals can flip out of order, so
 /// `index` is no longer monotonic; it identifies the most-recent flip for
 /// the "just-lit" animation). `total` is the total objective count.
-/// `hintText` is the hint of the suggested-focus pending goal (server-side
-/// field name `next_hint` is retained on the wire; renamed here for clarity).
+///
+/// Story 6.20 AC2 — the dead `next_hint` / `hintText` field was removed: the
+/// HUD computes the active step locally from [goalsMetIndices] + [hints] and
+/// never consumed it.
 ///
 /// Story 6.10 — [goalsMetIndices] carries the FULL set of met-goal indices
 /// (author order) so a consumer can render the exact set, including
@@ -28,12 +30,12 @@
 /// step locally from this list (including the out-of-order completion
 /// choreography), so the wire stays idempotent + loss-robust (same
 /// philosophy as [goalsMetIndices]). Empty when the field is absent
-/// (pre-refonte server) — the HUD then falls back to [hintText].
+/// (pre-refonte server) — the HUD then renders nothing (there is no
+/// per-step fallback anymore; Story 6.20 AC2 removed `hintText`).
 class CheckpointAdvancedPayload {
   final String checkpointId;
   final int index;
   final int total;
-  final String hintText;
   final List<int> goalsMetIndices;
   final List<String> hints;
 
@@ -41,7 +43,6 @@ class CheckpointAdvancedPayload {
     required this.checkpointId,
     required this.index,
     required this.total,
-    required this.hintText,
     required this.goalsMetIndices,
     required this.hints,
   });

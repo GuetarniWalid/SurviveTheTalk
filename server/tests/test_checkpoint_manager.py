@@ -68,14 +68,30 @@ def _advance_envelopes(captured: list[Frame]) -> list[Frame]:
     # The initial-state envelope is a queued OutputTransportMessageFrame;
     # the mid-turn flip envelopes are URGENT (OutputTransportMessageUrgentFrame,
     # a SystemFrame) so they jump the per-processor queue and reach the client
-    # without waiting behind the character LLM's in-flight generation. Match
-    # both so this helper captures the full checkpoint_advanced stream.
+    # without waiting behind the character LLM's in-flight generation. Story
+    # 6.20 AC5 ALSO emits a queued OutputTransportMessageFrame duplicate of
+    # each flip (lost-tail self-heal). This helper matches ALL of them — used
+    # by initial-state tests (one queued frame, no flip) and the AC5 duplicate
+    # assertion. Per-flip count/index assertions use `_flip_envelopes` instead
+    # so the AC5 duplicate doesn't double the count.
     return [
         f
         for f in captured
         if isinstance(
             f, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
         )
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+
+
+def _flip_envelopes(captured: list[Frame]) -> list[Frame]:
+    # The per-flip ANIMATION stream only: the URGENT frames. Excludes the
+    # Story 6.20 AC5 reliable OutputTransportMessageFrame duplicate (and the
+    # initial-state queued frame), so a single flip == exactly one entry here.
+    return [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageUrgentFrame)
         and f.message.get("type") == "checkpoint_advanced"
     ]
 
@@ -328,15 +344,15 @@ def test_met_goal_flips_recomposes_prompt_emits_envelope() -> None:
     assert "prompt segment 2" in si
     assert "prompt segment 0" not in si
 
-    # Envelope reports the goal that JUST flipped (cp0 / index 0) +
-    # the full met set + the suggested-focus hint (first pending = cp1).
-    envelopes = _advance_envelopes(captured)
+    # Envelope reports the goal that JUST flipped (cp0 / index 0) + the
+    # full met set (Story 6.20 AC2 dropped the dead `next_hint`).
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 1
     data = envelopes[0].message["data"]
     assert data["checkpoint_id"] == "cp0"
     assert data["index"] == 0
     assert data["total"] == 3
-    assert data["next_hint"] == "hint 1"
+    assert "next_hint" not in data
     assert data["goals_met_indices"] == [0]
 
     tracker.apply_exchange_outcome.assert_called_with(success=True)
@@ -541,7 +557,7 @@ def test_all_goals_met_routes_to_schedule_completion() -> None:
     assert manager.met_count == 2
     # Story 6.10 behavior change vs 6.6: the final goal flip DOES emit a
     # checkpoint_advanced envelope (so the client fills the last circle).
-    envelopes = _advance_envelopes(captured)
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 2
     last = envelopes[-1].message["data"]
     assert last["index"] == 1
@@ -551,13 +567,18 @@ def test_all_goals_met_routes_to_schedule_completion() -> None:
     tracker.set_checkpoints_passed.assert_any_call(2)
 
 
-# ---------- Test 9: stale verdict suppressed by generation guard ---------
+# ---------- Test 9: fast re-speak serialization + generation guard -------
 
 
-def test_stale_verdict_dropped_by_generation_guard() -> None:
-    """Two finalized TranscriptionFrames back-to-back: the older
-    classifier task's verdict must NOT flip a goal after the newer task
-    has already won. Exactly ONE flip + ONE apply_exchange_outcome lands."""
+def test_fast_respeak_serializes_prior_classify_no_dropped_goal() -> None:
+    """Story 6.20 AC1 — a new finalized turn arriving WHILE the prior turn's
+    classify is still in flight must AWAIT the prior classify to completion
+    (its flip lands) before judging the new turn. Both turns' goals flip —
+    the just-completed one is NOT silently dropped on fast re-speak.
+
+    Before the fix, the non-terminal path `prior.cancel()`-ed the in-flight
+    classify, discarding the first turn's genuinely-met goal (breaks_progress).
+    """
     manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
         classify_response=True,
         classify_delay=0.05,
@@ -568,21 +589,94 @@ def test_stale_verdict_dropped_by_generation_guard() -> None:
         await manager.process_frame(
             _make_user_frame("first."), FrameDirection.DOWNSTREAM
         )
+        # Re-speak before the first classify resolves (its task is still
+        # in flight): the non-terminal path must await it, not cancel it.
         await manager.process_frame(
             _make_user_frame("second."), FrameDirection.DOWNSTREAM
         )
-        if manager._in_flight is not None:
-            await asyncio.gather(manager._in_flight, return_exceptions=True)
+        await _drain(manager)
 
     _run(_drive())
 
-    assert manager.met_count == 1
+    # BOTH the first and second turns' goals flipped — nothing dropped.
+    assert manager.met_count == 2
     success_calls = [
         c
         for c in tracker.apply_exchange_outcome.call_args_list
         if c.kwargs.get("success") is True
     ]
-    assert len(success_calls) == 1
+    assert len(success_calls) == 2
+
+
+def test_generation_guard_drops_stale_verdict() -> None:
+    """The generation guard still suppresses a classify task whose generation
+    is stale (a newer turn bumped the counter). Exercised directly so it stays
+    covered now that the non-terminal path serializes rather than cancels."""
+    manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
+        classify_response=True,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Simulate a newer turn having advanced the generation counter, then
+        # run a classify task born with an OLD generation number.
+        manager._generation = 5
+        await manager._classify_and_flip_goals("late verdict.", 3)
+
+    _run(_drive())
+
+    # Stale task's side effects suppressed: no flip, no outcome applied.
+    assert manager.met_count == 0
+    tracker.apply_exchange_outcome.assert_not_called()
+
+
+def test_fast_respeak_into_completion_suppresses_second_user_frame() -> None:
+    """Story 6.20 review (async-correctness) — regression for the terminal-
+    suppression race the AC1 await-not-cancel change could open.
+
+    Turn 1 flips the FINAL pending goals in ONE verdict (→ schedule_completion).
+    Turn 2 arrives as a fast re-speak while turn 1's classify is still in flight,
+    so its terminal precheck read a STALE (pre-flip) met_count and committed to
+    the non-terminal path. After serialization awaits turn 1 (call now
+    completing), turn 2's user frame MUST be suppressed — never forwarded to the
+    LLM — so the survived exit line stays the sole final utterance (Deviation #7).
+    The old cancel-based path avoided this only because the cancelled prior never
+    reached schedule_completion.
+    """
+    checkpoints = _make_checkpoints(2)
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # Turn 1 ("first.") flips BOTH remaining goals at once → completion.
+        if call_index == 0:
+            return {g["id"]: True for g in pending}
+        return {g["id"]: None for g in pending}
+
+    manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        multi_response_fn=_fn,
+        classify_delay=0.02,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        # Fast re-speak before turn 1's classify resolves.
+        await manager.process_frame(
+            _make_user_frame("second."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    assert manager.met_count == 2  # turn 1 completed every goal
+    tracker.schedule_completion.assert_called_once()
+    # The SECOND user turn must NOT have been forwarded to the LLM (suppressed
+    # because the awaited prior turn completed the call); only "first." flows.
+    forwarded = [f.text for f in captured if isinstance(f, TranscriptionFrame)]
+    assert "second." not in forwarded
+    assert "first." in forwarded
 
 
 # ---------- Test 10: last character line read from LLMContext ------------
@@ -808,7 +902,7 @@ def test_preemptive_completion_suppresses_user_frame_on_last_goal() -> None:
     forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
     assert forwarded == []
     # The last goal's flip emits one envelope with the full met set.
-    envelopes = _advance_envelopes(captured)
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 1
     assert envelopes[0].message["data"]["goals_met_indices"] == [0, 1]
 
@@ -962,7 +1056,8 @@ def test_build_initial_envelope_returns_index_zero_frame() -> None:
     assert data["index"] == 0
     assert data["total"] == 6
     assert data["checkpoint_id"] == "cp0"
-    assert data["next_hint"] == "hint 0"
+    # Story 6.20 AC2 — dead `next_hint` removed from the wire.
+    assert "next_hint" not in data
     # Story 6.10 — initial state has zero goals met.
     assert data["goals_met_indices"] == []
     # Story 6.10 UI refonte — every step's hint, author order, so the
@@ -1027,7 +1122,7 @@ def test_emit_initial_state_pushes_index_zero_envelope() -> None:
     assert data["index"] == 0
     assert data["total"] == 6
     assert data["checkpoint_id"] == "cp0"
-    assert data["next_hint"] == "hint 0"
+    assert "next_hint" not in data
     assert data["goals_met_indices"] == []
     assert manager.met_count == 0
 
@@ -1198,7 +1293,7 @@ def test_two_goals_flip_in_same_turn() -> None:
     assert manager.goals_state["cp3"] == "met"
     assert manager.met_count == 2
 
-    envelopes = _advance_envelopes(captured)
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 2
     indices = {e.message["data"]["index"] for e in envelopes}
     assert indices == {2, 3}
@@ -1382,7 +1477,7 @@ def test_envelope_carries_goals_met_indices() -> None:
 
     _run(_drive())
 
-    envelopes = _advance_envelopes(captured)
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 2
     assert envelopes[0].message["data"]["goals_met_indices"] == [0]
     assert envelopes[1].message["data"]["goals_met_indices"] == [0, 1]
@@ -1417,11 +1512,11 @@ def test_suggested_focus_is_first_pending_in_author_order() -> None:
 
     # cp2 met; pending author-order-first is now cp0.
     assert manager.met_count == 1
-    envelopes = _advance_envelopes(captured)
+    envelopes = _flip_envelopes(captured)
     assert len(envelopes) == 1
-    # next_hint points at the author-order-first PENDING goal (cp0), not
-    # the just-flipped cp2.
-    assert envelopes[0].message["data"]["next_hint"] == "hint 0"
+    # Story 6.20 AC2 — dead `next_hint` removed; the active step (cp0) is
+    # computed client-side from goals_met_indices + hints.
+    assert "next_hint" not in envelopes[0].message["data"]
     si = stub_llm._settings.system_instruction
     # Story 6.21 — the focus block firmly names the lowest-unmet objective
     # (cp0) as the only one to pursue next, holding the line until addressed.
@@ -1490,3 +1585,77 @@ def test_pending_goals_property_preserves_author_order() -> None:
         "cp2": "pending",
         "cp3": "met",
     }
+
+
+# ============================================================
+# Story 6.20 — AC5 lost-tail self-heal + AC3 call_end met-set
+# ============================================================
+
+
+def test_each_flip_emits_urgent_and_reliable_duplicate() -> None:
+    """Story 6.20 AC5 — every flip pushes BOTH an URGENT
+    OutputTransportMessageUrgentFrame (the immediate animation) AND a queued
+    OutputTransportMessageFrame duplicate carrying the SAME full-state
+    payload (the lost-tail self-heal), so a lost final URGENT frame still
+    lands on the ordered datachannel. The client dedupes the duplicate."""
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        classify_response=True,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("I want chicken."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    urgent = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageUrgentFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    reliable = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and not isinstance(f, OutputTransportMessageUrgentFrame)
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert len(urgent) == 1
+    assert len(reliable) == 1
+    # Identical full-state payload → the client treats the reliable copy as a
+    # value-equal no-op (deduped via _animatedMet).
+    assert urgent[0].message == reliable[0].message
+    assert reliable[0].message["data"]["goals_met_indices"] == [0]
+
+
+def test_set_goals_met_indices_synced_to_tracker_on_flip() -> None:
+    """Story 6.20 AC3 — on every successful flip the manager mirrors the REAL
+    met SET (author-order indices) to the PatienceTracker so the `call_end`
+    envelope can carry which goals were met, not just how many. Verified for
+    an OUT-OF-ORDER completion (the case the count alone would mislabel)."""
+    checkpoints = _make_checkpoints(4)
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # Meet cp2 first (out of order) — the set must be [2], not [0].
+        return {g["id"]: (g["id"] == "cp2") or None for g in pending}
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        multi_response_fn=_fn,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("grilled, please."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    tracker.set_goals_met_indices.assert_called_with([2])
+    tracker.set_checkpoints_passed.assert_called_with(1)

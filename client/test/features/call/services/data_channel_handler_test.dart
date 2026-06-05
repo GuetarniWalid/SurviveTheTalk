@@ -502,7 +502,6 @@ void main() {
             'checkpoint_id': 'order_item',
             'index': 2,
             'total': 6,
-            'next_hint': 'Tell the waiter what you want to drink.',
           },
         }),
       );
@@ -512,10 +511,6 @@ void main() {
       expect(received.first.checkpointId, 'order_item');
       expect(received.first.index, 2);
       expect(received.first.total, 6);
-      expect(
-        received.first.hintText,
-        'Tell the waiter what you want to drink.',
-      );
       // Story 6.10 — no goals_met_indices on this (pre-6.10-shaped)
       // envelope, so the parser reconstructs the linear set [0..index-1].
       expect(received.first.goalsMetIndices, [0, 1]);
@@ -548,7 +543,6 @@ void main() {
             'checkpoint_id': 'drink',
             'index': 3,
             'total': 6,
-            'next_hint': 'Clarify the cooking style.',
             'goals_met_indices': [0, 3],
           },
         }),
@@ -583,7 +577,6 @@ void main() {
             'checkpoint_id': 'greet',
             'index': 0,
             'total': 6,
-            'next_hint': 'Greet the waiter.',
             'goals_met_indices': <int>[],
           },
         }),
@@ -620,7 +613,6 @@ void main() {
             'checkpoint_id': 'main',
             'index': 1,
             'total': 5,
-            'next_hint': 'whatever',
             'goals_met_indices': [3, 99, -1, 'oops', 1, 1],
           },
         }),
@@ -654,7 +646,6 @@ void main() {
             'checkpoint_id': 'greet',
             'index': 0,
             'total': 3,
-            'next_hint': 'Greet the waiter.',
             'goals_met_indices': <int>[],
             'hints': ['Greet.', 'Order a dish.', 'Pick a drink.'],
           },
@@ -689,7 +680,6 @@ void main() {
             'checkpoint_id': 'greet',
             'index': 0,
             'total': 3,
-            'next_hint': 'Greet the waiter.',
             'goals_met_indices': <int>[],
           },
         }),
@@ -727,7 +717,6 @@ void main() {
             'checkpoint_id': 42,
             'index': 'abc',
             'total': 6,
-            'next_hint': 'whatever',
           },
         }),
       );
@@ -762,7 +751,6 @@ void main() {
             'checkpoint_id': 'overflow',
             'index': 10,
             'total': 5,
-            'next_hint': 'oops',
           },
         }),
       );
@@ -794,7 +782,6 @@ void main() {
           'checkpoint_id': 'first',
           'index': 0,
           'total': 0,
-          'next_hint': 'huh',
         },
       }),
     );

@@ -47,7 +47,7 @@ import pathlib
 import re
 import sys
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 import yaml
@@ -268,6 +268,9 @@ class BuildResult:
     yaml_text: str
     structural_problems: list[str]
     overlap_pairs: list[tuple[str, str, float]]
+    # Story 6.20 AC4 — checkpoints whose hint_text ↔ prompt_segment overlap is
+    # below threshold (authoring drift). Advisory, never blocks the write.
+    hint_prompt_drift: list[tuple[str, float]] = field(default_factory=list)
     voice_id: str | None = None
     voice_reason: str = ""
 
@@ -357,6 +360,64 @@ def sanitize_checkpoints(raw_checkpoints: list[dict]) -> list[dict]:
     return out
 
 
+# Salient-token stopword set + tokenizer shared by the lexical heuristics
+# (`lexical_overlap_pairs` and the Story 6.20 `hint_prompt_drift_pairs`). Drops
+# closed-class / scenario-generic words so the overlap math reflects CONTENT
+# tokens, not grammar glue.
+_SALIENT_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "or",
+    "and",
+    "in",
+    "on",
+    "user",
+    "learner",
+    "they",
+    "their",
+    "them",
+    "that",
+    "this",
+    "is",
+    "are",
+    "with",
+    "for",
+    "any",
+    "what",
+    "when",
+    "where",
+    "it",
+    "as",
+    "about",
+    "must",
+    "his",
+    "her",
+    # Story 6.20 — imperative-glue words common to `hint_text` directives
+    # ("tell the waiter…", "ask them…") that would otherwise inflate the
+    # hint↔prompt overlap and hide genuine topical drift.
+    "you",
+    "your",
+    "tell",
+    "ask",
+    "say",
+    "give",
+    "get",
+    "let",
+    "make",
+    "want",
+}
+
+
+def _salient_tokens(text: str) -> set[str]:
+    """Lowercase content tokens of `text` (drop stopwords + <=2-char words).
+    Pure + deterministic; shared by the lexical-overlap heuristics."""
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    return {w for w in words if w not in _SALIENT_STOPWORDS and len(w) > 2}
+
+
 def lexical_overlap_pairs(
     checkpoints: list[dict], *, threshold: float = 0.6
 ) -> list[tuple[str, str, float]]:
@@ -366,44 +427,10 @@ def lexical_overlap_pairs(
     is the LLM critique, and the empirical backstop is the Story 6.15 `too_easy`
     gate. Pure + deterministic.
     """
-    _stop = {
-        "the",
-        "a",
-        "an",
-        "to",
-        "of",
-        "or",
-        "and",
-        "in",
-        "on",
-        "user",
-        "learner",
-        "they",
-        "their",
-        "them",
-        "that",
-        "this",
-        "is",
-        "are",
-        "with",
-        "for",
-        "any",
-        "what",
-        "when",
-        "where",
-        "it",
-        "as",
-        "about",
-        "must",
-        "his",
-        "her",
-    }
-
-    def toks(cp: dict) -> set[str]:
-        words = re.findall(r"[a-z']+", cp.get("success_criteria", "").lower())
-        return {w for w in words if w not in _stop and len(w) > 2}
-
-    sets = [(cp["id"], toks(cp)) for cp in checkpoints]
+    sets = [
+        (cp["id"], _salient_tokens(cp.get("success_criteria", "")))
+        for cp in checkpoints
+    ]
     pairs: list[tuple[str, str, float]] = []
     for i in range(len(sets)):
         for j in range(i + 1, len(sets)):
@@ -415,6 +442,38 @@ def lexical_overlap_pairs(
             if jac >= threshold:
                 pairs.append((a_id, b_id, round(jac, 2)))
     return pairs
+
+
+def hint_prompt_drift_pairs(
+    checkpoints: list[dict], *, threshold: float = 0.2
+) -> list[tuple[str, float]]:
+    """Story 6.20 AC4 — authoring-drift lint: flag checkpoints whose `hint_text`
+    (shown to the LEARNER) and `prompt_segment` (what the CHARACTER is steered to
+    pursue) share too few salient tokens — a sign the two were authored about
+    different things, so the on-screen consigne won't match what the character
+    actually asks.
+
+    Returns `(checkpoint_id, overlap)` for each checkpoint whose overlap is BELOW
+    `threshold`, where `overlap = |hint ∩ prompt| / |hint|` (the fraction of the
+    hint's content words that also appear in the prompt segment). The hint is the
+    shorter, learner-facing string, so anchoring the ratio on it asks "is the
+    instruction the learner reads reflected in what the character pursues?".
+
+    A checkpoint with NO salient hint tokens (e.g. a one-word hint that is all
+    stopwords) is skipped — there's nothing to measure, not a drift. Pure +
+    deterministic; a WARNING-level heuristic surfaced to the author at build time,
+    NEVER a runtime block (AC4: static, per-scenario, no runtime change).
+    """
+    flagged: list[tuple[str, float]] = []
+    for cp in checkpoints:
+        hint_toks = _salient_tokens(cp.get("hint_text", ""))
+        prompt_toks = _salient_tokens(cp.get("prompt_segment", ""))
+        if not hint_toks:
+            continue
+        overlap = len(hint_toks & prompt_toks) / len(hint_toks)
+        if overlap < threshold:
+            flagged.append((cp.get("id", "?"), round(overlap, 2)))
+    return flagged
 
 
 def suggest_patience_start(n_checkpoints: int, difficulty: str) -> int:
@@ -926,6 +985,7 @@ def finalize_build(
             f"the draft token budget, or set --checkpoints {len(checkpoints)})"
         )
     overlaps = lexical_overlap_pairs(checkpoints)
+    drift = hint_prompt_drift_pairs(checkpoints)
     return BuildResult(
         scenario=scenario,
         brief=brief,
@@ -933,6 +993,7 @@ def finalize_build(
         yaml_text=scenario_to_yaml(scenario),
         structural_problems=problems,
         overlap_pairs=overlaps,
+        hint_prompt_drift=drift,
         voice_id=voice_id,
         voice_reason=voice_reason,
     )

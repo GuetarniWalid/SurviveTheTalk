@@ -126,6 +126,47 @@ def test_lexical_overlap_flags_near_duplicates():
     assert ("a", "c") not in flagged
 
 
+def test_hint_prompt_drift_flags_mismatched_pairs():
+    """Story 6.20 AC4 — a checkpoint whose hint_text and prompt_segment talk
+    about different things (low salient-token overlap) is flagged; an aligned
+    pair is not."""
+    cps = [
+        {
+            # Aligned: hint + prompt share "alibi"/"bar"/"night" content tokens.
+            "id": "aligned",
+            "hint_text": "Give your alibi for last night at the bar.",
+            "prompt_segment": "Ask them to account for their alibi for last "
+            "night — where were they, were they really at the bar?",
+            "success_criteria": "User provides an alibi.",
+        },
+        {
+            # Drifted: hint is about a receipt, prompt is about a phone call.
+            "id": "drifted",
+            "hint_text": "Show the cashier your receipt for the purchase.",
+            "prompt_segment": "Demand to know who they telephoned during the "
+            "evening and why nobody answered.",
+            "success_criteria": "User explains the call.",
+        },
+    ]
+    flagged = {cid for cid, _ in builder.hint_prompt_drift_pairs(cps)}
+    assert "drifted" in flagged
+    assert "aligned" not in flagged
+
+
+def test_hint_prompt_drift_skips_empty_hint_tokens():
+    """A hint with no salient tokens (all stopwords) is skipped — nothing to
+    measure, not a drift."""
+    cps = [
+        {
+            "id": "stopwords_only",
+            "hint_text": "Tell them what you want.",
+            "prompt_segment": "Interrogate the suspect about the missing files.",
+            "success_criteria": "...",
+        }
+    ]
+    assert builder.hint_prompt_drift_pairs(cps) == []
+
+
 def test_suggest_patience_start_scales_with_length_and_difficulty():
     short_hard = builder.suggest_patience_start(6, "hard")
     long_hard = builder.suggest_patience_start(20, "hard")

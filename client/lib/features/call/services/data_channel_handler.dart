@@ -137,15 +137,13 @@ class DataChannelHandler {
         final id = data['checkpoint_id'];
         final idx = data['index'];
         final total = data['total'];
-        final hint = data['next_hint'];
-        if (id is! String ||
-            idx is! num ||
-            total is! num ||
-            hint is! String) {
+        // Story 6.20 AC2 — the dead `next_hint` field was removed from the
+        // wire; the HUD renders from `goals_met_indices` + `hints` only.
+        if (id is! String || idx is! num || total is! num) {
           dev.log(
             'DataChannelHandler: checkpoint_advanced malformed payload: '
             'id=${id.runtimeType} idx=${idx.runtimeType} '
-            'total=${total.runtimeType} hint=${hint.runtimeType}',
+            'total=${total.runtimeType}',
             name: 'call.data',
             level: 700,
           );
@@ -189,11 +187,12 @@ class DataChannelHandler {
         // Story 6.10 UI refonte — `hints` carries every step's text in
         // author order so the Flutter HUD animates locally. Keep only
         // string entries; default to empty when the field is absent.
-        // NOTE: there is NO `next_hint` fallback — `CheckpointStepHud`
-        // renders nothing when `hints` is empty. That only happens with a
-        // pre-refonte / rolled-back server that omits `hints`; on a normal
-        // single-VPS deploy the server is always at-or-ahead of the client,
-        // so the current server always sends the full `hints` list.
+        // `CheckpointStepHud` renders nothing when `hints` is empty (there
+        // was never a per-step `next_hint` fallback — removed entirely in
+        // Story 6.20 AC2). That only happens with a pre-refonte / rolled-
+        // back server that omits `hints`; on a normal single-VPS deploy the
+        // server is always at-or-ahead of the client, so the current server
+        // always sends the full `hints` list.
         final rawHints = data['hints'];
         final List<String> hints = rawHints is List
             ? [
@@ -206,7 +205,6 @@ class DataChannelHandler {
             checkpointId: id,
             index: idxInt,
             total: totalInt,
-            hintText: hint,
             goalsMetIndices: goalsMetIndices,
             hints: hints,
           ),

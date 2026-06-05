@@ -582,7 +582,36 @@ class CheckpointManager(FrameProcessor):
             else:
                 # Normal parallel path: schedule the classifier
                 # asynchronously, let the LLM run in parallel.
-                await self._schedule_classification(text)
+                #
+                # Story 6.20 AC1 — on fast re-speak (a new finalized turn
+                # arrives while the PRIOR turn's classify is still in
+                # flight) we AWAIT the prior classify to completion (so its
+                # flips, prompt recompose, and envelope land) before judging
+                # this turn against the updated goal state, instead of
+                # cancelling it. Cancelling silently DROPPED a genuinely-met
+                # goal (breaks_progress). The terminal-turn path above and
+                # the generation guard are unchanged.
+                await self._serialize_then_classify(text)
+                # Story 6.20 review (async-correctness) — the awaited prior
+                # classify may have flipped the FINAL goal(s) and scheduled
+                # completion WHILE this turn was already committed to the
+                # non-terminal path (its terminal precheck above read a STALE
+                # met_count, from before the prior turn's flip landed). If the
+                # call is now completing, SUPPRESS this user frame so the
+                # survived exit line stays the sole final utterance — same
+                # Deviation #7 contract the terminal path enforces. The old
+                # cancel-based path got this for free (a cancelled prior never
+                # reached schedule_completion); the await re-opened the window.
+                # `met_count == total` is the precise, mock-independent signal
+                # that the prior completed the call (the patience-hangup case
+                # is unreachable here: a non-terminal precheck means one more
+                # fail can't zero the meter).
+                if self.met_count >= len(self._checkpoints):
+                    logger.info(
+                        "checkpoint_suppress_post_serialize_completion text={!r}",
+                        text[:64],
+                    )
+                    return
 
         await self.push_frame(frame, direction)
 
@@ -594,7 +623,9 @@ class CheckpointManager(FrameProcessor):
         Deviation #1 — no `v: 1` schema version; additive evolution under
         `data.{}`). Story 6.10 adds `goals_met_indices: []` so a 6.10
         client renders zero filled circles on connect; a pre-6.10 client
-        reads `index=0` and renders nothing filled too.
+        reads `index=0` and renders nothing filled too. Story 6.20 AC2
+        dropped the dead `next_hint` field — the HUD computes the active
+        step locally from `goals_met_indices` + `hints` and never read it.
 
         **Important (Phase 2 retouche #4).** This method ONLY builds the
         frame. In production it is queued via `schedule_initial_emit()` +
@@ -609,7 +640,6 @@ class CheckpointManager(FrameProcessor):
                     "checkpoint_id": first["id"],
                     "index": 0,
                     "total": len(self._checkpoints),
-                    "next_hint": first["hint_text"],
                     # Story 6.10 — full set of met indices (empty at boot).
                     "goals_met_indices": [],
                     # Story 6.10 (UI refonte) — ALL step hints in author
@@ -660,6 +690,51 @@ class CheckpointManager(FrameProcessor):
         if prior is not None and not prior.done():
             prior.cancel()
             await asyncio.gather(prior, return_exceptions=True)
+
+        self._generation += 1
+        gen = self._generation
+        self._in_flight = asyncio.create_task(
+            self._classify_and_flip_goals(user_text, gen)
+        )
+
+    async def _serialize_then_classify(self, user_text: str) -> None:
+        """Non-terminal fast-re-speak path (Story 6.20 AC1).
+
+        AWAIT any in-flight classify to COMPLETION — letting it apply its
+        flips, recompose the system instruction, and emit its envelope —
+        BEFORE scheduling the fresh classify for this turn. Replaces the
+        old cancel-before-schedule (`_schedule_classification`) on the
+        non-terminal path, which discarded the in-flight POST and so
+        silently dropped a goal the user had genuinely completed when they
+        spoke again within the ~0.2-0.5 s classify window.
+
+        Because `process_frame` is serialized per pipecat processor, awaiting
+        the prior task here is safe (no re-entrancy). The prior task runs to
+        its natural end (NOT cancelled), so its `self._goals` mutation lands;
+        the fresh classify created below is then judged against that updated
+        state. The generation counter is only bumped AFTER the await, so the
+        prior task always sees its own generation and applies its side
+        effects (the generation guard stays a backstop for the still-cancel-
+        based terminal path).
+
+        Trade-off (accepted by AC1): on a genuine fast re-speak this defers
+        forwarding the new user frame to the LLM until the prior classify
+        resolves — which is also CORRECT for coherence, since the recomposed
+        system instruction (smaller pending set) must land before the LLM
+        replies to the new turn. In the common case the prior task is already
+        `done()` and the await is a no-op (zero added latency).
+        """
+        prior = self._in_flight
+        if prior is not None and not prior.done():
+            await asyncio.gather(prior, return_exceptions=True)
+
+        # Story 6.20 review — if the awaited prior classify completed every
+        # goal, the call is ending (schedule_completion already fired); don't
+        # schedule a fresh classify that would only no-op on an empty pending
+        # set. The caller (process_frame) suppresses the user frame so no
+        # parallel LLM reply races the exit line.
+        if not self.pending_goals:
+            return
 
         self._generation += 1
         gen = self._generation
@@ -785,6 +860,11 @@ class CheckpointManager(FrameProcessor):
         # character_hung_up emits the real passed count in `call_end`
         # (Story 6.7 review). On completion met_count == total.
         self._patience_tracker.set_checkpoints_passed(self.met_count)
+        # Story 6.20 AC3 — also mirror the REAL met SET (author-order
+        # indices) so `call_end` carries WHICH goals were met, not just how
+        # many; the client reconcile prefers it (walk-up-only / never shrink)
+        # and a future debrief can't mislabel out-of-order completions.
+        self._patience_tracker.set_goals_met_indices(self._goals_met_indices())
 
         # Recompose the live system instruction with the smaller pending
         # set (Deviation #2 + AC4). When all_met the composition collapses
@@ -792,12 +872,12 @@ class CheckpointManager(FrameProcessor):
         self._update_system_instruction()
 
         # Emit one envelope per flip so the client stepper animates each
-        # circle (AC6). All envelopes in this turn carry the SAME
-        # post-flip `goals_met_indices` + suggested-focus `next_hint`.
+        # circle (AC6). All envelopes in this turn carry the SAME post-flip
+        # full-state `goals_met_indices` + `hints` (Story 6.20 AC2 dropped
+        # the dead `next_hint`).
         goals_met_indices = self._goals_met_indices()
-        next_hint = self._suggested_focus_hint()
         for gid in flipped_ids:
-            await self._emit_checkpoint_advanced(gid, goals_met_indices, next_hint)
+            await self._emit_checkpoint_advanced(gid, goals_met_indices)
 
         if all_met:
             # Final objective met → completion path. PatienceTracker emits
@@ -825,9 +905,9 @@ class CheckpointManager(FrameProcessor):
         self._patience_tracker.apply_exchange_outcome(success=True)
 
     async def _emit_checkpoint_advanced(
-        self, goal_id: str, goals_met_indices: list[int], next_hint: str
+        self, goal_id: str, goals_met_indices: list[int]
     ) -> None:
-        """Push one `checkpoint_advanced` envelope for a single flipped
+        """Push the `checkpoint_advanced` envelope(s) for a single flipped
         goal (Story 6.10 AC6).
 
         - `index` = the author-order index of THE goal that just flipped
@@ -835,9 +915,20 @@ class CheckpointManager(FrameProcessor):
         - `goals_met_indices` = the FULL set of met indices (author
           order) so a 6.10 client renders the exact set, including
           out-of-order fills.
-        - `next_hint` = hint of the suggested-focus pending goal, or "".
+
+        Story 6.20 AC2 dropped the dead `next_hint` field (the HUD computes
+        the active step locally from `goals_met_indices` + `hints`).
         """
         idx = self._id_to_index[goal_id]
+        data = {
+            "checkpoint_id": goal_id,
+            "index": idx,
+            "total": len(self._checkpoints),
+            "goals_met_indices": goals_met_indices,
+            # Story 6.10 (UI refonte) — see build_initial_envelope.
+            "hints": self._all_hints(),
+        }
+        message = {"type": "checkpoint_advanced", "data": data}
         # URGENT (SystemFrame), NOT the queued OutputTransportMessageFrame:
         # the flip fires mid-turn while the character LLM is busy streaming
         # its reply. A queued DataFrame would sit in each processor's
@@ -850,20 +941,27 @@ class CheckpointManager(FrameProcessor):
         # before/while she starts speaking. The envelope is full-state
         # (goals_met_indices + hints), so out-of-order delivery is safe.
         await self.push_frame(
-            OutputTransportMessageUrgentFrame(
-                message={
-                    "type": "checkpoint_advanced",
-                    "data": {
-                        "checkpoint_id": goal_id,
-                        "index": idx,
-                        "total": len(self._checkpoints),
-                        "next_hint": next_hint,
-                        "goals_met_indices": goals_met_indices,
-                        # Story 6.10 (UI refonte) — see build_initial_envelope.
-                        "hints": self._all_hints(),
-                    },
-                }
-            ),
+            OutputTransportMessageUrgentFrame(message=message),
+            FrameDirection.DOWNSTREAM,
+        )
+        # Story 6.20 AC5 — lost-tail self-heal. The URGENT copy above jumps
+        # the per-processor queue and is sent the moment the flip lands, but
+        # it does so during the most turbulent moment of the turn (mid-LLM
+        # stream, and on the completion path right before the hang-up
+        # InterruptionFrame). If that send races with room teardown the LAST
+        # flip would have NO resend — full-state envelopes otherwise only
+        # self-heal on the NEXT flip, and there is no next flip after the
+        # final one. So ALSO emit the SAME full-state envelope as a queued
+        # `OutputTransportMessageFrame`, which travels the ordered media-
+        # sender path (a second, independent delivery opportunity). Both
+        # ride LiveKit `send_data(reliable=True)` in this pipecat build, so
+        # this is belt-and-suspenders, not a lossy→reliable upgrade. The
+        # client dedupes via `_animatedMet` (an identical full-state snapshot
+        # is a value-equal no-op), so the duplicate is harmless. The mid-call
+        # case is covered here; the terminal/hang-up case is ALSO backstopped
+        # by the `call_end` `goals_met_indices` reconcile (AC3).
+        await self.push_frame(
+            OutputTransportMessageFrame(message=message),
             FrameDirection.DOWNSTREAM,
         )
         logger.info(
@@ -895,11 +993,6 @@ class CheckpointManager(FrameProcessor):
         loss-robust philosophy as `goals_met_indices`.
         """
         return [cp["hint_text"] for cp in self._checkpoints]
-
-    def _suggested_focus_hint(self) -> str:
-        """Hint of the author-order-first pending goal, or "" if all met."""
-        pending = self.pending_goals
-        return pending[0]["hint_text"] if pending else ""
 
     def _update_system_instruction(self) -> None:
         """Recompose `llm._settings.system_instruction` from the current
