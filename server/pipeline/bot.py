@@ -54,7 +54,11 @@ from pipeline.prompts import (
     COHERENCE_CHARTER,
     SARCASTIC_CHARACTER_PROMPT,
 )
-from pipeline.tts_factory import build_tts_service, resolve_cartesia_voice
+from pipeline.tts_factory import (
+    CARTESIA_MODEL,
+    build_tts_service,
+    resolve_cartesia_voice,
+)
 from pipeline.tts_warmup import warm_up_tts_cartesia
 from pipeline.tts_watchdog import TTSWatchdog
 from pipeline.scenarios import (
@@ -298,7 +302,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
         _tts_warmup_task = asyncio.create_task(
             warm_up_tts_cartesia(
                 api_key=settings.cartesia_api_key,
-                model="sonic-3",
+                model=CARTESIA_MODEL,
                 voice_id=resolve_cartesia_voice(scenario_metadata.get("tts_voice_id")),
             )
         )

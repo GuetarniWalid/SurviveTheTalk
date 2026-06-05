@@ -51,6 +51,12 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from config import Settings
 from pipeline.prompts import CARTESIA_VOICE_ID
 
+# Story 6.24 — single source of truth for the Cartesia model id. Consumed by
+# BOTH `_build_cartesia` (what the call SPEAKS with) and the `bot.py` TTS warm-up
+# (what gets WARMED), mirroring `resolve_cartesia_voice` for the voice — so the
+# warmed model can't drift from the spoken model if it's ever changed.
+CARTESIA_MODEL = "sonic-3"
+
 
 def resolve_cartesia_voice(voice_id: str | None) -> str:
     """Resolve the effective Cartesia voice id: the scenario's
@@ -159,7 +165,7 @@ def _build_cartesia(settings: Settings, *, voice_id: str | None = None) -> Any:
     return tts_cls(
         api_key=settings.cartesia_api_key,
         settings=CartesiaTTSService.Settings(
-            model="sonic-3",
+            model=CARTESIA_MODEL,
             voice=resolved_voice,
         ),
     )

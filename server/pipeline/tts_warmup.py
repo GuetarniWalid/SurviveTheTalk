@@ -82,8 +82,26 @@ async def warm_up_tts_cartesia(*, api_key: str, model: str, voice_id: str) -> No
     }
     try:
         async with httpx.AsyncClient(timeout=_WARMUP_TIMEOUT_SECONDS) as client:
-            await client.post(_CARTESIA_TTS_BYTES_URL, headers=headers, json=payload)
-        logger.info("tts_warmup: cartesia warmed (model={} voice={})", model, voice_id)
+            response = await client.post(
+                _CARTESIA_TTS_BYTES_URL, headers=headers, json=payload
+            )
+        # httpx does NOT raise on 4xx/5xx — a non-2xx means the synthesis never
+        # ran, so NOTHING was warmed and the opening line still pays the cold-
+        # start. Only emit the success breadcrumb on 200 (AC7's journalctl grep
+        # of `tts_warmup` must not report a phantom warm-up); surface a non-2xx
+        # at WARNING with the status so a swallowed 401/429 is visible to ops.
+        if response.status_code == 200:
+            logger.info(
+                "tts_warmup: cartesia warmed (model={} voice={})", model, voice_id
+            )
+        else:
+            logger.warning(
+                "tts_warmup: cartesia warm-up returned HTTP {} — nothing warmed "
+                "(model={} voice={})",
+                response.status_code,
+                model,
+                voice_id,
+            )
     except Exception as exc:
         # Best-effort: a cold/stalled turn-1 utterance is a UX nit; a crashed
         # call is not. Swallow everything (same contract as llm_warmup).

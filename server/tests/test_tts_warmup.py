@@ -146,3 +146,35 @@ def test_warmup_swallows_generic_exception(monkeypatch) -> None:
     monkeypatch.setattr(warmup_mod.httpx, "AsyncClient", _boom)
 
     _run(warm_up_tts_cartesia(api_key="k", model="sonic-3", voice_id="v"))
+
+
+def test_warmup_non_2xx_does_not_claim_warmed(monkeypatch) -> None:
+    """A non-2xx response (401 bad key / 429 rate-limit / 5xx) means NOTHING was
+    warmed: httpx does not raise on 4xx/5xx, so the success breadcrumb MUST be
+    suppressed (the smoke gate greps it) and a WARNING with the status emitted —
+    and it must still never raise."""
+    import pipeline.tts_warmup as warmup_mod
+    from loguru import logger as loguru_logger
+
+    class _Resp401:
+        status_code = 401
+
+    class _Client401(_CapturingClient):
+        async def post(self, url: str, headers: dict, json: dict) -> _Resp401:
+            _CapturingClient.last_post_url = url
+            _CapturingClient.last_post_headers = headers
+            _CapturingClient.last_post_json = json
+            return _Resp401()
+
+    monkeypatch.setattr(warmup_mod.httpx, "AsyncClient", _Client401)
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="DEBUG")
+    try:
+        _run(warm_up_tts_cartesia(api_key="bad-key", model="sonic-3", voice_id="v"))
+    finally:
+        loguru_logger.remove(sink_id)
+
+    joined = "".join(captured)
+    assert "cartesia warmed" not in joined  # no phantom success breadcrumb
+    assert "401" in joined  # the WARNING surfaces the real status
