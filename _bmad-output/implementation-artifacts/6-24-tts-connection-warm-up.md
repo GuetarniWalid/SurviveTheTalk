@@ -1,6 +1,6 @@
 # Story 6.24: TTS connection warm-up (kill the first-utterance Cartesia cold-start)
 
-Status: review
+Status: done
 
 > **Bug-surfaced story (2026-06-05).** During the Story 6.20 smoke testing, call_id=226 opened with **total silence**: the canned opening line was sent to Cartesia but Cartesia returned NO audio for 5 s → the Story 6.13 TTS watchdog fired (`cartesia_tts_watchdog_fired reason=no_audio_within_5.0s`) → the user heard nothing and hung up. Even when it does not fully stall, the FIRST utterance is noticeably slow. Cartesia's API was confirmed up at the time (`GET /voices` = 200), so this is the classic **first-synthesis cold-start** (sonic-3 model + voice load + edge routing) paid on the opening line. There is already an **LLM** warm-up (`pipeline/llm_warmup.py`) that kills the turn-1 LLM cold-start; this story adds the symmetric **TTS** warm-up. Design + API verified via a research/verify workflow (the warm-up replays pipecat's own `CartesiaHttpTTSService.run_tts` call, every param checked against the live Cartesia docs).
 
@@ -81,10 +81,12 @@ On a fresh call right after a deploy, the opening line speaks **promptly with no
 
 ## Smoke Test Gate (Server / Deploy Story)
 
-- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
-- [ ] **Prompt opening line:** on a fresh call right after the deploy, the greeting speaks promptly — no multi-second dead air. _Proof:_ device + `journalctl … | grep -E 'tts_warmup|cartesia_tts_watchdog_fired'` shows `tts_warmup` fired and NO watchdog fire on the opening line.
-- [ ] **No regression:** the rest of the call behaves normally (LLM warm-up still logs; checkpoints + exit lines unaffected).
-- [ ] **Server logs clean** on the happy path.
+**Outcome — 2026-06-05, Pixel 9, calls 230 & 231 (deployed `git_sha bca3331`):** the TTS warm-up is VALIDATED working — `tts_warmup: cartesia warmed` fired on BOTH calls (and, post-review-fix, that line only logs on HTTP 200, so it proves a *real* warm-up, not a phantom), the per-scenario **resolved voice** was warmed (two different voice UUIDs across the two scenarios → AC2 confirmed in the wild), TTS first-audio was **~150 ms** after synth-start (hot model), and there was **ZERO `cartesia_tts_watchdog_fired`** — the call_id=226 stall this story targets is dead. ✅ **Story goal met.** **However**, Walid still perceived a blank on the opening line: the call-230 timeline shows it is the per-call bot-subprocess **cold boot** (~4.7 s spawn→first pipeline work) + ~1.4 s transport connect, NOT the TTS (150 ms). That opening-latency cause is out of 6.24's scope → spun off as **Story 6.26 (opening-latency / bot pre-warm)**.
+
+- [x] **Deployed** to the VPS (`git_sha bca3331` confirmed via `/health`).
+- [x] **Prompt opening line — TTS half:** `tts_warmup` fired + **NO** `cartesia_tts_watchdog_fired` on the opening line (server proof on calls 230/231). _Perceived promptness is bounded by bot cold-boot, not the TTS → Story 6.26._
+- [x] **No regression:** both calls behaved normally (LLM warm-up logged; clean `reason=user_hung_up`; no `cartesia_ws_error`).
+- [x] **Server logs clean** on the happy path.
 
 ## Dev Agent Record
 
@@ -118,6 +120,7 @@ _Code review 2026-06-05 (`/bmad-code-review`, ultracode — 3 adversarial layers
   - **✅ Fixed 2026-06-05:** introduced a `CARTESIA_MODEL` constant in `tts_factory.py` as the single source of truth; both `_build_cartesia` and the `bot.py` warm-up now consume it (warmed model == spoken model by construction).
 
 ## Change Log
+- 2026-06-05 — **Smoke gate run (Pixel 9, calls 230/231) → `review` → `done`.** TTS warm-up validated server-side (fired both calls, first-audio ~150 ms = hot, ZERO watchdog fire — the call_id=226 stall is dead; AC2 per-scenario voice confirmed live). Walid still heard an opening blank → diagnosed as the per-call bot-subprocess cold-boot (~4.7 s) + transport connect (~1.4 s), NOT the TTS (150 ms) → spun off as **Story 6.26 (opening-latency / bot pre-warm)**. 6.24 flipped `done` on its TTS merit. Review fixes live at `git_sha bca3331`.
 - 2026-06-05 — `/bmad-code-review` (ultracode). Adversarial multi-layer review: Blind Hunter 0, Acceptance Auditor 0, Edge-Case Hunter 2 (both `low` after verification) → 2 `patch` findings both APPLIED in the same pass (non-2xx false-success log now gated on HTTP 200 + WARNING; duplicated `sonic-3` literal replaced by a shared `CARTESIA_MODEL` constant). Gates re-run green: ruff clean, `pytest 637` (+1 regression test). Code-review-complete; awaiting ONLY the Pixel 9 smoke gate for `review → done`.
 - 2026-06-05 — `/bmad-dev-story` implementation (ultracode). Added the Cartesia TTS warm-up (symmetric to the existing LLM warm-up) + `resolve_cartesia_voice` single-source voice resolver + `TTS_WARMUP_ENABLED` toggle. Gates green: ruff + `pytest 636`. Status → review; Pixel 9 smoke gate (prompt opening line, no `cartesia_tts_watchdog_fired`) reserved for Walid.
 - 2026-06-05 — Drafted (bug-surfaced from Story 6.20 smoke call_id=226 silent opening). Design + Cartesia `/tts/bytes` API verified via a research+verify workflow; mirrors `llm_warmup.py`. Ready for `/bmad-dev-story`.
