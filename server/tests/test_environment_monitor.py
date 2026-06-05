@@ -163,6 +163,52 @@ def test_sliding_window_expires_spaced_out_parasitic_turns() -> None:
     tracker.schedule_noisy_environment_exit.assert_not_called()
 
 
+# ---------- Story 6.20 follow-up: diarization label-flip false positive ----
+
+
+def test_call_223_label_flip_does_not_trigger() -> None:
+    """Regression for the call_id=223 FALSE noisy-environment hang-up.
+
+    Soniox split the LONE user's voice across SINGLE-speaker turns (the label
+    flipped '1'→'2' between turns, never two voices within one turn), and the
+    user's largest utterance ({'2': 22}) flipped the cumulative-primary onto
+    the mis-labelled id. The old rule counted those lone re-labelled turns as
+    parasitic and hung up. With the co-occurrence rule, no turn has the primary
+    AND a parasite together, so it must NOT trigger.
+    """
+    monitor, tracker = _make_monitor()
+    captured = _capture_pushed(monitor)
+    # Exact per-turn speaker maps logged on call 223.
+    for counts in [{"1": 8}, {"1": 3}, {"2": 4}, {"1": 8}, {"2": 22}]:
+        _run(monitor.process_frame(_turn(counts), FrameDirection.DOWNSTREAM))
+    tracker.schedule_noisy_environment_exit.assert_not_called()
+    assert _env_warnings(captured) == []
+
+
+def test_lone_nonprimary_turns_never_parasitic() -> None:
+    """Even many alternating single-speaker turns (a sustained label-flip)
+    never trip detection — a parasite must OVERLAP the user within a turn."""
+    monitor, tracker = _make_monitor()
+    _capture_pushed(monitor)
+    for counts in [{"1": 6}, {"2": 6}, {"1": 6}, {"2": 6}, {"1": 6}, {"2": 6}]:
+        _run(monitor.process_frame(_turn(counts), FrameDirection.DOWNSTREAM))
+    tracker.schedule_noisy_environment_exit.assert_not_called()
+
+
+def test_disabled_monitor_never_detects() -> None:
+    """ENV_MONITOR_ENABLED=0 kill-switch: a clear two-voice overlap that WOULD
+    fire is fully suppressed, and frames still pass through."""
+    tracker = MagicMock()
+    monitor = EnvironmentMonitor(patience_tracker=tracker, enabled=False)
+    captured = _capture_pushed(monitor)
+    for _ in range(4):
+        frame = _turn({"1": 6, "2": 4})
+        _run(monitor.process_frame(frame, FrameDirection.DOWNSTREAM))
+        assert frame in captured  # pass-through preserved
+    tracker.schedule_noisy_environment_exit.assert_not_called()
+    assert _env_warnings(captured) == []
+
+
 # ---------- idempotency ----------
 
 

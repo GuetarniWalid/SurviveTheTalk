@@ -477,9 +477,15 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # parasite can then no longer interrupt Tina's exit line (smoke
     # call_id=205: continuous interruptions flushed the line every ~1.5 s).
     input_gate = InputGate()
+    # Story 6.20 follow-up — env-tunable sensitivity + kill-switch (call_id=223
+    # false positive; the co-occurrence rule is the code fix, these are the live
+    # safety valve). Defaults reproduce the shipped Story 6.11 behaviour.
     environment_monitor = EnvironmentMonitor(
         patience_tracker=patience_tracker,
         input_gate=input_gate,
+        enabled=settings.env_monitor_enabled,
+        trigger_turns=settings.env_monitor_trigger_turns,
+        min_speaker_tokens=settings.env_monitor_min_speaker_tokens,
     )
 
     # Story 6.6 — checkpoint progression brain. ExchangeClassifier is

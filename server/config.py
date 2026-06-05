@@ -181,6 +181,21 @@ class Settings(BaseSettings):
     # PRD 2 s perceived-latency ceiling). Recommended range 0.6-1.0 s.
     user_speech_timeout: float = 0.8  # USER_SPEECH_TIMEOUT
 
+    # Story 6.20 follow-up (smoke call_id=223, 2026-06-05) — EnvironmentMonitor
+    # (parasitic background-voice detection, Story 6.11) tunables, now
+    # env-configurable so the VPS can adjust sensitivity (or kill it) without a
+    # code release. call_id=223 was a FALSE hang-up: Soniox diarization split
+    # the lone user's voice across single-speaker turns ('1' then '2'), which
+    # the detector mis-read as a second voice. The code fix is the co-occurrence
+    # rule (a parasite must overlap the user WITHIN a turn); these knobs are the
+    # live safety valve on top of it.
+    #   ENV_MONITOR_ENABLED=0           → disable detection entirely (kill-switch)
+    #   ENV_MONITOR_TRIGGER_TURNS       → parasitic turns in the window to fire
+    #   ENV_MONITOR_MIN_SPEAKER_TOKENS  → min non-primary tokens/turn to count
+    env_monitor_enabled: bool = True  # ENV_MONITOR_ENABLED
+    env_monitor_trigger_turns: int = 2  # ENV_MONITOR_TRIGGER_TURNS
+    env_monitor_min_speaker_tokens: int = 3  # ENV_MONITOR_MIN_SPEAKER_TOKENS
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #

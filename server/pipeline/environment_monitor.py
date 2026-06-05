@@ -29,10 +29,25 @@ two-speaker turn is often a Soniox mis-diarization (the same user's
 prosody re-classified as a new speaker after a long pause). Firing on
 that would refund + hang up on a false positive, which is worse UX than a
 30-60 s delayed real warning. So detection requires **≥2 of the last 4
-user turns** to each contain a non-primary speaker with **≥3 tokens** of
-that speaker's audio in the turn. The "primary" speaker is the one with
-the most cumulative tokens across the call (= the user, who dominates
-their own phone's mic); everyone else is parasitic.
+user turns** to each contain a real overlapping second voice (see the
+co-occurrence rule below). The "primary" speaker is the one with the most
+cumulative tokens across the call (= the user, who dominates their own
+phone's mic); everyone else is parasitic.
+
+**Co-occurrence rule (Story 6.20 follow-up — call_id=223 false positive).**
+A turn counts as parasitic ONLY if the primary speaker AND a non-primary
+speaker (≥`min_speaker_tokens` tokens) appear in the SAME turn. A genuine
+background voice is audible *alongside* the user (both diarized within one
+turn); a Soniox label-flip instead re-labels the SAME lone speaker
+*between* turns — each turn carries only one speaker id, the id just flips
+'1'→'2' across turns. In call_id=223 the user's single voice was split
+across single-speaker turns (`{'1':8}`, `{'2':22}`, …) with no within-turn
+overlap, yet the old "any non-primary speaker in the turn" rule read those
+lone re-labelled turns as a parasite — compounded by the cumulative-primary
+flipping onto the largest mis-labelled chunk and retro-branding the user's
+real turns. Requiring co-occurrence makes a lone re-labelled turn NOT
+parasitic, removing that whole false-positive class while a real two-voice
+turn still trips it.
 
 Pipeline position (AC2): wired BEFORE `emotion_emitter` so it observes
 the raw finalized `TranscriptionFrame` straight from STT, before any
@@ -83,6 +98,10 @@ class EnvironmentMonitor(FrameProcessor):
         min_speaker_tokens: Minimum tokens a non-primary speaker must
             contribute WITHIN a turn for that turn to count as parasitic
             (default 3 — filters 1-2-token mis-diarization burps).
+        enabled: Master switch (default True). When False the monitor is a
+            pure pass-through observer — it never detects or hangs up. The
+            live kill-switch (env `ENV_MONITOR_ENABLED=0`) for the
+            diarization false-positive class while tuning, set in `bot.py`.
     """
 
     def __init__(
@@ -93,10 +112,12 @@ class EnvironmentMonitor(FrameProcessor):
         window_size: int = _WINDOW_SIZE,
         trigger_turns: int = _TRIGGER_TURNS,
         min_speaker_tokens: int = _MIN_SPEAKER_TOKENS,
+        enabled: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._patience_tracker = patience_tracker
+        self._enabled = enabled
         # Story 6.11 fix (2026-05-30) — the InputGate placed after
         # transport.input(). Armed on detection to "stop listening" so the
         # loud parasite can't keep interrupting the exit line (smoke
@@ -127,7 +148,7 @@ class EnvironmentMonitor(FrameProcessor):
         # downstream LLM/TTS path.
         await self.push_frame(frame, direction)
 
-        if self._triggered:
+        if self._triggered or not self._enabled:
             return
         # Only finalized user transcriptions carry a complete turn's tokens.
         # `getattr(..., False)` defaults interim frames OUT (same
@@ -169,8 +190,11 @@ class EnvironmentMonitor(FrameProcessor):
             await self._on_parasitic_voice_detected()
 
     def _is_parasitic_window(self) -> bool:
-        """True when ≥`trigger_turns` of the windowed turns each contain a
-        non-primary speaker with ≥`min_speaker_tokens` tokens."""
+        """True when ≥`trigger_turns` of the windowed turns each show a real
+        overlapping second voice: a non-primary speaker with
+        ≥`min_speaker_tokens` tokens AND the primary speaker present in the
+        SAME turn (the Story 6.20 co-occurrence rule — see module docstring).
+        """
         if not self._cumulative:
             return False
         # Primary = the cumulative-dominant speaker (the user). Ties broken
@@ -178,10 +202,16 @@ class EnvironmentMonitor(FrameProcessor):
         primary = max(self._cumulative, key=lambda s: (self._cumulative[s], s))
         parasitic_turns = 0
         for turn in self._window:
-            if any(
+            # Co-occurrence: the primary AND a substantial non-primary voice
+            # must both be in THIS turn. A lone re-labelled single-speaker
+            # turn (the Soniox label-flip false positive, call_id=223) has no
+            # within-turn overlap and is therefore NOT parasitic.
+            primary_present = turn.get(primary, 0) > 0
+            has_parasite = any(
                 speaker != primary and count >= self._min_speaker_tokens
                 for speaker, count in turn.items()
-            ):
+            )
+            if primary_present and has_parasite:
                 parasitic_turns += 1
         return parasitic_turns >= self._trigger_turns
 
