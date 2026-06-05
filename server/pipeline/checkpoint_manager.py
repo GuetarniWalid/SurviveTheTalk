@@ -89,9 +89,30 @@ is the authoritative source for "what the character last said".
 Direction sensitivity (per `server/CLAUDE.md` §1 and project memory
 🪤 `feedback_pipecat_frame_direction_test_trap.md`): user
 `TranscriptionFrame`s flow DOWNSTREAM from STT through the user
-aggregator to this processor; we don't gate on direction (mirroring
-`EmotionEmitter`). The pipeline-driven contract test in
+aggregator to this processor; we don't gate on direction for THOSE
+(mirroring `EmotionEmitter`). The pipeline-driven contract test in
 `test_bot_pipeline_wiring.py` is the regression net.
+
+**BUT** the echo guard (below) DOES gate on direction:
+`BotStartedSpeakingFrame` / `BotStoppedSpeakingFrame` originate at the
+output transport and pipecat 0.0.108 pushes them in BOTH directions — the
+downstream copy goes into the sink, and this processor (UPSTREAM of the
+LLM/TTS/output, same region as `PatienceTracker`) only ever sees the
+UPSTREAM copy. So the `_bot_speaking` flag is set ONLY on
+`direction == FrameDirection.UPSTREAM` — exactly the Déviation #28 trap
+PatienceTracker hit. Source-text contract tests
+(`test_BSF_*_direction_matches_pipecat_emission_routing` in
+`test_checkpoint_manager.py`) guard both BSF directions against a pipecat
+upgrade or an accidental revert.
+
+Echo guard (call_id=225): a finalized user `TranscriptionFrame` that
+arrives WHILE the bot is speaking is almost always mic echo of the
+character's own line (or a sub-turn blip the pipecat turn-taking strategy
+itself rejected). Classifying it let the lenient judge credit a checkpoint
+before the user really spoke (e.g. `greet` ticked during Tina's opening
+greeting). So while `_bot_speaking` is True we SKIP classification — but
+still forward the frame (pass-through is mandatory; whether it becomes a
+real user turn is pipecat's turn-taking decision, not ours).
 """
 
 from __future__ import annotations
@@ -103,6 +124,8 @@ from typing import Any
 
 from loguru import logger
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
@@ -432,6 +455,16 @@ class CheckpointManager(FrameProcessor):
         # real (True/False) verdict.
         self._consecutive_none_count: int = 0
 
+        # Story 6.20 follow-up (call_id=225 echo) — True while the bot is
+        # speaking (between BotStartedSpeakingFrame and BotStoppedSpeakingFrame,
+        # both observed UPSTREAM at this pipeline position — see the class
+        # docstring's direction note). The classifier is skipped while True so
+        # mic echo of the character's own line (or a sub-turn blip pipecat's
+        # turn-taking rejected) can't credit a checkpoint before the user
+        # actually speaks. Default False: at construction the bot has not begun
+        # its opening line yet.
+        self._bot_speaking: bool = False
+
         # Story 6.10 — compose the initial goal-based system instruction
         # so the FIRST LLM turn already reflects the full pending-goals
         # set (AC4: `_update_system_instruction` called once at
@@ -501,6 +534,37 @@ class CheckpointManager(FrameProcessor):
                 self._checkpoints[0]["id"],
             )
 
+        # Story 6.20 follow-up (call_id=225) — track the bot-speaking window
+        # for the echo guard. Pure state-setters: gate on UPSTREAM ONLY (the
+        # only direction this processor sees BSF — see the class docstring's
+        # direction note + the source-text contract tests), and NEVER early-
+        # return so the frames still fall through to the unconditional
+        # `push_frame` below (pass-through, Story 6.3 lesson).
+        if (
+            isinstance(frame, BotStartedSpeakingFrame)
+            and direction == FrameDirection.UPSTREAM
+        ):
+            self._bot_speaking = True
+        elif (
+            isinstance(frame, BotStoppedSpeakingFrame)
+            and direction == FrameDirection.UPSTREAM
+        ):
+            self._bot_speaking = False
+
+        # Story 6.20 follow-up — observability: one greppable line per echo
+        # the guard suppresses, so a journalctl tail shows WHY a checkpoint
+        # didn't advance during the bot's turn (call_id=225 root cause).
+        if (
+            isinstance(frame, TranscriptionFrame)
+            and getattr(frame, "finalized", False)
+            and frame.text.strip()
+            and self._bot_speaking
+        ):
+            logger.info(
+                "checkpoint_echo_skip_while_bot_speaking text={!r}",
+                frame.text.strip()[:64],
+            )
+
         # Pass-through MANDATORY for non-terminal turns. The terminal-turn
         # path (Deviation #7) deliberately SUPPRESSES the user frame so
         # the LLM doesn't produce a parallel response that lands before
@@ -514,6 +578,16 @@ class CheckpointManager(FrameProcessor):
             # which defaults to True (documented in server/CLAUDE.md §1).
             and getattr(frame, "finalized", False)
             and frame.text.strip()
+            # Story 6.20 follow-up (call_id=225) — ECHO GUARD. Skip
+            # classification while the bot is speaking: a finalized user TF
+            # mid-bot-line is almost always mic echo of the character's own
+            # speech (or a sub-turn blip the turn-taking strategy rejected).
+            # Classifying it let the lenient judge credit a checkpoint before
+            # the user really spoke (`greet` ticked during Tina's greeting).
+            # The frame is STILL forwarded below (pass-through); we only skip
+            # the classifier. A genuine barge-in cuts the bot first
+            # (BotStoppedSpeaking → flag False) so its turn is still judged.
+            and not self._bot_speaking
         ):
             text = frame.text.strip()
             # Deviation #7 (redefined for goals, Story 6.10) — preemptive

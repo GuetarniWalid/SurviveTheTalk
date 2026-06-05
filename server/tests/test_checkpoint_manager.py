@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     OutputTransportMessageFrame,
@@ -26,6 +27,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 
+import pipeline.checkpoint_manager as cm_mod
 from pipeline.checkpoint_manager import CheckpointManager
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
@@ -1659,3 +1661,143 @@ def test_set_goals_met_indices_synced_to_tracker_on_flip() -> None:
 
     tracker.set_goals_met_indices.assert_called_with([2])
     tracker.set_checkpoints_passed.assert_called_with(1)
+
+
+# ============================================================
+# Story 6.20 follow-up — echo guard (call_id=225 false greet credit)
+# ============================================================
+
+
+def test_echo_during_bot_speech_is_not_classified() -> None:
+    """call_id=225 regression — a finalized user TranscriptionFrame that
+    arrives WHILE the bot is speaking (mic echo of the character's own line)
+    must NOT be classified (no false checkpoint credit), but MUST still be
+    forwarded downstream (pass-through)."""
+    manager, classifier, _tracker, _llm, _ctx = _make_manager()
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> TranscriptionFrame:
+        # Bot starts its opening line (BSF travels UPSTREAM to this processor).
+        await manager.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        tf = _make_user_frame("hi")  # 1-word echo blip mid-greeting
+        await manager.process_frame(tf, FrameDirection.DOWNSTREAM)
+        await _drain(manager)
+        return tf
+
+    tf = _run(_drive())
+
+    assert classifier._test_calls == [], "echo must NOT reach the classifier"
+    assert manager.met_count == 0
+    assert tf in captured, "echo frame must still be forwarded (pass-through)"
+
+
+def test_classification_resumes_after_bot_stops_speaking() -> None:
+    """Once the bot stops (BotStoppedSpeakingFrame UPSTREAM), the guard
+    clears and the user's real turn is classified normally — the barge-in /
+    normal-reply happy path."""
+    manager, classifier, _tracker, _llm, _ctx = _make_manager()
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await manager.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await manager.process_frame(
+            _make_user_frame("I'll have the steak."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    assert len(classifier._test_calls) == 1, "real turn after bot stops is judged"
+
+
+def test_bot_started_speaking_downstream_does_not_arm_guard() -> None:
+    """Direction discipline — the DOWNSTREAM copy of BotStartedSpeakingFrame
+    (which goes into the sink in prod) must NOT arm the echo guard; only the
+    UPSTREAM copy does. Proves we gate on UPSTREAM, not a mocked direction."""
+    manager, classifier, _tracker, _llm, _ctx = _make_manager()
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await manager.process_frame(
+            _make_user_frame("I'll have the steak."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    assert len(classifier._test_calls) == 1, "DOWNSTREAM BSF must not arm the guard"
+
+
+def test_BSF_stopped_direction_matches_pipecat_emission_routing() -> None:
+    """Déviation #28 contract test (mirror of PatienceTracker's) — the echo
+    guard's `BotStoppedSpeakingFrame` UPSTREAM check MUST match the direction
+    pipecat's BaseOutputTransport actually emits. Source-text matched so a
+    pipecat upgrade OR an accidental revert to DOWNSTREAM fires before deploy."""
+    import inspect
+
+    from pipecat.transports.base_output import BaseOutputTransport
+
+    pipecat_src = inspect.getsource(BaseOutputTransport)
+    fn_start = pipecat_src.find("async def _bot_stopped_speaking")
+    assert fn_start != -1, (
+        "pipecat structure changed — `_bot_stopped_speaking` no longer on "
+        "BaseOutputTransport. Re-verify the BSF emission contract."
+    )
+    fn_body = pipecat_src[fn_start : fn_start + 1500]
+    assert "BotStoppedSpeakingFrame()" in fn_body
+    assert "FrameDirection.UPSTREAM" in fn_body, (
+        "pipecat no longer pushes BSF upstream from `_bot_stopped_speaking` — "
+        "the CheckpointManager echo-guard UPSTREAM check must be re-verified."
+    )
+
+    cm_src = inspect.getsource(cm_mod)
+    marker = "isinstance(frame, BotStoppedSpeakingFrame)"
+    start = cm_src.find(marker)
+    assert start != -1, (
+        "CheckpointManager no longer references BotStoppedSpeakingFrame — "
+        "the echo-guard clear path changed; re-evaluate this contract test."
+    )
+    assert "FrameDirection.UPSTREAM" in cm_src[start : start + 300], (
+        "CheckpointManager's BotStoppedSpeakingFrame check no longer gates on "
+        "UPSTREAM — this reverts the Déviation #28 invariant (the guard would "
+        "never clear). Re-apply UPSTREAM or update this test if pipecat changed."
+    )
+
+
+def test_BSF_started_direction_matches_pipecat_emission_routing() -> None:
+    """Déviation #28 contract test — the echo guard's `BotStartedSpeakingFrame`
+    UPSTREAM check MUST match pipecat's emission direction (the guard would
+    never ARM if this drifted, so echo would slip through silently)."""
+    import inspect
+
+    from pipecat.transports.base_output import BaseOutputTransport
+
+    pipecat_src = inspect.getsource(BaseOutputTransport)
+    fn_start = pipecat_src.find("async def _bot_started_speaking")
+    assert fn_start != -1, (
+        "pipecat structure changed — `_bot_started_speaking` no longer on "
+        "BaseOutputTransport. Re-verify the BSF emission contract."
+    )
+    fn_body = pipecat_src[fn_start : fn_start + 1500]
+    assert "BotStartedSpeakingFrame()" in fn_body
+    assert "FrameDirection.UPSTREAM" in fn_body, (
+        "pipecat no longer pushes BSF upstream from `_bot_started_speaking` — "
+        "the CheckpointManager echo-guard UPSTREAM check must be re-verified."
+    )
+
+    cm_src = inspect.getsource(cm_mod)
+    marker = "isinstance(frame, BotStartedSpeakingFrame)"
+    start = cm_src.find(marker)
+    assert start != -1, (
+        "CheckpointManager no longer references BotStartedSpeakingFrame — "
+        "the echo-guard arm path changed; re-evaluate this contract test."
+    )
+    assert "FrameDirection.UPSTREAM" in cm_src[start : start + 300], (
+        "CheckpointManager's BotStartedSpeakingFrame check no longer gates on "
+        "UPSTREAM — the echo guard would never arm. Re-apply UPSTREAM or update "
+        "this test if pipecat routing genuinely changed."
+    )
