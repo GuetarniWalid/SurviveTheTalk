@@ -52,6 +52,19 @@ from config import Settings
 from pipeline.prompts import CARTESIA_VOICE_ID
 
 
+def resolve_cartesia_voice(voice_id: str | None) -> str:
+    """Resolve the effective Cartesia voice id: the scenario's
+    `metadata.tts_voice_id` when set, else the default `CARTESIA_VOICE_ID`.
+
+    Story 6.24 — single source of truth for the voice default, called by BOTH
+    `_build_cartesia` (what the call SPEAKS with) and the `bot.py` TTS warm-up
+    (what gets WARMED). Routing both through here makes warmed-voice ==
+    spoken-voice by construction, so the opening line can't pay a cold-start
+    for a voice the warm-up didn't prime.
+    """
+    return voice_id or CARTESIA_VOICE_ID
+
+
 def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any:
     """Return the configured TTS service instance.
 
@@ -138,7 +151,7 @@ def _build_cartesia(settings: Settings, *, voice_id: str | None = None) -> Any:
         tts_cls = InstrumentedCartesiaTTSService
         logger.info("CARTESIA_INSTRUMENT=1 — using InstrumentedCartesiaTTSService")
 
-    resolved_voice = voice_id or CARTESIA_VOICE_ID
+    resolved_voice = resolve_cartesia_voice(voice_id)
     logger.info(
         "TTS provider = cartesia (Sonic-3) voice={} [launch default]",
         resolved_voice,

@@ -54,7 +54,8 @@ from pipeline.prompts import (
     COHERENCE_CHARTER,
     SARCASTIC_CHARACTER_PROMPT,
 )
-from pipeline.tts_factory import build_tts_service
+from pipeline.tts_factory import build_tts_service, resolve_cartesia_voice
+from pipeline.tts_warmup import warm_up_tts_cartesia
 from pipeline.tts_watchdog import TTSWatchdog
 from pipeline.scenarios import (
     TUTORIAL_SCENARIO_ID,
@@ -282,6 +283,27 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # British female). None/empty → the Cartesia default. Before 6.17 this field
     # was stored but ignored.
     tts = build_tts_service(settings, voice_id=scenario_metadata.get("tts_voice_id"))
+
+    # Story 6.24 — TTS warm-up. Symmetric to the LLM warm-up above: the canned
+    # opening line is the call's FIRST synthesis, so it pays the Cartesia
+    # cold-start (sonic-3 model + voice load + edge) — on a cold edge that can
+    # stall past the 5 s TTSWatchdog and emit total silence (call_id=226). Fire
+    # a throwaway /tts/bytes synthesis of the SAME model + RESOLVED voice
+    # (resolve_cartesia_voice → identical to what build_tts_service speaks with)
+    # in parallel with the LiveKit connect + greeting, so the opening
+    # TTSSpeakFrame hits a hot model. Provider-gated (Cartesia only; ElevenLabs
+    # is the fallback + already low-TTFA) + TTS_WARMUP_ENABLED kill-switch.
+    # Never blocks/raises; the TTSWatchdog stays the real safety net.
+    if settings.tts_warmup_enabled and settings.tts_provider == "cartesia":
+        _tts_warmup_task = asyncio.create_task(
+            warm_up_tts_cartesia(
+                api_key=settings.cartesia_api_key,
+                model="sonic-3",
+                voice_id=resolve_cartesia_voice(scenario_metadata.get("tts_voice_id")),
+            )
+        )
+        _BACKGROUND_TASKS.add(_tts_warmup_task)
+        _tts_warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     # Story 6.8 Phase 1 AC2 — VAD `stop_secs` audit. Pipecat 0.0.108's
     # `SileroVADAnalyzer` consumes `stop_secs` independently of the

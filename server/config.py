@@ -196,6 +196,14 @@ class Settings(BaseSettings):
     env_monitor_trigger_turns: int = 2  # ENV_MONITOR_TRIGGER_TURNS
     env_monitor_min_speaker_tokens: int = 3  # ENV_MONITOR_MIN_SPEAKER_TOKENS
 
+    # Story 6.24 — TTS connection warm-up kill-switch. When True (default), a
+    # fire-and-forget Cartesia /tts/bytes warm-up fires at call start so the
+    # opening line doesn't pay the first-synthesis cold-start (call_id=226:
+    # opening line stalled → 5 s silence). Set TTS_WARMUP_ENABLED=0 to disable
+    # (saves a tiny throwaway synthesis per call). Only fires for the Cartesia
+    # provider; never blocks or raises (pipeline/tts_warmup.py).
+    tts_warmup_enabled: bool = True  # TTS_WARMUP_ENABLED
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #
