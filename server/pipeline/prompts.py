@@ -350,10 +350,13 @@ EXIT_LINE_REASON_GUIDANCE: dict[str, str] = {
         "quieter."
     ),
     "survived": (
-        "The conversation has reached a natural, SUCCESSFUL end — the user got "
-        "what this conversation was about. Deliver a short closing line that "
-        "wraps things up. It can be grudging or warm depending on who you are, "
-        "but it acknowledges you are finished."
+        "The conversation has reached a natural, SUCCESSFUL end and you are "
+        "HANGING UP NOW. Deliver a short SIGN-OFF that clearly ENDS the call: "
+        "acknowledge it's settled and say a clear goodbye in your own register "
+        "(grudging or warm depending on who you are). It MUST sound like the "
+        "last thing said before hanging up. Do NOT ask any question, do NOT "
+        "reopen or chase a missing detail, and do NOT keep the task going — you "
+        "are saying goodbye and ending the call, nothing more."
     ),
     "patience_warning": (
         "You are LOSING PATIENCE but NOT ending the call yet — you are giving "
