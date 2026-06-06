@@ -76,7 +76,9 @@ The core loop is: **Call → Fail → Debrief → Study on your own → Come bac
 ### Effortless Interactions
 
 **1. Starting a call — One tap**
-A single green call button on each scenario card. No configuration, no difficulty selection, no pre-call setup. Tap and the character picks up. Mirrors the simplicity of tapping a contact in a real phone app.
+A single green call button on each scenario card. No per-call configuration, no pre-call setup. Tap and the character picks up. Mirrors the simplicity of tapping a contact in a real phone app.
+
+> **Story 6.19 update (2026-06-05):** the original "no difficulty selection" rule is superseded by a **single GLOBAL difficulty preference** (easy / medium / hard), set **once** via a discreet "Difficulty:" line on the hub that opens a modal bottom sheet (cloned from `content_warning_sheet.dart` — no new Settings screen, no per-card chrome). It is remembered client-side and applied to **every** call, so the one-tap, zero-per-call-setup feel of starting a call is preserved. The chosen difficulty drives the patience preset, the character's behavior/vocabulary, and the speech speed.
 
 **2. Understanding what to do — Zero instructions**
 The character speaks first, setting the scenario. The user responds naturally. No tutorial needed because every human already knows how a phone call works. The phone call metaphor eliminates the need for any onboarding UI.

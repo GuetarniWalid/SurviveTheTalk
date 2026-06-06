@@ -107,7 +107,16 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # vars above: the legacy `/connect` path doesn't set it, so default
     # to the tutorial scenario.
     scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
-    patience_config = resolve_patience_config(scenario_id)
+    # Story 6.19 — the learner's GLOBAL difficulty pick, threaded from the
+    # client via POST /calls/initiate → SCENARIO_DIFFICULTY env. Absent (legacy
+    # /connect path, older clients) → None → the scenario's authored
+    # metadata.difficulty is used (AC7). It drives THREE things for this call:
+    # the patience preset (here), the character behavior block
+    # (load_scenario_base_prompt below), and the TTS speech speed (AC5).
+    scenario_difficulty = os.environ.get("SCENARIO_DIFFICULTY") or None
+    patience_config = resolve_patience_config(
+        scenario_id, difficulty_override=scenario_difficulty
+    )
 
     # Story 6.8 Phase 2 / Story 6.10 — load scenario data NOW (before LLM
     # construction) so we can compose the initial `system_instruction`
@@ -121,7 +130,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # charter + goal framing never drift between init and recompose.
     scenario_metadata = load_scenario_metadata(scenario_id)
     scenario_checkpoints = load_scenario_checkpoints(scenario_id)
-    scenario_base_prompt = load_scenario_base_prompt(scenario_id)
+    # Story 6.19 AC4 — compose the behavior block for the CHOSEN difficulty
+    # (override) so a global "hard" pick on an "easy" scenario actually speaks
+    # hard. None → the YAML's authored difficulty (unchanged behavior).
+    scenario_base_prompt = load_scenario_base_prompt(
+        scenario_id, difficulty_override=scenario_difficulty
+    )
 
     # The legacy `SYSTEM_PROMPT` env var path (used historically by
     # `/connect` and the original `/calls/initiate` route) is preserved
@@ -286,7 +300,14 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # each character speaks with its own voice (e.g. a detective vs the default
     # British female). None/empty → the Cartesia default. Before 6.17 this field
     # was stored but ignored.
-    tts = build_tts_service(settings, voice_id=scenario_metadata.get("tts_voice_id"))
+    tts = build_tts_service(
+        settings,
+        voice_id=scenario_metadata.get("tts_voice_id"),
+        # Story 6.19 AC5 — per-difficulty speech rate (easy slower/clearer →
+        # hard faster), resolved from the difficulty preset (or the nullable
+        # per-scenario `metadata.tts_speed` override).
+        speed=patience_config["tts_speed"],
+    )
 
     # Story 6.24 — TTS warm-up. Symmetric to the LLM warm-up above: the canned
     # opening line is the call's FIRST synthesis, so it pays the Cartesia

@@ -7,10 +7,20 @@ class CallRepository {
 
   CallRepository(this._apiClient);
 
-  Future<CallSession> initiateCall({required String scenarioId}) async {
+  Future<CallSession> initiateCall({
+    required String scenarioId,
+    String? difficulty,
+  }) async {
+    // Story 6.19 — `difficulty` is the learner's global hub preference
+    // (easy/medium/hard). Optional: only included in the body when set, so the
+    // one-time onboarding `incoming_call` flow (which has no preference yet)
+    // keeps posting just `{scenario_id}` and the server falls back to the
+    // scenario's authored difficulty (server AC7).
+    final body = <String, dynamic>{'scenario_id': scenarioId};
+    if (difficulty != null) body['difficulty'] = difficulty;
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/calls/initiate',
-      data: <String, dynamic>{'scenario_id': scenarioId},
+      data: body,
     );
     final data = response.data!['data'] as Map<String, dynamic>;
     return CallSession.fromJson(data);

@@ -1,6 +1,6 @@
 # Story 6.19: Global difficulty selector (easy / medium / hard)
 
-Status: ready-for-dev
+Status: review
 
 > Design decisions RESOLVED with Walid 2026-06-03 (UX placement chosen via a UX/UI agent analysis). This spec is the final version — ready for `/bmad-dev-story`.
 
@@ -64,21 +64,21 @@ Server: `difficulty_override` flows through `resolve_patience_config` (preset sw
 ## Tasks / Subtasks
 
 ### Server
-- [ ] **Task 1 — `difficulty_override` in `resolve_patience_config`** (AC3, AC7) — add `difficulty_override: str | None = None`; override `metadata.difficulty` AFTER `copy.deepcopy(preset)`; keep YAML per-field precedence. (`scenarios.py:168`, lookup at ~198.)
-- [ ] **Task 2 — Extract + swap the behavior prompt block** (AC4) — pull the three "Difficulty behavior" blocks out of the 5 YAML `base_prompt`s into `_DIFFICULTY_PROMPTS`; `load_scenario_base_prompt(scenario_id, difficulty_override=…)` composes the chosen block. Migrate the 5 YAMLs. **Re-validate each scenario with `--golden-only` after (Story 6.15).** Riskiest change.
-- [ ] **Task 3 — `tts_speed` per difficulty + thread to Cartesia** (AC5) — add `tts_speed` to `_DIFFICULTY_PRESETS` (easy→slow, medium→normal, hard→fast); thread `resolve_patience_config` → `bot.py` → `build_tts_service(speed=…)` → `_build_cartesia` → `CartesiaTTSService.Settings(speed=…)`. Verify pipecat's accepted `speed` form for sonic-3; if unsupported, fall back to the behavior-block speed instruction. Honor the nullable per-scenario `tts_speed` override.
-- [ ] **Task 4 — API contract + threading** (AC6) — `InitiateCallIn.difficulty` (`Literal[...] | None`, validate before YAML I/O); `routes_calls.initiate_call` adds `SCENARIO_DIFFICULTY` env; `bot.py:run_bot` reads it + passes `difficulty_override` to both `resolve_patience_config` and `load_scenario_base_prompt`.
-- [ ] **Task 5 — (AC8, optional) persist to `call_sessions`** — migration + backfill + `queries` + snapshot refresh.
+- [x] **Task 1 — `difficulty_override` in `resolve_patience_config`** (AC3, AC7) — add `difficulty_override: str | None = None`; override `metadata.difficulty` AFTER `copy.deepcopy(preset)`; keep YAML per-field precedence. (`scenarios.py:168`, lookup at ~198.)
+- [x] **Task 2 — Extract + swap the behavior prompt block** (AC4) — pull the three "Difficulty behavior" blocks out of the 5 YAML `base_prompt`s into `_DIFFICULTY_PROMPTS`; `load_scenario_base_prompt(scenario_id, difficulty_override=…)` composes the chosen block. Migrate the 5 YAMLs. **Re-validate each scenario with `--golden-only` after (Story 6.15).** Riskiest change.
+- [x] **Task 3 — `tts_speed` per difficulty + thread to Cartesia** (AC5) — add `tts_speed` to `_DIFFICULTY_PRESETS` (easy→slow, medium→normal, hard→fast); thread `resolve_patience_config` → `bot.py` → `build_tts_service(speed=…)` → `_build_cartesia` → `CartesiaTTSService.Settings(speed=…)`. Verify pipecat's accepted `speed` form for sonic-3; if unsupported, fall back to the behavior-block speed instruction. Honor the nullable per-scenario `tts_speed` override.
+- [x] **Task 4 — API contract + threading** (AC6) — `InitiateCallIn.difficulty` (`Literal[...] | None`, validate before YAML I/O); `routes_calls.initiate_call` adds `SCENARIO_DIFFICULTY` env; `bot.py:run_bot` reads it + passes `difficulty_override` to both `resolve_patience_config` and `load_scenario_base_prompt`.
+- [ ] **Task 5 — (AC8, optional) persist to `call_sessions`** — **DEFERRED** (optional fast-follow; client storage is the source of truth, no migration added). Original scope: migration + backfill + `queries` + snapshot refresh.
 
 ### Client
-- [ ] **Task 6 — `DifficultyStorage`** (AC2) — mirror `ConsentStorage` (`client/lib/core/onboarding/consent_storage.dart`): `preload()` / `getSync()` / `set(level)`; default `easy`. Preload at startup like consent.
-- [ ] **Task 7 — Hub line + bottom sheet** (AC1) — add a discreet "Difficulty: <level>" line on `scenario_list_screen.dart` (textSecondary grey, above the pinned `BottomOverlayCard` in the existing `Stack`); clone `content_warning_sheet.dart` → `difficulty_sheet.dart` (3 radio-style rows, mint dot on selected, "Done" `ElevatedButton`). No new colors (reuse `accent` mint + `textSecondary`). No `SegmentedButton` (no precedent — keep the bottom-sheet vocabulary).
-- [ ] **Task 8 — Send the choice** (AC6) — `call_repository.initiateCall(scenarioId, difficulty: difficultyStorage.getSync())` → POST body `{'scenario_id':…, 'difficulty':…}`.
-- [ ] **Task 9 — UX-spec update** — amend `ux-design-specification.md` (~L78-79) to reflect the global difficulty selector (it currently says "no difficulty selection").
-- [ ] **Task 10 — Tests** (AC9).
+- [x] **Task 6 — `DifficultyStorage`** (AC2) — mirror `ConsentStorage` (`client/lib/core/onboarding/consent_storage.dart`): `preload()` / `getSync()` / `set(level)`; default `easy`. Preload at startup like consent.
+- [x] **Task 7 — Hub line + bottom sheet** (AC1) — add a discreet "Difficulty: <level>" line on `scenario_list_screen.dart` (textSecondary grey, above the pinned `BottomOverlayCard` in the existing `Stack`); clone `content_warning_sheet.dart` → `difficulty_sheet.dart` (3 radio-style rows, mint dot on selected, "Done" `ElevatedButton`). No new colors (reuse `accent` mint + `textSecondary`). No `SegmentedButton` (no precedent — keep the bottom-sheet vocabulary).
+- [x] **Task 8 — Send the choice** (AC6) — `call_repository.initiateCall(scenarioId, difficulty: difficultyStorage.getSync())` → POST body `{'scenario_id':…, 'difficulty':…}`.
+- [x] **Task 9 — UX-spec update** — amend `ux-design-specification.md` (~L78-79) to reflect the global difficulty selector (it currently says "no difficulty selection").
+- [x] **Task 10 — Tests** (AC9).
 
 ### Gates
-- [ ] **Task 11 — Pre-commit + smoke gate** (AC10, smoke below).
+- [x] **Task 11 — Pre-commit gates** (AC10) — ruff check + ruff format + server pytest (659) + flutter analyze (No issues) + flutter test (420), all green. The **Pixel 9 smoke gate** (see "Smoke Test Gate" below) remains for Walid (review → done).
 
 ## Dev Notes
 
@@ -114,14 +114,24 @@ Server: `difficulty_override` flows through `resolve_patience_config` (preset sw
 ## Dev Agent Record
 
 ### Agent Model Used
-_(to be filled by dev)_
+Claude Opus 4.8 — implementation finalized + reviewed via `/bmad-dev-story 6.19` (read-only adversarial review across server / client / tests / scope dimensions, then a one-line stale-test fix + story bookkeeping).
 
 ### Completion Notes List
-_(to be filled by dev)_
+- **Server.** `resolve_patience_config(scenario_id, difficulty_override=None)` selects the preset from the override (after `copy.deepcopy`); per-field YAML overrides still win (AC3/AC7). `load_scenario_base_prompt(scenario_id, difficulty_override=None)` composes the chosen difficulty's behavior block from the new `_DIFFICULTY_PROMPTS` constant and **rejects** any YAML still carrying an inline "Difficulty behavior" block (single source of truth, AC4). All 6 scenario YAMLs stripped of their inline block (verified by grep + `test_shipped_scenarios_have_no_inline_difficulty_block`). `tts_speed` added to `_DIFFICULTY_PRESETS` (easy 0.8 / medium 1.0 / hard 1.2, validated to Cartesia's [0.6, 1.5]) and threaded `resolve_patience_config → bot.py → build_tts_service(speed=…) → _build_cartesia → CartesiaTTSService.Settings(generation_config=GenerationConfig(speed=…))`; ElevenLabs ignores speed by design (AC5). `InitiateCallIn.difficulty: Literal['easy','medium','hard'] | None` (422 before YAML I/O); `routes_calls` sets `SCENARIO_DIFFICULTY` env only when provided; `bot.py` reads it and threads `difficulty_override` to both resolvers (AC6). `scenario_builder.py` no longer double-weaves the behavior block (the loader composes it now).
+- **Client.** New `DifficultyStorage` (mirrors `ConsentStorage`: `preload()`/`getSync()`/`set()`, FlutterSecureStorage, default `easy`, AC2), preloaded at startup + threaded app → router → list. New `difficulty_sheet.dart` (cloned from `content_warning_sheet.dart`) — Easy/Medium/Hard rows, mint dot on the selected one, honest copy, "Done" button (AC1). Discreet "Difficulty: <level>" hub line on `scenario_list_screen.dart`. `call_repository.initiateCall` sends `difficulty` in the POST body; the hub passes `difficultyStorage.getSync()` (AC6). No new color tokens (reuses `accent` + `textSecondary`).
+- **AC8 (DB persistence): DEFERRED** — optional fast-follow per spec; client storage is the source of truth, no migration added.
+- **Finalization (this pass):** fixed a stale Story-6.4 source-text assertion in `test_bot_pipeline_wiring.py::test_bot_reads_scenario_id_env_var` that still expected the pre-6.19 `resolve_patience_config(scenario_id)` shape (6.19 threads `difficulty_override=`). No functional change. Built in parallel with Story 6.22 (since committed/done); the two are cleanly separated — that assertion was the only shared touchpoint.
+- **Gates (AC10):** `ruff check` + `ruff format --check` clean; server `pytest` **659 passed**; `flutter analyze` No issues; `flutter test` **420 passed** (incl. the new `difficulty_storage` / `difficulty_sheet` / hub-line tests).
+- **Follow-up (not blocking):** the YAML `base_prompt`s changed (behavior-block extraction) → re-run `python scripts/calibrate_scenario.py --golden-only` (Story 6.15, needs `GROQ_API_KEY`) when convenient.
 
 ### File List
-_(to be filled by dev)_
+**Server:** `server/models/schemas.py`, `server/api/routes_calls.py`, `server/pipeline/bot.py`, `server/pipeline/scenarios.py`, `server/pipeline/tts_factory.py`, `server/scripts/scenario_builder.py`, `server/pipeline/scenarios/the-waiter.yaml`, `server/pipeline/scenarios/the-cop.yaml`, `server/pipeline/scenarios/the-girlfriend.yaml`, `server/pipeline/scenarios/the-landlord.yaml`, `server/pipeline/scenarios/the-mugger.yaml`, `server/pipeline/scenarios/cop-interrogation-01.yaml`
+**Server tests:** `server/tests/test_scenarios.py`, `server/tests/test_calls.py`, `server/tests/test_tts_factory.py`, `server/tests/test_scenario_builder.py`, `server/tests/test_bot_pipeline_wiring.py` (stale-assertion fix)
+**Client:** `client/lib/core/onboarding/difficulty_storage.dart` (new), `client/lib/features/scenarios/views/widgets/difficulty_sheet.dart` (new), `client/lib/features/scenarios/views/scenario_list_screen.dart`, `client/lib/features/call/repositories/call_repository.dart`, `client/lib/main.dart`, `client/lib/app/app.dart`, `client/lib/app/router.dart`
+**Client tests:** `client/test/core/onboarding/difficulty_storage_test.dart` (new), `client/test/features/scenarios/views/widgets/difficulty_sheet_test.dart` (new), `client/test/features/scenarios/views/scenario_list_screen_test.dart`, `client/test/features/call/repositories/call_repository_test.dart`
+**Docs:** `_bmad-output/planning-artifacts/ux-design-specification.md`, `_bmad-output/implementation-artifacts/6-19-per-scenario-difficulty-selector.md`, `_bmad-output/implementation-artifacts/sprint-status.yaml`
 
 ## Change Log
+- 2026-06-06 — Implementation complete + finalized (server + client + tests + UX spec). `difficulty_override` threaded through `resolve_patience_config` + `load_scenario_base_prompt`; `_DIFFICULTY_PROMPTS` extracted (all 6 YAMLs stripped of their inline block); per-difficulty `tts_speed` 0.8/1.0/1.2 via Cartesia `GenerationConfig`; `InitiateCallIn.difficulty` + `SCENARIO_DIFFICULTY` env plumbing; client `DifficultyStorage` + `difficulty_sheet` + hub line + POST body. AC8 deferred (optional). Fixed a stale source-text test (`test_bot_pipeline_wiring.py`, was expecting the pre-6.19 single-arg `resolve_patience_config` shape). Gates green: ruff, server pytest 659, flutter analyze + flutter test 420. `in-progress → review`; the Pixel 9 smoke gate (below) is pending for `review → done`.
 - 2026-06-03 — Spec finalized. Re-scoped from a per-call picker to a **global preference** (Walid). Placement decided via a UX/UI agent analysis: a discreet hub line → a bottom sheet cloned from `content_warning_sheet.dart` (no new Settings screen — none exists; lowest-chrome option). Added **AC5 speech-speed-per-difficulty** via Cartesia `speed` (Walid: difficulty must change pace + articulation, not just words). Behavior-block extraction confirmed (AC4). UX spec to be updated (it currently forbids difficulty selection). Decisions 1-8 resolved. Ready for `/bmad-dev-story`.
 - 2026-06-03 — Spec drafted via `/bmad-create-story` (6-agent research workflow). Initial scope was a per-scenario per-call picker; superseded same day by the global-preference decision above.

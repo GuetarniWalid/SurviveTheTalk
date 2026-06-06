@@ -625,6 +625,32 @@ void main() {
     await tester.pump();
   }
 
+  // ---------- Story 6.19 — global difficulty hub line ----------
+
+  testWidgets(
+    'hub shows the difficulty line; tapping it opens the sheet and updates it',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      await pumpListWithScenario(tester, scenario);
+
+      // Default preference renders on the hub.
+      expect(find.text('Difficulty: Easy'), findsOneWidget);
+
+      // Tapping the line opens the difficulty sheet.
+      await tester.tap(find.text('Difficulty: Easy'));
+      await tester.pumpAndSettle();
+      expect(find.text('Done'), findsOneWidget);
+
+      // Choosing Hard + Done persists and updates the hub line in place.
+      await tester.tap(find.text('Hard'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Difficulty: Hard'), findsOneWidget);
+    },
+  );
+
   testWidgets(
     'tapping phone icon on a scenario WITH content_warning shows the sheet',
     (tester) async {
@@ -635,7 +661,10 @@ void main() {
       );
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenAnswer((_) async => _kFakeSession);
       await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
@@ -648,7 +677,10 @@ void main() {
       expect(find.byKey(_kCallStubKey), findsNothing);
       // POST not fired — gated by the content-warning sheet.
       verifyNever(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       );
     },
   );
@@ -663,7 +695,10 @@ void main() {
       );
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenAnswer((_) async => _kFakeSession);
       await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
@@ -672,7 +707,10 @@ void main() {
       await tester.tap(find.text('Pick up'));
       await tester.pumpAndSettle();
 
-      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
       expect(find.text('Buckle up'), findsNothing);
     },
@@ -698,7 +736,10 @@ void main() {
       expect(find.text('Buckle up'), findsNothing);
       expect(find.byType(ScenarioCard), findsOneWidget);
       verifyNever(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       );
     },
   );
@@ -713,14 +754,20 @@ void main() {
       );
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenAnswer((_) async => _kFakeSession);
       await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
-      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
       expect(find.text('Buckle up'), findsNothing);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
     },
@@ -734,7 +781,10 @@ void main() {
       final scenario = _build(id: 's1', title: 'Waiter');
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenThrow(
         const ApiException(code: 'NETWORK_ERROR', message: 'No connection.'),
       );
@@ -754,7 +804,10 @@ void main() {
       final scenario = _build(id: 's1', title: 'Waiter');
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenThrow(
         const ApiException(
           code: 'CALL_LIMIT_REACHED',
@@ -780,7 +833,10 @@ void main() {
       final scenario = _build(id: 's1', title: 'Waiter');
       final mockRepo = MockCallRepository();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenThrow(
         const ApiException(code: 'BOT_SPAWN_FAILED', message: 'Server error'),
       );
@@ -820,7 +876,10 @@ void main() {
       // Hold the request open by returning a never-resolving Future.
       final completer = Completer<CallSession>();
       when(
-        () => mockRepo.initiateCall(scenarioId: any(named: 'scenarioId')),
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
       ).thenAnswer((_) => completer.future);
       await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
 
@@ -830,7 +889,10 @@ void main() {
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pump();
 
-      verify(() => mockRepo.initiateCall(scenarioId: 's1')).called(1);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
 
       // Cleanup: complete the future so addTearDown doesn't leak a pending
       // microtask into the next test.

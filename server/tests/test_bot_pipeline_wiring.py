@@ -305,7 +305,12 @@ def test_bot_reads_scenario_id_env_var() -> None:
     source = _BOT_PATH.read_text(encoding="utf-8")
     assert 'os.environ.get("SCENARIO_ID")' in source
     assert "TUTORIAL_SCENARIO_ID" in source
-    assert "resolve_patience_config(scenario_id)" in source
+    # Story 6.19 — bot.py now threads the learner's global difficulty into the
+    # resolver: `resolve_patience_config(scenario_id, difficulty_override=...)`
+    # (was the single-arg `resolve_patience_config(scenario_id)` pre-6.19).
+    # Assert the call + the override threading, not the old exact single-arg shape.
+    assert "resolve_patience_config(" in source
+    assert "difficulty_override=scenario_difficulty" in source
 
 
 def test_on_first_participant_joined_queues_initial_envelope_via_task() -> None:

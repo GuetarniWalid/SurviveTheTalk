@@ -129,9 +129,13 @@ _CRITIQUE_MAX_TOKENS = 3600
 
 _SCENARIOS_DIR = _HERE.parent / "pipeline" / "scenarios"
 
-# The exact guard string `scenarios.load_scenario_base_prompt` rejects — kept in
+# The exact guard strings `scenarios.load_scenario_base_prompt` rejects — kept in
 # sync so the builder never emits a base_prompt the loader would refuse.
 _SPEAK_FIRST_GUARD = "You will speak first when the call begins"
+# Story 6.19 — the loader composes the per-difficulty behavior block from
+# `scenarios._DIFFICULTY_PROMPTS` and REJECTS any base_prompt that still carries
+# an inline "Difficulty behavior (…)" block. The builder must NOT weave one in.
+_DIFFICULTY_BLOCK_GUARD = "Difficulty behavior ("
 
 _VALID_DIFFICULTIES = ("easy", "medium", "hard")
 
@@ -201,7 +205,8 @@ Return STRICT JSON only (no prose, no fences): a JSON array of EXACTLY {n} objec
   "id": "<short snake_case unique id naming the beat, e.g. state_alibi_time>",
   "hint_text": "<one short imperative line telling the LEARNER what to do at this beat>",
   "prompt_segment": "<1-3 sentences instructing the CHARACTER what to ask/say/probe at THIS beat>",
-  "success_criteria": "<a SPECIFIC, judgeable description of what the LEARNER's turn must do to pass THIS beat>"
+  "success_criteria": "<a SPECIFIC, judgeable description of what the LEARNER's turn must do to pass THIS beat>",
+  "requires": "<OPTIONAL — see the REACTIVE rule below. Omit entirely for normal beats.>"
 }}
 
 CRITICAL rules:
@@ -211,6 +216,14 @@ at once. Being merely on-topic, coherent, or polite must NOT be enough to pass.
 - Beats stay in the arc's time order; the conversation must ADVANCE (no two checkpoints that repeat \
 the same exchange).
 - ids unique. Do NOT include any "speak first" instruction anywhere.
+- REACTIVE beats (`requires`): a beat is REACTIVE if it only makes sense as the learner's RESPONSE \
+to a specific earlier CHARACTER action — a trap (misquoting them, citing a CCTV timestamp), a \
+reveal (naming an associate, a forced-door detail), or a circle-back ("remind me who you said…"). \
+A reactive beat literally cannot happen before that trigger. For each reactive beat, set \
+"requires" to the `id` of the EARLIER checkpoint that delivers its trigger (a single earlier id). \
+A beat the learner can volunteer at any time (PROACTIVE — give your name, state your alibi) must \
+OMIT "requires" entirely. When in doubt, omit it. The engine then refuses to credit a reactive \
+beat until its trigger is met, so its success_criteria can stay a simple lexical test.
 """
 
 CRITIQUE_PROMPT = """\
@@ -221,7 +234,11 @@ the corrected set.
 at once. Rewrite their success_criteria so each requires a DISTINCT, beat-specific action. This is \
 the most important fix — a scenario where one sentence validates several checkpoints is broken.
 2. CIRCULARITY: beats that repeat, regress, or could happen in any order. Reorder/rewrite so the \
-conversation STRICTLY ADVANCES in time (beat k builds on beat k-1's exchange).
+conversation STRICTLY ADVANCES in time (beat k builds on beat k-1's exchange). \
+EXCEPTION — a REACTIVE beat (one carrying a "requires" field) has a LEGITIMATE ordering dependency \
+on the earlier trigger it names; do NOT "make it any-order" or strip that dependency. PRESERVE its \
+"requires" field verbatim. The engine enforces the ordering, so the reactive beat's success_criteria \
+may stay a simple lexical test rather than encoding "PASS only AFTER …" in prose.
 3. UNJUDGEABLE: vague success_criteria a classifier could not decide. Make them concrete and \
 checkable.
 
@@ -232,27 +249,17 @@ Checkpoints (JSON):
 {checkpoints_json}
 
 Return STRICT JSON only (no prose, no fences): a JSON array of EXACTLY {n} corrected checkpoint \
-objects with the SAME keys (id, hint_text, prompt_segment, success_criteria), ids unique, in time \
-order. Output ONLY the corrected array.
+objects with the SAME keys (id, hint_text, prompt_segment, success_criteria, plus "requires" on any \
+beat that had one), ids unique, in time order. Output ONLY the corrected array.
 """
 
-# Per-difficulty behavior block woven into the base_prompt (mirrors the tone of the
-# hand-authored scenario YAMLs).
-_DIFFICULTY_BEHAVIOR = {
-    "easy": (
-        "Difficulty behavior (easy): speak slowly with simple everyday vocabulary and short "
-        "sentences; avoid idioms and slang; be patient and give the learner time to think; "
-        "if they seem stuck, help them along."
-    ),
-    "medium": (
-        "Difficulty behavior (medium): speak at a natural pace with everyday vocabulary; show "
-        "mild impatience if the learner stalls or is vague; do not spoon-feed answers."
-    ),
-    "hard": (
-        "Difficulty behavior (hard): speak quickly and assertively; be demanding and skeptical; "
-        "press the learner on weak or vague answers; show impatience early; do not help them."
-    ),
-}
+# Story 6.19 — the per-difficulty "Difficulty behavior (…)" block is NO LONGER
+# woven into the generated base_prompt. It moved to
+# `pipeline.scenarios._DIFFICULTY_PROMPTS` (single source of truth) and is
+# composed at LOAD time by `load_scenario_base_prompt` (which rejects any inline
+# block), so a global difficulty pick can actually change how a scenario SPEAKS.
+# The builder therefore emits a base_prompt WITHOUT a block (enforced by
+# `_DIFFICULTY_BLOCK_GUARD` in `validate_structure`).
 
 
 # ============================================================
@@ -332,10 +339,18 @@ def slugify(text: str, *, fallback: str = "beat") -> str:
 
 
 def sanitize_checkpoints(raw_checkpoints: list[dict]) -> list[dict]:
-    """Keep only the 4 schema keys, strip strings, and force ids unique + snake_case.
+    """Keep the schema keys, strip strings, and force ids unique + snake_case.
 
     The LLM occasionally returns extra keys, blank fields, or duplicate ids; this
     makes the list schema-shaped before structural validation.
+
+    Story 6.23 — the OPTIONAL reactive-gating `requires` edge is PRESERVED (it
+    used to be silently dropped by this whitelist — the load-bearing builder
+    edit). A present `requires` value is slugified the SAME way ids are so it
+    matches the target checkpoint's sanitized id; a blank/non-string `requires`
+    is omitted (treated as a proactive beat). The loader (and `validate_structure`)
+    still validate that the edge points at an existing, earlier beat — a builder
+    that mis-slugs the target surfaces there, for the human to fix.
     """
     out: list[dict] = []
     seen: set[str] = set()
@@ -349,14 +364,16 @@ def sanitize_checkpoints(raw_checkpoints: list[dict]) -> list[dict]:
             cid = f"{base}_{n}"
             n += 1
         seen.add(cid)
-        out.append(
-            {
-                "id": cid,
-                "hint_text": str(cp.get("hint_text", "")).strip(),
-                "prompt_segment": str(cp.get("prompt_segment", "")).strip(),
-                "success_criteria": str(cp.get("success_criteria", "")).strip(),
-            }
-        )
+        entry = {
+            "id": cid,
+            "hint_text": str(cp.get("hint_text", "")).strip(),
+            "prompt_segment": str(cp.get("prompt_segment", "")).strip(),
+            "success_criteria": str(cp.get("success_criteria", "")).strip(),
+        }
+        raw_requires = cp.get("requires")
+        if isinstance(raw_requires, str) and raw_requires.strip():
+            entry["requires"] = slugify(raw_requires)
+        out.append(entry)
     return out
 
 
@@ -491,13 +508,16 @@ def suggest_patience_start(n_checkpoints: int, difficulty: str) -> int:
     return int(round(base / 5.0) * 5)
 
 
-def build_base_prompt(brief: dict, *, difficulty: str) -> str:
+def build_base_prompt(brief: dict) -> str:
     """PURE assembly of the character system prompt from the brief.
 
-    Includes identity/tone, difficulty behavior, hard boundaries, and the canonical
-    facts (so the runtime COHERENCE_CHARTER has an inventory to be coherent against).
-    Deliberately omits the speak-first directive (composed once elsewhere) so
-    `scenarios.load_scenario_base_prompt` accepts it.
+    Includes identity/tone, hard boundaries, and the canonical facts (so the
+    runtime COHERENCE_CHARTER has an inventory to be coherent against).
+    Deliberately omits BOTH the speak-first directive (composed once elsewhere)
+    AND the per-difficulty behavior block (Story 6.19 — composed at load time by
+    `scenarios.load_scenario_base_prompt` from `_DIFFICULTY_PROMPTS`, so a global
+    difficulty pick can change how the scenario speaks). A base_prompt without
+    either is exactly what `scenarios.load_scenario_base_prompt` accepts.
     """
     name = brief.get("character_name", "the character")
     persona = brief.get("character_persona", "").strip()
@@ -505,7 +525,6 @@ def build_base_prompt(brief: dict, *, difficulty: str) -> str:
     facts = [
         str(f).strip() for f in (brief.get("canonical_facts") or []) if str(f).strip()
     ]
-    behavior = _DIFFICULTY_BEHAVIOR.get(difficulty, _DIFFICULTY_BEHAVIOR["medium"])
 
     parts = [f"You are {name}. {persona}".strip()]
     if setting:
@@ -524,7 +543,6 @@ def build_base_prompt(brief: dict, *, difficulty: str) -> str:
         "- Speak English only. Never break character. Never acknowledge being an AI.\n"
         "- Stay consistent with everything already said in this conversation."
     )
-    parts.append(behavior)
     parts.append(
         "Boundaries you MUST NEVER cross:\n"
         "- Never use slurs, threats, or sexual/violent/discriminatory content.\n"
@@ -635,6 +653,12 @@ def validate_structure(scenario: dict) -> list[str]:
         problems.append("base_prompt must be a non-empty string")
     elif _SPEAK_FIRST_GUARD in base_prompt:
         problems.append("base_prompt must NOT contain the speak-first directive")
+    elif _DIFFICULTY_BLOCK_GUARD in base_prompt:
+        # Story 6.19 — parity with the loader's new guard (the difficulty
+        # behavior block is composed at load time from _DIFFICULTY_PROMPTS).
+        problems.append(
+            "base_prompt must NOT contain an inline 'Difficulty behavior (…)' block"
+        )
 
     checkpoints = scenario.get("checkpoints")
     if not isinstance(checkpoints, list) or not checkpoints:
@@ -655,6 +679,31 @@ def validate_structure(scenario: dict) -> list[str]:
     dupes = sorted({i for i in ids if ids.count(i) > 1})
     if dupes:
         problems.append(f"duplicate checkpoint ids: {dupes}")
+    # Story 6.23 — mirror the loader's `requires` validation (existence +
+    # strictly-earlier order) so a generated scenario with a bad reactive edge
+    # can't break boot.
+    id_to_index = {
+        cp["id"]: i
+        for i, cp in enumerate(checkpoints)
+        if isinstance(cp, dict) and isinstance(cp.get("id"), str)
+    }
+    for i, cp in enumerate(checkpoints):
+        if not isinstance(cp, dict):
+            continue
+        required = cp.get("requires")
+        if required is None:
+            continue
+        if not isinstance(required, str) or not required.strip():
+            problems.append(f"checkpoint[{i}] has a non-string/empty 'requires'")
+            continue
+        if required not in id_to_index:
+            problems.append(
+                f"checkpoint[{i}] 'requires' points at unknown id {required!r}"
+            )
+        elif id_to_index[required] >= i:
+            problems.append(
+                f"checkpoint[{i}] 'requires' {required!r} must be an EARLIER checkpoint"
+            )
     return problems
 
 
@@ -966,7 +1015,7 @@ def finalize_build(
     structural problem (AC3 — "exactly N"): the LLM under/over-generating must
     block the write, not ship a wrong-length scenario silently."""
     checkpoints = sanitize_checkpoints(checkpoints)
-    base_prompt = build_base_prompt(brief, difficulty=difficulty)
+    base_prompt = build_base_prompt(brief)
     scenario = assemble_scenario(
         scenario_id=scenario_id,
         title=title,

@@ -44,9 +44,17 @@ class InitiateCallIn(BaseModel):
     length + charset prevent log-amplification (an unbounded string would
     hit `logger.exception` on lookup-miss) and reject obvious garbage at
     the schema boundary.
+
+    Story 6.19 — `difficulty` is the learner's GLOBAL difficulty pick
+    (set once on the hub, sent on every call). Optional + `default=None`
+    for backward compatibility: older clients / the legacy `/connect`
+    path omit it, and the server then uses the scenario's authored
+    `metadata.difficulty` (AC7). The `Literal` rejects any other value
+    with a 422 at the schema boundary, BEFORE any scenario YAML I/O.
     """
 
     scenario_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
+    difficulty: Literal["easy", "medium", "hard"] | None = Field(default=None)
 
 
 class InitiateCallOut(BaseModel):

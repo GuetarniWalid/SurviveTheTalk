@@ -331,6 +331,14 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
         "SCENARIO_CHARACTER": rive_character,
         "SCENARIO_ID": scenario_id,
     }
+    # Story 6.19 — pass the learner's chosen global difficulty to the bot
+    # subprocess (mirrors SCENARIO_ID / SCENARIO_CHARACTER). Only set when
+    # provided: env values are strings, so an unset preference must NOT become
+    # the literal "None" string — absence makes the bot fall back to the
+    # scenario's authored difficulty (AC7). Validated already by the
+    # `InitiateCallIn.difficulty` Literal (422 on a bad value).
+    if payload.difficulty is not None:
+        bot_env["SCENARIO_DIFFICULTY"] = payload.difficulty
     try:
         subprocess.Popen(
             [

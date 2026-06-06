@@ -45,7 +45,7 @@ import os
 from typing import Any
 
 from loguru import logger
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
 from config import Settings
@@ -71,7 +71,9 @@ def resolve_cartesia_voice(voice_id: str | None) -> str:
     return voice_id or CARTESIA_VOICE_ID
 
 
-def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any:
+def build_tts_service(
+    settings: Settings, *, voice_id: str | None = None, speed: float | None = None
+) -> Any:
     """Return the configured TTS service instance.
 
     Story 6.17 — `voice_id` is the scenario's `metadata.tts_voice_id` (a Cartesia
@@ -81,6 +83,13 @@ def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any
     `CARTESIA_VOICE_ID` is used. This is what makes a scenario's chosen voice
     (e.g. a detective's voice vs the default British female) actually take effect
     — before 6.17 the field was stored but ignored.
+
+    Story 6.19 AC5 — `speed` is the per-difficulty Cartesia speech-rate
+    multiplier (easy slower → hard faster, resolved by
+    `resolve_patience_config`). Applied for Cartesia only; ElevenLabs (the
+    last-resort fallback) keeps its single env voice and no per-difficulty
+    speed. `None` → Cartesia's natural default (1.0), i.e. exactly today's
+    behavior.
 
     Reads `settings.tts_provider` and returns either a Cartesia or
     ElevenLabs service constructed with the matching credentials +
@@ -104,8 +113,10 @@ def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any
     """
     provider = settings.tts_provider
     if provider == "cartesia":
-        return _build_cartesia(settings, voice_id=voice_id)
+        return _build_cartesia(settings, voice_id=voice_id, speed=speed)
     if provider == "elevenlabs":
+        # Story 6.19 — ElevenLabs ignores per-difficulty speed by design
+        # (Cartesia-primary; ElevenLabs is the fallback with a single env voice).
         return _build_elevenlabs(settings)
     # The Literal[...] type on settings.tts_provider already makes this
     # branch unreachable under Pydantic validation, but defensive guard
@@ -117,12 +128,19 @@ def build_tts_service(settings: Settings, *, voice_id: str | None = None) -> Any
     )
 
 
-def _build_cartesia(settings: Settings, *, voice_id: str | None = None) -> Any:
+def _build_cartesia(
+    settings: Settings, *, voice_id: str | None = None, speed: float | None = None
+) -> Any:
     """Construct a Cartesia Sonic-3 service (the Story 6.14 launch default).
 
     Story 6.17 — `voice_id` (the scenario's `metadata.tts_voice_id`) overrides the
     default `CARTESIA_VOICE_ID` when provided, so each scenario speaks with its
     own selected voice. Falls back to the default when `None`/empty.
+
+    Story 6.19 AC5 — `speed` (the per-difficulty multiplier, Cartesia's documented
+    sonic-3 range [0.6, 1.5]) is passed via `GenerationConfig(speed=…)`. Only set
+    when provided so the un-sped path stays byte-for-byte identical to today (the
+    `Settings.generation_config` default sentinel is left untouched).
 
     - Default (no env-gate) → `ErrorLoggingCartesiaTTSService` (always-on
       WARNING surfacing of Cartesia's documented `type=error` schema).
@@ -159,15 +177,19 @@ def _build_cartesia(settings: Settings, *, voice_id: str | None = None) -> Any:
 
     resolved_voice = resolve_cartesia_voice(voice_id)
     logger.info(
-        "TTS provider = cartesia (Sonic-3) voice={} [launch default]",
+        "TTS provider = cartesia (Sonic-3) voice={} speed={} [launch default]",
         resolved_voice,
+        speed if speed is not None else "default(1.0)",
     )
+    settings_kwargs: dict[str, Any] = {
+        "model": CARTESIA_MODEL,
+        "voice": resolved_voice,
+    }
+    if speed is not None:
+        settings_kwargs["generation_config"] = GenerationConfig(speed=speed)
     return tts_cls(
         api_key=settings.cartesia_api_key,
-        settings=CartesiaTTSService.Settings(
-            model=CARTESIA_MODEL,
-            voice=resolved_voice,
-        ),
+        settings=CartesiaTTSService.Settings(**settings_kwargs),
     )
 
 

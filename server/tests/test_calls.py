@@ -181,6 +181,81 @@ def test_initiate_spawns_bot_with_scenario_prompt(
 @patch("api.routes_calls.subprocess.Popen")
 @patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
 @patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_threads_difficulty_into_bot_env(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Story 6.19 AC6 — a chosen global difficulty is passed to the spawned bot
+    via the `SCENARIO_DIFFICULTY` env var (mirrors SCENARIO_ID)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "waiter_easy_01", "difficulty": "hard"},
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+
+    env = mock_popen.call_args.kwargs.get("env")
+    assert env is not None
+    assert env.get("SCENARIO_DIFFICULTY") == "hard"
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_omits_difficulty_env_when_absent(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Story 6.19 AC7 — when the request omits `difficulty`, the bot env carries
+    NO `SCENARIO_DIFFICULTY` (the bot then uses the scenario's authored
+    difficulty). An unset preference must never leak as the literal 'None'."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json=_TUTORIAL_BODY,
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+
+    env = mock_popen.call_args.kwargs.get("env")
+    assert env is not None
+    assert "SCENARIO_DIFFICULTY" not in env
+
+
+def test_initiate_rejects_bad_difficulty_value(
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """Story 6.19 AC6 — an out-of-enum `difficulty` is rejected with 422 at the
+    schema boundary, BEFORE any scenario YAML I/O or bot spawn."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "waiter_easy_01", "difficulty": "bogus"},
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 422
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
 def test_initiate_generates_both_tokens(
     mock_gen_token: MagicMock,
     mock_gen_agent: MagicMock,

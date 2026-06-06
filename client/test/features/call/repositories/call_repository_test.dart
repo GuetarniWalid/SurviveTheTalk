@@ -51,6 +51,37 @@ void main() {
       expect(capturedBody, equals({'scenario_id': 'waiter_easy_01'}));
     });
 
+    // Story 6.19 — the chosen global difficulty is added to the POST body when
+    // provided (the hub always passes it); omitted otherwise (above test).
+    test('includes difficulty in the body when provided', () async {
+      Map<String, dynamic>? capturedBody;
+      when(
+        () => mockApiClient.post<Map<String, dynamic>>(
+          '/calls/initiate',
+          data: any(named: 'data'),
+        ),
+      ).thenAnswer((invocation) async {
+        capturedBody =
+            invocation.namedArguments[#data] as Map<String, dynamic>?;
+        return envelope(const {
+          'call_id': 7,
+          'room_name': 'call-xyz',
+          'token': 'user-token',
+          'livekit_url': 'wss://livekit.example.com',
+        });
+      });
+
+      await repository.initiateCall(
+        scenarioId: 'waiter_easy_01',
+        difficulty: 'hard',
+      );
+
+      expect(
+        capturedBody,
+        equals({'scenario_id': 'waiter_easy_01', 'difficulty': 'hard'}),
+      );
+    });
+
     test('parses the envelope and returns a CallSession', () async {
       when(
         () => mockApiClient.post<Map<String, dynamic>>(

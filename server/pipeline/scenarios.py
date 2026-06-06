@@ -126,6 +126,14 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         # smoke-gate call_id=148 (2026-05-26).
         "ladder_impatience_seconds": 4.5,
         "escalation_thresholds": [75, 50, 25, 0],
+        # Story 6.19 AC5 — speech speed scales with difficulty (Cartesia
+        # sonic-3 `speed` multiplier, valid range [0.6, 1.5], 1.0 = natural).
+        # Easy speaks SLOWER + clearer so a B1 learner catches every syllable;
+        # medium natural; hard faster (see hard preset). Threaded preset →
+        # resolve_patience_config → bot.py → build_tts_service(speed=…) →
+        # CartesiaTTSService GenerationConfig. The nullable per-scenario
+        # `metadata.tts_speed` override still wins (in `_PATIENCE_OVERRIDE_KEYS`).
+        "tts_speed": 0.8,
     },
     "medium": {
         "initial_patience": 80,
@@ -136,6 +144,8 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "silence_hangup_seconds": 7.0,
         "ladder_impatience_seconds": 3.5,
         "escalation_thresholds": [60, 30, 0],
+        # Story 6.19 AC5 — natural speaking rate.
+        "tts_speed": 1.0,
     },
     "hard": {
         "initial_patience": 60,
@@ -148,7 +158,62 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         # face-shift = "Mugger should be impatient by design" semantic).
         "ladder_impatience_seconds": 2.5,
         "escalation_thresholds": [30, 0],
+        # Story 6.19 AC5 — faster, natural native cadence (no slowing down).
+        "tts_speed": 1.2,
     },
+}
+
+# ============================================================
+# Story 6.19 — Per-difficulty character behavior block (AC4)
+# ============================================================
+#
+# Until Story 6.19 the "Difficulty behavior (easy|medium|hard): …" block lived
+# INLINE in each scenario YAML's `base_prompt`. That meant a global "hard" pick
+# on an "easy"-authored scenario still *spoke* easy (the YAML text was fixed).
+# The three blocks now live HERE as the single source of truth; the YAMLs drop
+# their inline block (a load-time guard in `load_scenario_base_prompt` rejects
+# any YAML that still carries one). `load_scenario_base_prompt(scenario_id,
+# difficulty_override=…)` composes the chosen difficulty's block onto the raw
+# persona, so the character's vocabulary / idioms / rephrasing / pace actually
+# match the selected difficulty.
+#
+# These are deliberately SCENARIO-AGNOSTIC (they apply to any character): the
+# per-scenario flavour lives in the persona/`base_prompt`; this block is the
+# difficulty knob. The pace line is also the AC5 fallback if a TTS provider ever
+# can't honour a numeric `speed`.
+_DIFFICULTY_PROMPTS: dict[str, str] = {
+    "easy": (
+        "Difficulty behavior (easy):\n"
+        "- Speak slowly and clearly, one idea at a time — every syllable should "
+        "be easy to catch.\n"
+        "- Use basic everyday vocabulary and short, simple sentences "
+        "(about 5-8 words).\n"
+        "- Never use idioms, slang, or cultural references; if the learner seems "
+        "confused, rephrase more simply and help them along.\n"
+        "- Never interrupt the learner mid-sentence — give them a few seconds of "
+        "silence to think."
+    ),
+    "medium": (
+        "Difficulty behavior (medium):\n"
+        "- Speak at a natural conversational pace.\n"
+        "- Use everyday vocabulary mixed with 1-2 colloquial expressions per "
+        "response.\n"
+        "- Do not rephrase or simplify on request — if the learner stalls or is "
+        "vague, show mild impatience instead of helping.\n"
+        "- Occasionally throw in an unexpected question to keep them on their "
+        "toes; you may interrupt once if they ramble or stall."
+    ),
+    "hard": (
+        "Difficulty behavior (hard):\n"
+        "- Speak fast, at a natural native cadence — no slowing down.\n"
+        "- Use rich, idiomatic vocabulary with 3+ idiomatic expressions woven in "
+        "naturally.\n"
+        "- Never rephrase, never simplify — if they don't understand, treat it as "
+        "their problem and press on.\n"
+        "- Interrupt the learner if they ramble; ask unexpected follow-up "
+        "questions that test improvisation. Show impatience early and do not "
+        "help them."
+    ),
 }
 
 # The 8 nullable override keys the scenario YAML may set in
@@ -162,10 +227,15 @@ _PATIENCE_OVERRIDE_KEYS = (
     "silence_hangup_seconds",
     "ladder_impatience_seconds",
     "escalation_thresholds",
+    # Story 6.19 AC5 — nullable per-scenario TTS speed override; null → the
+    # difficulty preset's `tts_speed` wins. YAML key is `metadata.tts_speed`.
+    "tts_speed",
 )
 
 
-def resolve_patience_config(scenario_id: str) -> dict:
+def resolve_patience_config(
+    scenario_id: str, difficulty_override: str | None = None
+) -> dict:
     """Return a non-null PatienceTracker config dict for `scenario_id`.
 
     Reads the scenario YAML, picks the difficulty preset row, and
@@ -174,12 +244,22 @@ def resolve_patience_config(scenario_id: str) -> dict:
     `checkpoints` list length) so the caller can populate the
     `call_end` envelope's progress field.
 
+    Story 6.19 — `difficulty_override` (the learner's GLOBAL difficulty
+    pick, threaded from the client) selects which preset is the base in
+    place of the YAML's authored `metadata.difficulty`. Precedence
+    (AC3): the chosen difficulty swaps the *preset* (and, via
+    `load_scenario_base_prompt`, the behavior block + speech speed);
+    explicit per-field YAML overrides still win over individual preset
+    values. `None` (legacy `/connect`, older clients) → the authored
+    difficulty is used, exactly as before (AC7). The `copy.deepcopy`
+    stays FIRST; the override only changes which row we copy.
+
     Raises:
         FileNotFoundError: Unknown scenario id (parity with the rest
             of this module).
-        RuntimeError: `metadata.difficulty` is missing or not one of
-            `easy` / `medium` / `hard` — defensive against future
-            YAML drift.
+        RuntimeError: `metadata.difficulty` (or `difficulty_override`)
+            is missing or not one of `easy` / `medium` / `hard` —
+            defensive against future YAML drift / a bad override.
     """
     yaml_path = _SCENARIO_INDEX.get(scenario_id)
     if yaml_path is None:
@@ -195,7 +275,19 @@ def resolve_patience_config(scenario_id: str) -> dict:
             f"Scenario {scenario_id!r} has malformed `metadata` (not a dict)."
         )
 
-    difficulty = metadata.get("difficulty")
+    # Story 6.19 — a chosen global difficulty overrides the authored one for
+    # THIS call. Validate the override defensively even though the API boundary
+    # (`InitiateCallIn.difficulty`, a Literal) already 422s a bad value: this
+    # resolver is also reachable from tests / future callers.
+    if difficulty_override is not None:
+        if difficulty_override not in _DIFFICULTY_PRESETS:
+            raise RuntimeError(
+                f"difficulty_override {difficulty_override!r} is not one of "
+                f"{sorted(_DIFFICULTY_PRESETS)}."
+            )
+        difficulty = difficulty_override
+    else:
+        difficulty = metadata.get("difficulty")
     if difficulty not in _DIFFICULTY_PRESETS:
         raise RuntimeError(
             f"Scenario {scenario_id!r} has unknown difficulty {difficulty!r}; "
@@ -380,6 +472,18 @@ def resolve_patience_config(scenario_id: str) -> dict:
             f"number in [0.5, 10.0], got "
             f"{config['ladder_impatience_seconds']!r}"
         )
+    # Story 6.19 AC5 — `tts_speed` (preset or `metadata.tts_speed` override)
+    # must be a Cartesia-valid multiplier in [0.6, 1.5] (sonic-3's documented
+    # range). Bool-reject mirrors the other numeric validators.
+    if (
+        not isinstance(config["tts_speed"], (int, float))
+        or isinstance(config["tts_speed"], bool)
+        or not (0.6 <= config["tts_speed"] <= 1.5)
+    ):
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: tts_speed must be a number in "
+            f"[0.6, 1.5], got {config['tts_speed']!r}"
+        )
 
     return config
 
@@ -439,11 +543,43 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
             f"Scenario {scenario_id!r}: duplicate checkpoint id(s) {duplicates}. "
             f"Checkpoint ids must be unique (goal state is keyed by id)."
         )
+    # Story 6.23 — validate the optional `requires` reactive-gating edge.
+    # A beat carrying `requires: <id>` is judged/credited only after that
+    # required beat is `met` (the engine gate in `checkpoint_manager.
+    # judgeable_goals`). The edge MUST point at an EXISTING checkpoint that
+    # comes STRICTLY EARLIER in author order — which makes the dependency
+    # graph acyclic by construction (a beat can only wait on a beat that
+    # precedes it). Same fail-fast posture as the duplicate-id guard above:
+    # a malformed edge raises at call init, not mid-call.
+    id_to_index = {entry["id"]: i for i, entry in enumerate(checkpoints)}
+    for idx, entry in enumerate(checkpoints):
+        required = entry.get("requires")
+        if required is None:
+            continue
+        if not isinstance(required, str) or not required.strip():
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) has "
+                f"a non-string/empty `requires` value {required!r}."
+            )
+        if required not in id_to_index:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`requires` points at unknown checkpoint id {required!r}. It must "
+                f"name an existing, earlier checkpoint."
+            )
+        if id_to_index[required] >= idx:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`requires` {required!r} must reference an EARLIER checkpoint "
+                f"(a reactive beat cannot depend on itself or a later beat)."
+            )
     return checkpoints
 
 
-def load_scenario_base_prompt(scenario_id: str) -> str:
-    """Return the raw `base_prompt` (rstrip'd, NO `_SPEAK_FIRST_DIRECTIVE` suffix).
+def load_scenario_base_prompt(
+    scenario_id: str, difficulty_override: str | None = None
+) -> str:
+    """Return the persona `base_prompt` composed with its difficulty behavior block.
 
     Story 6.6 — `CheckpointManager` composes the live system message as
     `base_prompt + "\\n\\n" + checkpoints[index].prompt_segment` after
@@ -452,9 +588,21 @@ def load_scenario_base_prompt(scenario_id: str) -> str:
     once by `load_scenario_prompt`); the second checkpoint onwards must
     NOT re-instruct the bot to deliver the canned opening line.
 
+    Story 6.19 AC4 — the "Difficulty behavior (…)" block used to live
+    INLINE in each YAML's `base_prompt`, which froze a scenario's spoken
+    difficulty to its authored level. The three blocks now live in the
+    `_DIFFICULTY_PROMPTS` code constant (single source of truth); this
+    function appends the block for the *resolved* difficulty —
+    `difficulty_override` (the learner's global pick) when given, else
+    the YAML's authored `metadata.difficulty`. So a global "hard" pick on
+    an "easy"-authored scenario now actually SPEAKS hard. A load-time
+    guard rejects any YAML that still carries an inline block.
+
     Raises:
         FileNotFoundError: Unknown scenario id.
-        RuntimeError: `base_prompt` is missing or not a string.
+        RuntimeError: `base_prompt` is missing/not a string, still carries
+            an inline difficulty block, or the resolved difficulty is not
+            one of `easy` / `medium` / `hard`.
     """
     yaml_path = _SCENARIO_INDEX.get(scenario_id)
     if yaml_path is None:
@@ -483,7 +631,32 @@ def load_scenario_base_prompt(scenario_id: str) -> str:
             f"advances re-use the raw `base_prompt` and must not re-issue "
             f"the canned opening line."
         )
-    return base_prompt.rstrip()
+    # Story 6.19 AC4 — the behavior block lives in `_DIFFICULTY_PROMPTS` now.
+    # Reject a YAML that still carries an inline one: two blocks (the stale
+    # inline one + the composed one) would contradict each other and a global
+    # difficulty pick could no longer override the spoken difficulty.
+    if "Difficulty behavior (" in base_prompt:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: `base_prompt` must NOT contain an inline "
+            f"'Difficulty behavior (…)' block. Story 6.19 moved the three blocks "
+            f"into the `_DIFFICULTY_PROMPTS` code constant (single source of "
+            f"truth); remove the inline block from the YAML."
+        )
+
+    # Resolve the difficulty: the learner's global pick wins, else the YAML's
+    # authored value. Validate defensively (the API Literal already 422s a bad
+    # override; this also guards a malformed YAML / a future direct caller).
+    metadata = data.get("metadata")
+    authored = metadata.get("difficulty") if isinstance(metadata, dict) else None
+    difficulty = difficulty_override if difficulty_override is not None else authored
+    if difficulty not in _DIFFICULTY_PROMPTS:
+        raise RuntimeError(
+            f"Scenario {scenario_id!r}: cannot compose base prompt — resolved "
+            f"difficulty {difficulty!r} is not one of "
+            f"{sorted(_DIFFICULTY_PROMPTS)}."
+        )
+
+    return f"{base_prompt.rstrip()}\n\n{_DIFFICULTY_PROMPTS[difficulty]}"
 
 
 def load_scenario_prompt(scenario_id: str) -> str:

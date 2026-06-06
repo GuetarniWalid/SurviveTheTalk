@@ -7,6 +7,7 @@ import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/auth/token_storage.dart';
 import 'core/onboarding/consent_storage.dart';
+import 'core/onboarding/difficulty_storage.dart';
 import 'core/services/connectivity_service.dart';
 import 'core/services/end_call_retry_service.dart';
 import 'core/services/end_call_retry_storage.dart';
@@ -67,7 +68,14 @@ Future<void> bootstrap() async {
   // already-authenticated; ConsentStorage covers the onboarding gates.
   final consentStorage = ConsentStorage();
   final tokenStorage = TokenStorage();
-  await Future.wait<void>([consentStorage.preload(), tokenStorage.preload()]);
+  // Story 6.19 — the global difficulty preference is read synchronously by the
+  // hub line, so preload it alongside the other sync caches before runApp.
+  final difficultyStorage = DifficultyStorage();
+  await Future.wait<void>([
+    consentStorage.preload(),
+    tokenStorage.preload(),
+    difficultyStorage.preload(),
+  ]);
 
   // Story 6.5 Option B (post-deploy fix) — app-level singleton that
   // replays any `/end` POSTs that failed while offline. Constructed
@@ -92,6 +100,7 @@ Future<void> bootstrap() async {
     App(
       consentStorage: consentStorage,
       tokenStorage: tokenStorage,
+      difficultyStorage: difficultyStorage,
       endCallRetryService: endCallRetryService,
     ),
   );

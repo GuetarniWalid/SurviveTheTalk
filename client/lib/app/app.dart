@@ -8,6 +8,7 @@ import '../core/api/api_client.dart';
 import '../core/api/auth_interceptor.dart';
 import '../core/auth/token_storage.dart';
 import '../core/onboarding/consent_storage.dart';
+import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/permission_service.dart';
 import '../core/services/end_call_retry_service.dart';
 import '../core/theme/app_theme.dart';
@@ -28,6 +29,8 @@ class App extends StatefulWidget {
   final TokenStorage? tokenStorage;
   final ScenariosBloc? scenariosBloc;
   final EndCallRetryService? endCallRetryService;
+  // Story 6.19 — global difficulty preference store (bootstrap-preloaded).
+  final DifficultyStorage? difficultyStorage;
 
   const App({
     super.key,
@@ -37,6 +40,7 @@ class App extends StatefulWidget {
     this.tokenStorage,
     this.scenariosBloc,
     this.endCallRetryService,
+    this.difficultyStorage,
   });
 
   @override
@@ -48,6 +52,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final OnboardingBloc _onboardingBloc;
   late final ConsentStorage _consentStorage;
   late final TokenStorage _tokenStorage;
+  late final DifficultyStorage _difficultyStorage;
   ScenariosBloc? _scenariosBloc;
   late final GoRouter _router;
 
@@ -67,6 +72,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     // converge on the same idempotent `replayAll()`.
     WidgetsBinding.instance.addObserver(this);
     _consentStorage = widget.consentStorage ?? ConsentStorage();
+    // Story 6.19 — use the bootstrap-preloaded difficulty store if provided so
+    // the hub line reads the persisted choice synchronously; tests fall back to
+    // a fresh (default-easy) instance.
+    _difficultyStorage = widget.difficultyStorage ?? DifficultyStorage();
     // Use the preloaded TokenStorage from bootstrap if provided so the
     // 401 handler clears the SAME store the AuthBloc reads from
     // (hasValidTokenSync cache stays consistent).
@@ -103,6 +112,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _router = AppRouter.createRouter(
       _authBloc,
       consentStorage: _consentStorage,
+      difficultyStorage: _difficultyStorage,
       scenariosBloc: _scenariosBloc,
     );
 

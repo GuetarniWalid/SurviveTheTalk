@@ -1173,6 +1173,215 @@ def test_easy_preset_ladder_impatience_seconds_is_4_5() -> None:
     assert _DIFFICULTY_PRESETS["hard"]["ladder_impatience_seconds"] == 2.5
 
 
+# ============================================================
+# Story 6.19 — global difficulty selector (override + behavior block + tts_speed)
+# ============================================================
+
+
+def test_difficulty_override_swaps_preset_on_resolve_patience_config() -> None:
+    """AC3 — a global `hard` pick on the easy-authored waiter resolves to the
+    HARD patience preset (not easy), proving the override selects the base
+    preset for the call."""
+    from pipeline.scenarios import _DIFFICULTY_PRESETS, resolve_patience_config
+
+    hard = _DIFFICULTY_PRESETS["hard"]
+    config = resolve_patience_config("waiter_easy_01", difficulty_override="hard")
+    assert config["initial_patience"] == hard["initial_patience"] == 60
+    assert config["fail_penalty"] == hard["fail_penalty"] == -25
+    assert config["escalation_thresholds"] == hard["escalation_thresholds"] == [30, 0]
+    assert config["tts_speed"] == hard["tts_speed"] == 1.2
+
+
+def test_difficulty_override_none_uses_authored_difficulty() -> None:
+    """AC7 — no override → the scenario's authored difficulty (easy) is used,
+    exactly as before the story."""
+    from pipeline.scenarios import resolve_patience_config
+
+    config = resolve_patience_config("waiter_easy_01")
+    assert config["initial_patience"] == 100  # easy preset
+    assert config["tts_speed"] == 0.8
+
+    config_explicit_none = resolve_patience_config(
+        "waiter_easy_01", difficulty_override=None
+    )
+    assert config_explicit_none["initial_patience"] == 100
+
+
+def test_resolve_patience_config_rejects_bad_difficulty_override() -> None:
+    """A bad override is a fail-loud condition (defensive; the API Literal
+    already 422s before this point)."""
+    from pipeline.scenarios import resolve_patience_config
+
+    with pytest.raises(RuntimeError, match="difficulty_override"):
+        resolve_patience_config("waiter_easy_01", difficulty_override="bogus")
+
+
+def test_presets_carry_tts_speed_easy_slow_hard_fast() -> None:
+    """AC5 — each preset carries a Cartesia-valid `tts_speed`: easy slower,
+    medium natural, hard faster, all inside the documented [0.6, 1.5] range."""
+    from pipeline.scenarios import _DIFFICULTY_PRESETS
+
+    speeds = {
+        k: _DIFFICULTY_PRESETS[k]["tts_speed"] for k in ("easy", "medium", "hard")
+    }
+    assert speeds == {"easy": 0.8, "medium": 1.0, "hard": 1.2}
+    assert speeds["easy"] < speeds["medium"] < speeds["hard"]
+    assert all(0.6 <= s <= 1.5 for s in speeds.values())
+
+
+def test_yaml_tts_speed_override_wins_over_preset(tmp_path, monkeypatch) -> None:
+    """AC5 — a nullable per-scenario `metadata.tts_speed` overrides the preset
+    value (mirrors the other patience overrides)."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_speed
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  tts_speed: 1.1
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_speed")
+    config = scenarios_mod.resolve_patience_config("synth_speed")
+    # YAML override (1.1) beats the easy preset (0.8).
+    assert config["tts_speed"] == 1.1
+
+
+def test_resolve_patience_config_rejects_out_of_range_tts_speed(
+    tmp_path, monkeypatch
+) -> None:
+    """AC5 — a `tts_speed` outside Cartesia's [0.6, 1.5] sonic-3 range fails
+    loud at resolve time."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_bad_speed
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+  tts_speed: 2.0
+base_prompt: |
+  base
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path, monkeypatch, yaml_body, scenario_id="synth_bad_speed"
+    )
+    with pytest.raises(RuntimeError, match="tts_speed"):
+        scenarios_mod.resolve_patience_config("synth_bad_speed")
+
+
+def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
+    """AC4 — the composed base prompt carries the persona AND the authored
+    difficulty's behavior block (now sourced from the code constant)."""
+    from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
+
+    composed = load_scenario_base_prompt("waiter_easy_01")
+    assert "Tina" in composed  # persona preserved
+    assert "Difficulty behavior (easy):" in composed
+    assert "Speak slowly and clearly" in composed
+    assert composed.endswith(_DIFFICULTY_PROMPTS["easy"])
+
+
+def test_load_scenario_base_prompt_override_swaps_behavior_block() -> None:
+    """AC4 — a global `hard` pick on the easy waiter makes it SPEAK hard: the
+    hard block is composed in place of the easy one."""
+    from pipeline.scenarios import load_scenario_base_prompt
+
+    composed = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
+    assert "Difficulty behavior (hard):" in composed
+    assert "Speak fast, at a natural native cadence" in composed
+    # The easy block must NOT leak through.
+    assert "Difficulty behavior (easy):" not in composed
+    assert "Speak slowly and clearly" not in composed
+
+
+def test_load_scenario_base_prompt_rejects_inline_difficulty_block(
+    tmp_path, monkeypatch
+) -> None:
+    """AC4 — the behavior block lives in `_DIFFICULTY_PROMPTS` now; a YAML that
+    still carries an inline block is rejected at load (single source of truth)."""
+    from pipeline import scenarios as scenarios_mod
+
+    yaml_body = """
+metadata:
+  id: synth_inline_block
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  You are Tina.
+
+  Difficulty behavior (hard): speak fast and press hard.
+checkpoints:
+  - id: a
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+    _write_synthetic_yaml(
+        tmp_path, monkeypatch, yaml_body, scenario_id="synth_inline_block"
+    )
+    with pytest.raises(RuntimeError, match="Difficulty behavior"):
+        scenarios_mod.load_scenario_base_prompt("synth_inline_block")
+
+
+def test_load_scenario_base_prompt_rejects_bad_difficulty_override() -> None:
+    """A bad override is fail-loud (defensive; the API Literal 422s first)."""
+    from pipeline.scenarios import load_scenario_base_prompt
+
+    with pytest.raises(RuntimeError, match="difficulty"):
+        load_scenario_base_prompt("waiter_easy_01", difficulty_override="bogus")
+
+
+def test_shipped_scenarios_have_no_inline_difficulty_block() -> None:
+    """AC4 / Task 2 regression net — every shipped scenario YAML dropped its
+    inline behavior block, so the composed prompt contains EXACTLY ONE
+    'Difficulty behavior (' (the one appended from the code constant). A double
+    would mean a YAML still carries an inline block."""
+    from pipeline.scenarios import _SCENARIO_INDEX, load_scenario_base_prompt
+
+    for scenario_id in _SCENARIO_INDEX:
+        composed = load_scenario_base_prompt(scenario_id)
+        assert composed.count("Difficulty behavior (") == 1, (
+            f"{scenario_id!r} composed prompt has a duplicated/inline difficulty block"
+        )
+
+
 def test_resolve_patience_config_validates_ladder_impatience_seconds_range(
     tmp_path, monkeypatch
 ) -> None:

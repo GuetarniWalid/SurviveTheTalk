@@ -178,11 +178,14 @@ def test_suggest_patience_start_scales_with_length_and_difficulty():
 
 
 def test_build_base_prompt_has_facts_and_no_speak_first():
-    bp = builder.build_base_prompt(_brief(), difficulty="hard")
+    bp = builder.build_base_prompt(_brief())
     assert "Officer Dale" in bp
     assert "Fingerprints were found at the scene." in bp
     assert builder._SPEAK_FIRST_GUARD not in bp
-    assert "hard" in bp.lower()
+    # Story 6.19 — the per-difficulty behavior block is composed at LOAD time
+    # (scenarios._DIFFICULTY_PROMPTS), never woven into the generated base_prompt;
+    # the builder must emit a base_prompt the loader's new guard accepts.
+    assert builder._DIFFICULTY_BLOCK_GUARD not in bp
 
 
 # ============================================================
@@ -560,7 +563,7 @@ def test_fetch_cartesia_voices_filters_to_english(monkeypatch):
 def test_assemble_threads_opening_line_and_base_prompt_notes_it():
     brief = _brief(2)
     brief["opening_line"] = "This is Detective Mercer. Answer my questions."
-    bp = builder.build_base_prompt(brief, difficulty="hard")
+    bp = builder.build_base_prompt(brief)
     sc = builder.assemble_scenario(
         scenario_id="x",
         title="X",

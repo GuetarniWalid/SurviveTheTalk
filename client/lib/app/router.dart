@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../core/api/api_client.dart';
 import '../core/onboarding/consent_storage.dart';
+import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/vibration_service.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
@@ -43,6 +44,10 @@ class AppRouter {
   static GoRouter createRouter(
     AuthBloc authBloc, {
     required ConsentStorage consentStorage,
+    // Story 6.19 — the bootstrap-preloaded global difficulty store, threaded to
+    // the hub (ScenarioListScreen) so the discreet "Difficulty:" line + the
+    // outgoing call reflect the persisted choice.
+    required DifficultyStorage difficultyStorage,
     ScenariosBloc? scenariosBloc,
   }) {
     return GoRouter(
@@ -105,13 +110,17 @@ class AppRouter {
             child: scenariosBloc != null
                 ? BlocProvider<ScenariosBloc>.value(
                     value: scenariosBloc,
-                    child: const ScenarioListScreen(),
+                    child: ScenarioListScreen(
+                      difficultyStorage: difficultyStorage,
+                    ),
                   )
                 : BlocProvider<ScenariosBloc>(
                     create: (_) =>
                         ScenariosBloc(ScenariosRepository(ApiClient()))
                           ..add(const LoadScenariosEvent()),
-                    child: const ScenarioListScreen(),
+                    child: ScenarioListScreen(
+                      difficultyStorage: difficultyStorage,
+                    ),
                   ),
           ),
         ),

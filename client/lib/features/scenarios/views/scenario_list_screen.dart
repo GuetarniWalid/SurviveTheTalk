@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/api/api_exception.dart';
+import '../../../core/onboarding/difficulty_storage.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
+import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_toast.dart';
 import '../../../core/widgets/empathetic_error_screen.dart';
 import '../../call/models/call_session.dart';
@@ -21,6 +23,7 @@ import '../models/call_usage.dart';
 import '../models/scenario.dart';
 import 'widgets/bottom_overlay_card.dart';
 import 'widgets/content_warning_sheet.dart';
+import 'widgets/difficulty_sheet.dart';
 import 'widgets/scenario_card.dart';
 
 /// Builds the in-call surface to push from `_onCallTap`. Defaults to
@@ -43,10 +46,17 @@ class ScenarioListScreen extends StatelessWidget {
   /// Optional injection seam for tests. Production uses `CallScreen.new`.
   final CallScreenBuilder? callScreenBuilder;
 
+  /// Story 6.19 — the GLOBAL difficulty preference store. Production passes the
+  /// bootstrap-preloaded instance (threaded via the router) so the hub line and
+  /// the outgoing call reflect the persisted choice; tests may omit it (a fresh,
+  /// non-preloaded instance defaults to `easy`).
+  final DifficultyStorage? difficultyStorage;
+
   const ScenarioListScreen({
     super.key,
     this.callRepository,
     this.callScreenBuilder,
+    this.difficultyStorage,
   });
 
   @override
@@ -83,6 +93,7 @@ class ScenarioListScreen extends StatelessWidget {
                         usage: usage,
                         callRepository: callRepository,
                         callScreenBuilder: callScreenBuilder,
+                        difficultyStorage: difficultyStorage,
                       ),
                     ),
                   );
@@ -143,12 +154,14 @@ class _List extends StatefulWidget {
   final CallUsage usage;
   final CallRepository? callRepository;
   final CallScreenBuilder? callScreenBuilder;
+  final DifficultyStorage? difficultyStorage;
 
   const _List({
     required this.scenarios,
     required this.usage,
     this.callRepository,
     this.callScreenBuilder,
+    this.difficultyStorage,
   });
 
   @override
@@ -168,6 +181,12 @@ class _ListState extends State<_List> {
   late final CallRepository _callRepository =
       widget.callRepository ?? CallRepository(ApiClient());
 
+  // Story 6.19 — resolved once per State so a sheet selection (set()) and the
+  // hub line stay in sync across BlocBuilder rebuilds. Production injects the
+  // bootstrap-preloaded store; tests fall back to a fresh (default-easy) one.
+  late final DifficultyStorage _difficultyStorage =
+      widget.difficultyStorage ?? DifficultyStorage();
+
   @override
   Widget build(BuildContext context) {
     // Reserve exactly the BOC's rendered height (static content + the
@@ -177,22 +196,50 @@ class _ListState extends State<_List> {
     final reservedForOverlay = BottomOverlayCard.isVisibleFor(widget.usage)
         ? BottomOverlayCard.staticContentHeight + bottomInset
         : 0.0;
-    return ListView.separated(
-      padding: EdgeInsets.only(bottom: reservedForOverlay),
-      itemCount: widget.scenarios.length,
-      separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.cardGap),
-      itemBuilder: (context, i) {
-        final scenario = widget.scenarios[i];
-        return ScenarioCard(
-          scenario: scenario,
-          onCallTap: () => _onCallTap(context, scenario),
-          onCardTap: () => _onCardTap(context, scenario),
-          onReportTap: scenario.isNotAttempted
-              ? null
-              : () => _onReportTap(context, scenario),
-        );
-      },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Story 6.19 — discreet GLOBAL difficulty line (set once, applies to
+        // every call). Sits above the scrolling list (and so above the pinned
+        // BottomOverlayCard); tapping it opens the difficulty bottom sheet.
+        _DifficultyHubLine(
+          difficulty: _difficultyStorage.getSync(),
+          onTap: () => _onDifficultyTap(context),
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+        Expanded(
+          child: ListView.separated(
+            padding: EdgeInsets.only(bottom: reservedForOverlay),
+            itemCount: widget.scenarios.length,
+            separatorBuilder: (_, _) =>
+                const SizedBox(height: AppSpacing.cardGap),
+            itemBuilder: (context, i) {
+              final scenario = widget.scenarios[i];
+              return ScenarioCard(
+                scenario: scenario,
+                onCallTap: () => _onCallTap(context, scenario),
+                onCardTap: () => _onCardTap(context, scenario),
+                onReportTap: scenario.isNotAttempted
+                    ? null
+                    : () => _onReportTap(context, scenario),
+              );
+            },
+          ),
+        ),
+      ],
     );
+  }
+
+  // Story 6.19 — open the difficulty bottom sheet, persist the pick, and
+  // refresh the hub line. A null result (dismissed) or an unchanged pick is a
+  // no-op. `_onCallTap` reads `_difficultyStorage.getSync()` fresh each tap, so
+  // the chosen value reaches the next call without any extra plumbing.
+  Future<void> _onDifficultyTap(BuildContext context) async {
+    final current = _difficultyStorage.getSync();
+    final chosen = await showDifficultySheet(context, current: current);
+    if (chosen == null || chosen == current) return;
+    await _difficultyStorage.set(chosen);
+    if (mounted) setState(() {});
   }
 
   // Story 6.1 contract:
@@ -219,6 +266,9 @@ class _ListState extends State<_List> {
     try {
       final session = await _callRepository.initiateCall(
         scenarioId: scenario.id,
+        // Story 6.19 — send the learner's chosen global difficulty for this
+        // call (read fresh so a mid-session change on the sheet is honored).
+        difficulty: _difficultyStorage.getSync(),
       );
       if (!context.mounted) return;
       final builder =
@@ -269,5 +319,48 @@ class _ListState extends State<_List> {
 
   void _onCardTap(BuildContext context, Scenario scenario) {
     context.push('${AppRoutes.briefing}/${scenario.id}');
+  }
+}
+
+/// Story 6.19 — the discreet, tappable `Difficulty: <Level>` line on the hub.
+/// Low-key (textSecondary grey, no new colors) so it reads as a quiet setting,
+/// not a prominent control. Tapping opens the difficulty bottom sheet.
+class _DifficultyHubLine extends StatelessWidget {
+  final String difficulty;
+  final VoidCallback onTap;
+
+  const _DifficultyHubLine({required this.difficulty, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final label =
+        '${difficulty[0].toUpperCase()}${difficulty.substring(1)}';
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            const Icon(
+              Icons.tune,
+              size: 15,
+              color: AppColors.textSecondary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Difficulty: $label',
+              style: const TextStyle(
+                fontFamily: AppTypography.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

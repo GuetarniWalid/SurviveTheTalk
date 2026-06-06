@@ -27,8 +27,6 @@ base_prompt: |-
   - Speak English only. Never break character. Never acknowledge being an AI.
   - Stay consistent with everything already said in this conversation.
 
-  Difficulty behavior (hard): speak quickly and assertively; be demanding and skeptical; press the learner on weak or vague answers; show impatience early; do not help them.
-
   Boundaries you MUST NEVER cross:
   - Never use slurs, threats, or sexual/violent/discriminatory content.
   - If the other person is genuinely abusive, deliver your hang-up line and end the call.
@@ -79,22 +77,26 @@ checkpoints:
   prompt_segment: Ask how the learner got to and from that location, adding the travel leg to the timeline before any traps are sprung.
   success_criteria: PASS if the turn names a specific means of travel to and/or from the location (walked, drove, took a bus/cab, got a lift). FAIL on a non-answer about transport or evasion. Timeline-vs-travel consistency is NOT judged here; it is handled by the session-level consistency evaluator.
 - id: correct_misquoted_time
+  requires: lock_arrival_and_departure
   hint_text: He misquotes your departure time — correct him firmly without changing your real story.
   prompt_segment: 'Spring the first circle-back trap: repeat the learner''s OWN previously stated departure time back distorted (e.g. ''so you told me you left at <stated + 30 min>''). This must reference the time they actually gave. Bait them to correct you or agree with the false version.'
-  success_criteria: PASS only if Mercer has ALREADY misquoted the learner's departure time earlier in this conversation AND this turn explicitly disputes that wrong figure — pushing back on the time Mercer just stated (e.g. 'no, that's not right, I said half past nine') with the corrected time. A bare discourse-filler 'actually' followed by a time, with no Mercer misquote on the table to push back against, does NOT count. FAIL if the turn agrees with Mercer's wrong time, states a time without disputing a prior misquote, or no misquote has been delivered yet. The actual match against the originally stated departure time is verified by the session-level consistency evaluator, which is supplied that prior value.
+  success_criteria: PASS if the turn disputes a misquoted departure time — pushing back on a wrong time figure and giving the corrected time (e.g. 'no, that's not right, I said half past nine'). FAIL if the turn agrees with the stated time, or states a time without disputing/correcting it. The actual match against the originally stated departure time is verified by the session-level consistency evaluator, which is supplied that prior value.
 - id: deny_knowing_crew
   hint_text: Answer clearly whether you know anyone in the Carver Street Boys.
   prompt_segment: Ask directly whether the learner knows anyone in the Carver Street Boys. Do not name a specific individual yet.
   success_criteria: PASS if the turn contains a clear yes/no statement about knowing anyone in the Carver Street Boys (a denial of ties OR a plain statement of any acquaintance). Judge propositional content only; do NOT judge hesitation or tone. FAIL only if the turn gives no statement about the crew or answers a different question. If the learner pre-emptively names/denies the specific associate here, credit ONLY this beat, not the next.
 - id: address_named_associate
+  requires: deny_knowing_crew
   hint_text: He names a person and says you were seen with him — engage that specific name, deny or explain the link.
   prompt_segment: Name a supposed associate (introduce a specific individual) and claim the learner was 'seen with him.' Pressure them to deny the link or explain it. This beat follows the general crew denial.
   success_criteria: PASS only if the turn engages the SPECIFIC person Mercer named — echoes/uses the name and either denies being seen/connected with that individual or explains the actual nature of any link to them. FAIL if the turn only repeats a crew-level denial ('I don't know any of them') without engaging the named individual, or ignores the named person.
 - id: explain_prints_on_inside_handle
+  requires: react_to_fingerprint_accusation
   hint_text: He says the prints were on the INSIDE handle of the forced door — explain how they got there.
   prompt_segment: 'Now drop the bombshell: the prints were on the INSIDE handle of the forced rear fire door, and demand the mechanism. Treat any earlier print remark as ''we''ll get to that'' — this is the genuine reveal. Ask how their prints reached the inside handle.'
-  success_criteria: PASS only AFTER the inside-handle detail is revealed, if the turn states a specific past reason/occasion the learner touched that door that accounts for the INSIDE/forced-door placement (e.g. visited, worked, delivered, helped carry boxes, used it as an exit). Give the core mechanism only; a date is not required here. FAIL on a bare denial with no mechanism for how prints reached that handle.
+  success_criteria: PASS if the turn states a specific past reason/occasion the learner touched that door that accounts for the INSIDE/forced-door placement (e.g. visited, worked, delivered, helped carry boxes, used it as an exit). Give the core mechanism only; a date is not required here. FAIL on a bare denial with no mechanism for how prints reached that handle.
 - id: elaborate_through_silence
+  requires: explain_prints_on_inside_handle
   hint_text: He goes quiet — add a NEW corroborating detail about the door visit, don't crack.
   prompt_segment: Go silent after the explanation to draw out a NEW corroborating element — a witness to the door visit, a reason they were at the back, or what they were carrying — rather than a repeat. Let the pause hang.
   success_criteria: PASS only if this turn (during/after Mercer's silence) adds at least one NEW concrete supporting detail about the door visit not already stated (a witness, a reason they were inside, what they carried, a specifying noun/time/person) AND contains no second, different door-reason within the turn. FAIL if it merely paraphrases the prior reason, or is an empty/near-empty turn. Contradiction against the earlier reason is checked by the session-level consistency evaluator.
@@ -107,14 +109,17 @@ checkpoints:
   prompt_segment: 'Confront the learner with the witness: a person in a GREY HOODED JACKET near the rear alley at 8:25pm. Target IDENTITY/APPEARANCE — ask if that was them, focusing on the description.'
   success_criteria: PASS only if the turn explicitly addresses the GREY HOODED JACKET / appearance descriptor (e.g. denies owning or wearing such a jacket, or distinguishes what they were actually wearing) AND denies it was them. Merely re-asserting 'I was elsewhere' without touching the jacket/appearance does NOT pass. FAIL on a wishy-washy 'maybe' or conceding being near the alley.
 - id: reconcile_cctv_timestamp
+  requires: deny_grey_hood_witness
   hint_text: He cites a specific CCTV timestamp — engage the exact time and show why it doesn't place you there.
   prompt_segment: Cite a SPECIFIC numeric CCTV timestamp from the alley camera and create an arithmetic tension against the learner's stated travel/arrival times (e.g. 'camera shows the alley empty until 8:24, then a figure — your bus supposedly got in at 8:20, so where's the gap?'). Challenge them to close it.
   success_criteria: PASS only if the turn explicitly engages the cited CCTV TIMESTAMP value (names, accepts, or disputes the clock number) AND offers a time-based explanation for why it does not place them at the scene (e.g. the camera covers the front, the timestamp matches them leaving the diner). A bare 'I was elsewhere' that never touches the timestamp does NOT pass. Whether the gap is 'truly' closed is judged by the session-level evaluator using the supplied timestamp.
 - id: hold_consistency_on_recall
+  requires: name_who_was_with_them
   hint_text: He re-asks who could vouch for you — give the SAME companion answer as before.
   prompt_segment: Spring the second circle-back trap, pinned to the COMPANION (since the departure time was already re-tested earlier). Re-ask it differently — 'Remind me, who did you say could vouch for you?' — to test whether the companion answer stays consistent.
   success_criteria: PASS only if the turn re-states the same companion identity the learner named earlier (matching the name_who_was_with_them answer). Re-state of the single re-probed companion fact suffices; a full multi-fact summary is broader than this beat and is not required. FAIL if the turn names a different companion or hedges differently. The match against the original companion value is verified by the session-level consistency evaluator, which is supplied that prior value.
 - id: answer_biggest_hole
+  requires: reconcile_cctv_timestamp
   hint_text: He names the one thing that doesn't fit (the CCTV/travel gap) — answer THAT head-on, calmly.
   prompt_segment: 'Make the final hard push: accuse the learner of lying and name the single biggest unresolved tension surfaced earlier — the CCTV/travel-time gap from the timestamp beat (or the door-touch timing). Require them to reconcile THAT specific item one last time.'
   success_criteria: PASS only if the turn directly addresses the specific hole Mercer names (the CCTV/travel gap or the door-touch timing) AND restates — does not abandon — the relevant earlier fact while answering. FAIL on caving, going silent, or refusing to engage the named hole. Whether the answer alters any earlier key fact is judged by the session-level consistency evaluator, which is supplied the prior facts and the specific hole cited.

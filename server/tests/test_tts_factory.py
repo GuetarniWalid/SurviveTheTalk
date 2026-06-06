@@ -153,3 +153,46 @@ def test_factory_defaults_to_cartesia_provider() -> None:
         assert s.tts_provider == "cartesia"
         tts = build_tts_service(s)
     assert isinstance(tts, ErrorLoggingCartesiaTTSService)
+
+
+# ---------- Story 6.19 — per-difficulty speech speed ----------
+
+
+def test_factory_threads_speed_into_cartesia_generation_config(monkeypatch) -> None:
+    """Story 6.19 AC5 — a per-difficulty `speed` reaches Cartesia via
+    `GenerationConfig(speed=…)`; omitting it leaves `generation_config` at its
+    default sentinel so the un-sped path stays identical to today."""
+    import pipeline.cartesia_instrumented as ci
+
+    captured: dict[str, object] = {}
+
+    class _FakeCartesia:
+        def __init__(self, *, api_key: str, settings) -> None:
+            captured["gc"] = getattr(settings, "generation_config", "MISSING")
+
+    monkeypatch.setattr(ci, "ErrorLoggingCartesiaTTSService", _FakeCartesia)
+    os.environ.pop("CARTESIA_INSTRUMENT", None)
+    s = _build_settings(TTS_PROVIDER="cartesia")
+
+    build_tts_service(s, speed=1.2)
+    gc = captured["gc"]
+    assert gc not in (None, "MISSING")
+    assert gc.speed == 1.2  # type: ignore[union-attr]
+
+    # No speed → we do NOT pass generation_config, so no GenerationConfig with a
+    # speed is injected (matches the pre-6.19 behavior).
+    build_tts_service(s, speed=None)
+    gc_none = captured["gc"]
+    assert gc_none is None or getattr(gc_none, "speed", None) is None
+
+
+def test_factory_elevenlabs_ignores_speed() -> None:
+    """Story 6.19 AC5 — ElevenLabs (the fallback) has no per-difficulty speed;
+    passing one must not crash and must not change the returned service type."""
+    s = _build_settings(
+        TTS_PROVIDER="elevenlabs",
+        ELEVENLABS_API_KEY="test-eleven-key",
+        ELEVENLABS_VOICE_ID="Xb7hH8MSUJpSbSDYk0k2",
+    )
+    tts = build_tts_service(s, speed=1.2)
+    assert isinstance(tts, ElevenLabsTTSService)
