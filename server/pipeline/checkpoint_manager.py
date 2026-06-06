@@ -551,6 +551,52 @@ class CheckpointManager(FrameProcessor):
         ):
             self._bot_speaking = False
 
+        # ============================================================
+        # Story 6.22 (AC1/AC2) — POST-HANG-UP TURN SUPPRESSION
+        # ============================================================
+        # Once a hang-up is already scheduled (`is_hanging_up == True`), DROP
+        # every subsequent finalized user turn here — do NOT forward it
+        # downstream to `context_aggregator.user()` / the LLM. Otherwise the
+        # turn triggers an LLMRun whose normal reply plays OVER the canned/
+        # generated exit line: two voices at once + a 6 s `hang-up TTS timeout`
+        # (cop call_id=219, 2026-06-04). The pre-existing preemptive-suppress
+        # (`if pt.is_hanging_up: return`) lived INSIDE the `is_terminal_turn`
+        # block below, but `is_terminal_turn` is `not pt.is_hanging_up and
+        # (...)`, so a turn arriving AFTER the hang-up is non-terminal by
+        # construction and never reached it — this early return closes that gap.
+        #
+        # Placed BEFORE both the echo-skip guard and the `is_terminal_turn`
+        # computation, and INTENTIONALLY independent of `_bot_speaking`: the
+        # overlap happens precisely WHILE the bot is mid-exit-line, and the
+        # echo guard only skips classification (it STILL forwards the frame),
+        # so a suppression living inside the `not _bot_speaking` block would let
+        # the over-the-exit-line turn slip through to the LLM. Suppressing here
+        # is the same deliberate pass-through violation as Deviation #7 — the
+        # exit line must be the SOLE final utterance.
+        #
+        # AC3 — the TRIGGERING terminal turn is unaffected: `is_hanging_up` is
+        # still False when it is judged (the hang-up is scheduled DURING that
+        # turn's awaited classify), so this early return is skipped for it and
+        # its existing `checkpoint_preemptive_suppress` path is unchanged. Each
+        # turn logs at most ONE suppression line (no double-suppression).
+        #
+        # D1 — frame-suppress only (no `InputGate` mic mute); D2 — finalized
+        # turns only (interim partials are harmless). See the story's Decisions.
+        if (
+            isinstance(frame, TranscriptionFrame)
+            # Same conservative `finalized` default as the classify path below
+            # (the server/CLAUDE.md §1 asymmetry): suppress only finalized user
+            # turns; interim partials never reach the LLM as a turn anyway.
+            and getattr(frame, "finalized", False)
+            and frame.text.strip()
+            and self._patience_tracker.is_hanging_up
+        ):
+            logger.info(
+                "checkpoint_post_hangup_suppress text={!r}",
+                frame.text.strip()[:64],
+            )
+            return
+
         # Story 6.20 follow-up — observability: one greppable line per echo
         # the guard suppresses, so a journalctl tail shows WHY a checkpoint
         # didn't advance during the bot's turn (call_id=225 root cause).

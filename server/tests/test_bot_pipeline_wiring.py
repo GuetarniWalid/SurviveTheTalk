@@ -515,6 +515,13 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
     ]
 
     patience_tracker = MagicMock()
+    # Story 6.22 — process_frame now early-suppresses finalized user turns when
+    # `is_hanging_up` is truthy; a bare auto-Mock would drop this contract
+    # test's TF before the classifier runs (and the `is_terminal_turn`
+    # comparison needs real ints). Pin a real non-hang-up tracker.
+    patience_tracker.is_hanging_up = False
+    patience_tracker.patience = 100
+    patience_tracker.fail_penalty = -15
 
     manager = CheckpointManager(
         base_prompt="BASE.",
@@ -580,6 +587,130 @@ def test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipel
     # goals (one entry per checkpoint on the first turn).
     pending = invoked_with[0]["pending_goals"]
     assert [g["id"] for g in pending] == ["cp0"]
+
+
+# ============================================================
+# Story 6.22 — post-hang-up suppression survives real pipeline routing
+# ============================================================
+
+
+def test_post_hangup_user_turn_suppressed_via_real_pipeline_drive():
+    """Story 6.22 AC5 (pipeline-drive variant, server/CLAUDE.md §1) — drive a
+    finalized user TranscriptionFrame through a REAL PipelineTask while the
+    PatienceTracker is ALREADY hanging up. The CheckpointManager must DROP it:
+    a recorder placed immediately downstream never sees it (so it never reaches
+    `context_aggregator.user()` / the LLM, which would generate a reply over the
+    exit line), and the classifier is never invoked. Proves the no-overlap
+    guarantee holds under real pipecat routing, not just a mocked process_frame
+    call — the mirror of the Déviation-#28 observe-the-frame contract test
+    above (that one asserts the frame IS seen on a normal call; this one that
+    it is NOT seen during a hang-up)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from pipecat.frames.frames import EndFrame, TranscriptionFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineTask
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+    )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    from pipeline.checkpoint_manager import CheckpointManager
+    from pipeline.exchange_classifier import ExchangeClassifier
+
+    class _StubSettings:
+        def __init__(self) -> None:
+            self.system_instruction = "initial"
+
+    class _StubLLM:
+        def __init__(self) -> None:
+            self._settings = _StubSettings()
+
+    class _Recorder(FrameProcessor):
+        """Records TranscriptionFrames that make it PAST the manager."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[str] = []
+
+        async def process_frame(self, frame: object, direction: FrameDirection) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, TranscriptionFrame):
+                self.seen.append(frame.text)
+            await self.push_frame(frame, direction)
+
+    invoked_with: list[dict] = []
+    classifier = ExchangeClassifier(api_key="test-key")
+
+    async def _stub_classify_multi(**kwargs):
+        invoked_with.append(kwargs)
+        return {g["id"]: False for g in kwargs["pending_goals"]}
+
+    classifier.classify_multi = _stub_classify_multi  # type: ignore[assignment]
+
+    checkpoints = [
+        dict(
+            id="cp0",
+            hint_text="hint",
+            prompt_segment="segment",
+            success_criteria="User said something.",
+        )
+    ]
+
+    # Tracker already hanging up — the state AFTER the triggering terminal turn
+    # scheduled the exit line.
+    patience_tracker = MagicMock()
+    patience_tracker.is_hanging_up = True
+    patience_tracker.patience = 0
+    patience_tracker.fail_penalty = -15
+
+    manager = CheckpointManager(
+        base_prompt="BASE.",
+        checkpoints=checkpoints,
+        llm=_StubLLM(),
+        llm_context=LLMContext(),
+        classifier=classifier,
+        patience_tracker=patience_tracker,
+        scenario_description="post-hangup-contract-test",
+        coherence_charter="CHARTER.",
+    )
+
+    recorder = _Recorder()
+    context = LLMContext()
+    aggregator_pair = LLMContextAggregatorPair(context)
+    pipeline = Pipeline([manager, recorder, aggregator_pair.user()])
+    task = PipelineTask(pipeline)
+
+    async def _drive() -> None:
+        await task.queue_frames(
+            [
+                TranscriptionFrame(
+                    text="Maybe you are someone else.",
+                    user_id="user",
+                    timestamp="2026-06-04T12:00:00Z",
+                    finalized=True,
+                ),
+                EndFrame(),
+            ]
+        )
+        runner = PipelineRunner()
+        await runner.run(task)
+        if manager._in_flight is not None:
+            await asyncio.gather(manager._in_flight, return_exceptions=True)
+
+    asyncio.run(_drive())
+
+    assert invoked_with == [], (
+        "post-hang-up turn must NOT be classified — a generated/normal reply "
+        "would play over the exit line (Story 6.22 AC1/AC2)"
+    )
+    assert recorder.seen == [], (
+        "post-hang-up turn must NOT be forwarded downstream past the "
+        "CheckpointManager — it would reach the LLM and overlap the exit line"
+    )
 
 
 # ============================================================

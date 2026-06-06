@@ -191,6 +191,19 @@ def _make_manager(
 
     if patience_tracker is None:
         patience_tracker = MagicMock()
+        # Story 6.22 — model a real NON-hang-up tracker. `is_hanging_up` MUST
+        # be a real bool (False), not a truthy auto-Mock: process_frame's new
+        # post-hang-up early-suppress reads it directly, so a truthy Mock would
+        # drop every normal turn before the classifier runs. Real int
+        # patience/fail_penalty too — with is_hanging_up False the
+        # `is_terminal_turn` short-circuit no longer hides the `pt.patience > 0`
+        # comparison (a bare Mock there raises TypeError). High patience keeps
+        # the default on the normal path; the completion clause still trips on
+        # the LAST pending goal, faithful to prod (a 1-goal-left turn IS
+        # terminal). Tests needing a hang-up/terminal tracker pass their own.
+        patience_tracker.is_hanging_up = False
+        patience_tracker.patience = 100
+        patience_tracker.fail_penalty = -15
 
     stub_llm = _StubLLM()
     llm_context = LLMContext()
@@ -298,11 +311,16 @@ def test_empty_text_does_not_schedule() -> None:
     ],
 )
 def test_pass_through_for_all_frame_types(frame_factory) -> None:
-    # NON-terminal turns only — the default `_make_manager` MagicMock
-    # tracker's `is_hanging_up` is a truthy Mock, so `not pt.is_hanging_up`
-    # is False and `is_terminal_turn` short-circuits to False, keeping
-    # this on the normal pass-through path. Terminal-turn suppression is
-    # covered by the Deviation #7 tests below.
+    # NON-terminal turns only — the default `_make_manager` tracker now pins
+    # `is_hanging_up=False`, `patience=100`, `fail_penalty=-15` (Story 6.22), so
+    # `is_terminal_turn` is False via its INNER clause: one more fail can't zero
+    # the meter (`patience + fail_penalty = 85 > 0`) AND this isn't the last
+    # pending goal (`met_count + 1 = 1 < len(checkpoints) = 3`). The new
+    # post-hang-up early-return is also skipped (is_hanging_up is False). (Before
+    # Story 6.22 the default's `is_hanging_up` was a truthy auto-Mock that
+    # short-circuited `is_terminal_turn` to False — that rationale is now stale.)
+    # Terminal-turn + hang-up suppression are covered by the Deviation #7 +
+    # Story 6.22 tests below.
     manager, _classifier, _tracker, _llm, _ctx = _make_manager()
     captured = _capture_pushed(manager)
 
@@ -994,6 +1012,180 @@ def test_preemptive_path_falls_through_on_classifier_exception() -> None:
 
     forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
     assert len(forwarded) == 1
+
+
+# ============================================================
+# Story 6.22 — post-hang-up user-turn suppression (no reply over exit line)
+# ============================================================
+
+
+def _hanging_up_mock_tracker() -> MagicMock:
+    """A tracker that is ALREADY hanging up — models the state AFTER the
+    triggering terminal turn scheduled the exit line. `patience`/`fail_penalty`
+    are real ints for completeness, but the post-hang-up early return fires on
+    `is_hanging_up` alone and never reads them."""
+    tracker = MagicMock()
+    tracker.is_hanging_up = True
+    tracker.patience = 0
+    tracker.fail_penalty = -15
+    return tracker
+
+
+def test_post_hangup_user_turn_is_suppressed() -> None:
+    """Story 6.22 AC1/AC2 — once a hang-up is scheduled (is_hanging_up True), a
+    subsequent finalized user turn is DROPPED: not forwarded downstream AND the
+    classifier is never scheduled, so no normal reply is generated to play over
+    the exit line. Exactly one `checkpoint_post_hangup_suppress` line records
+    the drop (AC1's 'single log line')."""
+    from loguru import logger as loguru_logger
+
+    tracker = _hanging_up_mock_tracker()
+    manager, classifier, _t, _llm, _ctx = _make_manager(patience_tracker=tracker)
+    captured = _capture_pushed(manager)
+
+    logs: list[str] = []
+    sink_id = loguru_logger.add(logs.append, level="INFO")
+    try:
+
+        async def _drive() -> None:
+            await manager.process_frame(
+                _make_user_frame("Maybe you are someone else."),
+                FrameDirection.DOWNSTREAM,
+            )
+            await _drain(manager)
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    # Not forwarded downstream → no LLMRun → no second utterance over the exit
+    # line (AC2).
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert forwarded == []
+    # Classifier never scheduled.
+    assert classifier._test_calls == []  # type: ignore[attr-defined]
+    assert manager._in_flight is None
+    # AC1 — exactly one suppression log line.
+    suppress_lines = [e for e in logs if "checkpoint_post_hangup_suppress" in e]
+    assert len(suppress_lines) == 1
+
+
+def test_post_hangup_turn_suppressed_even_while_bot_speaking() -> None:
+    """Story 6.22 AC2 — the actual overlap (cop call_id=219): the user keeps
+    talking WHILE the exit line is playing (bot speaking). The post-hang-up
+    suppression sits BEFORE the echo guard, so it still drops the turn — the
+    echo guard alone only skips classification but STILL forwards, which would
+    let the over-the-exit-line turn reach the LLM. This is the test that pins
+    the placement (a suppression inside the `not _bot_speaking` block would
+    regress here)."""
+    tracker = _hanging_up_mock_tracker()
+    manager, classifier, _t, _llm, _ctx = _make_manager(patience_tracker=tracker)
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Bot is mid-exit-line (BSF travels UPSTREAM to this processor).
+        await manager.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await manager.process_frame(
+            _make_user_frame("Maybe you are someone else."),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert forwarded == [], "post-hang-up turn must be suppressed even mid-exit-line"
+    assert classifier._test_calls == []  # type: ignore[attr-defined]
+
+
+def test_post_hangup_interim_turn_passes_through_unchanged() -> None:
+    """Story 6.22 D2 — only FINALIZED user turns are suppressed during a
+    hang-up; an interim (non-finalized) partial is harmless and follows the
+    normal pass-through (it never becomes an LLM turn). Guards the `finalized`
+    guard on the new early return."""
+    tracker = _hanging_up_mock_tracker()
+    manager, classifier, _t, _llm, _ctx = _make_manager(patience_tracker=tracker)
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("Maybe you", finalized=False),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    # Interim frame is forwarded (pass-through) and not classified.
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert len(forwarded) == 1
+    assert classifier._test_calls == []  # type: ignore[attr-defined]
+
+
+def test_triggering_turn_then_post_hangup_turn_distinct_suppress_logs() -> None:
+    """Story 6.22 AC3 — end-to-end with a REAL PatienceTracker: the terminal
+    TRIGGERING turn is still suppressed via the existing preemptive path
+    (`checkpoint_preemptive_suppress`), and a SUBSEQUENT turn arriving after
+    `is_hanging_up` flips is suppressed via the NEW post-hang-up path
+    (`checkpoint_post_hangup_suppress`). Both frames are dropped, and NO single
+    turn logs both lines (no double-suppression) — the happy-path triggering
+    turn behaviour is unchanged."""
+    from loguru import logger as loguru_logger
+
+    tracker = PatienceTracker(
+        initial_patience=15,
+        fail_penalty=-15,
+        silence_penalty=-10,
+        recovery_bonus=0,
+        silence_prompt_seconds=6.0,
+        ladder_impatience_seconds=4.5,
+        silence_hangup_seconds=10.0,
+        escalation_thresholds=[10, 0],
+        total_checkpoints=3,
+    )
+    manager, classifier, _t, _llm, _ctx = _make_manager(
+        patience_tracker=tracker,
+        classify_responses=[False, False],
+    )
+    captured = _capture_pushed(manager)
+
+    logs: list[str] = []
+    sink_id = loguru_logger.add(logs.append, level="INFO")
+    try:
+
+        async def _drive() -> None:
+            # Turn 1: off-topic at meter=15, fail_penalty=-15 → meter zeroes →
+            # character_hung_up scheduled. The triggering turn is suppressed by
+            # the existing Deviation #7 preemptive path.
+            await manager.process_frame(
+                _make_user_frame("...I don't know."), FrameDirection.DOWNSTREAM
+            )
+            await _drain(manager)
+            assert tracker.is_hanging_up is True
+            # Turn 2: the user keeps talking AFTER the hang-up is in progress.
+            await manager.process_frame(
+                _make_user_frame("Maybe you are someone else."),
+                FrameDirection.DOWNSTREAM,
+            )
+            await _drain(manager)
+            # Reap the real hang-up task (mirrors the terminal-lock test).
+            if tracker._hang_up_task is not None and not tracker._hang_up_task.done():
+                tracker._hang_up_task.cancel()
+                await asyncio.gather(tracker._hang_up_task, return_exceptions=True)
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    # Both turns suppressed — the exit line is the sole final utterance.
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert forwarded == []
+    # The triggering turn → exactly one preemptive_suppress (unchanged AC3).
+    preemptive = [e for e in logs if "checkpoint_preemptive_suppress" in e]
+    assert len(preemptive) == 1
+    # The follow-up turn → exactly one post_hangup_suppress (new AC1 path).
+    post_hangup = [e for e in logs if "checkpoint_post_hangup_suppress" in e]
+    assert len(post_hangup) == 1
 
 
 # ============================================================
