@@ -1,6 +1,6 @@
 # Story 6.22: Suppress user turns once a hang-up is in progress (no reply over the exit line)
 
-Status: review
+Status: done
 
 > Drafted 2026-06-04 from the Story 6.18 Pixel 9 smoke gate (call_id=219). Has an open `## Decisions for Walid` — review before `/bmad-dev-story`.
 
@@ -81,10 +81,10 @@ On a `hard` cop call, **keep talking after the character starts to hang up** →
 
 ## Smoke Test Gate (Server / Deploy Story)
 
-- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
-- [ ] **No overlap:** `hard` cop call, keep talking after the character begins to hang up → only the exit line is heard, no second bot voice over it.
-- [ ] **No false timeout:** `journalctl … | grep 'hang-up TTS timeout'` → none for that call.
-- [ ] **No regression:** a normal completed `survived` call still ends cleanly with its single closing line (Story 6.18 behavior intact).
+- [x] **Deployed** to the VPS (`deploy-server.yml` git_sha match) — commit `5fe9abd`, CI run 27057978334 success, live `/health` `git_sha=5fe9abd…097a950`.
+- [x] **No overlap:** `hard` cop call (call_id=232, 2026-06-06), kept talking after the hang-up → only the exit line played, no second bot voice. Logs: `checkpoint_post_hangup_suppress text="I don't have to answer your question."` dropped the over-the-exit-line turn; the triggering turn used the existing `checkpoint_preemptive_suppress` (two distinct turns, two distinct lines, no double).
+- [x] **No false timeout:** `journalctl … | grep 'hang-up TTS timeout'` → none for call_id=232.
+- [x] **No regression:** survived/normal path is untouched — those calls have `is_hanging_up=False`, so the new early-return is never reached (covered by AC4 + full server pytest 643). Story 6.18 exit-line behavior intact.
 
 ## Dev Agent Record
 
@@ -120,3 +120,4 @@ Implemented via `/bmad-dev-story` (ultracode). Server-only; no client change, no
 ## Change Log
 - 2026-06-04 — Drafted via `/bmad-create-story` (Walid's call) from the Story 6.18 smoke gate (call_id=219). Server-only; pre-existing overlap bug spun off from 6.18. Open `## Decisions` (D1 mechanism / D2 scope) — review before `/bmad-dev-story`.
 - 2026-06-05 — Implemented via `/bmad-dev-story` (ultracode). Post-hang-up turn suppression in `CheckpointManager.process_frame` (D1 → (a) frame-suppress only, D2 → finalized-only). 5 new tests + 2 fixture pins + stale-comment fix; `ruff` + `pytest` (643) green; 3-dimension adversarial review (1 low-sev stale comment fixed). `ready-for-dev` → `review`. AC7 Pixel 9 smoke gate owed before `review → done`.
+- 2026-06-06 — Committed `5fe9abd` + deployed to VPS (CI run 27057978334 success; `/health` git_sha match). Walid Pixel 9 hard-cop smoke gate **PASSED** (call_id=232): kept talking after the hang-up → only the exit line played, no overlap, no `hang-up TTS timeout`. Logs confirm `checkpoint_post_hangup_suppress` dropped the over-the-exit-line turn ("I don't have to answer your question.") while the triggering turn used `checkpoint_preemptive_suppress` (AC3, no double). `review` → **`done`**.
