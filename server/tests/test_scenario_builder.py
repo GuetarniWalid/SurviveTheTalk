@@ -108,6 +108,133 @@ def test_sanitize_dedupes_ids_and_strips_extra_keys():
     assert "junk" not in out[0]
 
 
+# ============================================================
+# Story 6.23 — builder preserves the reactive-gating `requires` edge
+# ============================================================
+
+
+def test_sanitize_preserves_requires_edge():
+    """The load-bearing builder edit: `requires` is NO LONGER dropped by the
+    whitelist, and is slugified to match the target's sanitized id."""
+    raw = [
+        {
+            "id": "trigger",
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+        {
+            "id": "reactive",
+            "requires": "Trigger",  # mixed-case → slugified to match `trigger`
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+    ]
+    out = builder.sanitize_checkpoints(raw)
+    assert out[1]["requires"] == "trigger"
+
+
+def test_sanitize_drops_blank_requires():
+    """A blank/non-string `requires` is omitted (treated as proactive)."""
+    raw = [
+        {
+            "id": "a",
+            "requires": "   ",
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        }
+    ]
+    out = builder.sanitize_checkpoints(raw)
+    assert "requires" not in out[0]
+
+
+def test_validate_structure_accepts_valid_requires_edge():
+    good = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt="You are X.",
+        checkpoints=_checkpoints(3),
+        brief=_brief(3),
+    )
+    cps = good["checkpoints"]
+    cps[2]["requires"] = cps[0]["id"]  # point at an earlier beat
+    scenario = {**good, "checkpoints": cps}
+    assert builder.validate_structure(scenario) == []
+
+
+def test_validate_structure_rejects_bad_requires_edges():
+    good = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt="You are X.",
+        checkpoints=_checkpoints(3),
+        brief=_brief(3),
+    )
+    cps = [dict(c) for c in good["checkpoints"]]
+
+    unknown = [dict(c) for c in cps]
+    unknown[1]["requires"] = "does_not_exist"
+    assert any(
+        "unknown id" in p
+        for p in builder.validate_structure({**good, "checkpoints": unknown})
+    )
+
+    forward = [dict(c) for c in cps]
+    forward[0]["requires"] = cps[2]["id"]  # points at a LATER beat
+    assert any(
+        "EARLIER" in p
+        for p in builder.validate_structure({**good, "checkpoints": forward})
+    )
+
+
+def test_assemble_and_yaml_roundtrip_preserves_requires():
+    scenario = builder.assemble_scenario(
+        scenario_id="cop_interrogation_01",
+        title="The Suspect",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt="You are Officer Dale.",
+        checkpoints=builder.sanitize_checkpoints(
+            [
+                {
+                    "id": "trigger",
+                    "hint_text": "h",
+                    "prompt_segment": "p",
+                    "success_criteria": "s",
+                },
+                {
+                    "id": "reactive",
+                    "requires": "trigger",
+                    "hint_text": "h",
+                    "prompt_segment": "p",
+                    "success_criteria": "s",
+                },
+            ]
+        ),
+        brief=_brief(2),
+    )
+    reloaded = yaml.safe_load(builder.scenario_to_yaml(scenario))
+    assert builder.validate_structure(reloaded) == []
+    assert reloaded["checkpoints"][1]["requires"] == "trigger"
+
+
+def test_checkpoints_and_critique_prompts_document_requires():
+    """The DRAFT prompt instructs emitting `requires` for reactive beats, and the
+    CRITIQUE prompt exempts reactive beats from its any-order pass + preserves
+    the field."""
+    assert "requires" in builder.CHECKPOINTS_PROMPT
+    assert "REACTIVE" in builder.CHECKPOINTS_PROMPT
+    assert "requires" in builder.CRITIQUE_PROMPT
+    # The circularity pass must not strip a legitimate reactive dependency.
+    assert "PRESERVE" in builder.CRITIQUE_PROMPT
+
+
 def test_lexical_overlap_flags_near_duplicates():
     cps = [
         {

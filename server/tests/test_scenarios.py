@@ -932,6 +932,109 @@ exit_lines:
         scenarios_mod.load_scenario_checkpoints("synth_dup")
 
 
+# ---------- Story 6.23 — `requires` reactive-gating edge validation ----------
+
+
+def _requires_yaml(*, requires_value: str) -> str:
+    """A 2-checkpoint synthetic YAML where the 2nd beat carries `requires`."""
+    return f"""
+metadata:
+  id: synth_req
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: first
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+  - id: second
+    requires: {requires_value}
+    hint_text: b
+    prompt_segment: b
+    success_criteria: b
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+
+
+def test_load_scenario_checkpoints_accepts_valid_requires_edge(
+    tmp_path, monkeypatch
+) -> None:
+    """A `requires` pointing at an existing, earlier checkpoint loads cleanly and
+    the edge is preserved on the returned dict (it reaches the runtime)."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _requires_yaml(requires_value="first"),
+        scenario_id="synth_req",
+    )
+    checkpoints = scenarios_mod.load_scenario_checkpoints("synth_req")
+    assert checkpoints[1]["requires"] == "first"
+
+
+def test_load_scenario_checkpoints_rejects_requires_unknown_id(
+    tmp_path, monkeypatch
+) -> None:
+    """A `requires` pointing at a non-existent checkpoint id raises at load."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _requires_yaml(requires_value="nope"),
+        scenario_id="synth_req",
+    )
+    with pytest.raises(RuntimeError, match="unknown checkpoint id"):
+        scenarios_mod.load_scenario_checkpoints("synth_req")
+
+
+def test_load_scenario_checkpoints_rejects_requires_self_reference(
+    tmp_path, monkeypatch
+) -> None:
+    """A `requires` pointing at the beat itself (or any later beat) raises —
+    a reactive beat can only depend on an EARLIER one (acyclic by construction)."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _requires_yaml(requires_value="second"),
+        scenario_id="synth_req",
+    )
+    with pytest.raises(RuntimeError, match="must reference an EARLIER checkpoint"):
+        scenarios_mod.load_scenario_checkpoints("synth_req")
+
+
+def test_cop_scenario_requires_edges_load() -> None:
+    """The shipped cop scenario's 7 reactive edges all validate (existence +
+    earlier-order) — guards the Story 6.23 T4 data migration against drift."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    checkpoints = load_scenario_checkpoints("cop_interrogation_01")
+    by_id = {c["id"]: c for c in checkpoints}
+    expected = {
+        "correct_misquoted_time": "lock_arrival_and_departure",
+        "address_named_associate": "deny_knowing_crew",
+        "explain_prints_on_inside_handle": "react_to_fingerprint_accusation",
+        "elaborate_through_silence": "explain_prints_on_inside_handle",
+        "reconcile_cctv_timestamp": "deny_grey_hood_witness",
+        "hold_consistency_on_recall": "name_who_was_with_them",
+        "answer_biggest_hole": "reconcile_cctv_timestamp",
+    }
+    for beat, trigger in expected.items():
+        assert by_id[beat]["requires"] == trigger
+
+
 def test_load_scenario_base_prompt_does_not_include_SPEAK_FIRST_directive() -> None:
     """The CheckpointManager composes the live system message from
     `base_prompt + checkpoint.prompt_segment` after every advance. The
@@ -1541,3 +1644,69 @@ def test_waiter_greet_criteria_requires_ordering_intent() -> None:
         "the catch-all 'any coherent response counts' clause must be gone"
     )
     assert "order" in crit, "greet must require engaging with ordering"
+
+
+def test_cop_curveball_criteria_rejects_offtopic_smalltalk() -> None:
+    """2026-06-06 calibration fix — `curveball` used to end with "or provides
+    any coherent response", so off-topic small talk ("there are a lot of people
+    here", "the traffic was terrible this morning", "did you watch the game")
+    passed the universal off-topic golden seed. The criteria must require the
+    user to actually engage with the officer's question and exclude unrelated
+    small talk, while STILL accepting a calm "I don't know" (the beat tests
+    composure under pressure, not factual accuracy)."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    cp = next(
+        c for c in load_scenario_checkpoints("cop_hard_01") if c["id"] == "curveball"
+    )
+    crit = cp["success_criteria"].lower()
+    assert "any coherent response" not in crit, (
+        "the catch-all 'provides any coherent response' clause must be gone"
+    )
+    assert "small talk" in crit, (
+        "curveball must explicitly exclude off-topic small talk"
+    )
+    assert "question" in crit, "curveball must require engaging with the question"
+
+
+def test_girlfriend_explain_criteria_rejects_offtopic_remarks() -> None:
+    """2026-06-06 calibration fix — `explain` accepted "any concrete excuse", so
+    off-topic remarks ("the traffic was terrible this morning", a phone merely
+    "almost dead") passed the universal off-topic golden seed. The criteria must
+    require the reason to account for the missed contact and exclude off-topic
+    remarks, while STILL accepting a genuine "my phone died" excuse."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    cp = next(
+        c
+        for c in load_scenario_checkpoints("girlfriend_medium_01")
+        if c["id"] == "explain"
+    )
+    crit = cp["success_criteria"].lower()
+    assert "any concrete excuse" not in crit, (
+        "the loose 'any concrete excuse counts' clause must be gone"
+    )
+    assert "off-topic" in crit, "explain must explicitly exclude off-topic remarks"
+    assert "missed contact" in crit, (
+        "explain must require the reason to account for the missed contact"
+    )
+
+
+def test_girlfriend_react_criteria_rejects_offtopic_smalltalk() -> None:
+    """2026-06-06 calibration fix — `react` ended with "Any coherent response
+    that acknowledges the confrontation counts", so off-topic small talk ("there
+    are a lot of people here today") passed the universal off-topic golden seed.
+    The criteria must require the reply to engage with the confrontation and
+    exclude off-topic small talk."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    cp = next(
+        c
+        for c in load_scenario_checkpoints("girlfriend_medium_01")
+        if c["id"] == "react"
+    )
+    crit = cp["success_criteria"].lower()
+    assert "any coherent response" not in crit, (
+        "the catch-all 'any coherent response counts' clause must be gone"
+    )
+    assert "small talk" in crit, "react must explicitly exclude off-topic small talk"

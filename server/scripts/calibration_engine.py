@@ -67,7 +67,7 @@ import os
 import pathlib
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -80,6 +80,7 @@ from pipeline import scenarios  # noqa: E402
 from pipeline.checkpoint_manager import (  # noqa: E402
     advance_goals,
     compose_goal_system_instruction,
+    judgeable_goals,
 )
 from pipeline.exchange_classifier import ExchangeClassifier  # noqa: E402
 from pipeline.llm_provider import (  # noqa: E402
@@ -102,7 +103,11 @@ from pipeline.prompts import COHERENCE_CHARTER  # noqa: E402
 # this — so tightening the engine forces a global re-check on the next sweep.
 # That is the "rigor lives in the engine, constant over time" property Walid
 # asked for: scenario authoring never carries the rules.
-ENGINE_VERSION = 1
+# Story 6.23 — bumped 1 → 2 so the smart sweep force-revalidates every scenario
+# on the next run, surfacing any reactive-but-ungated beat already shipped (a
+# reactive beat whose `success_criteria` is a self-contained lexical pattern but
+# that carries no `requires` edge). The bump is the global re-check lever.
+ENGINE_VERSION = 2
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —
@@ -584,6 +589,14 @@ async def simulate_conversation(
 
     for _ in range(max_turns):
         pending = [cp for cp in data.checkpoints if goals[cp["id"]] == "pending"]
+        # Story 6.23 — golden==prod coupling (THE load-bearing one). The judge
+        # payload is the GATED set (`judgeable_goals` — the SAME helper prod uses
+        # in `_classify_and_flip_goals`), so a reactive beat gated in prod is
+        # gated here too; if the harness judged the un-gated `pending` instead,
+        # gated beats would be credited in validation but not prod (false-green).
+        # The character steering prompt below stays UN-gated (`pending`), exactly
+        # like prod's `_update_system_instruction`.
+        judgeable = judgeable_goals(data.checkpoints, goals)
         system_instruction = compose_goal_system_instruction(
             base_prompt=data.base_prompt,
             coherence_charter=COHERENCE_CHARTER,
@@ -613,15 +626,22 @@ async def simulate_conversation(
         )
         dialogue.append(("user", user_text))
 
-        verdicts = await judge.classify_multi(
-            user_text=user_text,
-            last_character_line=character_line,
-            pending_goals=[
-                {"id": cp["id"], "success_criteria": cp["success_criteria"]}
-                for cp in pending
-            ],
-            scenario_description=data.title,
-        )
+        # Story 6.23 — judge only the GATED set (see the `judgeable` derivation
+        # above). When every pending beat is reactive-and-gated, there is
+        # nothing to judge this turn: record an empty verdict (no flips, no
+        # patience change) and let the character keep pursuing the trigger.
+        if judgeable:
+            verdicts = await judge.classify_multi(
+                user_text=user_text,
+                last_character_line=character_line,
+                pending_goals=[
+                    {"id": cp["id"], "success_criteria": cp["success_criteria"]}
+                    for cp in judgeable
+                ],
+                scenario_description=data.title,
+            )
+        else:
+            verdicts = {}
         recorded_verdicts: dict[str, bool | None] = verdicts if verdicts else {}
         if verdicts is not None:
             adv = advance_goals(goals, verdicts)
@@ -694,6 +714,56 @@ class GoldenResult:
     positive_met: int
     positive_misses: list[GoldenCaseResult]
     all_results: list[GoldenCaseResult]
+    # Story 6.23 — human-readable descriptions of any reactive beat that the
+    # pure `requires` gate fails to gate correctly (a `requires` beat that is
+    # judgeable before its trigger is met, or stays gated after it). Non-empty
+    # forces `passed=False`. NON-LLM (a pure function over the gate), so it runs
+    # for free even in `--golden-only`.
+    requires_gating_failures: list[str] = field(default_factory=list)
+
+
+def requires_gating_failures(checkpoints: list[dict]) -> list[str]:
+    """Pure premature-credit assertion over the Story 6.23 reactive gate (AC6).
+
+    For every beat carrying a ``requires`` edge, assert that the prod gate
+    (``checkpoint_manager.judgeable_goals`` — the SAME function prod uses)
+    behaves:
+
+      1. with NO beat met, the reactive beat is NOT judgeable (it cannot be
+         credited before its trigger) — this is the call_id=222 incident as a
+         permanent assertion; and
+      2. with ONLY its required beat met, the reactive beat BECOMES judgeable
+         (the gate opens once the trigger fires, so the trap can still land).
+
+    Returns a list of human-readable failure descriptions (empty == OK). No LLM,
+    no I/O — a pure function over the gate, so it runs even in ``--golden-only``
+    and costs nothing. The loader already rejected malformed edges, so on a
+    valid scenario this is a cheap belt-and-suspenders proof that the gate wired
+    up as intended.
+    """
+    failures: list[str] = []
+    all_pending = {cp["id"]: "pending" for cp in checkpoints}
+    for cp in checkpoints:
+        required = cp.get("requires")
+        if required is None:
+            continue
+        # (1) gated while the trigger is unmet.
+        judgeable_ids = {c["id"] for c in judgeable_goals(checkpoints, all_pending)}
+        if cp["id"] in judgeable_ids:
+            failures.append(
+                f"{cp['id']!r} is judgeable before its required beat {required!r} "
+                f"is met (reactive beat would credit out of context)."
+            )
+        # (2) ungated once the trigger is met.
+        trigger_met = dict(all_pending)
+        trigger_met[required] = "met"
+        opened_ids = {c["id"] for c in judgeable_goals(checkpoints, trigger_met)}
+        if cp["id"] not in opened_ids:
+            failures.append(
+                f"{cp['id']!r} stays gated even after its required beat "
+                f"{required!r} is met (the trap could never land)."
+            )
+    return failures
 
 
 def build_seed_cases(checkpoints: list[dict]) -> list[GoldenCase]:
@@ -864,12 +934,20 @@ async def run_golden(
             )
         )
 
-    return evaluate_golden_results(
+    golden = evaluate_golden_results(
         scenario_id,
         results,
         reviewed_fixture=reviewed_fixture,
         fixture_present=fixture is not None,
     )
+    # Story 6.23 (AC6) — fold in the pure reactive-gating assertion. A gating
+    # failure is a hard FAIL (a reactive beat that could credit out of context
+    # is exactly the bug class this story removes), and it runs in --golden-only
+    # because it is non-LLM.
+    gating_failures = requires_gating_failures(data.checkpoints)
+    if gating_failures:
+        golden = replace(golden, passed=False, requires_gating_failures=gating_failures)
+    return golden
 
 
 def golden_inconclusive(golden: GoldenResult) -> bool:
@@ -1216,6 +1294,11 @@ def compute_scenario_hash(scenario_id: str) -> str:
                 "id": cp.get("id"),
                 "prompt_segment": cp.get("prompt_segment"),
                 "success_criteria": cp.get("success_criteria"),
+                # Story 6.23 — the reactive-gating edge is behaviour-affecting:
+                # adding/removing a `requires` changes WHEN a beat is judgeable,
+                # so it must invalidate the cached PASS (else editing a gate
+                # would not trigger a revalidation).
+                "requires": cp.get("requires"),
             }
             for cp in (raw.get("checkpoints") or [])
         ],
@@ -1294,6 +1377,8 @@ def _golden_summary(golden: GoldenResult | None) -> dict:
         "negative_warnings": len(golden.negative_warnings),
         "positive_total": golden.positive_total,
         "positive_met": golden.positive_met,
+        # Story 6.23 — reactive-gating assertion failures (AC6).
+        "requires_gating_failures": list(golden.requires_gating_failures),
     }
 
 
@@ -1414,6 +1499,21 @@ def format_failure_report(verdict: ScenarioVerdict, *, report_path: str = "") ->
     lines.append("")
 
     golden = verdict.golden
+    if golden and golden.requires_gating_failures:
+        lines.append(
+            "## Reactive-gating failures (Story 6.23 `requires` edge wired wrong)"
+        )
+        lines.append("")
+        lines.append(
+            "A beat carrying `requires: <id>` must be gated (un-judgeable) until "
+            "its required beat is met, and become judgeable once it is. These "
+            "edges are wired wrong — fix the `requires:` field in "
+            f"`server/pipeline/scenarios/` for `{sid}`:"
+        )
+        lines.append("")
+        for msg in golden.requires_gating_failures:
+            lines.append(f"- {msg}")
+        lines.append("")
     if golden and not golden.passed:
         lines.append("## Golden net failures (the judge mis-verdicts known cases)")
         lines.append("")

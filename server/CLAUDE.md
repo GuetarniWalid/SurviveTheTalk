@@ -341,6 +341,52 @@ and run only via the CLI (never imported by prod). A full
 `calibrate_scenario <id>` ≈ a few US cents at N=10 (Groq); `--golden-only` is a
 fraction of a cent. Treat a full sweep as a deliberate, budgeted action.
 
+### 7. Reactive checkpoints — gate them with `requires`, never with prose (Story 6.23)
+
+Not all checkpoints are equal. **Proactive** beats are info the learner can
+volunteer at any time (give your name, state your alibi) — they stay fully
+any-order (the Story 6.10 win). **Reactive** beats only make sense as a
+*response* to a specific earlier CHARACTER action: a misquote trap, a
+named-associate confrontation, an inside-handle reveal, a circle-back recall,
+a cited CCTV timestamp. A reactive beat *literally cannot occur before its
+trigger* — so crediting it earlier is always wrong.
+
+**The rule: a reactive beat declares `requires: <earlier_checkpoint_id>` in the
+YAML.** That one optional field is the entire taxonomy — no `beat_type` enum, no
+free-prose precondition. The engine then refuses to even JUDGE that beat until
+the required beat is `met` (`checkpoint_manager.judgeable_goals`, the single
+crediting choke point — `advance_goals` is untouched). The guarantee is
+**structural and upstream of the LLM**, so it is immune to how
+`success_criteria` is worded: write reactive criteria as a clean lexical test
+and let the gate hold the precondition. Do NOT re-encode "PASS only AFTER Mercer
+has ALREADY…" in prose — that approach is blind to traps beyond the single
+`last_character_line` and is exactly the brittle hand-patch this story retired
+(the cop call_id=222 incident: a bare "actually + a time" alibi credited the
+far-later `correct_misquoted_time` trap before it was sprung).
+
+Mechanics / invariants:
+- **No `requires` = proactive = byte-identical to pre-6.23.** Only beats with an
+  explicit edge are gated; proactive any-order is preserved verbatim.
+- **The edge must point STRICTLY EARLIER.** The loader
+  (`scenarios.load_scenario_checkpoints`) fail-fasts at call init on a `requires`
+  that names a non-existent or non-earlier id (acyclic by construction) — same
+  posture as the duplicate-id guard.
+- **The UN-gated `pending_goals` still drives the character steering prompt + the
+  terminal-turn count** — the character must keep *pursuing* a reactive beat (it
+  delivers the trigger), and a gated beat keeps the call from completing with an
+  un-sprung trap.
+- **Golden==prod is load-bearing.** The Story 6.15 harness
+  (`calibration_engine.run_calibration`) MUST judge the SAME `judgeable_goals`
+  set; the golden net also runs a pure premature-credit assertion
+  (`requires_gating_failures`) and `ENGINE_VERSION` was bumped so the next sweep
+  surfaces any reactive-but-ungated beat already shipped.
+- **The builder auto-populates it.** `scenario_builder.CHECKPOINTS_PROMPT` asks
+  the draft LLM to emit `requires` for reactive beats; `sanitize_checkpoints`
+  preserves it (it used to silently drop unknown keys); `CRITIQUE_PROMPT`'s
+  circularity pass EXEMPTS reactive beats (it used to launder ordering
+  dependencies out — plausibly how the cop trap became a standalone lexical
+  test). Human-confirmed, not a build blocker.
+
 ---
 
 ## When in doubt

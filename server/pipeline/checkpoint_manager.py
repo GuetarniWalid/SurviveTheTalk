@@ -261,6 +261,48 @@ def compose_goal_system_instruction(
 # ============================================================
 
 
+def judgeable_goals(checkpoints: list[dict], goals_state: dict[str, str]) -> list[dict]:
+    """Pure selection of which PENDING checkpoints are eligible to be judged
+    THIS turn — the single Story 6.23 reactive-gating choke point.
+
+    A checkpoint may declare an optional ``requires: <prior_checkpoint_id>``
+    field. A beat WITH ``requires`` is **reactive**: it only makes sense as a
+    response to a specific prior character action (a misquote trap, a named-
+    associate confrontation, an inside-handle reveal, …), so it is **not
+    eligible to be judged/credited until the required beat is `met`**. A beat
+    WITHOUT ``requires`` is **proactive** = the Story 6.10 any-order behaviour,
+    byte-for-byte.
+
+    Returns the pending checkpoint dicts (in author order) whose ``requires``
+    id — if any — is already ``met``. The result feeds ONLY the judge payload
+    in ``_classify_and_flip_goals`` (and, verbatim, the Story 6.15 calibration
+    harness — golden==prod). The UN-gated ``pending_goals`` keeps driving the
+    character steering prompt + the terminal-turn count, so the character still
+    *pursues* a reactive beat (it is the one that delivers the trigger) and a
+    gated beat keeps the call from completing with an un-sprung trap.
+
+    The guarantee is **structural and upstream of the LLM**: a gated reactive
+    beat never enters the classify payload, so it cannot flip regardless of how
+    its ``success_criteria`` is worded. The loader (``scenarios.
+    load_scenario_checkpoints``) already rejected a ``requires`` pointing at a
+    non-existent or non-earlier id, so by the time this runs every edge points
+    strictly backwards (acyclic by construction).
+
+    Pure — no I/O, no side effects — so the offline validator gets the EXACT
+    gate prod uses (same idiom as ``advance_goals``).
+    """
+    out: list[dict] = []
+    for cp in checkpoints:
+        if goals_state.get(cp["id"]) != "pending":
+            continue
+        required = cp.get("requires")
+        if required is not None and goals_state.get(required) != "met":
+            # Reactive beat whose trigger has not been credited yet — gated.
+            continue
+        out.append(cp)
+    return out
+
+
 @dataclass(frozen=True)
 class GoalAdvance:
     """Pure result of judging one turn's verdicts against the goal state.
@@ -883,12 +925,33 @@ class CheckpointManager(FrameProcessor):
             await asyncio.gather(in_flight, return_exceptions=True)
 
     async def _classify_and_flip_goals(self, user_text: str, generation: int) -> None:
-        """Judge the user turn against ALL pending goals in one call and
-        flip every goal the user met. Story 6.10 AC5."""
+        """Judge the user turn against all JUDGEABLE pending goals in one
+        call and flip every goal the user met. Story 6.10 AC5 + Story 6.23
+        reactive gating."""
         pending = self.pending_goals
         if not pending:
             # All goals already met (completion path fired on a prior
             # turn). Nothing to evaluate.
+            return
+        # Story 6.23 — the judge payload is the GATED set: a reactive beat
+        # (one carrying `requires`) is excluded until its required beat is
+        # `met`, so it can NEVER be credited before its trigger has fired
+        # (immune to `success_criteria` wording — the gate is upstream of the
+        # LLM). Proactive beats (no `requires`) are all judgeable, so this is
+        # byte-identical to pre-6.23 for any scenario without `requires`.
+        judgeable = judgeable_goals(self._checkpoints, self._goals)
+        if not judgeable:
+            # Every still-pending beat is a reactive one whose trigger has
+            # not been credited yet → nothing to judge this turn. The
+            # character keeps pursuing them (the UN-gated steering prompt is
+            # unchanged) and the meter is untouched, exactly as if the turn
+            # met nothing — but without draining patience on a beat the
+            # learner cannot yet satisfy.
+            logger.debug(
+                "checkpoint_all_pending_gated pending={} (reactive beats await "
+                "their trigger)",
+                len(pending),
+            )
             return
         try:
             verdicts = await self._classifier.classify_multi(
@@ -896,7 +959,7 @@ class CheckpointManager(FrameProcessor):
                 last_character_line=self._last_character_line(),
                 pending_goals=[
                     {"id": cp["id"], "success_criteria": cp["success_criteria"]}
-                    for cp in pending
+                    for cp in judgeable
                 ],
                 scenario_description=self._scenario_description,
             )

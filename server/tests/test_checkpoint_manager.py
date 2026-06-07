@@ -28,7 +28,8 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 
 import pipeline.checkpoint_manager as cm_mod
-from pipeline.checkpoint_manager import CheckpointManager
+from pipeline import scenarios
+from pipeline.checkpoint_manager import CheckpointManager, judgeable_goals
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 
@@ -2054,3 +2055,308 @@ def test_BSF_started_direction_matches_pipecat_emission_routing() -> None:
         "UPSTREAM — the echo guard would never arm. Re-apply UPSTREAM or update "
         "this test if pipecat routing genuinely changed."
     )
+
+
+# ============================================================
+# Story 6.23 — reactive-checkpoint precondition gating
+# ============================================================
+
+
+def _reactive_checkpoints() -> list[dict]:
+    """3 beats: two proactive + one reactive gated on the 2nd (the trigger).
+
+    Mirrors the cop incident shape in miniature:
+      - cp0 `alibi`  — proactive (any-order).
+      - cp1 `lock_times` — proactive; the TRIGGER.
+      - cp2 `correct_misquote` — reactive, `requires: lock_times`.
+    """
+    return [
+        dict(
+            id="alibi",
+            hint_text="state where you were",
+            prompt_segment="ask where they were",
+            success_criteria="names a specific place",
+        ),
+        dict(
+            id="lock_times",
+            hint_text="give arrival and departure",
+            prompt_segment="ask for both clock times",
+            success_criteria="gives both an arrival and a departure clock time",
+        ),
+        dict(
+            id="correct_misquote",
+            requires="lock_times",
+            hint_text="correct the misquoted time",
+            prompt_segment="misquote their departure time",
+            success_criteria="disputes a wrong time and gives the corrected one",
+        ),
+    ]
+
+
+def test_judgeable_goals_gates_reactive_until_trigger_met() -> None:
+    """Pure helper (T1): a `requires` beat is excluded while its trigger is
+    pending, included once the trigger is met; a no-`requires` beat is always
+    judgeable while pending."""
+    cps = _reactive_checkpoints()
+
+    all_pending = {
+        "alibi": "pending",
+        "lock_times": "pending",
+        "correct_misquote": "pending",
+    }
+    ids = [cp["id"] for cp in judgeable_goals(cps, all_pending)]
+    assert ids == ["alibi", "lock_times"]  # reactive beat gated
+
+    trigger_met = {
+        "alibi": "pending",
+        "lock_times": "met",
+        "correct_misquote": "pending",
+    }
+    ids = [cp["id"] for cp in judgeable_goals(cps, trigger_met)]
+    assert ids == [
+        "alibi",
+        "correct_misquote",
+    ]  # gate opened (lock_times now met → off pending)
+
+    # A met reactive beat is never re-judged (it's no longer pending).
+    all_done = {"alibi": "met", "lock_times": "met", "correct_misquote": "met"}
+    assert judgeable_goals(cps, all_done) == []
+
+
+def test_judgeable_goals_no_requires_is_byte_identical_to_pending() -> None:
+    """AC3 — for checkpoints WITHOUT any `requires`, judgeable_goals returns the
+    full pending set (no gating), so the change is a no-op for proactive-only
+    scenarios."""
+    cps = _make_checkpoints(3)  # none carry `requires`
+    state = {"cp0": "pending", "cp1": "met", "cp2": "pending"}
+    ids = [cp["id"] for cp in judgeable_goals(cps, state)]
+    assert ids == ["cp0", "cp2"]
+
+
+def test_judgeable_goals_multi_level_chain_opens_one_step_at_a_time() -> None:
+    """A 3-level reactive chain A→B→C (each beat gated on the previous) opens one
+    link at a time — exactly the cop arc's react_to_fingerprint_accusation →
+    explain_prints_on_inside_handle → elaborate_through_silence shape."""
+    cps = [
+        dict(id="A", hint_text="a", prompt_segment="a", success_criteria="a"),
+        dict(
+            id="B",
+            requires="A",
+            hint_text="b",
+            prompt_segment="b",
+            success_criteria="b",
+        ),
+        dict(
+            id="C",
+            requires="B",
+            hint_text="c",
+            prompt_segment="c",
+            success_criteria="c",
+        ),
+    ]
+    # Nothing met: only the proactive root A is judgeable.
+    assert [
+        c["id"]
+        for c in judgeable_goals(cps, {"A": "pending", "B": "pending", "C": "pending"})
+    ] == ["A"]
+    # A met: B opens, C still gated (its trigger B is not met).
+    assert [
+        c["id"]
+        for c in judgeable_goals(cps, {"A": "met", "B": "pending", "C": "pending"})
+    ] == ["B"]
+    # A+B met: C finally opens.
+    assert [
+        c["id"] for c in judgeable_goals(cps, {"A": "met", "B": "met", "C": "pending"})
+    ] == ["C"]
+
+
+def test_judgeable_goals_returns_empty_when_every_pending_beat_is_gated() -> None:
+    """Direct coverage of the defensive empty-return branch: a contrived state
+    where the only pending beat is reactive and its trigger is NOT met yields an
+    empty judgeable set. (The loader forbids the dangling/forward edges that
+    would let this arise in a REAL conversation — with valid backward-only edges
+    the earliest pending beat is always judgeable — but the helper must still be
+    correct for the degenerate input.)"""
+    cps = [
+        dict(id="trigger", hint_text="t", prompt_segment="t", success_criteria="t"),
+        dict(
+            id="reactive",
+            requires="trigger",
+            hint_text="r",
+            prompt_segment="r",
+            success_criteria="r",
+        ),
+    ]
+    # trigger already MET but no longer pending; reactive pending → reactive is
+    # judgeable. To force ALL-gated we mark trigger as a non-met, non-pending
+    # sentinel so it is neither judged nor satisfies the gate.
+    state = {"trigger": "skipped", "reactive": "pending"}
+    assert judgeable_goals(cps, state) == []
+
+
+def test_reactive_beat_absent_from_judge_payload_until_trigger() -> None:
+    """AC1 — the gated reactive beat is NEVER in the classify payload while its
+    trigger is pending, so it cannot flip even if the judge is over-eager.
+
+    Drives a turn that an over-eager judge would credit on EVERYTHING in the
+    payload; asserts the reactive beat is excluded from the payload AND stays
+    pending."""
+
+    def _flip_all(pending_goals: list[dict], _idx: int) -> dict[str, bool | None]:
+        # Over-eager judge: credit every goal it is asked about.
+        return {g["id"]: True for g in pending_goals}
+
+    manager, classifier, _t, _llm, _ctx = _make_manager(
+        checkpoints=_reactive_checkpoints(),
+        multi_response_fn=_flip_all,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("Actually I left at half past 8, I was at Jos's diner."),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    calls = classifier._test_calls  # type: ignore[attr-defined]
+    assert len(calls) == 1
+    payload_ids = [g["id"] for g in calls[0]["pending_goals"]]
+    # The reactive trap is NOT offered to the judge — structural gating.
+    assert "correct_misquote" not in payload_ids
+    assert payload_ids == ["alibi", "lock_times"]
+    # And so it did NOT flip even though the judge said "met" to everything.
+    assert manager.goals_state["correct_misquote"] == "pending"
+    # The two proactive beats DID flip (over-eager judge credited them).
+    assert manager.goals_state["alibi"] == "met"
+    assert manager.goals_state["lock_times"] == "met"
+
+
+def test_reactive_beat_becomes_judgeable_after_trigger_met() -> None:
+    """AC2 — once the trigger beat is credited, the reactive beat enters the
+    judge payload on the next turn and a genuine attempt credits it."""
+
+    def _flip_first(pending_goals: list[dict], _idx: int) -> dict[str, bool | None]:
+        # Credit only the first goal offered (author-order analog).
+        out: dict[str, bool | None] = {g["id"]: None for g in pending_goals}
+        if pending_goals:
+            out[pending_goals[0]["id"]] = True
+        return out
+
+    manager, classifier, _t, _llm, _ctx = _make_manager(
+        checkpoints=_reactive_checkpoints(),
+        multi_response_fn=_flip_first,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Turn 1 → flips `alibi`. Reactive beat still gated (lock_times pending).
+        await manager.process_frame(
+            _make_user_frame("I was at Jos's diner."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        # Turn 2 → flips `lock_times` (the trigger).
+        await manager.process_frame(
+            _make_user_frame("I got there at 8, left at half past 9."),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+        # Turn 3 → reactive beat now judgeable; flips it.
+        await manager.process_frame(
+            _make_user_frame("No, that's wrong — I said half past nine."),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    calls = classifier._test_calls  # type: ignore[attr-defined]
+    # Turn 1 payload excludes the reactive beat; turn 3 payload includes it.
+    assert "correct_misquote" not in [g["id"] for g in calls[0]["pending_goals"]]
+    assert "correct_misquote" in [g["id"] for g in calls[2]["pending_goals"]]
+    assert manager.goals_state["correct_misquote"] == "met"
+
+
+def test_reactive_gating_does_not_drain_patience_on_gated_only_attempt() -> None:
+    """A turn that an over-eager judge would FAIL on the gated reactive beat
+    does not drain patience for that beat — because the beat is never judged.
+
+    Here turn 1 is off-topic (no proactive beat met). The judge returns False
+    for the judgeable beats → one patience drain, exactly as a normal off-topic
+    miss; the gated reactive beat contributes nothing (it isn't in the payload).
+    """
+
+    def _fail_all(pending_goals: list[dict], _idx: int) -> dict[str, bool | None]:
+        return {g["id"]: False for g in pending_goals}
+
+    tracker = MagicMock()
+    tracker.is_hanging_up = False
+    tracker.patience = 100
+    tracker.fail_penalty = -15
+
+    manager, classifier, _t, _llm, _ctx = _make_manager(
+        checkpoints=_reactive_checkpoints(),
+        multi_response_fn=_fail_all,
+        patience_tracker=tracker,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("Nice weather today."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    calls = classifier._test_calls  # type: ignore[attr-defined]
+    assert "correct_misquote" not in [g["id"] for g in calls[0]["pending_goals"]]
+    # Exactly one off-topic miss recorded (the gated beat didn't add a second).
+    tracker.apply_exchange_outcome.assert_called_once_with(success=False)
+
+
+def test_cop_call_222_alibi_does_not_credit_correct_misquoted_time() -> None:
+    """AC9 regression — the live cop incident (call_id=222), fake judge, zero
+    network. A turn-3-style alibi ('actually at half past 8 … at Jos's diner')
+    must NOT credit the far-later trap `correct_misquoted_time`, because that
+    beat now `requires: lock_arrival_and_departure` (never met at this point).
+
+    Uses the REAL `cop_interrogation_01` checkpoints so the regression rides on
+    the shipped YAML edges, not a fixture. The fake judge is OVER-EAGER (credits
+    everything in the payload), so if the trap were in the payload it WOULD flip
+    — proving the gate, not the criteria wording, blocks it.
+    """
+    cop_checkpoints = scenarios.load_scenario_checkpoints("cop_interrogation_01")
+
+    def _flip_all(pending_goals: list[dict], _idx: int) -> dict[str, bool | None]:
+        return {g["id"]: True for g in pending_goals}
+
+    manager, classifier, _t, _llm, _ctx = _make_manager(
+        checkpoints=cop_checkpoints,
+        multi_response_fn=_flip_all,
+        scenario_description="The 8:30 Alibi",
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame(
+                "Actually at half past 8 I was at Jos's diner on 5th Avenue."
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    calls = classifier._test_calls  # type: ignore[attr-defined]
+    payload_ids = [g["id"] for g in calls[0]["pending_goals"]]
+    # The trap is gated (its trigger lock_arrival_and_departure is not met yet).
+    assert "correct_misquoted_time" not in payload_ids
+    assert manager.goals_state["correct_misquoted_time"] == "pending"
+    # Sanity: the trigger IS gated-out too at this point? No — it's proactive
+    # (no requires), so it's offered and (over-eager judge) credited. The point
+    # of the test is only that the TRAP stayed pending.
+    assert "lock_arrival_and_departure" in payload_ids

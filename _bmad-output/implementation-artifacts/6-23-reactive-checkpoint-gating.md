@@ -1,6 +1,6 @@
 # Story 6.23: Reactive-checkpoint precondition gating (stop out-of-context crediting)
 
-Status: ready-for-dev
+Status: review
 
 > **Design-surfaced story (drafted via a 9-agent design workflow, 2026-06-04).** Motivated by the Story 6.21 smoke gate (cop call_id=222): a far-later **trap** checkpoint (`correct_misquoted_time`) was credited at turn 3 by a bare "actually + a time" alibi, before the trap was ever played. We hand-patched that one beat's criteria — but Walid correctly flagged that the *manual, per-beat* patch does not scale: the same **class** recurs for every reactive beat (the cop scenario alone has ~7-10) and every future builder-generated scenario. This story makes the class **structurally impossible**, not patched case-by-case.
 >
@@ -82,14 +82,14 @@ On a cop call, jump to the alibi early with "actually …": CP9 must NOT tick at
 
 ## Tasks / Subtasks
 
-- [ ] **T1 — Engine gate.** Add module-level pure `judgeable_goals(checkpoints, goals_state)` in `checkpoint_manager.py`; switch the judge-payload line in `_classify_and_flip_goals` to use it. Leave `advance_goals` and `pending_goals` (prompt/terminal-count) **untouched**. Unit-test the helper (gated / un-gated / no-`requires`).
-- [ ] **T2 — Harness mirror (the load-bearing coupling).** Adopt the **same** `judgeable_goals` at the harness pending-derivation site (`calibration_engine.py` ~`:586`) so golden == prod. Add a parity test.
-- [ ] **T3 — Loader validation.** Add optional-field validation in `scenarios.py` (existence + earlier-in-author-order / acyclic); raise on malformed. Unit-test pass/fail. Add `requires` to the checkpoint loader projection so it reaches the runtime.
-- [ ] **T4 — Data (cop scenario migration).** Add `requires` edges to the ~7 reactive beats in `cop-interrogation-01.yaml`; **revert** `correct_misquoted_time` (and the other hand-patched beats) to clean lexical criteria now that the engine holds the precondition.
-- [ ] **T5 — Golden net.** Add the pure premature-credit assertion over `requires`; add `requires` to `compute_scenario_hash`'s per-checkpoint projection; bump `ENGINE_VERSION`; run a `--golden-only` sweep.
-- [ ] **T6 — Builder.** Add one `CHECKPOINTS_PROMPT` rule to emit `requires` for reactive beats; stop `sanitize_checkpoints` dropping it; thread through `assemble_scenario` (verbatim). Fake-LLM unit test: a reactive draft emits a `requires`, a proactive one omits it.
-- [ ] **T7 — Docs.** Add a `server/CLAUDE.md` §6 note + a memory entry on reactive-beat gating.
-- [ ] **T8 — Verify + smoke gate.** Full `pytest` green; targeted `calibrate_scenario cop_interrogation_01 --golden-only`; Pixel 9 smoke gate (AC11).
+- [x] **T1 — Engine gate.** Add module-level pure `judgeable_goals(checkpoints, goals_state)` in `checkpoint_manager.py`; switch the judge-payload line in `_classify_and_flip_goals` to use it. Leave `advance_goals` and `pending_goals` (prompt/terminal-count) **untouched**. Unit-test the helper (gated / un-gated / no-`requires`).
+- [x] **T2 — Harness mirror (the load-bearing coupling).** Adopt the **same** `judgeable_goals` at the harness pending-derivation site (`calibration_engine.py` ~`:586`) so golden == prod. Add a parity test.
+- [x] **T3 — Loader validation.** Add optional-field validation in `scenarios.py` (existence + earlier-in-author-order / acyclic); raise on malformed. Unit-test pass/fail. Add `requires` to the checkpoint loader projection so it reaches the runtime.
+- [x] **T4 — Data (cop scenario migration).** Add `requires` edges to the ~7 reactive beats in `cop-interrogation-01.yaml`; **revert** `correct_misquoted_time` (and the other hand-patched beats) to clean lexical criteria now that the engine holds the precondition.
+- [x] **T5 — Golden net.** Add the pure premature-credit assertion over `requires`; add `requires` to `compute_scenario_hash`'s per-checkpoint projection; bump `ENGINE_VERSION`; run a `--golden-only` sweep. _(Live `--golden-only` sweep deferred to deploy — bundled with the Pixel 9 smoke gate; the gating assertion is non-LLM and unit-proven.)_
+- [x] **T6 — Builder.** Add one `CHECKPOINTS_PROMPT` rule to emit `requires` for reactive beats; stop `sanitize_checkpoints` dropping it; thread through `assemble_scenario` (verbatim). Fake-LLM unit test: a reactive draft emits a `requires`, a proactive one omits it.
+- [x] **T7 — Docs.** Add a `server/CLAUDE.md` §6 note + a memory entry on reactive-beat gating.
+- [~] **T8 — Verify + smoke gate.** Full `pytest` green (683 passed); ruff check + format clean. Targeted live `calibrate_scenario cop_interrogation_01 --golden-only` + Pixel 9 smoke gate (AC11) **owed by Walid** (live Groq + device).
 
 ## Dev Notes
 
@@ -160,16 +160,58 @@ Field absent ⇒ proactive ⇒ unchanged. The field's **mere presence is the tax
 ## Dev Agent Record
 
 ### Agent Model Used
-_(to be filled by dev)_
+claude-opus-4-8 (ultracode — implementation + 4-dimension adversarial review workflow).
 
 ### Debug Log References
+- Full server `pytest`: **683 passed** (was ~660; +23 tests). `ruff check .` + `ruff format --check .` clean (91 files).
 
 ### Completion Notes List
-_(to be filled by dev)_
+
+**The one concept, shipped.** Added the optional checkpoint field `requires: <earlier_checkpoint_id>` and one pure choke-point helper `checkpoint_manager.judgeable_goals(checkpoints, goals_state)`. `_classify_and_flip_goals` now builds its judge payload from `judgeable_goals` instead of `pending_goals`: a reactive beat (one carrying `requires`) is excluded from the classify payload until its required beat is `met`, so it can NEVER flip before its trigger fires — structural, upstream of the LLM, immune to `success_criteria` wording. `advance_goals` (the frozen pure flip rule) and the UN-gated `pending_goals` (character steering prompt + terminal-turn count) are **untouched** (AC3 — proactive-only scenarios are byte-identical).
+
+- **T1 (engine).** `judgeable_goals` + the single switched line. The new `if not judgeable: return` is a defensive guard — with valid backward-only edges the earliest pending beat is always judgeable, so it is effectively unreachable, but it costs nothing and is honest.
+- **T2 (harness, the load-bearing coupling).** `calibration_engine.run_calibration` now derives `judgeable = judgeable_goals(...)` for the classify payload while keeping `pending` for the character prompt — exactly mirroring prod. Empty-judgeable → `verdicts = {}` (no flips, no drain), matching prod's early return. Parity test asserts a reactive beat is absent from the judge payload until its trigger is met.
+- **T3 (loader).** `load_scenario_checkpoints` validates each `requires` (existence + strictly-earlier author order ⇒ acyclic), raising at call init like the duplicate-id guard. `requires` already reaches the runtime (the loader returns the raw dicts; CheckpointManager stores them).
+- **T4 (cop data).** 7 `requires` edges hand-added per the design table; `correct_misquoted_time` (the call_id=222 incident, AC7) and `explain_prints_on_inside_handle` reverted from "PASS only AFTER…" prose to clean lexical tests now the engine holds the precondition.
+- **T5 (golden net).** Pure non-LLM `requires_gating_failures` assertion folded into `run_golden.passed` (so `--golden-only` catches it); `requires` added to `compute_scenario_hash`'s per-checkpoint projection; `ENGINE_VERSION` 1 → 2 (forces a full re-sweep). The assertion is a contract guard over `judgeable_goals` (tautological for valid data; its test exercises the failure branch via a broken-gate monkeypatch).
+- **T6 (builder).** `CHECKPOINTS_PROMPT` emits `requires` for reactive beats; `sanitize_checkpoints` now PRESERVES it (slugified to match the target id) instead of dropping it — the load-bearing builder edit; `CRITIQUE_PROMPT`'s circularity pass EXEMPTS reactive beats (it used to launder ordering deps out); `validate_structure` mirrors the loader's edge validation. `assemble_scenario` threads `requires` verbatim (no change needed).
+- **T7 (docs).** `server/CLAUDE.md` §7 + memory `project_reactive_checkpoint_gating.md`.
+
+**AC9 regression (the incident).** `test_cop_call_222_alibi_does_not_credit_correct_misquoted_time` drives the turn-3 alibi through a CheckpointManager over the REAL cop checkpoints with an OVER-EAGER fake judge (credits everything in the payload); the trap stays pending because the gate keeps it out of the payload — proving the gate, not the criteria, blocks it. Zero network.
+
+**⚠️ Concurrent-commit note (surface to Walid).** A concurrent Story 6.19 dev process committed `03e6031` MID-SESSION and swept 4 of this story's files into ITS commit: `server/pipeline/scenarios.py`, `server/scripts/scenario_builder.py`, `server/pipeline/scenarios/cop-interrogation-01.yaml`, and `sprint-status.yaml` (6-23 → in-progress). All edits are intact + coherent (verified via `git show 03e6031:…` + 683 green), but a future `/commit` of Story 6.23 will NOT include those 4 files (already in history under the 6.19 commit). One-story-one-commit is therefore split; flagged rather than rewriting another live agent's commit.
 
 ### File List
-_(to be filled by dev)_
+**Working tree (uncommitted — Story 6.23):**
+- `server/pipeline/checkpoint_manager.py` — `judgeable_goals` helper + judge-payload switch (T1)
+- `server/scripts/calibration_engine.py` — harness mirror, `requires_gating_failures`, hash projection, `ENGINE_VERSION`=2, `run_golden` fold (T2/T5)
+- `server/CLAUDE.md` — §7 reactive-gating note (T7)
+- `server/tests/test_checkpoint_manager.py` — pure helper + engine-integration + AC9 regression tests
+- `server/tests/test_scenarios.py` — loader `requires`-edge validation tests
+- `server/tests/test_calibration_engine.py` — golden-assertion + harness-parity + hash tests
+- `server/tests/test_scenario_builder.py` — sanitize/validate/prompt `requires` tests
+- `_bmad-output/implementation-artifacts/6-23-reactive-checkpoint-gating.md` — this story file
+
+**Already committed inside `03e6031` (concurrent 6.19 commit — see note above):**
+- `server/pipeline/scenarios.py` — `load_scenario_checkpoints` `requires` validation (T3)
+- `server/pipeline/scenarios/cop-interrogation-01.yaml` — 7 `requires` edges + reverted CP9/explain_prints prose (T4)
+- `server/scripts/scenario_builder.py` — `CHECKPOINTS_PROMPT`/`CRITIQUE_PROMPT` rules, `sanitize_checkpoints`, `validate_structure` (T6)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — 6-23 status line
+
+**Memory (outside repo):**
+- `memory/project_reactive_checkpoint_gating.md` + `MEMORY.md` pointer (T7)
+
+### Review (ultracode adversarial, 2026-06-06)
+
+4-dimension parallel review (engine-correctness+concurrency / golden==prod coupling / loader+builder+data / AC-coverage+test-quality), every finding skeptic-verified by an independent agent (32 agents, 28 raw findings). **Zero code defects confirmed** — the 9 "confirmed-real" engine/coupling/data findings were positive verifications (no proactive regression per AC3; harness judges the exact gated set per AC4; `advance_goals` untouched; loader acyclicity per AC5; `ENGINE_VERSION`+hash invalidation; AC9 regression genuinely proves the gate not the criteria). **2 MEDIUM test-coverage gaps fixed:**
+- Added `test_judgeable_goals_multi_level_chain_opens_one_step_at_a_time` — a 3-level A→B→C chain opens one link at a time (the cop arc ships exactly this: react_to_fingerprint_accusation → explain_prints_on_inside_handle → elaborate_through_silence).
+- Added `test_judgeable_goals_returns_empty_when_every_pending_beat_is_gated` — direct coverage of the defensive empty-judgeable branch (unreachable with valid backward-only edges, but the helper must be correct for degenerate input).
+
+Gates after fixes: ruff check + format clean (91 files), full server `pytest` **683 passed** (the 2 new pure tests bring 6.23's net to +23; counted in the 681). Server-only, no migration, client untouched.
+
+**Story 6.23 is review-complete; it is now waiting ONLY on your live `calibrate_scenario cop_interrogation_01 --golden-only` + Pixel 9 smoke gate (AC11) for the `review → done` flip.**
 
 ## Change Log
+- 2026-06-06 — **/bmad-dev-story COMPLETE (ultracode)**, ready-for-dev → review. Shipped the one-concept `requires` reactive-gating fix (T1–T7): pure `judgeable_goals` choke point in `checkpoint_manager` (judge payload only; `advance_goals` + un-gated `pending_goals` untouched); harness mirror in `calibration_engine` (golden==prod); loader fail-fast + 7 cop edges + reverted CP9/explain_prints prose; golden premature-credit assertion + `ENGINE_VERSION` 1→2 + hash projection; builder emits/preserves/exempts `requires`; `server/CLAUDE.md` §7 + memory. +23 tests. 4-dimension ultracode adversarial review → 0 code defects, 2 test gaps closed. ⚠️ 4 files (scenarios.py, scenario_builder.py, cop yaml, sprint-status.yaml) were swept into the concurrent Story 6.19 commit `03e6031` — intact but a 6.23 `/commit` won't re-include them.
 - 2026-06-04 — **Decisions RESOLVED (Walid): all 6 → option A** — engine-side `requires` gate (D1), single-id value (D2), defer non-checkpoint triggers (D3), light builder + no gating lint (D4), point `requires` at a reliably-met beat (D5), hand-add cop edges + delete prose preconditions (D6). Story is decision-complete → ready for `/bmad-dev-story`.
 - 2026-06-04 — Drafted via a 9-agent design workflow (4-reader code map of builder/golden-net/engine + survey of at-risk beats → 4-approach panel → architect synthesis). Recommended approach: a single optional `requires` precondition edge, enforced structurally at the engine's crediting choke point (`judgeable_goals`), proven by the golden net (`ENGINE_VERSION` bump), auto-populated by the builder; `advance_goals` and proactive any-order untouched. 6 open decisions documented with recommendations — Walid to confirm the approach before `/bmad-dev-story`.

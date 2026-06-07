@@ -378,6 +378,112 @@ def test_run_golden_correct_judge_passes_the_seed(tmp_path):
 
 
 # ============================================================
+# Story 6.23 — reactive-gating: golden assertion + harness parity + hash
+# ============================================================
+
+
+def _cp_req(cid: str, requires: str) -> dict:
+    cp = _cp(cid)
+    cp["requires"] = requires
+    return cp
+
+
+def test_requires_gating_failures_clean_on_valid_edges():
+    """The pure premature-credit assertion returns no failures for a valid
+    reactive edge (it's a contract guard over `judgeable_goals`)."""
+    checkpoints = [_cp("trigger"), _cp_req("reactive", "trigger")]
+    assert engine.requires_gating_failures(checkpoints) == []
+
+
+def test_requires_gating_failures_clean_on_shipped_cop_scenario():
+    """The shipped cop scenario's 7 edges all satisfy the gate contract."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    checkpoints = load_scenario_checkpoints("cop_interrogation_01")
+    assert engine.requires_gating_failures(checkpoints) == []
+
+
+def test_requires_gating_failures_detects_a_broken_gate(monkeypatch):
+    """If `judgeable_goals` were changed to IGNORE `requires` (the exact
+    regression this story prevents), the assertion catches it — proving the
+    golden net would FAIL a reactive-but-ungated gate."""
+
+    def _broken_gate(checkpoints, goals_state):
+        # Returns every pending beat, ignoring `requires` entirely.
+        return [cp for cp in checkpoints if goals_state.get(cp["id"]) == "pending"]
+
+    monkeypatch.setattr(engine, "judgeable_goals", _broken_gate)
+    checkpoints = [_cp("trigger"), _cp_req("reactive", "trigger")]
+    failures = engine.requires_gating_failures(checkpoints)
+    assert any("judgeable before its required beat" in f for f in failures)
+
+
+def test_run_golden_fails_when_gate_is_broken(tmp_path, monkeypatch):
+    """AC6 — a broken gate makes the golden net FAIL even with a correct judge,
+    and `--golden-only` (which rides on `run_golden`) catches it."""
+
+    def _broken_gate(checkpoints, goals_state):
+        return [cp for cp in checkpoints if goals_state.get(cp["id"]) == "pending"]
+
+    monkeypatch.setattr(engine, "judgeable_goals", _broken_gate)
+    data = _scenario_data(checkpoints=[_cp("trigger"), _cp_req("reactive", "trigger")])
+    strict = FakeJudge(lambda user_text, goal_ids: {g: False for g in goal_ids})
+    g = _run(
+        engine.run_golden(
+            scenario_id="fake_test_01", judge=strict, data=data, fixture_dir=tmp_path
+        )
+    )
+    assert g.passed is False
+    assert g.requires_gating_failures  # populated with the diagnostic
+
+
+def test_harness_gates_reactive_beat_same_as_prod():
+    """AC4 — the golden==prod coupling. `simulate_conversation` must judge the
+    GATED set (the same `judgeable_goals` prod uses), so a reactive beat is NOT
+    offered to the judge until its trigger is met."""
+    data = _scenario_data(
+        checkpoints=[_cp("alibi"), _cp("lock_times"), _cp_req("correct", "lock_times")]
+    )
+    # Over-eager judge credits everything it's ASKED about.
+    judge = FakeJudge(lambda user_text, goal_ids: {g: True for g in goal_ids})
+    result = _run(
+        engine.simulate_conversation(
+            scenario_id="fake_test_01",
+            strategy="cooperative",
+            character_llm=FakeChat(["..."]),
+            learner_llm=FakeChat(["I was at the diner at half past eight."]),
+            judge=judge,
+            data=data,
+            max_turns=5,
+        )
+    )
+    # Turn 1's judge payload must EXCLUDE the gated reactive beat.
+    assert "correct" not in judge.calls[0]["goal_ids"]
+    assert set(judge.calls[0]["goal_ids"]) == {"alibi", "lock_times"}
+    # Once the trigger is met, the reactive beat enters the payload (turn 2).
+    assert "correct" in judge.calls[1]["goal_ids"]
+    assert result.outcome == "survived"
+
+
+def test_scenario_hash_changes_on_requires_edit(monkeypatch):
+    """Adding/removing a `requires` edge is behaviour-affecting → new hash."""
+    base = {
+        "metadata": {"id": "x", "difficulty": "easy"},
+        "base_prompt": "You are Tina.",
+        "checkpoints": [
+            {"id": "a", "prompt_segment": "A.", "success_criteria": "Does a."},
+            {"id": "b", "prompt_segment": "B.", "success_criteria": "Does b."},
+        ],
+        "briefing": {},
+        "exit_lines": {},
+    }
+    monkeypatch.setattr(engine, "_load_raw_scenario", lambda _sid: base)
+    h1 = engine.compute_scenario_hash("x")
+    base["checkpoints"][1]["requires"] = "a"
+    assert engine.compute_scenario_hash("x") != h1
+
+
+# ============================================================
 # Simulator (AC1) — faithful prod-path replay with fakes
 # ============================================================
 
@@ -728,6 +834,7 @@ def test_cli_amain_records_verdict_with_correct_arity(monkeypatch, tmp_path):
         negative_warnings=[],
         positive_total=0,
         positive_met=0,
+        requires_gating_failures=[],
     )
     calibration = types.SimpleNamespace(
         passed=True,
