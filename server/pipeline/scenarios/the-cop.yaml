@@ -111,10 +111,15 @@ checkpoints:
       long have you had this vehicle?" You're testing if they're
       alert and coherent, not if they know the exact answer.
     success_criteria: >
-      User attempts to answer the unexpected question: gives a
-      number, describes a route, admits they don't know, or
-      provides any coherent response. Refusing to answer or
-      becoming hostile does NOT count.
+      User engages with the officer's unexpected question: gives a
+      number or estimate, describes a route or direction, or says
+      they're not sure or don't remember. This tests composure
+      under pressure, not factual accuracy, so a vague, approximate,
+      or "I don't know" answer still counts as long as it actually
+      responds to what was asked. A reply that ignores the question
+      and changes the subject to unrelated small talk (the weather,
+      the traffic, the crowd, last night's game), a refusal to
+      answer, or hostility does NOT count.
 
   - id: closing
     hint_text: "Make a clear, calm closing statement."

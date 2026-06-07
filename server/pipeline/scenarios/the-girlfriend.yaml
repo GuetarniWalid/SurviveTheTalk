@@ -69,9 +69,12 @@ checkpoints:
       what, don't even start. Explain yourself." Wait for their
       reaction.
     success_criteria: >
-      User reacts to the situation: starts explaining, apologizes,
-      asks what happened, or expresses surprise. Any coherent
-      response that acknowledges the confrontation counts.
+      User reacts to the confrontation: starts explaining,
+      apologizes, asks what happened, or expresses surprise or
+      concern at why she is upset. The reply must actually engage
+      with the situation, even clumsily. An off-topic remark or
+      small talk that ignores the confrontation (the weather, the
+      crowd, how busy it is) does NOT count.
 
   - id: explain
     hint_text: "Explain why you didn't call or text."
@@ -82,10 +85,18 @@ checkpoints:
       reason, not just "I'm sorry." Make it clear a simple apology
       isn't enough.
     success_criteria: >
-      User provides a reason or explanation for not calling or
-      texting. "I forgot", "my phone died", "I got stuck at work",
-      or any concrete excuse counts. A bare "I'm sorry" without
-      explanation does NOT count.
+      User gives a concrete reason that explains why they could not
+      call or text her tonight. The reason must account for being
+      unable to reach her, not just be any statement: "I forgot",
+      "I lost track of time", "I got stuck at work", "my phone was
+      dead so I couldn't call", or any specific excuse for the
+      missed contact counts. Judge by intent, so a genuine reason in
+      messy or informal English still passes. What does NOT count: a
+      bare "I'm sorry" with no reason; an off-topic remark that does
+      not explain the silence (weather, traffic, the crowd, how busy
+      it is); or merely noting a circumstance that would not actually
+      have prevented a quick call or text (for example a phone that
+      is only low or "almost dead" rather than fully dead).
 
   - id: acknowledge
     hint_text: "Acknowledge how she felt sitting alone."
