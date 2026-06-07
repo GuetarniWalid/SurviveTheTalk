@@ -1292,7 +1292,7 @@ def test_difficulty_override_swaps_preset_on_resolve_patience_config() -> None:
     assert config["initial_patience"] == hard["initial_patience"] == 60
     assert config["fail_penalty"] == hard["fail_penalty"] == -25
     assert config["escalation_thresholds"] == hard["escalation_thresholds"] == [30, 0]
-    assert config["tts_speed"] == hard["tts_speed"] == 1.2
+    assert config["tts_speed"] == hard["tts_speed"] == 1.0
 
 
 def test_difficulty_override_none_uses_authored_difficulty() -> None:
@@ -1302,7 +1302,7 @@ def test_difficulty_override_none_uses_authored_difficulty() -> None:
 
     config = resolve_patience_config("waiter_easy_01")
     assert config["initial_patience"] == 100  # easy preset
-    assert config["tts_speed"] == 0.8
+    assert config["tts_speed"] == 0.9
 
     config_explicit_none = resolve_patience_config(
         "waiter_easy_01", difficulty_override=None
@@ -1319,17 +1319,20 @@ def test_resolve_patience_config_rejects_bad_difficulty_override() -> None:
         resolve_patience_config("waiter_easy_01", difficulty_override="bogus")
 
 
-def test_presets_carry_tts_speed_easy_slow_hard_fast() -> None:
-    """AC5 — each preset carries a Cartesia-valid `tts_speed`: easy slower,
-    medium natural, hard faster, all inside the documented [0.6, 1.5] range."""
+def test_presets_carry_tts_speed_easy_slowed_medium_hard_natural() -> None:
+    """Story 6.19 follow-up — speech speed is a narrow band inside natural
+    bounds: easy is only gently slowed; medium and hard BOTH sit at the natural
+    rate (1.0, the ceiling — never accelerated). Difficulty above easy is carried
+    by language/interaction, not by a faster voice."""
     from pipeline.scenarios import _DIFFICULTY_PRESETS
 
     speeds = {
         k: _DIFFICULTY_PRESETS[k]["tts_speed"] for k in ("easy", "medium", "hard")
     }
-    assert speeds == {"easy": 0.8, "medium": 1.0, "hard": 1.2}
-    assert speeds["easy"] < speeds["medium"] < speeds["hard"]
-    assert all(0.6 <= s <= 1.5 for s in speeds.values())
+    assert speeds == {"easy": 0.9, "medium": 1.0, "hard": 1.0}
+    # Easy is slower than medium; hard never exceeds the natural ceiling (== medium).
+    assert speeds["easy"] < speeds["medium"] == speeds["hard"]
+    assert all(0.6 <= s <= 1.0 for s in speeds.values())
 
 
 def test_yaml_tts_speed_override_wins_over_preset(tmp_path, monkeypatch) -> None:
@@ -1347,7 +1350,7 @@ metadata:
   language_focus: test
   tts_voice_id: test
   content_warning: null
-  tts_speed: 1.1
+  tts_speed: 0.95
 base_prompt: |
   base
 checkpoints:
@@ -1361,15 +1364,16 @@ exit_lines:
 """
     _write_synthetic_yaml(tmp_path, monkeypatch, yaml_body, scenario_id="synth_speed")
     config = scenarios_mod.resolve_patience_config("synth_speed")
-    # YAML override (1.1) beats the easy preset (0.8).
-    assert config["tts_speed"] == 1.1
+    # YAML override (0.95) beats the easy preset (0.9).
+    assert config["tts_speed"] == 0.95
 
 
 def test_resolve_patience_config_rejects_out_of_range_tts_speed(
     tmp_path, monkeypatch
 ) -> None:
-    """AC5 — a `tts_speed` outside Cartesia's [0.6, 1.5] sonic-3 range fails
-    loud at resolve time."""
+    """Story 6.19 follow-up — natural rate (1.0) is the ceiling: a `tts_speed`
+    above 1.0 (here 1.2, the value Walid heard as too fast) now fails loud at
+    resolve time. The old cap was 1.5."""
     from pipeline import scenarios as scenarios_mod
 
     yaml_body = """
@@ -1382,7 +1386,7 @@ metadata:
   language_focus: test
   tts_voice_id: test
   content_warning: null
-  tts_speed: 2.0
+  tts_speed: 1.2
 base_prompt: |
   base
 checkpoints:
@@ -1409,7 +1413,7 @@ def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
     composed = load_scenario_base_prompt("waiter_easy_01")
     assert "Tina" in composed  # persona preserved
     assert "Difficulty behavior (easy):" in composed
-    assert "Speak slowly and clearly" in composed
+    assert "Speak at a calm, clear pace" in composed
     assert composed.endswith(_DIFFICULTY_PROMPTS["easy"])
 
 
@@ -1420,10 +1424,10 @@ def test_load_scenario_base_prompt_override_swaps_behavior_block() -> None:
 
     composed = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
     assert "Difficulty behavior (hard):" in composed
-    assert "Speak fast, at a natural native cadence" in composed
+    assert "never rushed or accelerated" in composed
     # The easy block must NOT leak through.
     assert "Difficulty behavior (easy):" not in composed
-    assert "Speak slowly and clearly" not in composed
+    assert "Speak at a calm, clear pace" not in composed
 
 
 def test_load_scenario_base_prompt_rejects_inline_difficulty_block(

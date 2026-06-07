@@ -126,14 +126,16 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         # smoke-gate call_id=148 (2026-05-26).
         "ladder_impatience_seconds": 4.5,
         "escalation_thresholds": [75, 50, 25, 0],
-        # Story 6.19 AC5 — speech speed scales with difficulty (Cartesia
-        # sonic-3 `speed` multiplier, valid range [0.6, 1.5], 1.0 = natural).
-        # Easy speaks SLOWER + clearer so a B1 learner catches every syllable;
-        # medium natural; hard faster (see hard preset). Threaded preset →
-        # resolve_patience_config → bot.py → build_tts_service(speed=…) →
-        # CartesiaTTSService GenerationConfig. The nullable per-scenario
+        # Story 6.19 follow-up (2026-06-07 smoke gate) — speech speed is a NARROW
+        # band ENTIRELY within natural human bounds; the natural rate (1.0) is the
+        # ceiling and is NEVER exceeded. Difficulty is carried by LANGUAGE +
+        # INTERACTION (see _DIFFICULTY_PROMPTS), not by a faster voice. Easy is
+        # only gently slowed — clear, never robotic or drawled. Cartesia sonic-3
+        # `speed` multiplier, 1.0 = the voice's natural recorded rate. Threaded
+        # preset → resolve_patience_config → bot.py → build_tts_service(speed=…)
+        # → CartesiaTTSService GenerationConfig. The nullable per-scenario
         # `metadata.tts_speed` override still wins (in `_PATIENCE_OVERRIDE_KEYS`).
-        "tts_speed": 0.8,
+        "tts_speed": 0.9,
     },
     "medium": {
         "initial_patience": 80,
@@ -158,8 +160,11 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         # face-shift = "Mugger should be impatient by design" semantic).
         "ladder_impatience_seconds": 2.5,
         "escalation_thresholds": [30, 0],
-        # Story 6.19 AC5 — faster, natural native cadence (no slowing down).
-        "tts_speed": 1.2,
+        # Story 6.19 follow-up (2026-06-07 smoke gate) — natural rate is the
+        # CEILING: hard speaks at the SAME natural pace as medium (1.0), NEVER
+        # accelerated. 1.2 read as unnatural/rushed on device; hard's extra
+        # difficulty is 100% language + interaction, not speed.
+        "tts_speed": 1.0,
     },
 }
 
@@ -184,35 +189,69 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
 _DIFFICULTY_PROMPTS: dict[str, str] = {
     "easy": (
         "Difficulty behavior (easy):\n"
-        "- Speak slowly and clearly, one idea at a time — every syllable should "
-        "be easy to catch.\n"
-        "- Use basic everyday vocabulary and short, simple sentences "
-        "(about 5-8 words).\n"
-        "- Never use idioms, slang, or cultural references; if the learner seems "
-        "confused, rephrase more simply and help them along.\n"
-        "- Never interrupt the learner mid-sentence — give them a few seconds of "
-        "silence to think."
+        "- Speak at a calm, clear pace (natural, never robotic or drawled).\n"
+        "- Use only basic, high-frequency everyday vocabulary; keep every word "
+        "concrete and literal.\n"
+        "- Use short, simple sentences (about 5-8 words), one idea per turn.\n"
+        "- Never use idioms, phrasal verbs, slang, or cultural references.\n"
+        "- Ask one question at a time, and make it closed or either-or whenever "
+        "you can ('Chicken or fish?', 'Were you at work? Yes or no?') so the "
+        "answer's shape is obvious.\n"
+        "- State plainly what you want from them ('Just tell me where you "
+        "were.'); never make them guess your intention.\n"
+        "- If they seem confused or don't understand, rephrase more simply and "
+        "help them along — stay patient and in character, and never correct "
+        "their grammar.\n"
+        "- Never interrupt; leave them a few seconds of silence to think.\n"
+        "- Stay calm; show only mild frustration after repeated failure, and let "
+        "a single good answer noticeably soften you."
     ),
     "medium": (
         "Difficulty behavior (medium):\n"
         "- Speak at a natural conversational pace.\n"
-        "- Use everyday vocabulary mixed with 1-2 colloquial expressions per "
-        "response.\n"
-        "- Do not rephrase or simplify on request — if the learner stalls or is "
-        "vague, show mild impatience instead of helping.\n"
-        "- Occasionally throw in an unexpected question to keep them on their "
-        "toes; you may interrupt once if they ramble or stall."
+        "- Use everyday vocabulary with the occasional lower-frequency word the "
+        "learner can work out from context.\n"
+        "- Use natural sentences (about 10-15 words) with at most one subordinate "
+        "clause.\n"
+        "- Weave in at most one common, transparent phrasal verb or colloquial "
+        "expression per turn ('calm down', 'find out', 'come on').\n"
+        "- Ask plain open questions one at a time ('Why didn't you call?', "
+        "'Where were you?') — no options offered, no hand-holding.\n"
+        "- Do not rephrase or simplify on request — repeat the same sentence "
+        "once, then show mild impatience instead of helping.\n"
+        "- React only to what they MEAN, never to their grammar.\n"
+        "- Throw in one unexpected question across the call; you may interrupt "
+        "once if they ramble or stall."
     ),
     "hard": (
         "Difficulty behavior (hard):\n"
-        "- Speak fast, at a natural native cadence — no slowing down.\n"
-        "- Use rich, idiomatic vocabulary with 3+ idiomatic expressions woven in "
-        "naturally.\n"
-        "- Never rephrase, never simplify — if they don't understand, treat it as "
-        "their problem and press on.\n"
-        "- Interrupt the learner if they ramble; ask unexpected follow-up "
-        "questions that test improvisation. Show impatience early and do not "
-        "help them."
+        "- Be genuinely hard through LANGUAGE and INTERACTION, not speed.\n"
+        "- Speak at a normal, natural pace — never rushed or accelerated.\n"
+        "- Use rich, lower-frequency and idiomatic vocabulary, including less "
+        "common senses of familiar words ('run me through it', a story that "
+        "doesn't 'add up').\n"
+        "- Weave in 2-3 phrasal verbs or idioms per turn that a non-native "
+        "struggles with, mixing British and American expressions ('come clean', "
+        "'cut to the chase', 'knock it off') — but never stack two opaque idioms "
+        "in one clause.\n"
+        "- Vary your turns: either keep them clipped ('And?', 'Go on.', "
+        "'That's it?') OR pack two facts into one dense, multi-clause sentence "
+        "they must track.\n"
+        "- Ask loaded, pointed questions that smuggle in an assumption ('So why "
+        "were you weaving all over the road?'); sometimes stack two questions so "
+        "they must hold both.\n"
+        "- Often IMPLY what you want instead of stating it — use hints, "
+        "rhetorical questions, and loaded pauses ('...Interesting.', 'Must be "
+        "nice.') and make them infer the response you're demanding.\n"
+        "- Never rephrase, never simplify; if they don't understand or stumble, "
+        "treat it as their problem and press the same point harder.\n"
+        "- Interrupt them if they ramble or stall, and finish their thought for "
+        "them, unfavorably; throw curveballs and abrupt topic shifts, and circle "
+        "back to an earlier answer to catch inconsistencies.\n"
+        "- Show impatience early; a good answer barely registers ('Fine. And?'). "
+        "Stay cold and do not help them.\n"
+        "- Stay fair: be hard to deal with, but never gibberish — keep each turn "
+        "parseable by a determined learner (at most one trap or twist per turn)."
     ),
 }
 
@@ -472,17 +511,20 @@ def resolve_patience_config(
             f"number in [0.5, 10.0], got "
             f"{config['ladder_impatience_seconds']!r}"
         )
-    # Story 6.19 AC5 — `tts_speed` (preset or `metadata.tts_speed` override)
-    # must be a Cartesia-valid multiplier in [0.6, 1.5] (sonic-3's documented
-    # range). Bool-reject mirrors the other numeric validators.
+    # Story 6.19 follow-up (2026-06-07 smoke gate) — `tts_speed` (preset or
+    # `metadata.tts_speed` override) must be in [0.6, 1.0]. The NATURAL rate (1.0)
+    # is the CEILING: a value above natural reads as rushed/unnatural on device
+    # (hard at 1.2 was the smoke-gate complaint), so the cap is lowered from the
+    # old 1.5 to 1.0 — "above natural" is structurally impossible to ship. The
+    # 0.6 floor stays. Bool-reject mirrors the other numeric validators.
     if (
         not isinstance(config["tts_speed"], (int, float))
         or isinstance(config["tts_speed"], bool)
-        or not (0.6 <= config["tts_speed"] <= 1.5)
+        or not (0.6 <= config["tts_speed"] <= 1.0)
     ):
         raise RuntimeError(
             f"Scenario {scenario_id!r}: tts_speed must be a number in "
-            f"[0.6, 1.5], got {config['tts_speed']!r}"
+            f"[0.6, 1.0] (natural rate is the ceiling), got {config['tts_speed']!r}"
         )
 
     return config
