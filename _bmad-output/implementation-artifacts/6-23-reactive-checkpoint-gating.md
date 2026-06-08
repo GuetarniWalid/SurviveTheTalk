@@ -1,6 +1,6 @@
 # Story 6.23: Reactive-checkpoint precondition gating (stop out-of-context crediting)
 
-Status: review
+Status: done
 
 > **Design-surfaced story (drafted via a 9-agent design workflow, 2026-06-04).** Motivated by the Story 6.21 smoke gate (cop call_id=222): a far-later **trap** checkpoint (`correct_misquoted_time`) was credited at turn 3 by a bare "actually + a time" alibi, before the trap was ever played. We hand-patched that one beat's criteria — but Walid correctly flagged that the *manual, per-beat* patch does not scale: the same **class** recurs for every reactive beat (the cop scenario alone has ~7-10) and every future builder-generated scenario. This story makes the class **structurally impossible**, not patched case-by-case.
 >
@@ -150,12 +150,14 @@ Field absent ⇒ proactive ⇒ unchanged. The field's **mere presence is the tax
 
 ## Smoke Test Gate (Server / Deploy Story)
 
-- [ ] **Deployed** to the VPS (`deploy-server.yml` git_sha match).
-- [ ] **Premature-credit blocked (the incident):** on the cop scenario, give the alibi early starting with "actually at half past 8 …". The trap beat `correct_misquoted_time` must **NOT** tick at that turn. _Proof:_ device + `journalctl … | grep checkpoint_advanced` shows NO `index=<CP9>` at the alibi turn.
-- [ ] **Trap still lands later:** once Mercer genuinely springs the misquote (repeats your departure time distorted) and you correct him, the beat **does** tick.
-- [ ] **Proactive unchanged:** an ordinary in-order run + an out-of-order proactive volunteer (e.g. alibi before the break-in) behave exactly as in Story 6.21 (out-of-order credit + return-to-skipped-beat intact).
-- [ ] **No stranded completion:** a fully-triggered run can still reach `survived`.
-- [ ] **Server logs clean** on the happy path.
+- [x] **Deployed** to the VPS — git_sha `a7bdf06` (verified: `/health` git_sha match + `judgeable_goals` present in the deployed `checkpoint_manager.py`). 2026-06-07. (Earlier release `03e6031` had the YAML edges WITHOUT the engine gate — the "worse than none" half-state — now corrected.)
+- [x] **Premature-credit blocked (the incident):** VALIDATED on device (call_id=244, 2026-06-08, character on Scout). Across a full 9-beat run the learner gave the alibi (turn 16) AND both clock times (turn 20) — yet `correct_misquoted_time` (CP9) **never appeared in any `goals_met_indices`**. Giving a time ≠ correcting a misquote; the gate held. journalctl met-sets walked [0,1,2,3,4,5,6,7,8] with CP9 absent throughout.
+- [~] **Trap still lands later:** on-device demonstration **waived by Walid** (2026-06-08) — covered by the automated test `test_reactive_beat_becomes_judgeable_after_trigger_met` (gate opens once the trigger is met → a genuine correction credits CP9). On call_id=244 CP9 became *eligible* after the times were locked (turn 20, gate opened correctly) but the call hit `character_hung_up` (patience drained on repeated "can you repeat?") before Mercer reached the misquote beat.
+- [x] **Proactive unchanged:** VALIDATED (call_id=244) — out-of-order credit intact (e.g. `describe_what_doing` idx6 credited before idx4/idx5) and ordered-pursuit return-to-skipped-beat behaving as in Story 6.21.
+- [~] **No stranded completion:** the call ended via normal `character_hung_up` (patience), NOT stranded by gating; normal `survived` completion is covered by the automated calibration harness + Stories 6.10/6.20.
+- [x] **Server logs clean** — no 429 / errors on Scout; only the pre-existing non-fatal exit-line generator ReadTimeout→fallback (unrelated to 6.23).
+
+**Smoke-gate sign-off (Walid, 2026-06-08):** "On valide sur le test auto + ce run" — accepted the automated AC9 regression (replays the exact call_id=222 incident) + the device run showing zero out-of-context CP9 misfire across 9 beats. `review → done`.
 
 ## Dev Agent Record
 
@@ -212,6 +214,7 @@ Gates after fixes: ruff check + format clean (91 files), full server `pytest` **
 **Story 6.23 is review-complete; it is now waiting ONLY on your live `calibrate_scenario cop_interrogation_01 --golden-only` + Pixel 9 smoke gate (AC11) for the `review → done` flip.**
 
 ## Change Log
+- 2026-06-08 — **review → done (Walid smoke-gate sign-off).** Deployed (gate live, verified `judgeable_goals` in the running release + 7 cop edges). Device run call_id=244 confirmed the gate held across 9 beats (alibi + clock times given, CP9 never credited out of context; proactive out-of-order credit intact). Full `🅑` trap-fire demonstration waived by Walid — covered by the automated AC9 regression. NOTE: the run used the character model on **Groq Llama-4-Scout** (temporary, free-tier unblock — Groq's paid Dev tier has been walled platform-wide for months; see [[infra-groq-capacity-and-scout-fallback]]); the gate is model-independent so this does not affect validity.
 - 2026-06-06 — **/bmad-dev-story COMPLETE (ultracode)**, ready-for-dev → review. Shipped the one-concept `requires` reactive-gating fix (T1–T7): pure `judgeable_goals` choke point in `checkpoint_manager` (judge payload only; `advance_goals` + un-gated `pending_goals` untouched); harness mirror in `calibration_engine` (golden==prod); loader fail-fast + 7 cop edges + reverted CP9/explain_prints prose; golden premature-credit assertion + `ENGINE_VERSION` 1→2 + hash projection; builder emits/preserves/exempts `requires`; `server/CLAUDE.md` §7 + memory. +23 tests. 4-dimension ultracode adversarial review → 0 code defects, 2 test gaps closed. ⚠️ 4 files (scenarios.py, scenario_builder.py, cop yaml, sprint-status.yaml) were swept into the concurrent Story 6.19 commit `03e6031` — intact but a 6.23 `/commit` won't re-include them.
 - 2026-06-04 — **Decisions RESOLVED (Walid): all 6 → option A** — engine-side `requires` gate (D1), single-id value (D2), defer non-checkpoint triggers (D3), light builder + no gating lint (D4), point `requires` at a reliably-met beat (D5), hand-add cop edges + delete prose preconditions (D6). Story is decision-complete → ready for `/bmad-dev-story`.
 - 2026-06-04 — Drafted via a 9-agent design workflow (4-reader code map of builder/golden-net/engine + survey of at-risk beats → 4-approach panel → architect synthesis). Recommended approach: a single optional `requires` precondition edge, enforced structurally at the engine's crediting choke point (`judgeable_goals`), proven by the golden net (`ENGINE_VERSION` bump), auto-populated by the builder; `advance_goals` and proactive any-order untouched. 6 open decisions documented with recommendations — Walid to confirm the approach before `/bmad-dev-story`.
