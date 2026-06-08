@@ -108,6 +108,8 @@ The `expected_exchanges` field is set **per scenario** in Story 3.2.
 
 Every lever available to tune scenario difficulty, organized by category. When authoring a scenario in Story 3.2, these are the knobs to turn.
 
+> **⚠️ Difficulty-neutral persona (Story 6.19 follow-up, 2026-06-08).** Every lever in tables B (Language & Comprehension) and C (Conversational Dynamics) below — vocabulary level, idioms, sentence complexity, rephrasing-on-confusion, interruption, follow-up persistence, emotional escalation — is realized as a **difficulty-level artifact** (`scenarios._DIFFICULTY_PROMPTS` + the `tts_speed` preset), composed at LOAD time. It is **NEVER** hard-coded into a scenario's persona/`base_prompt`. Per the locked 2026-06-08 design, difficulty = how hard the character is on the **learner's English** (comprehension + accommodation), with the character's **personality held constant** across levels (a calm detective stays calm; he just gets linguistically harder + stricter — never warmer/colder, never a fixed catchphrase). Speech speed is capped at the natural rate (1.0 ceiling); difficulty above easy rides on language/interaction, not pace. **Enforced by construction:** the loader composition + a load-time inline-block guard + a deterministic denylist lint (`find_persona_difficulty_leaks`) over every shipped `base_prompt` (see `server/CLAUDE.md` §8). The cop's "squint at them like you're assessing impairment" persona line was the canonical leak that made easy == hard on the weak prod model.
+
 #### A. Timing & Patience (how forgiving the character is)
 
 | Lever | What it controls | Easy end | Hard end |

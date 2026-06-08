@@ -181,73 +181,98 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
 # Story 6.19 — Per-difficulty character behavior block (AC4)
 # ============================================================
 #
-# Until Story 6.19 the "Difficulty behavior (easy|medium|hard): …" block lived
-# INLINE in each scenario YAML's `base_prompt`. That meant a global "hard" pick
-# on an "easy"-authored scenario still *spoke* easy (the YAML text was fixed).
-# The three blocks now live HERE as the single source of truth; the YAMLs drop
-# their inline block (a load-time guard in `load_scenario_base_prompt` rejects
-# any YAML that still carries one). `load_scenario_base_prompt(scenario_id,
-# difficulty_override=…)` composes the chosen difficulty's block onto the raw
-# persona, so the character's vocabulary / idioms / rephrasing / pace actually
-# match the selected difficulty.
+# Difficulty is composed at LOAD time, NEVER frozen into a persona. Until Story
+# 6.19 the "Difficulty behavior (…)" block lived INLINE in each YAML `base_prompt`,
+# so a global "hard" pick on an "easy"-authored scenario still *spoke* easy. The
+# three blocks now live HERE as the single source of truth; `load_scenario_base_
+# prompt(scenario_id, difficulty_override=…)` appends the chosen block onto the
+# raw persona, so the character's vocabulary / idioms / rephrasing actually match
+# the selected difficulty.
 #
-# These are deliberately SCENARIO-AGNOSTIC (they apply to any character): the
-# per-scenario flavour lives in the persona/`base_prompt`; this block is the
-# difficulty knob. Per the locked 2026-06-08 design, difficulty = how hard the
-# character is on the LEARNER's English — COMPREHENSION (vocabulary, idioms,
-# sentence length) + ACCOMMODATION (does it help / rephrase / accept approximate
-# answers, or refuse and demand precision) — NEVER the character's personality
-# (a calm detective stays calm; he just gets linguistically harder + stricter).
-# Speech speed is handled separately by the preset `tts_speed`. These blocks are
-# deliberately STRONG + CONCRETE: the 2026-06-08 cop smoke gate (on Scout) showed
-# a soft, buried block is ignored — easy and hard sounded identical until the
-# directive named exact behaviours ("say 'You heard me'", "demand the exact
-# time"). Verify changes with `scripts/compare_difficulty.py` (offline A/B).
+# THE LOAD-BEARING INVARIANT (2026-06-08 follow-up): the persona is DIFFICULTY-
+# NEUTRAL and the block is PERSONALITY-NEUTRAL. The persona (`base_prompt`)
+# describes only WHO the character is — identity, setting, fixed temperament,
+# canonical facts, hard boundaries — and says NOTHING about how hard they are on
+# the learner's English (enforced by `_PERSONA_DIFFICULTY_LEAK_PATTERNS` below,
+# via `load_scenario_base_prompt` + the builder + a pytest lint). These blocks,
+# conversely, change ONLY the LANGUAGE + ACCOMMODATION — COMPREHENSION
+# (vocabulary, idioms, sentence length) + how much the character rephrases /
+# accepts approximate answers / demands precision — and explicitly order the model
+# to keep the persona's temperament and mood UNCHANGED, so the SAME block composes
+# cleanly onto a cold cop, a tired waiter, or a mugger without contradiction.
+# Difficulty is NEVER personality (a calm detective stays calm; he just gets
+# linguistically harder + stricter), NEVER warmth/encouragement, and NEVER a fixed
+# catchphrase. Speech speed is the preset `tts_speed` (capped at the natural 1.0
+# rate; difficulty above easy rides on language, not pace).
+#
+# Why the split matters MORE on the prod model: the 2026-06-08 cop smoke gate (on
+# Scout, the weaker free model) showed easy == hard because the hard `base_prompt`
+# and a generic block CONTRADICTED each other and Scout fell back to the persona.
+# A neutral persona removes the contradiction, so even a weak model obeys. Keep
+# the blocks STRONG + CONCRETE (a soft, buried block is ignored) but expressed as
+# language/precision POLICY, never as personality. Verify a change with
+# `scripts/compare_difficulty.py` (offline A/B) ON THE PROD MODEL.
 _DIFFICULTY_PROMPTS: dict[str, str] = {
     "easy": (
         "Difficulty behavior (easy):\n"
-        "- Stay fully in character, but go MAXIMALLY EASY on the learner's "
-        "English — treat them as a nervous beginner.\n"
-        "- If they don't understand, ask you to repeat, or look confused, "
-        "REPHRASE it more simply and help them. Never just say 'I already said "
-        "it'.\n"
-        "- Accept approximate or vague answers: if they give the gist ('around "
-        "eight', 'at home'), take it and move on. Do NOT demand exact details.\n"
-        "- Use ONLY simple, common words and short sentences (about 5-8 words). "
-        "No idioms, phrasal verbs, slang, or jargon.\n"
-        "- Ask one simple question at a time; stay patient and encouraging, even "
-        "after mistakes, and never correct their grammar."
+        "- This is a LANGUAGE setting only. Keep your persona's exact temperament "
+        "and mood (warm or cold, calm or hostile) unchanged — only your ENGLISH "
+        "and your tolerance for imprecise answers change.\n"
+        "- Speak in simple, common words and short sentences (about 5-8 words). "
+        "Use NO idioms, phrasal verbs, slang, or role jargon.\n"
+        "- When the learner doesn't understand or asks you to repeat, restate the "
+        "SAME point in DIFFERENT, simpler words (swap any hard word for an easy "
+        "one). This rephrase is MANDATORY, not optional — do it even if your "
+        "persona is impatient (keep it short and in your tone, but you DO "
+        "simplify).\n"
+        "- A vague or approximate answer ('around eight', 'at home') is "
+        "SUFFICIENT: treat the gist as a complete answer and move on. Do NOT "
+        "demand exact details.\n"
+        "- Respond to what the learner MEANS, not how they say it; do not flag "
+        "grammar or word-choice errors (this is comprehension scope, not "
+        "forgiveness).\n"
+        "- Ask one thing at a time."
     ),
     "medium": (
         "Difficulty behavior (medium):\n"
-        "- Stay in character and be moderately demanding on the learner's "
-        "English.\n"
-        "- If they don't understand, repeat it ONCE in the same words, then show "
-        "mild impatience. Do not simplify further.\n"
-        "- Expect a real attempt: nudge them for a missing detail, but don't "
-        "grill them on precision.\n"
-        "- Use everyday vocabulary with about one common phrasal verb or idiom "
-        "per turn.\n"
-        "- Ask natural open questions, one at a time; react to what they MEAN, "
-        "never to their grammar."
+        "- This is a LANGUAGE setting only. Keep your persona's exact temperament "
+        "and mood unchanged — only your English and your tolerance for imprecise "
+        "answers change.\n"
+        "- Speak in everyday native vocabulary. Use common, TRANSPARENT idioms a "
+        "learner has probably heard, whose meaning is guessable ('hang on', 'go "
+        "ahead', 'no rush'). Normal-length sentences.\n"
+        "- When the learner doesn't understand, repeat your point ONCE — the SAME "
+        "sentence verbatim — then STOP and wait. Do not simplify it and do not "
+        "rephrase a second time. (Whether that repeat sounds patient or curt is "
+        "set by your persona.)\n"
+        "- Require a genuine attempt. If a needed detail is missing, ask for it "
+        "once; accept a reasonable answer without insisting on exactness.\n"
+        "- Respond to what the learner MEANS, not their grammar.\n"
+        "- Ask natural, open questions, one at a time."
     ),
     "hard": (
         "Difficulty behavior (hard):\n"
-        "- Stay fully in character (keep your SAME personality and tone), but be "
-        "MAXIMALLY HARD on the learner's English and give them NO slack.\n"
-        "- If they don't understand or ask you to repeat, do NOT repeat or "
-        "rephrase. Say 'You heard me.' and press on — their confusion is their "
-        "problem, not yours.\n"
-        "- REJECT vague or approximate answers ('around eight', 'at home'). "
-        "Demand the EXACT detail every time ('What exact time? Which street and "
-        "number?').\n"
-        "- Use rich, idiomatic native English: weave in idioms and phrasal verbs "
-        "('come clean', 'cut to the chase', 'level with me', 'that doesn't add "
-        "up') plus any jargon your role would really use.\n"
-        "- Ask loaded, pointed questions and keep pressing; a vague or evasive "
-        "answer makes you push HARDER, never softer.\n"
-        "- Being hard is about LANGUAGE and refusing to accommodate — it is NOT "
-        "shouting or breaking character."
+        "- This is a LANGUAGE setting only. Keep your persona's exact temperament "
+        "and tone unchanged — only your English and your demand for precise "
+        "answers change. Do NOT become angrier, louder, or more aggressive than "
+        "your persona already is.\n"
+        "- Speak in rich, fully idiomatic native English, leaning on LESS "
+        "transparent idioms and phrasal verbs whose meaning is NOT guessable from "
+        "the words ('come clean', 'cut to the chase', 'level with me', 'that "
+        "doesn't add up'), plus any jargon your role really uses. Do not soften "
+        "or simplify your wording.\n"
+        "- When the learner doesn't understand or asks you to repeat, do NOT "
+        "repeat or rephrase. In ONE short clause make clear you won't re-explain, "
+        "then press straight on to your next point ('That's what I asked.' / "
+        "\"I'll take that as a no.\") — phrase it in your own persona's voice, "
+        "never a fixed catchphrase, but always: no re-explanation, move "
+        "forward.\n"
+        "- Reject vague or approximate answers ('around eight', 'at home'). Ask "
+        "for the EXACT detail ('What exact time? Which street and number?'). If "
+        "it's still vague, press ONCE more, then note the gap and move on — do "
+        "NOT loop the same demand.\n"
+        "- Respond to what the learner MEANS, not their grammar; strictness here "
+        "is about language and precision, never grammar correction."
     ),
 }
 
@@ -266,6 +291,75 @@ _PATIENCE_OVERRIDE_KEYS = (
     # difficulty preset's `tts_speed` wins. YAML key is `metadata.tts_speed`.
     "tts_speed",
 )
+
+
+# ============================================================
+# Story 6.19 follow-up (2026-06-08) — personas are DIFFICULTY-NEUTRAL
+# ============================================================
+#
+# A scenario `base_prompt` describes ONLY the character's stable identity (who
+# they are, the setting, canonical facts, fixed temperament, hard boundaries). It
+# must NOT encode how hard the character is on the LEARNER's English — no
+# grammar-policing ("squint at grammar mistakes"), no reaction-to-hesitation
+# ("treat it as suspicious"), no escalation curve ("escalate gradually"), no
+# rephrase/repeat policy, no idiom/slang-density mandate, no speech-pace line. ALL
+# of that is the difficulty layer's job (`_DIFFICULTY_PROMPTS`, composed at load
+# time). A coded phrase frozen in a persona leaks the authored difficulty and
+# defeats the global difficulty pick — the cop's "squint at them like you're
+# assessing impairment" was the canonical leak (easy == hard on Scout).
+#
+# Enforced by construction, three layers (+ an optional live A/B):
+#   1. `load_scenario_base_prompt` WARNS (loudly, runtime canary) if a persona
+#      hits a pattern below — it does NOT crash the call, because the denylist is
+#      a fuzzy substring tripwire (could false-positive on innocent backstory).
+#   2. `scenario_builder.validate_structure` HARD-fails the check (imports this),
+#      so the builder never WRITES a leaking persona, and `EXPAND_PROMPT` instructs
+#      the draft LLM to keep personas difficulty-neutral.
+#   3. `tests/test_scenarios.py` HARD-lints every shipped persona on each commit.
+# (2) and (3) run where a human is present, so a false positive is a fixable red
+# test, never a prod outage; a shipped persona therefore can't leak.
+# A static denylist only catches KNOWN coded phrases; the real proof that the
+# blocks change BEHAVIOR is the live A/B (`scripts/compare_difficulty.py`).
+_PERSONA_DIFFICULTY_LEAK_PATTERNS: tuple[str, ...] = (
+    "squint",
+    "overlap them",
+    "react with condescension",
+    "react with confusion or mockery",
+    "react with emotional frustration",
+    "take it personally",
+    "treat it as suspicious",
+    "interpret it as guilt",
+    "escalate your frustration",
+    "push harder",
+    "pick 1-2",
+    "rephrase",
+    "idiom",
+    "grammar mistake",
+    "grammar correction",
+    "correct their grammar",
+    "no slack",
+    "speak fast",
+    "speak slowly",
+    "natural cadence",
+    "one clear syllable",
+)
+
+
+def find_persona_difficulty_leaks(base_prompt: str) -> list[str]:
+    """Return the difficulty-coded phrases present in a persona `base_prompt`.
+
+    Story 6.19 follow-up — personas must be difficulty-NEUTRAL: the difficulty
+    knob (vocabulary / idioms / rephrasing / precision) lives ONLY in
+    `_DIFFICULTY_PROMPTS`, composed at load time. A non-empty return means the
+    persona froze a difficulty stance into its prose, which would leak the
+    authored difficulty and defeat the global difficulty pick. High-precision,
+    deterministic, case-insensitive substring match — a tripwire, NOT proof of
+    full neutrality (only the live A/B proves the model obeys). Single source of
+    truth, imported by `scenario_builder.validate_structure` and the
+    `tests/test_scenarios.py` lint.
+    """
+    haystack = (base_prompt or "").lower()
+    return [p for p in _PERSONA_DIFFICULTY_LEAK_PATTERNS if p in haystack]
 
 
 def resolve_patience_config(
@@ -679,6 +773,29 @@ def load_scenario_base_prompt(
             f"'Difficulty behavior (…)' block. Story 6.19 moved the three blocks "
             f"into the `_DIFFICULTY_PROMPTS` code constant (single source of "
             f"truth); remove the inline block from the YAML."
+        )
+    # Story 6.19 follow-up — the persona must be DIFFICULTY-NEUTRAL: difficulty
+    # behavior (vocabulary / idioms / rephrasing / precision / escalation / pace)
+    # lives ONLY in `_DIFFICULTY_PROMPTS` (composed just below). A persona that
+    # freezes a difficulty stance into its prose (e.g. the cop's "squint at them
+    # like you're assessing impairment") leaks the authored difficulty and defeats
+    # the global difficulty pick. This check is a FUZZY substring tripwire (unlike
+    # the EXACT inline-block / speak-first markers above), so it WARNS rather than
+    # raising — we must not crash a live call on a possible false positive (a
+    # persona whose backstory innocently contains a flagged word). The HARD gates
+    # are `scenario_builder.validate_structure` + the `tests/test_scenarios.py`
+    # lint (a human is present there; a shipped persona can't leak). This runtime
+    # warning only fires if a scenario was hand-edited on the VPS past those gates.
+    leaks = find_persona_difficulty_leaks(base_prompt)
+    if leaks:
+        from loguru import logger
+
+        logger.warning(
+            "scenario_persona_difficulty_leak scenario={} phrases={} — persona "
+            "should be difficulty-NEUTRAL (difficulty lives in _DIFFICULTY_PROMPTS, "
+            "composed at load time). Move that behavior out of the base_prompt.",
+            scenario_id,
+            leaks,
         )
 
     # Resolve the difficulty: the learner's global pick wins, else the YAML's

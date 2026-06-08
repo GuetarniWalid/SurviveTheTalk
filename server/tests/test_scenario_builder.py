@@ -376,6 +376,25 @@ def test_assemble_scenario_matches_schema():
     assert set(scenario["briefing"]) == {"vocabulary", "context", "expect"}
 
 
+def test_validate_structure_rejects_difficulty_coded_persona():
+    """Story 6.19 follow-up — the builder mirrors the loader's difficulty-neutral
+    guard: a base_prompt that freezes a difficulty stance into its prose is
+    flagged, so the builder can never WRITE a persona the loader would reject."""
+    scenario = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt=(
+            "You are Officer Dale. If they make grammar mistakes, squint at them."
+        ),
+        checkpoints=_checkpoints(2),
+        brief=_brief(2),
+    )
+    problems = builder.validate_structure(scenario)
+    assert any("difficulty-coded" in p for p in problems), problems
+
+
 def test_validate_structure_accepts_good_scenario():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",

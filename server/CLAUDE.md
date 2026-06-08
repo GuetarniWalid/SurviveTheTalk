@@ -398,6 +398,48 @@ Mechanics / invariants:
   dependencies out — plausibly how the cop trap became a standalone lexical
   test). Human-confirmed, not a build blocker.
 
+### 8. Personas are difficulty-NEUTRAL — difficulty lives ONLY in `_DIFFICULTY_PROMPTS` (Story 6.19 follow-up)
+
+A scenario YAML `base_prompt` describes ONLY the character's **stable identity**:
+who they are, the setting, canonical facts, their fixed temperament/tone, and the
+hard safety boundaries. It must **NOT** encode any difficulty-coded behavior — no
+"squint at grammar mistakes", "overlap/interrupt them", "react with condescension",
+"escalate gradually", "rephrase on confusion", idiom/slang-density mandate, or
+speech-pace line. ALL difficulty behavior (comprehension load + accommodation) is
+composed at LOAD time from `scenarios._DIFFICULTY_PROMPTS` by
+`load_scenario_base_prompt(difficulty_override=…)`.
+
+**Why (the cop "squint" leak).** Before this, the cop persona was authored *hard*
+("squint at them like you're assessing impairment", "overlap them if the person
+pauses") and the waiter *easy* ("escalate gradually"). A global easy/hard pick
+appended a generic block that **contradicted** the persona; on the weak prod model
+(Scout) the model fell back to the persona, so **easy == hard** on-device. A neutral
+persona removes the contradiction. The blocks themselves are now **personality-
+neutral** too: each opens with "This is a LANGUAGE setting only — keep your persona's
+temperament unchanged", so the SAME block composes onto a cold cop, a tired waiter,
+or a mugger. Difficulty rides on **language + precision**, never personality, warmth,
+or a fixed catchphrase; speech speed is capped at the natural 1.0 rate. (Difficulty
+ALSO scales the **patience/timing** layer — silence tolerance + `ladder_impatience_seconds`
+in `_DIFFICULTY_PRESETS`. That is a *separate, sanctioned* difficulty channel — turn-taking
+pace + error budget — NOT character personality: "personality held constant" means warmth /
+temperament / role, not the meter.)
+
+**Enforced by construction (no LLM):**
+- `load_scenario_base_prompt` **warns** (runtime canary; does NOT crash the call — the
+  denylist is a fuzzy substring tripwire that could false-positive on innocent backstory)
+  when a persona hits `scenarios._PERSONA_DIFFICULTY_LEAK_PATTERNS`.
+  `find_persona_difficulty_leaks` is the single source of truth.
+- `scenario_builder.validate_structure` **hard-fails** it (imports the same helper) and
+  `EXPAND_PROMPT` / `CHECKPOINTS_PROMPT` / `CRITIQUE_PROMPT` instruct the draft LLM
+  to keep the persona AND every `prompt_segment` difficulty-neutral — so future
+  generated scenarios are born neutral.
+- `tests/test_scenarios.py::test_shipped_personas_have_no_difficulty_coded_phrases`
+  lints every shipped persona on each commit.
+
+A static denylist only catches KNOWN coded phrases; the real proof the blocks change
+BEHAVIOR is the live A/B `scripts/compare_difficulty.py` — **run it on the prod model
+(Scout), not 70B** (the tool now defaults to Scout for exactly this reason).
+
 ---
 
 ## When in doubt

@@ -30,6 +30,16 @@ def test_sarcastic_prompt_mentions_character_name() -> None:
     assert "Tina" in SARCASTIC_CHARACTER_PROMPT
 
 
+def test_sarcastic_prompt_is_difficulty_neutral() -> None:
+    """Story 6.19 follow-up — even the LEGACY fallback persona must stay
+    difficulty-NEUTRAL: no inline 'Difficulty behavior' block and no coded
+    phrase. Difficulty lives only in scenarios._DIFFICULTY_PROMPTS."""
+    from pipeline.scenarios import find_persona_difficulty_leaks
+
+    assert "Difficulty behavior (" not in SARCASTIC_CHARACTER_PROMPT
+    assert find_persona_difficulty_leaks(SARCASTIC_CHARACTER_PROMPT) == []
+
+
 def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
     """Story 6.10 AC3 (2026-05-29 structured-output rev) — the multi-goal
     classifier prompt exists, carries the 4 substitution placeholders,

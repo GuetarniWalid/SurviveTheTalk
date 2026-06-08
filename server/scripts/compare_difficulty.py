@@ -40,7 +40,13 @@ from pipeline.scenarios import (  # noqa: E402
     load_scenario_checkpoints,
 )
 
-MODEL = os.environ.get("CHARACTER_MODEL", "llama-3.3-70b-versatile")
+# The character LLM the bot ACTUALLY runs on. Defaults to Scout — the current
+# prod model (the VPS .env sets CHARACTER_MODEL=Scout since 2026-06-08; the 70B
+# free tier is capacity-walled). Validating on a STRONGER model than prod hides
+# the exact failure this tool exists to catch: a weak model ignoring a soft or
+# self-contradicting difficulty signal (the 2026-06-08 cop smoke gate). Override
+# CHARACTER_MODEL to match prod if prod changes.
+MODEL = os.environ.get("CHARACTER_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 BASE = os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
 URL = BASE + "/chat/completions"
 KEY = os.environ.get("LLM_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
@@ -124,7 +130,10 @@ async def main() -> None:
         print("ERROR: set GROQ_API_KEY (or LLM_API_KEY) in the environment.")
         sys.exit(1)
     scenario_id = sys.argv[1] if len(sys.argv) > 1 else "cop_interrogation_01"
-    difficulties = sys.argv[2:] or ["easy", "hard"]
+    # Default to all three: the extremes (easy vs hard) are the EASY case to
+    # differentiate — the adjacent pairs (easy/medium, medium/hard) are where a
+    # weak model collapses the register, so probe medium too.
+    difficulties = sys.argv[2:] or ["easy", "medium", "hard"]
     print(f"scenario={scenario_id}  model={MODEL}  difficulties={difficulties}\n")
     async with httpx.AsyncClient(timeout=40.0) as client:
         results = {

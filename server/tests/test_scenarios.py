@@ -1407,27 +1407,28 @@ exit_lines:
 
 def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
     """AC4 — the composed base prompt carries the persona AND the authored
-    difficulty's behavior block (now sourced from the code constant)."""
+    difficulty's behavior block (sourced from the code constant). Asserts on
+    rewrite-proof markers (the header + the constant itself), not a hand-picked
+    sentence, so future block tightening never breaks this test."""
     from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
 
     composed = load_scenario_base_prompt("waiter_easy_01")
     assert "Tina" in composed  # persona preserved
     assert "Difficulty behavior (easy):" in composed
-    assert "Accept approximate or vague answers" in composed
     assert composed.endswith(_DIFFICULTY_PROMPTS["easy"])
 
 
 def test_load_scenario_base_prompt_override_swaps_behavior_block() -> None:
     """AC4 — a global `hard` pick on the easy waiter makes it SPEAK hard: the
-    hard block is composed in place of the easy one."""
-    from pipeline.scenarios import load_scenario_base_prompt
+    hard block is composed in place of the easy one. Structural markers only
+    (rewrite-proof); the neutrality lint below is the real content guard."""
+    from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
 
     composed = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
     assert "Difficulty behavior (hard):" in composed
-    assert "You heard me." in composed
+    assert composed.endswith(_DIFFICULTY_PROMPTS["hard"])
     # The easy block must NOT leak through.
     assert "Difficulty behavior (easy):" not in composed
-    assert "Accept approximate or vague answers" not in composed
 
 
 def test_load_scenario_base_prompt_rejects_inline_difficulty_block(
@@ -1487,6 +1488,98 @@ def test_shipped_scenarios_have_no_inline_difficulty_block() -> None:
         assert composed.count("Difficulty behavior (") == 1, (
             f"{scenario_id!r} composed prompt has a duplicated/inline difficulty block"
         )
+
+
+def test_shipped_personas_have_no_difficulty_coded_phrases() -> None:
+    """Story 6.19 follow-up — every shipped persona is DIFFICULTY-NEUTRAL: the
+    RAW base_prompt (the persona, BEFORE the difficulty block is appended) must
+    contain none of the known difficulty-coded phrases. The difficulty knob lives
+    ONLY in `_DIFFICULTY_PROMPTS`; a coded phrase frozen in a persona leaks the
+    authored difficulty and defeats the global difficulty pick. Deterministic, no
+    LLM — the cheap CI complement to the live A/B (compare_difficulty.py)."""
+    import yaml
+
+    from pipeline.scenarios import _SCENARIO_INDEX, find_persona_difficulty_leaks
+
+    offenders: dict[str, list[str]] = {}
+    for scenario_id, path in _SCENARIO_INDEX.items():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        leaks = find_persona_difficulty_leaks(data.get("base_prompt") or "")
+        if leaks:
+            offenders[scenario_id] = leaks
+    assert not offenders, (
+        f"difficulty-coded phrase(s) in persona base_prompt(s): {offenders}. Move "
+        "that behavior into scenarios._DIFFICULTY_PROMPTS — personas must be "
+        "difficulty-NEUTRAL."
+    )
+
+
+# Identity tokens that MUST survive any persona rewrite (a careless 'strip coded
+# phrases' pass that also gutted the name would silently break test_calls.py /
+# the env-threading tests downstream). Cheap tripwire.
+_PERSONA_IDENTITY_TOKENS = {
+    "waiter_easy_01": "Tina",
+    "cop_hard_01": "Sergeant Price",
+    "cop_interrogation_01": "Mercer",
+    "girlfriend_medium_01": "Rachel",
+    "landlord_hard_01": "Gerald",
+    "mugger_medium_01": "Danny",
+}
+
+
+def test_shipped_personas_preserve_character_identity() -> None:
+    """Story 6.19 follow-up — the neutral-persona rewrite must keep each
+    character's IDENTITY (name); only difficulty behavior was removed."""
+    import yaml
+
+    from pipeline.scenarios import _SCENARIO_INDEX
+
+    for scenario_id, name in _PERSONA_IDENTITY_TOKENS.items():
+        path = _SCENARIO_INDEX[scenario_id]
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        base_prompt = data.get("base_prompt") or ""
+        assert name in base_prompt, (
+            f"{scenario_id!r} persona lost its identity token {name!r}"
+        )
+
+
+def test_difficulty_blocks_are_distinct_and_personality_neutral() -> None:
+    """Story 6.19 follow-up — by-construction guard that difficulty CAN change
+    behavior: the three blocks are mutually distinct + non-empty, the composed
+    persona differs across difficulties, and each block carries the persona-
+    preservation clause (so it can't silently revert to scripting personality)."""
+    from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
+
+    blocks = _DIFFICULTY_PROMPTS
+    assert set(blocks) == {"easy", "medium", "hard"}
+    assert len({blocks["easy"], blocks["medium"], blocks["hard"]}) == 3
+    # Symmetric to the persona denylist: the BLOCKS must stay PERSONALITY-neutral
+    # too (they change only language/accommodation). These words would appear only
+    # if a future edit re-injected warmth/kindness/affect — the original easy-block
+    # sin ("stay patient and encouraging"). Chosen so they never collide with the
+    # blocks' own NEGATED uses (e.g. hard's "do NOT become angrier").
+    block_personality_denylist = (
+        "encouraging",
+        "reassuring",
+        "be warm",
+        "be gentle",
+        "be nicer",
+        "be kinder",
+        "comfort them",
+    )
+    for level, text in blocks.items():
+        assert text.strip(), f"{level} block is empty"
+        assert "LANGUAGE setting only" in text, (
+            f"{level} block dropped the neutral clause"
+        )
+        # The retired hard catchphrase scripted personality — it must not return.
+        assert "You heard me." not in text
+        injected = [w for w in block_personality_denylist if w in text.lower()]
+        assert not injected, f"{level} block injects personality: {injected}"
+    # Composition actually threads difficulty: easy vs hard differ for a scenario.
+    easy = load_scenario_base_prompt("waiter_easy_01", difficulty_override="easy")
+    hard = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
+    assert easy != hard
 
 
 def test_resolve_patience_config_validates_ladder_impatience_seconds_range(

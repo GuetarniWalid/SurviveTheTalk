@@ -107,7 +107,13 @@ from pipeline.prompts import COHERENCE_CHARTER  # noqa: E402
 # on the next run, surfacing any reactive-but-ungated beat already shipped (a
 # reactive beat whose `success_criteria` is a self-contained lexical pattern but
 # that carries no `requires` edge). The bump is the global re-check lever.
-ENGINE_VERSION = 2
+# Story 6.19 follow-up (2026-06-08) — bumped 2 → 3: all shipped personas were
+# rewritten difficulty-NEUTRAL and the easy/medium/hard `_DIFFICULTY_PROMPTS`
+# blocks were tightened. `compute_scenario_hash` covers `base_prompt` (so a
+# persona edit self-invalidates that scenario), but NOT the code-constant blocks
+# — this bump forces the next sweep to revalidate every scenario's difficulty
+# band against the new neutral personas + tightened blocks.
+ENGINE_VERSION = 3
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —
@@ -1287,6 +1293,14 @@ def compute_scenario_hash(scenario_id: str) -> str:
     """
     raw = _load_raw_scenario(scenario_id)
     metadata = raw.get("metadata") or {}
+    # Story 6.19 follow-up — the per-difficulty behavior blocks are a CODE constant
+    # (`scenarios._DIFFICULTY_PROMPTS`), composed onto the persona at runtime, so
+    # they affect EVERY scenario's behaviour but live in no YAML field above. Fold
+    # them into the hash so editing a block self-invalidates cached PASSes (same
+    # reasoning as the Story 6.23 `requires` inclusion) — no longer relying solely
+    # on a manual ENGINE_VERSION bump to catch a difficulty-block edit.
+    from pipeline.scenarios import _DIFFICULTY_PROMPTS
+
     projection = {
         "base_prompt": raw.get("base_prompt", ""),
         "checkpoints": [
@@ -1305,6 +1319,7 @@ def compute_scenario_hash(scenario_id: str) -> str:
         "metadata": {k: metadata.get(k) for k in _BEHAVIOUR_META_KEYS},
         "briefing": raw.get("briefing") or {},
         "exit_lines": raw.get("exit_lines") or {},
+        "difficulty_blocks": _DIFFICULTY_PROMPTS,
     }
     canonical = json.dumps(projection, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

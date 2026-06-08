@@ -65,6 +65,12 @@ from scripts.calibration_engine import (  # noqa: E402,F401
     run_golden,
 )
 
+# Story 6.19 follow-up — single source of truth for the difficulty-neutral
+# persona guard, shared with the loader (`scenarios.load_scenario_base_prompt`)
+# so a generated base_prompt can never carry a difficulty-coded phrase the loader
+# would reject. Used by `validate_structure`.
+from pipeline.scenarios import find_persona_difficulty_leaks  # noqa: E402
+
 # The five Rive puppets the client can render — a new scenario MUST reuse one
 # (puppets are expensive to make; you cannot invent a new character). See
 # server/CLAUDE.md. Story 6.17: each puppet has a FIXED on-screen physique
@@ -164,6 +170,16 @@ itself or stalling.
 Premise: {description}
 Character role: {character}. Difficulty: {difficulty}.
 
+DIFFICULTY IS NOT A PERSONALITY KNOB. The Difficulty value tells you only how \
+demanding the conversation ARC should be — it must NEVER change WHO the character \
+is. Do NOT make the persona gentler, warmer, or more helpful for "easy", nor \
+sterner, colder, or more demanding for "hard". character_persona, setting, \
+opening_line, and every prompt_segment must read IDENTICALLY at easy, medium, and \
+hard. How hard the character is on the learner's English (vocabulary, idioms, \
+rephrasing, precision) is applied SEPARATELY by the engine at runtime — never \
+mention grammar mistakes, repeating/rephrasing, going easy or hard on them, or \
+speaking speed anywhere in what you write.
+
 VISUAL CONSTRAINT — the character is shown on screen as: {character_look}.
 Your persona MUST match this gender, approximate age, and overall look. You may freely \
 invent the name, job, backstory, and situation, but you must NOT change the gender, age \
@@ -173,7 +189,7 @@ Return STRICT JSON only (no prose, no Markdown fences), with these keys:
 {{
   "title": "<short scenario title>",
   "character_name": "<the character's first name>",
-  "character_persona": "<2-4 sentences: who they are, their mood/tone, how they treat the learner>",
+  "character_persona": "<2-4 sentences: who they are and their FIXED mood/tone — difficulty-neutral, the SAME persona at every difficulty; do NOT describe how they treat the learner's English>",
   "setting": "<1-2 sentences: where/when this happens>",
   "user_objective": "<what the LEARNER must achieve overall>",
   "win_condition": "<what counts as success>",
@@ -204,7 +220,7 @@ Return STRICT JSON only (no prose, no fences): a JSON array of EXACTLY {n} objec
 {{
   "id": "<short snake_case unique id naming the beat, e.g. state_alibi_time>",
   "hint_text": "<one short imperative line telling the LEARNER what to do at this beat>",
-  "prompt_segment": "<1-3 sentences instructing the CHARACTER what to ask/say/probe at THIS beat>",
+  "prompt_segment": "<1-3 sentences instructing the CHARACTER what to ask/say/probe at THIS beat — difficulty-neutral: describe WHAT they pursue, never HOW hard they are on the learner's English>",
   "success_criteria": "<a SPECIFIC, judgeable description of what the LEARNER's turn must do to pass THIS beat>",
   "requires": "<OPTIONAL — see the REACTIVE rule below. Omit entirely for normal beats.>"
 }}
@@ -216,6 +232,9 @@ at once. Being merely on-topic, coherent, or polite must NOT be enough to pass.
 - Beats stay in the arc's time order; the conversation must ADVANCE (no two checkpoints that repeat \
 the same exchange).
 - ids unique. Do NOT include any "speak first" instruction anywhere.
+- Keep every prompt_segment DIFFICULTY-NEUTRAL: never bake in a difficulty stance (going easy / \
+helping / rephrasing, or being strict / demanding the exact detail / refusing to rephrase). The \
+difficulty knob is applied separately by the engine at runtime.
 - REACTIVE beats (`requires`): a beat is REACTIVE if it only makes sense as the learner's RESPONSE \
 to a specific earlier CHARACTER action — a trap (misquoting them, citing a CCTV timestamp), a \
 reveal (naming an associate, a forced-door detail), or a circle-back ("remind me who you said…"). \
@@ -227,7 +246,7 @@ beat until its trigger is met, so its success_criteria can stay a simple lexical
 """
 
 CRITIQUE_PROMPT = """\
-You audit {n} checkpoints for a roleplay scenario. Find and FIX three failure modes, then output \
+You audit {n} checkpoints for a roleplay scenario. Find and FIX four failure modes, then output \
 the corrected set.
 
 1. OVERLAP / COLLAPSE: any pair of checkpoints that a single plausible user sentence could satisfy \
@@ -241,6 +260,10 @@ on the earlier trigger it names; do NOT "make it any-order" or strip that depend
 may stay a simple lexical test rather than encoding "PASS only AFTER …" in prose.
 3. UNJUDGEABLE: vague success_criteria a classifier could not decide. Make them concrete and \
 checkable.
+4. DIFFICULTY LEAKAGE: any prompt_segment that bakes in a difficulty stance — going easy/helping/\
+rephrasing, or being maximally strict/demanding the exact detail/refusing to rephrase. Rewrite it \
+to be difficulty-NEUTRAL: describe only WHAT the character pursues at this beat, never HOW hard they \
+are on the learner's English (the difficulty knob is applied separately at runtime).
 
 Brief (JSON):
 {brief_json}
@@ -671,6 +694,18 @@ def validate_structure(scenario: dict) -> list[str]:
         problems.append(
             "base_prompt must NOT contain an inline 'Difficulty behavior (…)' block"
         )
+    if isinstance(base_prompt, str):
+        # Story 6.19 follow-up — parity with the loader's difficulty-neutral
+        # guard: a persona must not freeze a difficulty stance into its prose
+        # (the difficulty knob lives in scenarios._DIFFICULTY_PROMPTS, composed at
+        # runtime). Shared single source of truth via `find_persona_difficulty_leaks`.
+        leaks = find_persona_difficulty_leaks(base_prompt)
+        if leaks:
+            problems.append(
+                f"base_prompt contains difficulty-coded phrase(s) {leaks} — "
+                "personas must be difficulty-NEUTRAL (the difficulty knob lives "
+                "in scenarios._DIFFICULTY_PROMPTS, composed at runtime)"
+            )
 
     checkpoints = scenario.get("checkpoints")
     if not isinstance(checkpoints, list) or not checkpoints:
