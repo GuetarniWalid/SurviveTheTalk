@@ -644,18 +644,19 @@ def test_constructor_rejects_non_positive_initial_patience() -> None:
         PatienceTracker(**_easy_kwargs(initial_patience=-1))
 
 
-# ---------- Test 14: interim TranscriptionFrame does NOT cancel ladder (P6) -
+# ---------- Test 14: interim TranscriptionFrame WITH TEXT cancels ladder ----
 
 
-def test_interim_transcription_does_not_cancel_ladder(
+def test_interim_transcription_with_text_cancels_ladder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-finalized TranscriptionFrame (`finalized=False`) is the
-    STT's interim partial-result emission. It must NOT cancel the
-    silence ladder — only finalized text confirms the user has
-    actually completed a turn. Without this gate, every partial
-    transcription mid-pause would reset the ladder and the user could
-    never trip impatience."""
+    """Turn-taking fix (2026-06-08 smoke gate) — an interim (non-finalized)
+    TranscriptionFrame that carries REAL text means the user has STARTED
+    speaking, so it MUST cancel the silence ladder. Otherwise the
+    "Hello? Are you still there?" prompt fires over a learner who is still
+    forming their answer ("uh, uh, in front of..."). Per server/CLAUDE.md
+    §1, a stray cancel only defers the silence hangup by one cycle
+    (recoverable); a prompt over live speech is the bad UX."""
     _shrink_timers(monkeypatch)
     tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
     captured = _capture_pushed(tracker)
@@ -669,11 +670,56 @@ def test_interim_transcription_does_not_cancel_ladder(
 
     async def _drive() -> None:
         tracker.handle_playback_idle()
-        # Halfway through stage 1: interim transcription arrives.
+        # Halfway through stage 1: interim transcription WITH TEXT arrives.
         await asyncio.sleep(0.025)
         await tracker.process_frame(interim, FrameDirection.DOWNSTREAM)
-        # Wait past stage 1 — impatience MUST still fire because the
-        # interim didn't cancel the ladder.
+        # Wait past stage 1 — impatience MUST NOT fire because the
+        # interim-with-text cancelled the ladder.
+        await asyncio.sleep(0.10)
+
+        impatience = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+            and f.message["data"]["emotion"] == "impatience"
+        ]
+        assert len(impatience) == 0, (
+            "interim TranscriptionFrame with text must cancel the ladder"
+        )
+
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+# ---------- Test 14b: EMPTY interim TranscriptionFrame does NOT cancel ------
+
+
+def test_interim_transcription_empty_does_not_cancel_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interim TranscriptionFrame with NO real text (whitespace / noise
+    artifact) must NOT cancel the ladder — otherwise ambient noise would
+    reset the timer forever and a genuinely silent user would never be
+    prompted or hung up on."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    captured = _capture_pushed(tracker)
+
+    interim_empty = TranscriptionFrame(
+        text="   ",
+        user_id="user",
+        timestamp="2026-05-12T12:00:00Z",
+        finalized=False,
+    )
+
+    async def _drive() -> None:
+        tracker.handle_playback_idle()
+        await asyncio.sleep(0.025)
+        await tracker.process_frame(interim_empty, FrameDirection.DOWNSTREAM)
+        # Past stage 1 — impatience MUST still fire (the empty interim
+        # did not cancel).
         await asyncio.sleep(0.10)
 
         impatience = [
@@ -684,7 +730,7 @@ def test_interim_transcription_does_not_cancel_ladder(
             and f.message["data"]["emotion"] == "impatience"
         ]
         assert len(impatience) == 1, (
-            "interim TranscriptionFrame must not cancel the ladder"
+            "empty interim TranscriptionFrame must not cancel the ladder"
         )
 
         await _drain(tracker)

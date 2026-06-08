@@ -573,24 +573,34 @@ class PatienceTracker(FrameProcessor):
                 if event is not None:
                     event.set()
         elif isinstance(frame, TranscriptionFrame):
-            # Skip interim transcriptions — they fire mid-utterance and
-            # would prematurely cancel the silence ladder. Only
-            # finalized text confirms the user actually completed a
-            # turn. `finalized` defaults to True if absent so STTs that
-            # don't carry the field (older pipecat) keep working.
-            # NOTE — intentional asymmetry with
-            # `checkpoint_manager.py::process_frame` which defaults to
-            # False (conservative — avoid firing on every interim).
-            # The asymmetry is documented in server/CLAUDE.md §1 and
-            # reflects different cost calculus for false positives.
-            if not getattr(frame, "finalized", True):
-                return
-            # Cancel BEFORE the empty-text early-return: an artifact
-            # frame from the STT (whitespace-only result, etc.) should
-            # still reset the ladder defensively — the user clearly
-            # made some sound.
-            self._cancel_silence_timer()
+            finalized = getattr(frame, "finalized", True)
             text = (getattr(frame, "text", "") or "").strip()
+            # Turn-taking fix (2026-06-08 smoke gate) — cancel the silence
+            # ladder on the FIRST sign of user speech, INTERIM frames
+            # included, so the "Hello? Are you still there?" prompt can never
+            # fire while the user is mid-sentence. Previously only FINALIZED
+            # frames cancelled (interim returned early here), so a hesitating
+            # B1 learner ("uh, uh, in front of...") got the prompt spoken over
+            # their own voice (cop call 2026-06-08: the stage-2 prompt fired
+            # ~0.3 s AFTER interim words were already streaming). Per the cost
+            # analysis in server/CLAUDE.md §1, a stray-artifact cancel only
+            # DEFERS the silence hangup by one ladder cycle (recoverable); a
+            # prompt spoken over live speech is the bad UX we are killing.
+            # `finalized` still defaults to True so an STT that drops the
+            # field keeps working.
+            #
+            # `_self_speaking` guard: while WE are playing our own stage-2
+            # prompt, an interim frame is almost certainly the user's mic
+            # echoing that prompt — it must NOT cancel the ladder (that would
+            # abort the hang-up escalation on a genuinely silent user). A
+            # FINALIZED frame during self-speaking IS a real answer to the
+            # prompt and still cancels.
+            if finalized or (text and not self._self_speaking):
+                self._cancel_silence_timer()
+            # Interim frames only reset the ladder; the abuse-classifier and
+            # downstream turn logic run on the finalized turn only.
+            if not finalized:
+                return
             if not text:
                 return
             if self._abuse_classifier is not None and not self._hang_up_in_progress:

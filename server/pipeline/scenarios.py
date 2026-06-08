@@ -142,7 +142,10 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "fail_penalty": -20,
         "silence_penalty": -15,
         "recovery_bonus": 3,
-        "silence_prompt_seconds": 4.0,
+        # Turn-taking fix (2026-06-08) — raised from 4.0 s so a B1 learner
+        # gets a bit more thinking time before the "Are you still there?"
+        # relance fires on genuine silence.
+        "silence_prompt_seconds": 5.0,
         "silence_hangup_seconds": 7.0,
         "ladder_impatience_seconds": 3.5,
         "escalation_thresholds": [60, 30, 0],
@@ -154,7 +157,13 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
         "fail_penalty": -25,
         "silence_penalty": -20,
         "recovery_bonus": 0,
-        "silence_prompt_seconds": 3.0,
+        # Turn-taking fix (2026-06-08 smoke gate) — raised from 3.0 s: 3 s
+        # was too aggressive (the cop fired "Are you still there?" while the
+        # learner was still forming the answer). Hard stays the most impatient
+        # of the three (easy 6.0 / medium 5.0 / hard 4.5) but no longer cuts
+        # off a thinking B1 on genuine silence; the live-speech case is now
+        # handled by the interim-cancel in patience_tracker.py.
+        "silence_prompt_seconds": 4.5,
         "silence_hangup_seconds": 5.0,
         # Hard scenarios get a visibly more impatient character (faster
         # face-shift = "Mugger should be impatient by design" semantic).
