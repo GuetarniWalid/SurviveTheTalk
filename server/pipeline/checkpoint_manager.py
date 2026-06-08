@@ -941,12 +941,18 @@ class CheckpointManager(FrameProcessor):
         # byte-identical to pre-6.23 for any scenario without `requires`.
         judgeable = judgeable_goals(self._checkpoints, self._goals)
         if not judgeable:
-            # Every still-pending beat is a reactive one whose trigger has
-            # not been credited yet → nothing to judge this turn. The
-            # character keeps pursuing them (the UN-gated steering prompt is
-            # unchanged) and the meter is untouched, exactly as if the turn
-            # met nothing — but without draining patience on a beat the
-            # learner cannot yet satisfy.
+            # PROVABLY UNREACHABLE for any validly-loaded scenario, kept only so
+            # the helper is honest on degenerate input. With the loader's
+            # acyclic, strictly-earlier `requires` guarantee and binary goal
+            # state, the EARLIEST still-pending beat is ALWAYS judgeable (its
+            # trigger, being an earlier beat than the earliest pending one, is
+            # necessarily already `met`), so `judgeable` is never empty while
+            # `pending` is non-empty. This is therefore NOT a patience-drain
+            # hole (Story 6.23 review 2026-06-08, finding f4/f5 — confirmed
+            # unreachable; see server/CLAUDE.md §7). If it ever DID fire:
+            # nothing to judge → the character keeps pursuing the reactive beats
+            # (the UN-gated steering prompt is unchanged) and the meter is
+            # untouched — no drain on a beat the learner cannot yet satisfy.
             logger.debug(
                 "checkpoint_all_pending_gated pending={} (reactive beats await "
                 "their trigger)",

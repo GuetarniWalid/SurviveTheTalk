@@ -2,6 +2,12 @@
 
 Items flagged during code review but postponed — each entry records where the review surfaced it and why it was not actioned at the time.
 
+## Deferred from: code review of story-6.23 (2026-06-08)
+
+_The reactive-gating engine/harness/loader/builder are correct; the formal review confirmed zero shipping defects. This is the one cosmetic residual._
+
+- **🟢 Harness empty-judgeable branch runs `advance_goals({})` while prod early-returns.** On a turn where every pending beat is reactive-and-gated, prod `_classify_and_flip_goals` early-RETURNS (`if not judgeable: return`, `checkpoint_manager.py:955`) before touching `advance_goals`. The harness instead sets `verdicts = {}` then falls through to `advance_goals(goals, {})` (`calibration_engine.py:644-647`). Behaviorally identical — empty verdicts = a flip no-op with `outcome="neutral"` and the meter unchanged — so the validated property (goal-state + meter + completion rate) cannot fork; and the branch is unreachable in shipped data (the only `requires` scenario, cop, has a proactive tail). Optional exact-parity tidy: `continue` instead of `advance_goals({})` so the harness mirrors prod's early-return textually at the "load-bearing coupling". Not a real golden==prod fork. (blind hunter, 6.23 formal review)
+
 ## Deferred from: code review of story-6.17 (2026-06-02)
 
 _The per-scenario voice + wizard + auto-repair + `--deploy` are dev/authoring tooling (the one PROD path is the voice wiring in `tts_factory.py`/`bot.py`, which is correct + tested). The Acceptance Auditor verified all 7 ACs on the on-disk code. Two patches were applied (wrong-gender-voice fallback; CLI `--validate` INCONCLUSIVE guard). These are the residual hardening items. The `--deploy` item is the top operational concern, carried from the 6.16 review._

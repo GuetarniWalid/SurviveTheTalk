@@ -101,6 +101,7 @@ checkpoints:
   prompt_segment: Go silent after the explanation to draw out a NEW corroborating element — a witness to the door visit, a reason they were at the back, or what they were carrying — rather than a repeat. Let the pause hang.
   success_criteria: PASS only if this turn (during/after Mercer's silence) adds at least one NEW concrete supporting detail about the door visit not already stated (a witness, a reason they were inside, what they carried, a specifying noun/time/person) AND contains no second, different door-reason within the turn. FAIL if it merely paraphrases the prior reason, or is an empty/near-empty turn. Contradiction against the earlier reason is checked by the session-level consistency evaluator.
 - id: date_last_touched_door
+  requires: explain_prints_on_inside_handle
   hint_text: Say what day you last touched that door — keep it off last night.
   prompt_segment: Cross-check by asking WHEN exactly — what day — the learner last touched that rear fire door. Demand an explicit date/day in response to this probe.
   success_criteria: PASS only if, in response to this 'when did you last touch it' probe, the turn gives an explicit date or day for last contact (e.g. 'last Friday', 'two days ago', 'Saturday afternoon'). If a date was volunteered earlier it must be re-confirmed here. FAIL on 'I don't remember' or a time that places them at the door during last night's break-in. Consistency with the alibi timeline is verified by the session-level consistency evaluator.

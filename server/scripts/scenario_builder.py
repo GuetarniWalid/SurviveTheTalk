@@ -371,8 +371,20 @@ def sanitize_checkpoints(raw_checkpoints: list[dict]) -> list[dict]:
             "success_criteria": str(cp.get("success_criteria", "")).strip(),
         }
         raw_requires = cp.get("requires")
-        if isinstance(raw_requires, str) and raw_requires.strip():
-            entry["requires"] = slugify(raw_requires)
+        if isinstance(raw_requires, str):
+            if raw_requires.strip():
+                entry["requires"] = slugify(raw_requires)
+            # blank/whitespace string → no edge (proactive), as before.
+        elif raw_requires not in (None, [], {}, ()):
+            # Story 6.23 review (f8) — a PRESENT but non-string `requires`
+            # (a list/int/dict the draft LLM emitted instead of a single id)
+            # means a reactive edge was INTENDED but malformed. Do NOT silently
+            # drop it — that demotes the beat to proactive with no signal, the
+            # exact silent-drop class the `requires` preservation above was
+            # added to kill. Keep a guaranteed-unmatchable sentinel so the
+            # loader / `validate_structure` "unknown id" fail-fast surfaces it
+            # for the human to fix instead of shipping a lost gate.
+            entry["requires"] = f"__malformed_requires__{slugify(str(raw_requires))}"
         out.append(entry)
     return out
 

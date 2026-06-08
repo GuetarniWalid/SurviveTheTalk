@@ -371,6 +371,17 @@ Mechanics / invariants:
   (`scenarios.load_scenario_checkpoints`) fail-fasts at call init on a `requires`
   that names a non-existent or non-earlier id (acyclic by construction) — same
   posture as the duplicate-id guard.
+- **The "all beats gated" state is IMPOSSIBLE — no tail guard needed.** Because
+  every `requires` points strictly earlier and goals are binary (`pending`/`met`),
+  the EARLIEST still-pending beat is always judgeable (its trigger, being earlier
+  than the earliest pending beat, is necessarily already `met`). So
+  `judgeable_goals` is NEVER empty while any beat is pending, and a scenario may
+  even END on a reactive beat safely (when only it remains, its trigger is met).
+  `_classify_and_flip_goals`'s `if not judgeable: return` is a never-executes
+  defensive guard, NOT a patience-drain hole (Story 6.23 review 2026-06-08,
+  finding f4/f5 — proven unreachable, no loader tail-guard added). ⚠️ If
+  `requires` ever grows OR/list/forward semantics (deferred decisions D2/D3),
+  re-verify this property.
 - **The UN-gated `pending_goals` still drives the character steering prompt + the
   terminal-turn count** — the character must keep *pursuing* a reactive beat (it
   delivers the trigger), and a gated beat keeps the call from completing with an

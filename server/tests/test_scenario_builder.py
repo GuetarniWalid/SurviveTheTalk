@@ -150,6 +150,30 @@ def test_sanitize_drops_blank_requires():
     assert "requires" not in out[0]
 
 
+def test_sanitize_keeps_malformed_nonstring_requires_as_fail_loud_sentinel():
+    """Story 6.23 review (f8) — a PRESENT but non-string `requires` (e.g. a list
+    the draft LLM emitted instead of a single id) is an INTENDED-but-malformed
+    reactive edge. It must NOT be silently dropped (which would demote the beat
+    to proactive with no signal — the exact silent-drop class the `requires`
+    preservation was added to kill); it becomes an unmatchable sentinel so the
+    loader / `validate_structure` 'unknown id' guard surfaces it to the human."""
+    raw = [
+        {"id": "a", "hint_text": "h", "prompt_segment": "p", "success_criteria": "s"},
+        {
+            "id": "b",
+            "requires": ["a", "c"],  # malformed: a list, not a single id string
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+    ]
+    out = builder.sanitize_checkpoints(raw)
+    assert "requires" in out[1], "malformed reactive edge must not be silently dropped"
+    assert out[1]["requires"].startswith("__malformed_requires__")
+    # the sentinel cannot match any real checkpoint id → fails validation loud
+    assert out[1]["requires"] not in {c["id"] for c in out}
+
+
 def test_validate_structure_accepts_valid_requires_edge():
     good = builder.assemble_scenario(
         scenario_id="x",
