@@ -873,7 +873,12 @@ class PatienceTracker(FrameProcessor):
         )
         try:
             await self.push_frame(
-                TTSSpeakFrame(text=line),
+                # Turn-taking fix (2026-06-08) — `append_to_context=False`: the
+                # one-shot patience-warning is a meta-nudge, not part of the
+                # dramatic exchange, so it is spoken but kept OUT of the LLM
+                # conversation memory (same pipecat plumbing + rationale as the
+                # silence relance), preventing it from merging into the next reply.
+                TTSSpeakFrame(text=line, append_to_context=False),
                 FrameDirection.DOWNSTREAM,
             )
         except asyncio.CancelledError:
@@ -1016,7 +1021,17 @@ class PatienceTracker(FrameProcessor):
             self._self_speaking = True
             self._prompt_played_event = asyncio.Event()
             await self.push_frame(
-                TTSSpeakFrame(text=self._silence_prompt_line),
+                # Turn-taking fix (2026-06-08) — `append_to_context=False` so this
+                # mechanical silence relance is SPOKEN but NEVER recorded in the
+                # LLM conversation memory. pipecat threads the flag from the
+                # TTSSpeakFrame to the emitted TTSTextFrame
+                # (services/tts_service.py: `append_tts_text_to_context`) and the
+                # assistant aggregator drops frames whose `append_to_context` is
+                # False (aggregators/llm_response_universal.py
+                # `_handle_text`). Without it the relance buffered and MERGED into
+                # the next reply ("Hello? Are you still there? 14 Maple Street,
+                # noted...") — cop call 2026-06-08. It is a nudge, not dialogue.
+                TTSSpeakFrame(text=self._silence_prompt_line, append_to_context=False),
                 FrameDirection.DOWNSTREAM,
             )
             await self._emit_emotion("impatience", 0.7)

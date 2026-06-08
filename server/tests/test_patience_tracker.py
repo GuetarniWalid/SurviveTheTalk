@@ -200,6 +200,12 @@ def test_six_second_verbal_prompt_pushes_tts_and_second_impatience(
         tts_speak = [f for f in captured if isinstance(f, TTSSpeakFrame)]
         assert len(tts_speak) == 1
         assert tts_speak[0].text == "Hello? Are you still there?"
+        # Turn-taking fix (2026-06-08) — the silence relance is SPOKEN but must
+        # NOT enter the LLM conversation memory (otherwise it buffers and merges
+        # into the next reply). pipecat drops TTS text whose `append_to_context`
+        # is False; PatienceTracker sets it here so the relance can never
+        # pollute the transcript.
+        assert tts_speak[0].append_to_context is False
 
         emotion_envelopes = [
             f
@@ -1300,6 +1306,10 @@ def test_apply_exchange_outcome_emits_warning_at_threshold(
         if isinstance(f, TTSSpeakFrame) and f.text == "Hey, last chance, buddy."
     ]
     assert len(warning_frames) == 1, "warning TTSSpeakFrame must be pushed once"
+    # Turn-taking fix (2026-06-08) — the patience warning is spoken but must NOT
+    # be recorded in the LLM conversation memory (same rationale as the silence
+    # relance: a meta-nudge, never merged into the next reply).
+    assert warning_frames[0].append_to_context is False
 
 
 def test_warning_is_one_shot_within_call(
