@@ -285,6 +285,12 @@ def test_bot_pipeline_ordering() -> None:
         < _idx("emotion_emitter")
         < _idx("checkpoint_manager")
         < _idx("patience_tracker")
+        # Story 7.1 (AC11) — hesitation_observer sits adjacent to
+        # patience_tracker (upstream of the output transport) so it sees both
+        # BotStoppedSpeakingFrame (UPSTREAM) and UserStartedSpeakingFrame
+        # (DOWNSTREAM). Moving it below transport.output() would silently kill
+        # hesitation capture (it would never see BSF) — this pins the slot.
+        < _idx("hesitation_observer")
         < _idx("context_aggregator.user()")
         < _idx("llm")
     )

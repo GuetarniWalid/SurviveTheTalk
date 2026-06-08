@@ -199,3 +199,66 @@ class ScenariosListOut(BaseModel):
 
     data: list[ScenarioListItem]
     meta: _ListMeta
+
+
+# --- Story 7.1: post-call debrief ------------------------------------------
+
+
+class DebriefError(BaseModel):
+    """One deduplicated language error (LLM-produced). `count` >= 1; the UI
+    shows an "x[N]" badge only when count >= 2 (debrief-content-strategy Q8)."""
+
+    user_said: str
+    correction: str
+    context: str
+    count: int
+
+
+class DebriefHesitation(BaseModel):
+    """A >3 s hesitation: backend-measured `duration_sec` merged (by index)
+    with the LLM's situational `context` (FR12)."""
+
+    duration_sec: float
+    context: str
+
+
+class DebriefIdiom(BaseModel):
+    """An idiom/slang expression the CHARACTER used (FR13)."""
+
+    expression: str
+    meaning: str
+    context: str
+
+
+class EncouragingFraming(BaseModel):
+    """FR15b data-driven framing — present only when survival > 40%.
+    `improvement` is omitted unless this attempt beat a prior best."""
+
+    proximity: str
+    improvement: str | None = None
+
+
+class DebriefOut(BaseModel):
+    """Response body for `GET /debriefs/{call_id}` (the assembled debrief).
+
+    The hero fields (`survival_pct`, `character_name`, `scenario_title`,
+    `attempt_number`, `previous_best`) + the analysis sections + the optional
+    `encouraging_framing`. Per debrief-content-strategy: `inappropriate_
+    behavior` and `previous_best` are kept as `null` when absent (the client
+    keys on the value), whereas `encouraging_framing` is OMITTED entirely
+    below 41% (the client keys on field presence). The route therefore serves
+    the stored, already-omission-correct dict rather than a model re-dump —
+    this model documents + validates that contract.
+    """
+
+    survival_pct: int
+    character_name: str
+    scenario_title: str
+    attempt_number: int
+    previous_best: int | None = None
+    errors: list[DebriefError]
+    hesitations: list[DebriefHesitation]
+    idioms: list[DebriefIdiom]
+    areas_to_work_on: list[str]
+    inappropriate_behavior: str | None = None
+    encouraging_framing: EncouragingFraming | None = None

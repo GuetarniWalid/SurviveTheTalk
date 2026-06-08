@@ -5,6 +5,8 @@
 metadata:
   id: landlord_hard_01
   title: "The Landlord"
+  # Story 7.1 — debrief "mission" title (distinct from the character name above).
+  scenario_title: "Your rent is late"
   difficulty: hard
   is_free: false
   rive_character: landlord

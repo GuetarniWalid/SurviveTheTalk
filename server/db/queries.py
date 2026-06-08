@@ -291,7 +291,7 @@ async def get_scenario_by_id_with_progress(
 
 _UPSERT_SCENARIO_SQL = """
 INSERT INTO scenarios (
-    id, title, difficulty, is_free, rive_character,
+    id, title, scenario_title, difficulty, is_free, rive_character,
     base_prompt, checkpoints, briefing, exit_lines, language_focus,
     content_warning,
     patience_start, fail_penalty, silence_penalty, recovery_bonus,
@@ -300,7 +300,7 @@ INSERT INTO scenarios (
     escalation_thresholds,
     tts_voice_id, tts_speed, scoring_model
 ) VALUES (
-    :id, :title, :difficulty, :is_free, :rive_character,
+    :id, :title, :scenario_title, :difficulty, :is_free, :rive_character,
     :base_prompt, :checkpoints, :briefing, :exit_lines, :language_focus,
     :content_warning,
     :patience_start, :fail_penalty, :silence_penalty, :recovery_bonus,
@@ -311,6 +311,7 @@ INSERT INTO scenarios (
 )
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
+    scenario_title=excluded.scenario_title,
     difficulty=excluded.difficulty,
     is_free=excluded.is_free,
     rive_character=excluded.rive_character,
@@ -413,3 +414,138 @@ async def count_user_call_sessions_since(
     ) as cursor:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+
+# --- Story 7.1: post-call debrief persistence -------------------------------
+
+
+async def upsert_user_progress(
+    db: aiosqlite.Connection,
+    user_id: int,
+    scenario_id: str,
+    survival_pct: int,
+    now_iso: str,
+) -> tuple[int | None, int]:
+    """Record a finished attempt against `(user_id, scenario_id)` (AC6).
+
+    Increments `attempts` by 1 and lifts `best_score` to
+    `max(existing, survival_pct)`. Returns `(previous_best, attempt_number)`:
+      - `previous_best` — the best_score BEFORE this attempt (None on the
+        FIRST attempt) → the debrief's `previous_best`.
+      - `attempt_number` — the post-increment `attempts` (1 on first attempt)
+        → the debrief's `attempt_number`.
+
+    This is the FIRST write path to `user_progress` (until 7.1 it was
+    read-only via `get_*_with_progress`). Read-then-write inside a single
+    `BEGIN IMMEDIATE` so a concurrent second attempt can't interleave between
+    the SELECT and the UPDATE (same TOCTOU posture as `end_call_session` /
+    `initiate_call`'s cap check). Safe under the connection's `busy_timeout`
+    when the bot writes concurrently with the API.
+    """
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        async with db.execute(
+            "SELECT best_score, attempts FROM user_progress "
+            "WHERE user_id = ? AND scenario_id = ?",
+            (user_id, scenario_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            previous_best = None
+            attempt_number = 1
+            await db.execute(
+                "INSERT INTO user_progress "
+                "(user_id, scenario_id, best_score, attempts, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (user_id, scenario_id, survival_pct, now_iso, now_iso),
+            )
+        else:
+            previous_best = row["best_score"]
+            attempt_number = int(row["attempts"]) + 1
+            new_best = (
+                survival_pct
+                if previous_best is None
+                else max(int(previous_best), survival_pct)
+            )
+            await db.execute(
+                "UPDATE user_progress "
+                "SET best_score = ?, attempts = ?, updated_at = ? "
+                "WHERE user_id = ? AND scenario_id = ?",
+                (new_best, attempt_number, now_iso, user_id, scenario_id),
+            )
+        await db.commit()
+        return previous_best, attempt_number
+    except BaseException:
+        await db.rollback()
+        raise
+
+
+async def insert_debrief(
+    db: aiosqlite.Connection,
+    *,
+    call_session_id: int,
+    survival_pct: int,
+    checkpoints_passed: int | None,
+    total_checkpoints: int | None,
+    debrief_json: str,
+    prompt_version: str,
+    created_at: str,
+) -> bool:
+    """Persist the distilled debrief for a call (one per call).
+
+    `debrief_json` is the FULLY-ASSEMBLED client debrief (LLM core + backend
+    fields + encouraging_framing) as a JSON string — the FULL transcript is
+    never stored (privacy). The `call_session_id` UNIQUE constraint makes this
+    idempotent: a re-run at teardown does nothing (ON CONFLICT DO NOTHING).
+    Returns True if a row was inserted, False if a debrief already existed.
+    """
+    cursor = await db.execute(
+        "INSERT INTO debriefs "
+        "(call_session_id, survival_pct, checkpoints_passed, total_checkpoints, "
+        "debrief_json, prompt_version, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(call_session_id) DO NOTHING",
+        (
+            call_session_id,
+            survival_pct,
+            checkpoints_passed,
+            total_checkpoints,
+            debrief_json,
+            prompt_version,
+            created_at,
+        ),
+    )
+    await db.commit()
+    return cursor.rowcount == 1
+
+
+async def set_call_checkpoint_counts(
+    db: aiosqlite.Connection,
+    call_id: int,
+    checkpoints_passed: int,
+    total_checkpoints: int,
+) -> None:
+    """Write the server-authoritative checkpoint counts onto the call row (AC1/AC9).
+
+    The counts otherwise only ride the LiveKit data channel to the CLIENT; the
+    bot mirrors them here at teardown so the server has them for analytics /
+    debrief cross-checks. Nullable columns — a legacy or crashed-before-
+    teardown call keeps NULL.
+    """
+    await db.execute(
+        "UPDATE call_sessions "
+        "SET checkpoints_passed = ?, total_checkpoints = ? WHERE id = ?",
+        (checkpoints_passed, total_checkpoints, call_id),
+    )
+    await db.commit()
+
+
+async def get_debrief_by_call_id(
+    db: aiosqlite.Connection, call_id: int
+) -> aiosqlite.Row | None:
+    """Return the debriefs row for `call_id` (by `call_session_id`), or None."""
+    async with db.execute(
+        "SELECT * FROM debriefs WHERE call_session_id = ?", (call_id,)
+    ) as cursor:
+        return await cursor.fetchone()

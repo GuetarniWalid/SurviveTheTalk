@@ -41,12 +41,18 @@ from pipeline.checkpoint_manager import (
     format_remaining_goals_block,
     format_suggested_focus_block,
 )
+from pipeline.debrief_teardown import (
+    DEFAULT_END_REASON,
+    brief_personality,
+    persist_debrief,
+)
 from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.emotion_emitter import EmotionEmitter
 from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.exit_line_generator import generate_exit_line
+from pipeline.hesitation_observer import HesitationObserver
 from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
 from pipeline.llm_warmup import warm_up_llm
@@ -115,6 +121,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # the patience preset (here), the character behavior block
     # (load_scenario_base_prompt below), and the TTS speech speed (AC5).
     scenario_difficulty = os.environ.get("SCENARIO_DIFFICULTY") or None
+    # Story 7.1 (Option A) — the DB call_id, threaded from `/calls/initiate`
+    # via the CALL_ID env (mirrors SCENARIO_ID). Absent on the legacy
+    # `/connect` path → no debrief is generated at teardown.
+    call_id_env = os.environ.get("CALL_ID") or None
     patience_config = resolve_patience_config(
         scenario_id, difficulty_override=scenario_difficulty
     )
@@ -410,7 +420,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
         ),
     )
 
-    collector = TranscriptCollector(session_id=f"call_{int(time.time())}")
+    # Story 7.1 — tag the collector with the real DB call_id when available
+    # (was a unix-ts session id). The teardown debrief keys off this call_id.
+    collector = TranscriptCollector(
+        session_id=call_id_env or f"call_{int(time.time())}"
+    )
     transcript_user = TranscriptLogger(collector=collector, role="user")
     transcript_character = TranscriptLogger(collector=collector, role="character")
 
@@ -617,6 +631,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # of the underlying Cartesia/pipecat bug is a follow-up).
     tts_watchdog = TTSWatchdog()
 
+    # Story 7.1 (AC11) — hesitation gap observer. Placed IMMEDIATELY adjacent to
+    # PatienceTracker below: that slot provably sees BotStoppedSpeakingFrame
+    # (UPSTREAM) + UserStartedSpeakingFrame (DOWNSTREAM), so the gaps measure
+    # correctly. Read via `top_hesitations()` at teardown.
+    hesitation_observer = HesitationObserver(collector=collector)
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -679,6 +699,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # traverse every processor on the way back from
             # transport.output().
             patience_tracker,
+            # Story 7.1 (AC11) — adjacent to PatienceTracker so it sees the same
+            # BotStoppedSpeakingFrame (UPSTREAM) + UserStartedSpeakingFrame
+            # (DOWNSTREAM) stream; pairs them into >3 s hesitation gaps.
+            hesitation_observer,
             context_aggregator.user(),
             llm,
             llm_first_text_probe,
@@ -715,6 +739,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
         # scenario omits it.
         opening_line = scenario_metadata.get("opening_line") or _DEFAULT_OPENING_LINE
         await task.queue_frames([TTSSpeakFrame(opening_line)])
+        # Story 7.1 — the canned opening is a TTSSpeakFrame (not a TextFrame),
+        # so `transcript_character` never logs it; record it explicitly so the
+        # debrief transcript is COMPLETE (the LLM analyses the whole conversation)
+        # and a >3 s hesitation after the greeting has a real preceding line.
+        collector.add_turn("character", opening_line, 0)
         # Story 6.7 AC1 + Phase 2 retouche #5 (2026-05-19) — schedule
         # the initial `checkpoint_advanced(index=0)` envelope to be
         # emitted by CheckpointManager itself on its first
@@ -771,7 +800,44 @@ async def run_bot(url: str, room: str, token: str) -> None:
         # additions can land before the matching server handler ships.
 
     runner = PipelineRunner()
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        # Story 7.1 (Decision 1 = Option A) — the call is over; the bot owns
+        # debrief generation in-process and persists it to the shared DB
+        # (`GET /debriefs/{call_id}` only reads). In a `finally` so the
+        # always-land progress + checkpoint-count writes are not lost if
+        # `runner.run` raised on an errored shutdown. A debrief failure must
+        # NEVER crash teardown (or mask a pipeline error) — a missing debrief
+        # degrades gracefully to DEBRIEF_NOT_READY.
+        if call_id_env and call_id_env.isdigit():
+            try:
+                await persist_debrief(
+                    settings=settings,
+                    call_id=int(call_id_env),
+                    transcript=list(collector.transcript),
+                    reason=patience_tracker.call_end_reason or DEFAULT_END_REASON,
+                    checkpoints_passed=checkpoint_manager.met_count,
+                    total_checkpoints=len(scenario_checkpoints),
+                    character_name=scenario_metadata.get("title", scenario_id),
+                    scenario_title=(
+                        scenario_metadata.get("scenario_title")
+                        or scenario_metadata.get("title", scenario_id)
+                    ),
+                    scenario_id=scenario_id,
+                    brief_personality_description=brief_personality(
+                        scenario_base_prompt
+                    ),
+                    hesitations=hesitation_observer.top_hesitations(),
+                )
+            except Exception:
+                logger.exception(
+                    "debrief teardown failed (non-fatal) call_id={}", call_id_env
+                )
+        else:
+            logger.info(
+                "debrief teardown skipped — no numeric CALL_ID (legacy /connect path)"
+            )
 
 
 def main() -> None:

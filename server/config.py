@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     # keep 70B (they don't use structured outputs).
     classifier_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
 
+    # Story 7.1 — post-call debrief generator model id (env DEBRIEF_MODEL).
+    # The debrief is a standalone Groq call that requests STRICT structured
+    # outputs (`response_format=json_schema`), so — exactly like
+    # `classifier_model` above — this MUST stay a Groq model that supports
+    # `json_schema` (Scout / Llama-4 / gpt-oss / kimi; NOT 70B, which HTTP
+    # 400s on json_schema). Project law: server/CLAUDE.md §4. Defaults to
+    # Scout, the same structured-output model the checkpoint judge trusts.
+    debrief_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+
     # 2026-05-29 "all-Groq" migration — the main character LLM and the
     # EmotionEmitter moved off Qwen-via-OpenRouter (429-prone shared pool)
     # onto Groq (first-party dedicated key = our own quota, controllable).

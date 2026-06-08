@@ -387,6 +387,13 @@ class PatienceTracker(FrameProcessor):
         # goals flipped out of order (the count alone would mislabel them as
         # the first N). Empty until the first flip.
         self._goals_met_indices: list[int] = []
+        # Story 7.1 — the reason this call ended (`character_hung_up`,
+        # `inappropriate_content`, `noisy_environment`, `survived`), recorded
+        # when `call_end` is emitted so the bot's teardown debrief generator can
+        # read it (AC9). Stays None when the tracker never drove the end (the
+        # user hung up / the network dropped) — the bot then defaults to
+        # `user_hangup`. See `call_end_reason`.
+        self._call_end_reason: str | None = None
         self._silence_prompt_line = silence_prompt_line
         self._hang_up_line_silence = hang_up_line_silence
         self._hang_up_line_inappropriate = hang_up_line_inappropriate
@@ -888,6 +895,13 @@ class PatienceTracker(FrameProcessor):
             return
         self._warning_emitted = True
 
+    @property
+    def call_end_reason(self) -> str | None:
+        """The reason this call ended, or None if the tracker never drove the
+        end (user hang-up / network drop). Read by the bot's teardown debrief
+        generator (Story 7.1 AC9); set when `call_end` is emitted."""
+        return self._call_end_reason
+
     def set_checkpoints_passed(self, count: int) -> None:
         """Record the current passed-checkpoint count.
 
@@ -1292,6 +1306,10 @@ class PatienceTracker(FrameProcessor):
                         int(max(0, self._patience) / self._initial_patience * 100),
                     ),
                 )
+            # Story 7.1 — record the end reason for the bot's teardown debrief
+            # generator (AC9). Set here, at the single point the call-end reason
+            # is finalized, so it reflects the SAME `reason` the client sees.
+            self._call_end_reason = reason
             await self.push_frame(
                 OutputTransportMessageFrame(
                     message={

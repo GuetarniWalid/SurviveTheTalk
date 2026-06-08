@@ -5,6 +5,8 @@
 metadata:
   id: girlfriend_medium_01
   title: "The Girlfriend"
+  # Story 7.1 — debrief "mission" title (distinct from the character name above).
+  scenario_title: "Explain where you were"
   difficulty: medium
   is_free: true
   rive_character: girlfriend

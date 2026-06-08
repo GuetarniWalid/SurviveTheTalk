@@ -5,6 +5,8 @@
 metadata:
   id: mugger_medium_01
   title: "The Mugger"
+  # Story 7.1 — debrief "mission" title (distinct from the character name above).
+  scenario_title: "Give me your wallet"
   difficulty: medium
   is_free: true
   rive_character: mugger

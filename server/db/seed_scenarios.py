@@ -68,6 +68,12 @@ def _row_from_yaml(doc: dict) -> dict:
     return {
         "id": meta["id"],
         "title": meta["title"],
+        # Story 7.1 Decision 3 — the dedicated debrief "mission" title
+        # (e.g. "Give me your wallet"), distinct from `title` (the character
+        # name "The Mugger"). Nullable: a scenario YAML that pre-dates 7.1
+        # has no `metadata.scenario_title` → NULL → the debrief falls back to
+        # the character name.
+        "scenario_title": meta.get("scenario_title"),
         "difficulty": meta["difficulty"],
         "is_free": 1 if meta["is_free"] else 0,
         "rive_character": meta["rive_character"],

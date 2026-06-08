@@ -1,6 +1,6 @@
 # Story 7.1: Build Debrief Generation Backend
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -105,36 +105,36 @@ The debrief hero (and the LLM user message) want a `character_name` ("The Mugger
 
 > Decisions locked: **D1 = Option A** (bot generates), **D2 = build hesitation now**, **D3 = dedicated `scenario_title` field**.
 
-- [ ] **Task 1 — Migration 011 + schema + scenario_title (AC1, Decision 3)**
-  - [ ] Write `server/db/migrations/011_debriefs.sql`: `CREATE TABLE debriefs(...)` (see AC1 column list; `call_session_id` UNIQUE FK; `survival_pct` CHECK 0–100) + `ALTER TABLE call_sessions ADD COLUMN checkpoints_passed INTEGER` + `ADD COLUMN total_checkpoints INTEGER` + `ALTER TABLE scenarios ADD COLUMN scenario_title TEXT` (all nullable — legacy rows pre-date them). Mirror the declarative style of `004_scenarios_and_user_progress.sql` / `008_call_sessions_status.sql`.
-  - [ ] **Author `scenario_title` in all 5 scenario YAML `metadata` blocks** (`server/pipeline/scenarios/*.yaml`) — dev proposes a short title per scenario (e.g. The Mugger → "Give me your wallet"); **Walid approves before ship**. Thread it through the YAML→DB seeder (`db/seed_scenarios.py` / `upsert_scenario`) and `pipeline/scenarios.load_scenario_metadata` so the bot can read it.
-  - [ ] `cd server && python scripts/refresh_prod_snapshot.py`; commit the refreshed `tests/fixtures/prod_snapshot.sqlite`.
-  - [ ] Add `test_migrations.py` / `test_queries.py` assertions: `debriefs` table + index exist, new `call_sessions` + `scenarios` columns exist, snapshot replay clean.
-- [ ] **Task 2 — `DEBRIEF_SYSTEM_PROMPT` + schema builder (AC2, AC3)**
-  - [ ] Add `DEBRIEF_SYSTEM_PROMPT` (verbatim v1.0 from `debrief-generation-prompt.md` §"System Prompt") as a constant in `pipeline/prompts.py`, house style (triple-quoted, version-commented). Watch `str.format` brace-escaping if the prompt contains literal `{}` (see `exchange_classifier._escape_format_braces`).
-  - [ ] Implement `_build_debrief_schema()` returning the exact `json_schema` from `debrief-generation-prompt.md` §"JSON Schema" (strict, `additionalProperties:false`, `areas_to_work_on` min2/max3).
-- [ ] **Task 3 — `generate_debrief(...)` generator (AC2, AC3, AC7, AC10)**
-  - [ ] New module `pipeline/debrief_generator.py` (or `services/debrief.py`). Build the user message from the documented template (scenario header, transcript as alternating `CHARACTER:`/`USER:` lines, hesitation block or "No significant hesitations detected.").
-  - [ ] POST to Groq with `response_format` json_schema — copy the request shape from `exchange_classifier.classify_multi` (model from `Settings.debrief_model`, key via `resolve_llm_api_key`, URL via `resolve_llm_chat_url`). Parse with the house fence/first-`{...}` fallback.
-  - [ ] Wrap in `asyncio.wait_for(..., timeout=8.0)` + swallow-all → `None` (copy `exit_line_generator.generate_exit_line` structure exactly; re-raise only `CancelledError`).
-  - [ ] Return the validated LLM-core dict (clamp `areas_to_work_on` to 2–3) or `None`.
-- [ ] **Task 4 — Backend calc + assembly (AC4, AC5, AC6)**
-  - [ ] `compute_survival_pct(passed, total) -> int` = `floor(passed/total*100)`, `0` when `total==0`.
-  - [ ] `assemble_debrief(...)`: merge LLM core + survival_pct + character_name (`scenarios.title`) + scenario_title (new field) + attempt_number + previous_best + `hesitations` (index-merge duration+context) + `encouraging_framing` (only if `survival_pct > 40`). Pure function → unit-test directly.
-  - [ ] Add `upsert_user_progress(db, user_id, scenario_id, survival_pct, now_iso)` to `db/queries.py` (INSERT … ON CONFLICT(user_id,scenario_id) DO UPDATE: `attempts = attempts+1`, `best_score = max(best_score, :survival)`, `updated_at=:now`). Return the pre-update `best_score` (for `previous_best`) and post-update `attempts` (for `attempt_number`) — or read-then-write inside one transaction.
-  - [ ] Add `insert_debrief(...)` + `get_debrief_by_call_id(...)` queries (the latter uses `call_sessions` for the ownership check).
-- [ ] **Task 5 — Bot wiring + hesitation capture (AC9, AC11) — Option A**
-  - [ ] `routes_calls.py`: add `"CALL_ID": str(call_id)` to `bot_env` (alongside `SCENARIO_ID`).
-  - [ ] `bot.py run_bot`: read `os.environ.get("CALL_ID")`; tag `TranscriptCollector` with it; after `await runner.run(task)`, if `CALL_ID` set, gather final transcript + `checkpoints_passed`/`total_checkpoints` (from `CheckpointManager`/`PatienceTracker` — see `set_checkpoints_passed`/the `call_end` envelope data) + `reason` + scenario `title`/`scenario_title` (from `load_scenario_metadata`), call `generate_debrief`, compute survival, and persist (`insert_debrief` + `call_sessions` counts + `upsert_user_progress`) via `db.database.get_connection`. Wrap the whole block so a failure logs but never crashes teardown.
-  - [ ] **(Decision 2) Hesitation observer** — a small FrameProcessor (or extend `TranscriptCollector`) that records each `BotStoppedSpeakingFrame` timestamp and the next user-speech-start timestamp; compute gaps, filter >3 s, keep top 3 by duration (with the preceding character line for the LLM prompt). Feed into `generate_debrief`. Add unit tests driving the frames through a real pipeline where direction matters (server/CLAUDE.md §1 trap).
-- [ ] **Task 6 — `GET /debriefs/{call_id}` (AC8)**
-  - [ ] New `api/routes_debriefs.py` (`APIRouter(prefix="/debriefs", tags=["debriefs"], dependencies=[AUTH_DEPENDENCY])`); register in `api/app.py`.
-  - [ ] Handler: ownership via `get_call_session` (404 `CALL_NOT_FOUND` if missing/cross-user); fetch debrief (404 `DEBRIEF_NOT_READY` if absent); return `ok(DebriefOut(...))`.
-  - [ ] Add `DebriefOut` (+ nested models) to `models/schemas.py`.
-- [ ] **Task 7 — Tests + gates (AC12)**
-  - [ ] Generator tests (mock the Groq POST; assert request carries `response_format` json_schema + correct model; assert None-on-failure paths). Schema-builder test. `compute_survival_pct` + `assemble_debrief` + clamp + encouraging-framing-omission tests. `upsert_user_progress` first-attempt vs improvement vs no-improvement tests. Hesitation gap-measurement tests. Route tests (happy / cross-user 404 / not-ready 404). Migration tests.
-  - [ ] Run all three gates green.
-- [ ] **Task 8 — Deploy + Smoke Test Gate (below).** Deploy to VPS, then Walid runs the Pixel 9 smoke gate for `review → done`.
+- [x] **Task 1 — Migration 011 + schema + scenario_title (AC1, Decision 3)**
+  - [x] Write `server/db/migrations/011_debriefs.sql`: `CREATE TABLE debriefs(...)` (`call_session_id` UNIQUE FK; `survival_pct` NOT NULL CHECK 0–100) + `ALTER TABLE call_sessions ADD checkpoints_passed/total_checkpoints` + `ALTER TABLE scenarios ADD scenario_title TEXT` — all nullable, ADD-only (no rebuild, replays clean).
+  - [x] **Authored `scenario_title` in ALL 6 scenario YAMLs** (the spec said "5" — there are now 6, incl. the 2 cop scenarios). Threaded through `seed_scenarios._row_from_yaml` + `_UPSERT_SCENARIO_SQL`; `load_scenario_metadata` already returns it. **⚠️ Proposed titles AWAIT Walid's approval** (Waiter→"Order your dinner", Mugger→"Give me your wallet", Girlfriend→"Explain where you were", Cop→"Answer the questions", Landlord→"Your rent is late", 8:30 Alibi→"Where were you at 8:30?").
+  - [ ] `refresh_prod_snapshot.py` — **DEFERRED to deploy (Task 8).** The script SSH-pulls live prod, which only contains migration 011 AFTER it's deployed; refreshing pre-deploy can't capture it (git history confirms migration+snapshot land together at deploy). The migration already replays clean against the CURRENT committed snapshot (verified), and `test_full_lifespan` was made robust to a not-yet-in-snapshot migration (see Change Log).
+  - [x] Added `test_migrations.py::test_migration_011_debrief_schema` (table + UNIQUE index + new columns) + the existing snapshot-replay tests stay green.
+- [x] **Task 2 — `DEBRIEF_SYSTEM_PROMPT` + schema builder (AC2, AC3)**
+  - [x] `DEBRIEF_SYSTEM_PROMPT` added to `pipeline/prompts.py` — extracted VERBATIM (programmatically) from `debrief-generation-prompt.md` §"System Prompt"; static (no `.format()`, no braces). A drift test asserts it matches the doc.
+  - [x] `_build_debrief_schema()` returns the strict json_schema. **DEVIATION: `areas_to_work_on` `minItems`/`maxItems` OMITTED** — Groq/OpenAI strict mode rejects array-length constraints (would 400). The 2-3 guarantee comes from the prompt + the AC3-mandated backend `_clamp_areas`.
+- [x] **Task 3 — `generate_debrief(...)` generator (AC2, AC3, AC7, AC10)**
+  - [x] `pipeline/debrief_generator.py` — user message from the documented template (header + transcript + hesitation block / "No significant hesitations detected."). Built via f-strings (no `.format()`, so no brace-escaping needed).
+  - [x] POSTs to Groq with `response_format` json_schema (mirrors `classify_multi`); `Settings.debrief_model` (new, default Scout), key/URL via `resolve_llm_*`. House fence/first-`{...}` parse fallback.
+  - [x] `asyncio.wait_for(timeout=8.0)` + swallow-all → `None` (mirrors `exit_line_generator`; re-raises only `CancelledError`); `finish_reason=length` → None.
+  - [x] Returns the validated LLM-core dict (areas clamped to ≤3) or `None`.
+- [x] **Task 4 — Backend calc + assembly (AC4, AC5, AC6)** (`pipeline/debrief_assembly.py`)
+  - [x] `compute_survival_pct(passed, total)` = `floor(passed/total*100)`, `0` on `total==0`, clamped 0–100.
+  - [x] `assemble_debrief(...)`: merges core + survival + character_name + scenario_title + attempt_number + previous_best + `hesitations` (index-merge) + `encouraging_framing` (only if `>40`). Pure.
+  - [x] `upsert_user_progress(...)` added to `db/queries.py` (read-then-write inside `BEGIN IMMEDIATE`; returns pre-update best + post-increment attempts) — the FIRST `user_progress` write path.
+  - [x] `insert_debrief(...)` (idempotent via UNIQUE + ON CONFLICT DO NOTHING), `get_debrief_by_call_id(...)`, `set_call_checkpoint_counts(...)` added.
+- [x] **Task 5 — Bot wiring + hesitation capture (AC9, AC11) — Option A**
+  - [x] `routes_calls.py`: `"CALL_ID": str(call_id)` added to `bot_env`.
+  - [x] `bot.py run_bot`: reads `CALL_ID`, tags the collector, and after `runner.run(task)` calls `persist_debrief` (`pipeline/debrief_teardown.py`) — gathers transcript + `checkpoint_manager.met_count` + `len(checkpoints)` + `patience_tracker.call_end_reason` (new property) + titles, generates, computes survival, upserts progress, writes counts, and inserts the debrief — wrapped so a failure NEVER crashes teardown. (Storage choice: the bot stores the FULLY-assembled debrief incl. `encouraging_framing`; `GET` only reads — simpler than assemble-on-read, identical output.)
+  - [x] **(Decision 2) `HesitationObserver`** (`pipeline/hesitation_observer.py`) pairs `BotStoppedSpeakingFrame`↔next `UserStartedSpeakingFrame`, >3 s, top 3 (+ preceding character line). Placed ADJACENT to `PatienceTracker` (proven to see both frames at that slot); observes regardless of `direction` → immune to the §1 trap. Tested by driving frames in their real directions.
+- [x] **Task 6 — `GET /debriefs/{call_id}` (AC8)**
+  - [x] `api/routes_debriefs.py` (`prefix=/debriefs`, `AUTH_DEPENDENCY`); registered in `api/app.py`.
+  - [x] Ownership via `get_call_session` (404 `CALL_NOT_FOUND` missing/cross-user); 404 `DEBRIEF_NOT_READY` if absent; serves the stored dict (preserving the `encouraging_framing` null-omission) validated against `DebriefOut`.
+  - [x] `DebriefOut` (+ `DebriefError`/`DebriefHesitation`/`DebriefIdiom`/`EncouragingFraming`) added to `models/schemas.py`.
+- [x] **Task 7 — Tests + gates (AC12)**
+  - [x] 67 new debrief tests across 6 files (generator incl. strict-schema request + all None paths, schema builder, survival/assembly/clamp/framing-omission, `upsert_user_progress` first/improve/no-improve, hesitation gap-measurement, route happy/cross-user-404/not-ready-404, teardown persistence, prompt-drift guard) + 1 migration test.
+  - [x] All three gates green: `ruff check` ✅, `ruff format --check` ✅, `pytest` **756 passed** ✅.
+- [ ] **Task 8 — Deploy + Smoke Test Gate (below).** Deploy to VPS (applies migration 011 → then refresh+commit the prod snapshot), then Walid runs the Pixel 9 smoke gate for `review → done`.
 
 ---
 
@@ -242,10 +242,70 @@ Implement **`debrief-content-strategy.md` + `debrief-generation-prompt.md`** (20
 
 ### Agent Model Used
 
-<!-- filled by dev-story -->
+claude-opus-4-8 (Claude Opus 4.8) — via `/bmad-dev-story`, executed in an isolated git worktree (`story/7.1-debrief-backend`).
 
 ### Debug Log References
 
+- Full server suite: **756 passed** (`.venv/Scripts/python -m pytest`).
+- Gates: `python -m ruff check .` → All checks passed; `python -m ruff format --check .` → all formatted.
+- Migration replay verified against the committed `prod_snapshot.sqlite` (FK/CHECK/integrity clean) — 011 is ADD-only.
+
 ### Completion Notes List
 
+Implemented server-only post-call debrief backend (Option A — bot generates at teardown, server serves). All 12 ACs addressed; gates green. Items needing Walid / surfaced for review:
+
+1. **`scenario_title` content awaits approval (Task 1 / D3).** 6 proposed titles authored in the YAMLs (the spec said 5 — there are 6 since the 2nd cop scenario). Trivially editable. Approve/adjust before the smoke gate.
+2. **Prod-snapshot refresh deferred to deploy (Task 1 / AC1).** The refresh script SSH-pulls live prod, which only carries migration 011 *after* it deploys — so it can't be refreshed pre-deploy (git history shows migration+snapshot always land together at deploy). The migration replays clean against the current snapshot now; the snapshot must be refreshed + committed right after the Task 8 deploy.
+3. **Guardrail test kept rigorous.** `test_full_lifespan_starts_against_prod_snapshot` asserts `schema_migrations` post-lifespan equals the EXACT repo migration count (not a blanket `>=`) — a not-yet-deployed repo migration legitimately records its row on replay, and this self-corrects to an exact match once the snapshot is refreshed. Every user-data table still `==`, FK/integrity re-checked.
+4. **AC3 schema deviation:** `areas_to_work_on` `minItems`/`maxItems` omitted from the strict schema (Groq strict mode rejects array-length constraints → would HTTP 400). The 2-3 guarantee = system prompt + the AC3-mandated backend `_clamp_areas`.
+5. **`encouraging_framing` stored, not assembled-on-read.** The bot stores the fully-assembled debrief; `GET` is a trivial read. Same output as Option A's "GET assembles framing", fewer moving parts, single source of truth. Its exact copy is provisional (Story 7.3 owns final UX wording).
+6. **NOT live-tested against Groq** (no key in sandbox, costs $). Generator is fully mocked-LLM tested; the real Scout `json_schema` round-trip is validated by `scripts/probe_debrief_schema.py` (run pre-smoke-gate) + the Task 8 smoke gate.
+
+### Senior Developer Review (AI) — adversarial multi-agent, 2026-06-08
+
+An 8-dimension adversarial review (parallel reviewers → an independent skeptic per finding → a completeness critic → synthesis) ran on the branch. 19 findings raised → 14 confirmed after verification. **1 CRITICAL fixed**, plus low-severity hardening. All 4 deliberate deviations were judged SOUND.
+
+- 🔴 **CRITICAL (fixed).** `HesitationObserver` stored its injected clock as `self._clock`, which pipecat's `FrameProcessor.setup()` overwrites with a non-callable `BaseClock` on every real call → `self._clock()` raised `TypeError` → hesitation capture was **silently dead in prod** while every unit test passed (the §1 / Déviation #28 trap, via attribute-name collision). Renamed `_clock`→`_now`; added a real-pipeline drive test (runs `setup()`) + a pipeline-ordering assertion. Bug reproduced and fix proven.
+- 🟠 **AC7 backend-enforced.** `inappropriate_behavior` is now pinned to the server-authoritative reason (non-null IFF `inappropriate_content`), not trusted to the model. +3 tests.
+- 🟠 **Write-time contract validation + idempotent teardown.** `persist_debrief` validates the assembled blob against `DebriefOut` before storing (a malformed fallback-path blob would otherwise make `GET` a permanent 500 — the insert is idempotent), and is now a no-op on re-run via the `checkpoints_passed` marker (future-proofs Story 6.26 bot pooling; also skips the wasteful LLM call). +route 500 tests + double-call test.
+- 🟠 **Teardown survives a `runner.run` error** (try/finally) so progress + counts always land. **Opening greeting seeded** into the transcript (it is a `TTSSpeakFrame`, never logged) so the debrief analyses the whole conversation and the first hesitation has an anchor.
+- 🟢 **Migration guardrail tightened** to the exact repo-migration count; **Groq Scout acceptance probe** (`scripts/probe_debrief_schema.py`) added for Walid to run pre-smoke-gate (the one untested risk).
+
+Net: +8 tests (**764** total), all three gates green.
+
 ### File List
+
+**New (server/):**
+- `db/migrations/011_debriefs.sql`
+- `pipeline/debrief_generator.py`
+- `pipeline/debrief_assembly.py`
+- `pipeline/debrief_teardown.py`
+- `pipeline/hesitation_observer.py`
+- `api/routes_debriefs.py`
+- `scripts/probe_debrief_schema.py` (review — live Groq-acceptance probe)
+- `tests/test_debrief_generator.py`
+- `tests/test_debrief_assembly.py`
+- `tests/test_debrief_queries.py`
+- `tests/test_debrief_teardown.py`
+- `tests/test_hesitation_observer.py`
+- `tests/test_routes_debriefs.py`
+
+**Modified (server/):**
+- `config.py` (+`debrief_model`)
+- `pipeline/prompts.py` (+`DEBRIEF_SYSTEM_PROMPT`, +`DEBRIEF_PROMPT_VERSION`)
+- `db/queries.py` (+`upsert_user_progress`, `insert_debrief`, `set_call_checkpoint_counts`, `get_debrief_by_call_id`; +`scenario_title` in `_UPSERT_SCENARIO_SQL`)
+- `db/seed_scenarios.py` (+`scenario_title` in `_row_from_yaml`)
+- `models/schemas.py` (+`DebriefOut` + nested models)
+- `api/app.py` (register `debriefs_router`)
+- `api/routes_calls.py` (+`CALL_ID` in `bot_env`)
+- `pipeline/bot.py` (read `CALL_ID`, tag collector, `HesitationObserver` in pipeline, teardown `persist_debrief`)
+- `pipeline/patience_tracker.py` (+`call_end_reason` capture + property)
+- `pipeline/scenarios/*.yaml` (6 files: +`scenario_title`)
+- `tests/test_migrations.py` (+011 schema test; `schema_migrations` growth allowed)
+
+### Change Log
+
+| Date | Change |
+|---|---|
+| 2026-06-08 | Story 7.1 implemented (Option A): migration 011 (`debriefs` + checkpoint counts + `scenario_title`), Groq-Scout `generate_debrief` (strict `json_schema`), pure survival/assembly, `user_progress` upsert + debrief queries, bot teardown generation + `HesitationObserver`, `GET /debriefs/{call_id}`. 67 new tests; gates green (ruff + 756 pytest). Status → review. Snapshot refresh + smoke gate pending deploy. |
+| 2026-06-08 | Adversarial multi-agent review fixes. **CRITICAL:** `HesitationObserver._clock`→`_now` (pipecat `setup()` clobbered `_clock` → hesitations dead in prod) + real-pipeline regression test + ordering assertion. Backend-enforce AC7 `inappropriate_behavior`. `persist_debrief` validates the blob vs `DebriefOut` before storing + is idempotent (re-run no-op) + survives a `runner.run` error (try/finally). Seed the opening greeting into the transcript. Tighten the migration guardrail to the exact repo count. Add `scripts/probe_debrief_schema.py`. +8 tests (**764** total); gates green. |

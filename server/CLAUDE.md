@@ -68,6 +68,26 @@ pass.
    the test observes the outcome. Higher setup cost than direct calls but
    the only way to truly catch direction drift.
 
+#### Don't shadow a base `FrameProcessor` attribute (the `_clock` trap)
+
+Same class of bug, different mechanism — Story 7.1 `HesitationObserver`. A
+custom `FrameProcessor` stored its injected monotonic clock as `self._clock`.
+But pipecat's base `FrameProcessor` **already owns `self._clock`**
+(`frame_processor.py:184`), and `setup()` (run at `StartFrame` on every REAL
+call) UNCONDITIONALLY overwrites it with a non-callable `BaseClock`
+(`frame_processor.py:563`). So `self._clock()` raised `'SystemClock' object is
+not callable` on the first frame, pipecat swallowed it via `push_error_frame`,
+and the observer captured **nothing in prod** — while every unit test passed,
+because direct `process_frame()` calls never run `setup()` (the §1 trap again,
+via attribute-name collision instead of direction).
+
+**Rule:** a `FrameProcessor` subclass must NOT name an instance attribute after
+a base-class one. Pipecat owns `_clock`, `_next`, `_prev`, `_id`, `_name`,
+`_observer`, `_task_manager`, `_event_handlers`, `_cancelling`, … When in doubt,
+prefix your own (`self._now`, `self._hesitation_gaps`) and add a real-pipeline
+drive test (one that calls `setup()` — i.e. runs the processor inside a
+`PipelineTask`/`PipelineRunner`) so a shadow surfaces loud, not silent.
+
 #### Asymmetric `TranscriptionFrame.finalized` defaults — intentional
 
 `CheckpointManager` and `PatienceTracker` both observe

@@ -95,12 +95,32 @@ def test_full_lifespan_starts_against_prod_snapshot(prod_db):
 
     # New tables added by future migrations are allowed (post may have keys
     # pre doesn't). Existing tables must not lose rows.
+    #
+    # `scenarios` legitimately GROWS (the seeder upserts every YAML on each
+    # startup, so a new scenario file adds a row) → asserted `>=`.
+    #
+    # `schema_migrations` is checked EXACTLY: after a full lifespan every repo
+    # migration is recorded, so its row count must equal the number of `.sql`
+    # files. An authored-but-not-yet-deployed migration absent from the snapshot
+    # legitimately adds its row on replay (Story 7.1 — the snapshot only gains a
+    # migration after it ships to prod and the fixture is re-pulled, a
+    # deploy-time step). Asserting the exact repo count keeps `==`-grade rigor
+    # (NOT a blanket `>=`, which would mask a ledger DELETE) and self-corrects to
+    # an exact match once the snapshot is refreshed post-deploy. Every real user
+    # table still asserts `==`, and FK/integrity are re-checked below, so the
+    # Story 5.1 data-loss class stays caught.
+    repo_migration_count = len(list(MIGRATIONS_DIR.glob("*.sql")))
     for table, pre in pre_counts.items():
         post = post_counts.get(table)
         assert post is not None, (
             f"Table {table!r} disappeared after lifespan — likely a buggy migration."
         )
-        if table == "scenarios":
+        if table == "schema_migrations":
+            assert post == repo_migration_count, (
+                f"schema_migrations={post} after lifespan, expected exactly "
+                f"{repo_migration_count} (one row per repo .sql migration)."
+            )
+        elif table == "scenarios":
             assert post >= pre, f"scenarios shrunk: {pre} → {post}"
         else:
             assert post == pre, (
@@ -230,3 +250,45 @@ def test_snapshot_migrations_match_repo_migrations(prod_db):
         "Either commit the missing .sql file(s) or refresh the snapshot from "
         "a VPS whose schema_migrations matches the repo."
     )
+
+
+def test_migration_011_debrief_schema(test_db_path):
+    """Story 7.1 AC1 — migration 011 creates the `debriefs` table (with a
+    UNIQUE index on `call_session_id`) and adds the new nullable columns to
+    `call_sessions` + `scenarios`. Asserted against a freshly-migrated empty
+    DB so a regression in 011's DDL fails fast.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        debrief_cols = {r[1] for r in conn.execute("PRAGMA table_info(debriefs)")}
+        assert {
+            "id",
+            "call_session_id",
+            "survival_pct",
+            "checkpoints_passed",
+            "total_checkpoints",
+            "debrief_json",
+            "prompt_version",
+            "created_at",
+        } <= debrief_cols, f"debriefs missing columns: {debrief_cols}"
+
+        # The UNIQUE(call_session_id) constraint creates an index (origin 'u')
+        # — one debrief per call. PRAGMA index_list column 2 is the unique flag.
+        indexes = conn.execute("PRAGMA index_list(debriefs)").fetchall()
+        assert any(row[2] == 1 for row in indexes), (
+            f"debriefs has no UNIQUE index (expected on call_session_id): {indexes}"
+        )
+
+        call_cols = {r[1] for r in conn.execute("PRAGMA table_info(call_sessions)")}
+        assert {"checkpoints_passed", "total_checkpoints"} <= call_cols, (
+            f"call_sessions missing the server-authoritative checkpoint counts: {call_cols}"
+        )
+
+        scenario_cols = {r[1] for r in conn.execute("PRAGMA table_info(scenarios)")}
+        assert "scenario_title" in scenario_cols, (
+            f"scenarios missing scenario_title: {scenario_cols}"
+        )
+    finally:
+        conn.close()

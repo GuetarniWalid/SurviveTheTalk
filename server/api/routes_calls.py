@@ -330,6 +330,9 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
         "SYSTEM_PROMPT": system_prompt,
         "SCENARIO_CHARACTER": rive_character,
         "SCENARIO_ID": scenario_id,
+        # Story 7.1 (Option A) — the DB call_id so the bot can key its
+        # teardown debrief (generate + persist) to this exact call_session.
+        "CALL_ID": str(call_id),
     }
     # Story 6.19 — pass the learner's chosen global difficulty to the bot
     # subprocess (mirrors SCENARIO_ID / SCENARIO_CHARACTER). Only set when
