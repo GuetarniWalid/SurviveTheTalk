@@ -1413,7 +1413,7 @@ def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
     composed = load_scenario_base_prompt("waiter_easy_01")
     assert "Tina" in composed  # persona preserved
     assert "Difficulty behavior (easy):" in composed
-    assert "Speak at a calm, clear pace" in composed
+    assert "Accept approximate or vague answers" in composed
     assert composed.endswith(_DIFFICULTY_PROMPTS["easy"])
 
 
@@ -1424,10 +1424,10 @@ def test_load_scenario_base_prompt_override_swaps_behavior_block() -> None:
 
     composed = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
     assert "Difficulty behavior (hard):" in composed
-    assert "never rushed or accelerated" in composed
+    assert "You heard me." in composed
     # The easy block must NOT leak through.
     assert "Difficulty behavior (easy):" not in composed
-    assert "Speak at a calm, clear pace" not in composed
+    assert "Accept approximate or vague answers" not in composed
 
 
 def test_load_scenario_base_prompt_rejects_inline_difficulty_block(

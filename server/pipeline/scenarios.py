@@ -193,74 +193,61 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
 #
 # These are deliberately SCENARIO-AGNOSTIC (they apply to any character): the
 # per-scenario flavour lives in the persona/`base_prompt`; this block is the
-# difficulty knob. The pace line is also the AC5 fallback if a TTS provider ever
-# can't honour a numeric `speed`.
+# difficulty knob. Per the locked 2026-06-08 design, difficulty = how hard the
+# character is on the LEARNER's English — COMPREHENSION (vocabulary, idioms,
+# sentence length) + ACCOMMODATION (does it help / rephrase / accept approximate
+# answers, or refuse and demand precision) — NEVER the character's personality
+# (a calm detective stays calm; he just gets linguistically harder + stricter).
+# Speech speed is handled separately by the preset `tts_speed`. These blocks are
+# deliberately STRONG + CONCRETE: the 2026-06-08 cop smoke gate (on Scout) showed
+# a soft, buried block is ignored — easy and hard sounded identical until the
+# directive named exact behaviours ("say 'You heard me'", "demand the exact
+# time"). Verify changes with `scripts/compare_difficulty.py` (offline A/B).
 _DIFFICULTY_PROMPTS: dict[str, str] = {
     "easy": (
         "Difficulty behavior (easy):\n"
-        "- Speak at a calm, clear pace (natural, never robotic or drawled).\n"
-        "- Use only basic, high-frequency everyday vocabulary; keep every word "
-        "concrete and literal.\n"
-        "- Use short, simple sentences (about 5-8 words), one idea per turn.\n"
-        "- Never use idioms, phrasal verbs, slang, or cultural references.\n"
-        "- Ask one question at a time, and make it closed or either-or whenever "
-        "you can ('Chicken or fish?', 'Were you at work? Yes or no?') so the "
-        "answer's shape is obvious.\n"
-        "- State plainly what you want from them ('Just tell me where you "
-        "were.'); never make them guess your intention.\n"
-        "- If they seem confused or don't understand, rephrase more simply and "
-        "help them along — stay patient and in character, and never correct "
-        "their grammar.\n"
-        "- Never interrupt; leave them a few seconds of silence to think.\n"
-        "- Stay calm; show only mild frustration after repeated failure, and let "
-        "a single good answer noticeably soften you."
+        "- Stay fully in character, but go MAXIMALLY EASY on the learner's "
+        "English — treat them as a nervous beginner.\n"
+        "- If they don't understand, ask you to repeat, or look confused, "
+        "REPHRASE it more simply and help them. Never just say 'I already said "
+        "it'.\n"
+        "- Accept approximate or vague answers: if they give the gist ('around "
+        "eight', 'at home'), take it and move on. Do NOT demand exact details.\n"
+        "- Use ONLY simple, common words and short sentences (about 5-8 words). "
+        "No idioms, phrasal verbs, slang, or jargon.\n"
+        "- Ask one simple question at a time; stay patient and encouraging, even "
+        "after mistakes, and never correct their grammar."
     ),
     "medium": (
         "Difficulty behavior (medium):\n"
-        "- Speak at a natural conversational pace.\n"
-        "- Use everyday vocabulary with the occasional lower-frequency word the "
-        "learner can work out from context.\n"
-        "- Use natural sentences (about 10-15 words) with at most one subordinate "
-        "clause.\n"
-        "- Weave in at most one common, transparent phrasal verb or colloquial "
-        "expression per turn ('calm down', 'find out', 'come on').\n"
-        "- Ask plain open questions one at a time ('Why didn't you call?', "
-        "'Where were you?') — no options offered, no hand-holding.\n"
-        "- Do not rephrase or simplify on request — repeat the same sentence "
-        "once, then show mild impatience instead of helping.\n"
-        "- React only to what they MEAN, never to their grammar.\n"
-        "- Throw in one unexpected question across the call; you may interrupt "
-        "once if they ramble or stall."
+        "- Stay in character and be moderately demanding on the learner's "
+        "English.\n"
+        "- If they don't understand, repeat it ONCE in the same words, then show "
+        "mild impatience. Do not simplify further.\n"
+        "- Expect a real attempt: nudge them for a missing detail, but don't "
+        "grill them on precision.\n"
+        "- Use everyday vocabulary with about one common phrasal verb or idiom "
+        "per turn.\n"
+        "- Ask natural open questions, one at a time; react to what they MEAN, "
+        "never to their grammar."
     ),
     "hard": (
         "Difficulty behavior (hard):\n"
-        "- Be genuinely hard through LANGUAGE and INTERACTION, not speed.\n"
-        "- Speak at a normal, natural pace — never rushed or accelerated.\n"
-        "- Use rich, lower-frequency and idiomatic vocabulary, including less "
-        "common senses of familiar words ('run me through it', a story that "
-        "doesn't 'add up').\n"
-        "- Weave in 2-3 phrasal verbs or idioms per turn that a non-native "
-        "struggles with, mixing British and American expressions ('come clean', "
-        "'cut to the chase', 'knock it off') — but never stack two opaque idioms "
-        "in one clause.\n"
-        "- Vary your turns: either keep them clipped ('And?', 'Go on.', "
-        "'That's it?') OR pack two facts into one dense, multi-clause sentence "
-        "they must track.\n"
-        "- Ask loaded, pointed questions that smuggle in an assumption ('So why "
-        "were you weaving all over the road?'); sometimes stack two questions so "
-        "they must hold both.\n"
-        "- Often IMPLY what you want instead of stating it — use hints, "
-        "rhetorical questions, and loaded pauses ('...Interesting.', 'Must be "
-        "nice.') and make them infer the response you're demanding.\n"
-        "- Never rephrase, never simplify; if they don't understand or stumble, "
-        "treat it as their problem and press the same point harder.\n"
-        "- Interrupt them if they ramble or stall, and finish their thought for "
-        "them, unfavorably; throw curveballs and abrupt topic shifts, and circle "
-        "back to an earlier answer to catch inconsistencies.\n"
-        "- Show impatience early; a good answer barely registers ('Fine. And?'). "
-        "Stay cold and do not help them.\n"
-        "- Stay fair: be hard to deal with, but never gibberish — keep each turn "
-        "parseable by a determined learner (at most one trap or twist per turn)."
+        "- Stay fully in character (keep your SAME personality and tone), but be "
+        "MAXIMALLY HARD on the learner's English and give them NO slack.\n"
+        "- If they don't understand or ask you to repeat, do NOT repeat or "
+        "rephrase. Say 'You heard me.' and press on — their confusion is their "
+        "problem, not yours.\n"
+        "- REJECT vague or approximate answers ('around eight', 'at home'). "
+        "Demand the EXACT detail every time ('What exact time? Which street and "
+        "number?').\n"
+        "- Use rich, idiomatic native English: weave in idioms and phrasal verbs "
+        "('come clean', 'cut to the chase', 'level with me', 'that doesn't add "
+        "up') plus any jargon your role would really use.\n"
+        "- Ask loaded, pointed questions and keep pressing; a vague or evasive "
+        "answer makes you push HARDER, never softer.\n"
+        "- Being hard is about LANGUAGE and refusing to accommodate — it is NOT "
+        "shouting or breaking character."
     ),
 }
 
