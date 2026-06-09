@@ -29,6 +29,7 @@ from pipeline.llm_provider import (
     resolve_llm_chat_url,
 )
 from pipecat.services.soniox.stt import SonioxSTTService
+from pipecat.transcriptions.language import Language
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
@@ -244,6 +245,17 @@ async def run_bot(url: str, room: str, token: str) -> None:
         settings=SonioxSTTService.Settings(
             model="stt-rt-v4",
             enable_speaker_diarization=True,
+            # Pin STT to English. The app is English-ONLY (every persona says
+            # "Speak English only"), but stt-rt-v4 with NO language hint
+            # auto-detects, and on a short/accented FIRST utterance it
+            # mis-detected the learner's speech as Russian/Ukrainian and
+            # transcribed Cyrillic gibberish ("Я шу.", "Вітанні валід."): the
+            # character "couldn't catch that", NO checkpoint ever met, patience
+            # drained to a hang-up in ~36 s (smoke gate 2026-06-09 — user felt
+            # "unheard"). `_strict` forbids any non-English transcription so the
+            # mis-detect cannot recur; relax it only if the app goes multilingual.
+            language_hints=[Language.EN],
+            language_hints_strict=True,
         ),
         vad_force_turn_endpoint=False,
     )
