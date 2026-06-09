@@ -148,3 +148,10 @@ development_status:
   10-4-set-up-beta-testing-pipeline-and-analytics: backlog
   10-5-execute-final-launch-checklist-and-store-submission: backlog
   epic-10-retrospective: optional
+
+  # Epic 11: Server-Driven Content Delivery (implements adr/004-content-delivery.md)
+  epic-11: backlog
+  11-1-move-character-text-to-server: backlog
+  11-2-serve-and-cache-avatar-images: backlog
+  11-3-over-the-air-rive-asset-updates: backlog
+  epic-11-retrospective: optional

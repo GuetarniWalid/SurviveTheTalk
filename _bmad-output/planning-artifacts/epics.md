@@ -1694,3 +1694,52 @@ So that the app passes store review on the first attempt with no blockers.
 **Given** the app is ready for submission
 **When** all checklist items pass
 **Then** the app is submitted to App Store Connect and Google Play Console for review, with all metadata, screenshots, privacy policy, and subscription products in place
+
+---
+
+## Epic 11: Server-Driven Content Delivery
+
+All user-facing content — character names/roles, avatar images, scenario taglines, the "Call Ended" theatrical phrases, and the animated character puppet — is delivered from the backend so content edits and brand-new characters/scenarios reach users **without an app-store release**. This removes the app-release bottleneck behind the goal of adding scenarios daily. Implements [`adr/004-content-delivery.md`](adr/004-content-delivery.md) (Accepted 2026-06-09). Builds on the scenarios API (Epic 5) and the bundled Rive puppet (Epic 6). **Priority vs. Epic 10 (launch) is TBD — recommended before public launch if daily content is a launch-day feature.** Phased per ADR 004: text → images → Rive OTA.
+
+> **The full technical contract for every story below lives in [`adr/004-content-delivery.md`](adr/004-content-delivery.md).** These are backlog stubs — run `create-story` to expand each with full context before dev.
+
+### Story 11.1: Move Character Text to the Server
+
+As a content owner,
+I want character names, roles, and scenario taglines served from the backend instead of hardcoded in the app,
+So that I can edit them anytime without shipping an app update.
+
+**Acceptance Criteria:**
+
+**Given** `kCharacterCatalog` (name/role) and `kScenarioTaglines` are hardcoded in the Flutter app (ADR 004 §Context)
+**When** this story ships
+**Then** character name + role + tagline are authored server-side (scenario/character data + API) and the app renders them from the payload — the hardcoded text is removed
+**And** editing any of these becomes a server-only change (no app release), verified end-to-end
+
+### Story 11.2: Serve and Cache Avatar Images
+
+As a content owner,
+I want character avatar photos served from the backend and cached on-device,
+So that a new character's photo appears without an app update, and the app still works offline.
+
+**Acceptance Criteria:**
+
+**Given** avatar JPGs are bundled assets today (ADR 004 §Context)
+**When** this story ships
+**Then** each character's avatar is delivered as a server URL (per ADR 004), downloaded + cached on-device, with a bundled/last-cached fallback when offline
+**And** adding a new character's photo becomes a server-only change
+
+### Story 11.3: Over-the-Air Rive Asset Updates
+
+As a content owner,
+I want the animated `characters.riv` file updated over-the-air from the server with a local fallback,
+So that I can add a new character by editing + uploading the one Rive file — no app-store release.
+
+**Acceptance Criteria:**
+
+**Given** the app bundles `characters.riv` and the server hosts the current version (ADR 004 §Decision pt.2)
+**When** the app launches
+**Then** it silently checks an asset manifest (`version` + `sha256`), downloads a newer `.riv`, verifies + caches it, and the Rive runtime loads from cache (else last-cache, else bundled) — never mid-call, never blocking
+**And** bumping the server version propagates the new character to all apps with no app release
+
+> **Note:** Story 11.3 is the largest piece (server manifest + Caddy static hosting + client download/cache/verify/fallback + Rive load-from-cache); `create-story` may split it into a server story + a client story.
