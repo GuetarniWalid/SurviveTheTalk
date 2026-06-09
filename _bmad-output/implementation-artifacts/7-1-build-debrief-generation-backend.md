@@ -1,6 +1,6 @@
 # Story 7.1: Build Debrief Generation Backend
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
