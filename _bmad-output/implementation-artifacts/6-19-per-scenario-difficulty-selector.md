@@ -1,6 +1,6 @@
 # Story 6.19: Global difficulty selector (easy / medium / hard)
 
-Status: review
+Status: done
 
 > Design decisions RESOLVED with Walid 2026-06-03 (UX placement chosen via a UX/UI agent analysis). This spec is the final version — ready for `/bmad-dev-story`.
 
