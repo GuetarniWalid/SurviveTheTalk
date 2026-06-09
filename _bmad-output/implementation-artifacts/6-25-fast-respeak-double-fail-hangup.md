@@ -1,6 +1,6 @@
 # Story 6.25: Fast-re-speak double-fail premature hang-up + Deviation #7 race
 
-Status: review
+Status: done
 
 > **Surfaced by the Story 6.20 retrospective code-review (2026-06-05, ultracode 6-lens + per-finding adversarial verification).** A CONFIRMED + empirically-reproduced defect that the Story 6.20 dev-time review explicitly (and incorrectly) ruled out. 6.20 stays `done`; this is its robustness follow-up (same pattern as 6.18→6.22, 6.20→6.24). **D1 resolved 2026-06-05 (Walid): drain ONCE — decision-complete, ready for `/bmad-dev-story`.**
 
