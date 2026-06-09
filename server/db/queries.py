@@ -436,49 +436,46 @@ async def upsert_user_progress(
         → the debrief's `attempt_number`.
 
     This is the FIRST write path to `user_progress` (until 7.1 it was
-    read-only via `get_*_with_progress`). Read-then-write inside a single
-    `BEGIN IMMEDIATE` so a concurrent second attempt can't interleave between
-    the SELECT and the UPDATE (same TOCTOU posture as `end_call_session` /
-    `initiate_call`'s cap check). Safe under the connection's `busy_timeout`
-    when the bot writes concurrently with the API.
-    """
-    await db.execute("BEGIN IMMEDIATE")
-    try:
-        async with db.execute(
-            "SELECT best_score, attempts FROM user_progress "
-            "WHERE user_id = ? AND scenario_id = ?",
-            (user_id, scenario_id),
-        ) as cursor:
-            row = await cursor.fetchone()
+    read-only via `get_*_with_progress`).
 
-        if row is None:
-            previous_best = None
-            attempt_number = 1
-            await db.execute(
-                "INSERT INTO user_progress "
-                "(user_id, scenario_id, best_score, attempts, created_at, updated_at) "
-                "VALUES (?, ?, ?, 1, ?, ?)",
-                (user_id, scenario_id, survival_pct, now_iso, now_iso),
-            )
-        else:
-            previous_best = row["best_score"]
-            attempt_number = int(row["attempts"]) + 1
-            new_best = (
-                survival_pct
-                if previous_best is None
-                else max(int(previous_best), survival_pct)
-            )
-            await db.execute(
-                "UPDATE user_progress "
-                "SET best_score = ?, attempts = ?, updated_at = ? "
-                "WHERE user_id = ? AND scenario_id = ?",
-                (new_best, attempt_number, now_iso, user_id, scenario_id),
-            )
-        await db.commit()
-        return previous_best, attempt_number
-    except BaseException:
-        await db.rollback()
-        raise
+    Does NOT open or commit a transaction — the CALLER owns it. `persist_debrief`
+    wraps this in a single `BEGIN IMMEDIATE` together with the idempotency CLAIM
+    on `call_sessions.checkpoints_passed`, so the marker write and this attempt
+    bump are one atomic unit (a crash between them can't double-count `attempts`,
+    and a concurrent/retry teardown that lost the claim never reaches here). A
+    direct caller must own a transaction and `commit()` for the write to persist.
+    """
+    async with db.execute(
+        "SELECT best_score, attempts FROM user_progress "
+        "WHERE user_id = ? AND scenario_id = ?",
+        (user_id, scenario_id),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        previous_best = None
+        attempt_number = 1
+        await db.execute(
+            "INSERT INTO user_progress "
+            "(user_id, scenario_id, best_score, attempts, created_at, updated_at) "
+            "VALUES (?, ?, ?, 1, ?, ?)",
+            (user_id, scenario_id, survival_pct, now_iso, now_iso),
+        )
+    else:
+        previous_best = row["best_score"]
+        attempt_number = int(row["attempts"]) + 1
+        new_best = (
+            survival_pct
+            if previous_best is None
+            else max(int(previous_best), survival_pct)
+        )
+        await db.execute(
+            "UPDATE user_progress "
+            "SET best_score = ?, attempts = ?, updated_at = ? "
+            "WHERE user_id = ? AND scenario_id = ?",
+            (new_best, attempt_number, now_iso, user_id, scenario_id),
+        )
+    return previous_best, attempt_number
 
 
 async def insert_debrief(
@@ -518,27 +515,6 @@ async def insert_debrief(
     )
     await db.commit()
     return cursor.rowcount == 1
-
-
-async def set_call_checkpoint_counts(
-    db: aiosqlite.Connection,
-    call_id: int,
-    checkpoints_passed: int,
-    total_checkpoints: int,
-) -> None:
-    """Write the server-authoritative checkpoint counts onto the call row (AC1/AC9).
-
-    The counts otherwise only ride the LiveKit data channel to the CLIENT; the
-    bot mirrors them here at teardown so the server has them for analytics /
-    debrief cross-checks. Nullable columns — a legacy or crashed-before-
-    teardown call keeps NULL.
-    """
-    await db.execute(
-        "UPDATE call_sessions "
-        "SET checkpoints_passed = ?, total_checkpoints = ? WHERE id = ?",
-        (checkpoints_passed, total_checkpoints, call_id),
-    )
-    await db.commit()
 
 
 async def get_debrief_by_call_id(

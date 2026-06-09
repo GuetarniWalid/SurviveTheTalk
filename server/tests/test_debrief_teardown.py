@@ -197,6 +197,48 @@ def test_persist_is_idempotent_on_double_call(seeded, monkeypatch):
     assert debrief["survival_pct"] == 66  # original (2/3), not the re-run's 3/3=100
 
 
+def test_persist_claim_blocks_double_bump_when_precheck_is_defeated(
+    seeded, monkeypatch
+):
+    """The ATOMIC CLAIM — not just the cheap pre-check — prevents a double
+    attempt-bump. This is the concurrency / post-crash retry case (Story 6.26):
+    two teardowns whose cheap pre-check both read a stale NULL marker. We force
+    `get_call_session` to always report the marker unset so the pre-check never
+    short-circuits; the conditional `UPDATE ... WHERE checkpoints_passed IS NULL`
+    must still let only the FIRST run through.
+    """
+    user_id, call_id = seeded
+    monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_core)
+
+    async def _stale_call_row(_db, _call_id):
+        # Marker always reported NULL → defeats the pre-check, forcing both runs
+        # down to the atomic claim on the REAL row.
+        return {"checkpoints_passed": None, "user_id": user_id}
+
+    monkeypatch.setattr("pipeline.debrief_teardown.get_call_session", _stale_call_row)
+
+    async def _go():
+        await persist_debrief(**_kwargs(call_id))
+        await persist_debrief(**_kwargs(call_id, checkpoints_passed=3))
+        async with get_connection() as db:
+            async with db.execute(
+                "SELECT attempts FROM user_progress "
+                "WHERE user_id = ? AND scenario_id = ?",
+                (user_id, _SCENARIO_ID),
+            ) as cur:
+                progress = await cur.fetchone()
+            async with db.execute(
+                "SELECT checkpoints_passed FROM call_sessions WHERE id = ?",
+                (call_id,),
+            ) as cur:
+                counts = await cur.fetchone()
+        return progress, counts
+
+    progress, counts = asyncio.run(_go())
+    assert progress["attempts"] == 1  # the claim caught run #2, not the pre-check
+    assert counts["checkpoints_passed"] == 2  # first claim's value, not re-run's 3
+
+
 async def _fake_malformed_core(**_kwargs):
     # An error item missing required fields (correction/context/count) — the kind
     # of shape that can slip through _normalize_core's list-only check on the

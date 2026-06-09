@@ -89,7 +89,9 @@ def _merge_hesitations(hesitations: list[dict], hesitation_contexts: Any) -> lis
     for i, gap in enumerate(hesitations):
         context = ""
         if i < len(contexts) and isinstance(contexts[i], dict):
-            context = str(contexts[i].get("context", "")).strip()
+            # `or ""` (not a .get default) so an explicit null `context` on the
+            # non-strict fallback path degrades to "" instead of the string "None".
+            context = str(contexts[i].get("context") or "").strip()
         merged.append(
             {
                 "duration_sec": round(float(gap.get("duration_sec", 0.0)), 1),

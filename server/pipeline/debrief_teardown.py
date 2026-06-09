@@ -29,7 +29,6 @@ from db.database import get_connection
 from db.queries import (
     get_call_session,
     insert_debrief,
-    set_call_checkpoint_counts,
     upsert_user_progress,
 )
 from models.schemas import DebriefOut
@@ -96,9 +95,11 @@ async def persist_debrief(
 
     # Cheap existence + idempotency pre-check BEFORE the ~8 s paid LLM call:
     # bail if the call row was rolled back (Popen-rollback), or if teardown
-    # already ran (`checkpoints_passed` is the marker `set_call_checkpoint_counts`
-    # always writes). Skipping here avoids both a wasted generation and a
-    # double user_progress increment on any re-run.
+    # already ran (`checkpoints_passed` is the marker the atomic claim below
+    # writes). This is only a COST optimisation — the authoritative guard is the
+    # conditional CLAIM inside the write transaction, which stays correct under a
+    # concurrent / post-crash retry that this earlier, separate-connection read
+    # could miss.
     async with get_connection() as db:
         call_row = await get_call_session(db, call_id)
     if call_row is None:
@@ -126,13 +127,39 @@ async def persist_debrief(
 
     now = _now_iso()
     async with get_connection() as db:
-        # Progression + server-side counts land regardless of LLM success.
-        previous_best, attempt_number = await upsert_user_progress(
-            db, user_id, scenario_id, survival_pct, now
-        )
-        await set_call_checkpoint_counts(
-            db, call_id, checkpoints_passed, total_checkpoints
-        )
+        # ONE atomic transaction = the authoritative idempotency guard + the
+        # progression bump. The conditional CLAIM flips `checkpoints_passed` from
+        # NULL only on the FIRST teardown; a concurrent run or a post-crash retry
+        # (future Story 6.26 bot pooling) gets rowcount 0 and bails — so
+        # `user_progress.attempts` is bumped EXACTLY once even though the cheap
+        # pre-check above and this claim can each be reached twice. The marker
+        # write and the attempt bump share this transaction, so a crash before
+        # commit rolls back BOTH (no half-applied attempt, no orphaned marker).
+        # The claim UPDATE also writes the server-authoritative checkpoint counts
+        # (AC1/AC9) — they land regardless of LLM success.
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            claim = await db.execute(
+                "UPDATE call_sessions "
+                "SET checkpoints_passed = ?, total_checkpoints = ? "
+                "WHERE id = ? AND checkpoints_passed IS NULL",
+                (checkpoints_passed, total_checkpoints, call_id),
+            )
+            if claim.rowcount != 1:
+                await db.rollback()
+                logger.info(
+                    "debrief: teardown already claimed for call_id={} — "
+                    "skipping (idempotent)",
+                    call_id,
+                )
+                return
+            previous_best, attempt_number = await upsert_user_progress(
+                db, user_id, scenario_id, survival_pct, now
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
         if core is None:
             logger.warning(

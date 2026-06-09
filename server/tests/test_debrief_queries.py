@@ -1,10 +1,10 @@
 """Story 7.1 — tests for the debrief persistence queries (AC6/AC9).
 
-`upsert_user_progress` (the FIRST write path to `user_progress`),
-`insert_debrief` (idempotent via the UNIQUE call_session_id),
-`set_call_checkpoint_counts`, and `get_debrief_by_call_id`. Each test runs
-migrations against a per-test sqlite file and seeds the FK prerequisites
-(user, scenarios, call_session).
+`upsert_user_progress` (the FIRST write path to `user_progress` — composable,
+the caller owns the transaction), `insert_debrief` (idempotent via the UNIQUE
+call_session_id), and `get_debrief_by_call_id`. Each test runs migrations
+against a per-test sqlite file and seeds the FK prerequisites (user, scenarios,
+call_session).
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from db.queries import (
     get_debrief_by_call_id,
     insert_call_session,
     insert_debrief,
-    set_call_checkpoint_counts,
     upsert_user_progress,
 )
 from db.seed_scenarios import seed_scenarios
@@ -174,21 +173,3 @@ def test_get_debrief_none_when_absent(seeded):
             return await get_debrief_by_call_id(db, call_id)
 
     assert asyncio.run(_go()) is None
-
-
-def test_set_call_checkpoint_counts_writes_columns(seeded):
-    _, call_id = seeded
-
-    async def _go():
-        async with get_connection() as db:
-            await set_call_checkpoint_counts(db, call_id, 2, 5)
-            async with db.execute(
-                "SELECT checkpoints_passed, total_checkpoints FROM call_sessions "
-                "WHERE id = ?",
-                (call_id,),
-            ) as cur:
-                return await cur.fetchone()
-
-    row = asyncio.run(_go())
-    assert row["checkpoints_passed"] == 2
-    assert row["total_checkpoints"] == 5
