@@ -28,7 +28,7 @@ from pipeline.llm_provider import (
     resolve_llm_api_key,
     resolve_llm_chat_url,
 )
-from pipecat.services.soniox.stt import SonioxSTTService
+from pipecat.services.soniox.stt import SonioxContextObject, SonioxSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
@@ -70,6 +70,7 @@ from pipeline.tts_warmup import warm_up_tts_cartesia
 from pipeline.tts_watchdog import TTSWatchdog
 from pipeline.scenarios import (
     TUTORIAL_SCENARIO_ID,
+    build_stt_terms,
     load_scenario_base_prompt,
     load_scenario_checkpoints,
     load_scenario_metadata,
@@ -250,6 +251,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # `TranscriptionFrame(..., result=self._final_transcription_buffer)`
     # where each buffered token is the raw Soniox dict with a `speaker`
     # key). EnvironmentMonitor reads `frame.result` accordingly.
+    # Story 6.19 follow-up — bias STT toward THIS scenario's proper nouns
+    # (character / place / business / menu names like "Halloran's Electronics",
+    # "Carver Street", "fish and chips") so a French accent doesn't mis-segment
+    # them. SHORT, scenario-scoped list from `build_stt_terms`; None when the
+    # scenario has no terms OR the `STT_CONTEXT_ENABLED` kill-switch is "0" → no
+    # bias (today's behavior, instant rollback without a redeploy). It CANNOT
+    # bias the learner's OWN self-stated name — the app stores no user name.
+    stt_context = None
+    if os.environ.get("STT_CONTEXT_ENABLED", "1") == "1":
+        stt_terms = build_stt_terms(scenario_id)
+        if stt_terms:
+            stt_context = SonioxContextObject(terms=stt_terms)
+            logger.info("stt_context scenario={} terms={}", scenario_id, stt_terms)
     stt = SonioxSTTService(
         api_key=settings.soniox_api_key,
         settings=SonioxSTTService.Settings(
@@ -266,6 +280,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # mis-detect cannot recur; relax it only if the app goes multilingual.
             language_hints=[Language.EN],
             language_hints_strict=True,
+            # Story 6.19 follow-up — per-scenario proper-noun bias (built above).
+            # None → unset → no bias. Complementary to language_hints: strict-EN
+            # picks the LANGUAGE, `context.terms` biases WORD choice within it.
+            context=stt_context,
         ),
         vad_force_turn_endpoint=False,
     )

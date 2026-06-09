@@ -1582,6 +1582,38 @@ def test_difficulty_blocks_are_distinct_and_personality_neutral() -> None:
     assert easy != hard
 
 
+def test_build_stt_terms_returns_scenario_proper_nouns() -> None:
+    """Story 6.19 follow-up — the per-scenario Soniox STT proper-noun bias list."""
+    from pipeline.scenarios import build_stt_terms
+
+    waiter = build_stt_terms("waiter_easy_01")
+    assert "Tina" in waiter
+    assert "The Golden Fork" in waiter
+    assert "fish and chips" in waiter
+    cop = build_stt_terms("cop_interrogation_01")
+    assert "Halloran's Electronics" in cop
+    assert "Carver Street" in cop
+    # Unknown scenario → no bias (graceful: exactly today's behavior).
+    assert build_stt_terms("nope_404") == []
+    # learner_name hook prepends it first + trims + de-dups case-insensitively.
+    named = build_stt_terms("girlfriend_medium_01", learner_name="  Walid  ")
+    assert named[0] == "Walid"
+    assert "Rachel" in named
+    deduped = build_stt_terms("girlfriend_medium_01", learner_name="rachel")
+    assert sum(1 for t in deduped if t.lower() == "rachel") == 1
+
+
+def test_stt_terms_compose_into_soniox_context_object() -> None:
+    """The terms list drops cleanly into the pipecat SonioxContextObject and
+    serializes — the exact shape bot.py sends to Soniox in the config frame."""
+    from pipecat.services.soniox.stt import SonioxContextObject
+
+    from pipeline.scenarios import build_stt_terms
+
+    dumped = SonioxContextObject(terms=build_stt_terms("waiter_easy_01")).model_dump()
+    assert "Tina" in dumped["terms"]
+
+
 def test_resolve_patience_config_validates_ladder_impatience_seconds_range(
     tmp_path, monkeypatch
 ) -> None:

@@ -362,6 +362,77 @@ def find_persona_difficulty_leaks(base_prompt: str) -> list[str]:
     return [p for p in _PERSONA_DIFFICULTY_LEAK_PATTERNS if p in haystack]
 
 
+# ============================================================
+# Story 6.19 follow-up (2026-06-09) — Soniox STT proper-noun bias
+# ============================================================
+#
+# Soniox (stt-rt-v4) mis-segments accented proper nouns into common words (a
+# French-accented "Halloran's" → "hello ran's"; a name → wrong tokens). Soniox's
+# `context` feature biases recognition toward a SHORT list of expected terms, so
+# the proper nouns the LEARNER is likely to SAY about THIS scenario (character
+# name, place / business names, distinctive menu items) come out right. Kept
+# SHORT + scenario-scoped — a long or global list over-biases and inserts names
+# mid-sentence (Soniox docs + 2026-06-09 research). Curated per scenario_id
+# because these nouns live as free prose inside `base_prompt` / the Menu block,
+# with no structured field to parse reliably. A scenario absent from the table →
+# no bias (exactly today's behavior). Wired in `bot.py` (wrapped in a pipecat
+# `SonioxContextObject(terms=…)`, behind the `STT_CONTEXT_ENABLED` kill-switch).
+#
+# NOTE — this CANNOT fix the learner's OWN self-stated name (the cop's "give your
+# name" beat): the app stores NO user name (only id / email / tier), so there is
+# nothing to bias toward. Fixing that needs an onboarding name-capture first;
+# then pass it as `build_stt_terms(scenario_id, learner_name=…)` (the hook is
+# already here).
+_SCENARIO_STT_TERMS: dict[str, list[str]] = {
+    "waiter_easy_01": [
+        "Tina",
+        "The Golden Fork",
+        "grilled chicken",
+        "fried chicken",
+        "fish and chips",
+        "tomato soup",
+    ],
+    "girlfriend_medium_01": ["Rachel"],
+    "mugger_medium_01": ["Danny"],
+    "cop_hard_01": ["Sergeant Price"],
+    "landlord_hard_01": ["Gerald Whitmore", "Mr. Whitmore"],
+    "cop_interrogation_01": [
+        "Detective Mercer",
+        "Detective Frank Mercer",
+        "Riverside",
+        "Halloran's Electronics",
+        "Carver Street",
+        "Carver Street Boys",
+    ],
+}
+
+
+def build_stt_terms(scenario_id: str, learner_name: str | None = None) -> list[str]:
+    """Return the SHORT proper-noun list to bias Soniox STT toward for a call.
+
+    Story 6.19 follow-up — the learner is likely to SAY these scenario proper
+    nouns (character name, places, distinctive menu items); Soniox's `context`
+    feature biases recognition toward them so an accent doesn't mis-segment them.
+    Pure + deterministic (no pipecat import — `bot.py` wraps the list in a
+    `SonioxContextObject`). Kept short + scenario-scoped (over-biasing inserts
+    names mid-sentence). `learner_name` is an optional FUTURE hook — the app
+    stores no user name today, but when onboarding captures one, pass it here to
+    also bias the learner's self-stated name. Unknown scenario → `[]` (no bias).
+    """
+    terms: list[str] = []
+    if learner_name and learner_name.strip():
+        terms.append(learner_name.strip())
+    terms.extend(_SCENARIO_STT_TERMS.get(scenario_id, []))
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        cleaned = term.strip()
+        if cleaned and cleaned.lower() not in seen:
+            seen.add(cleaned.lower())
+            out.append(cleaned)
+    return out
+
+
 def resolve_patience_config(
     scenario_id: str, difficulty_override: str | None = None
 ) -> dict:
