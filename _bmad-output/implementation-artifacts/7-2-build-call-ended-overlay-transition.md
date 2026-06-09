@@ -117,7 +117,7 @@ No inline hex (theme-token test): reuse `AppColors`/`CallColors`; add the four c
 
 ### Server
 - [ ] **Task 1 — Migration 012 + snapshot (AC-S1).** Write `012_scenarios_end_phrases.sql` (`ALTER TABLE scenarios ADD COLUMN end_phrases TEXT`); add `test_migrations.py::test_migration_012_*`; after deploy, `refresh_prod_snapshot.py` + commit the snapshot.
-- [ ] **Task 2 — YAML + seeder (AC-S2).** Add `end_phrases:{hung_up,voluntary,survived}` to all 6 `scenarios/*.yaml` (copy from the Dev Notes table; **propose the 2nd-cop set for Walid**); add the `end_phrases` key to `seed_scenarios._row_from_yaml` (`json.dumps`, NULL when absent); add the column to `_UPSERT_SCENARIO_SQL` in **`db/queries.py`** in ALL THREE spots (INSERT column list, `VALUES` params, `ON CONFLICT … DO UPDATE SET`).
+- [ ] **Task 2 — YAML + seeder (AC-S2).** Add `end_phrases:{hung_up,voluntary,survived}` to all 6 `scenarios/*.yaml` — **copy verbatim from the Dev Notes table (all 6 sets locked, no choosing)**; add the `end_phrases` key to `seed_scenarios._row_from_yaml` (`json.dumps`, NULL when absent); add the column to `_UPSERT_SCENARIO_SQL` in **`db/queries.py`** in ALL THREE spots (INSERT column list, `VALUES` params, `ON CONFLICT … DO UPDATE SET`).
 - [ ] **Task 3 — Expose in `ScenarioListItem` (AC-S3).** Add `end_phrases: dict | None = None` to `ScenarioListItem` ([schemas.py:141-156]); pass `end_phrases=_safe_json_load(row["end_phrases"], scenario_id=row["id"], column="end_phrases")` in `list_scenarios`. (`ScenarioDetail` inherits the field; `get_scenario` may leave it unset → detail nulls it, fine.) +round-trip tests in `tests/test_scenarios.py`.
 - [ ] **Task 4 — Server gates (AC-S4).** `ruff` + `pytest` green incl. migration + scenarios tests.
 
@@ -169,16 +169,16 @@ Adding `end_phrases` follows the Story 7.1 `scenario_title` path EXACTLY (migrat
 
 ### Seed phrases (Walid-approved 2026-06-09 — author per scenario)
 
-Base copy by character (the dev seeds each scenario's YAML from its character; **propose a distinct set for the 2nd cop scenario** + confirm with Walid). Tone: short, 3rd person, sarcastic, never congratulatory; ≤50 chars ideal / 70 hard.
+**ALL 6 sets LOCKED (Walid 2026-06-09)** — the dev seeds each scenario's YAML verbatim from this table; no proposing/choosing. Tone: short, 3rd person, sarcastic, never congratulatory; ≤50 chars ideal / 70 hard. (Walid may still tweak any string later — it's a server edit, no app update.)
 
-| Character (scenario) | `hung_up` (failure) | `voluntary` (you quit) | `survived` (rare) |
+| Scenario (character) | `hung_up` (failure) | `voluntary` (you quit) | `survived` (rare) |
 |---|---|---|---|
-| Waitress (the-waiter) | "The waitress kicked you out" | "You walked out" | "You actually got your food" |
-| Mugger (the-mugger) | "The mugger gave up on you" | "You hung up first" | "The mugger walked away empty-handed" |
-| Girlfriend (the-girlfriend) | "She hung up. Again." | "You ended the call" | "She's still on the line. Barely." |
-| Cop (the-cop) | "The officer lost patience" | "You hung up on the officer" | "The officer let you off" |
-| Landlord (the-landlord) | "The landlord hung up on you" | "You hung up on him" | "The landlord backed down" |
-| Cop #2 (cop-interrogation-01) | _dev proposes_ | _dev proposes_ | _dev proposes_ |
+| the-waiter (Waitress) | "The waitress kicked you out" | "You walked out" | "You actually got your food" |
+| the-mugger (Mugger) | "The mugger gave up on you" | "You hung up first" | "The mugger walked away empty-handed" |
+| the-girlfriend (Girlfriend) | "She hung up. Again." | "You ended the call" | "She's still on the line. Barely." |
+| the-cop (Cop) | "The officer lost patience" | "You hung up on the officer" | "The officer let you off" |
+| the-landlord (Landlord) | "The landlord hung up on you" | "You hung up on him" | "The landlord backed down" |
+| cop-interrogation-01 (Detective, "The 8:30 Alibi") | "The detective stopped believing you" | "You hung up on the detective" | "Your alibi held. Barely." |
 
 ### Reuse, don't reinvent (client)
 
@@ -187,9 +187,9 @@ Base copy by character (the dev seeds each scenario's YAML from its character; *
 - **Auth'd GET:** copy `CallRepository.endCall` ([call_repository.dart:43-53]) for `fetchDebrief`; `ApiClient` base `http://167.235.63.129`, Bearer interceptor.
 - **Post-call nav:** copy the imperative `rootNavigator pushReplacement(MaterialPageRoute)` in a post-frame callback ([call_screen.dart:744-760]); `_popScheduled` guards double-push. Don't touch `CallEndedNoticeScreen` / the `showsNotice` predicate.
 
-### Avatar vs track color (minor — for Walid's visual gate)
+### Avatar vs track color (DECIDED 2026-06-09)
 
-Design assigns avatar-bg `#414143` and track `#38383A`. The shipped `CharacterAvatar` uses `CallColors.avatarBackground` (#38383A). Reusing it (recommended, continuity) → avatar #38383A; use `AppColors.avatarBg` (#414143) for the track to keep them distinct. Cosmetic — settle on-device.
+**LOCKED:** avatar circle = the shipped `CharacterAvatar` (`CallColors.avatarBackground` #38383A — continuity with the other call screens); progress-bar track = `AppColors.avatarBg` (#414143), which keeps it visually distinct from the avatar. No new token, no inline hex. (This swaps the design doc's literal #414143-avatar / #38383A-track assignment to preserve cross-screen avatar continuity; Walid may fine-tune at the on-device gate, but the dev implements exactly this.)
 
 ### Conventions / traps
 
@@ -233,3 +233,4 @@ Design assigns avatar-bg `#414143` and track `#38383A`. The shipped `CharacterAv
 |---|---|
 | 2026-06-09 | Story 7.2 drafted (`backlog` → `ready-for-dev`); client-only Call Ended overlay; phrases proposed client-side. |
 | 2026-06-09 | **Revised: phrases moved SERVER-SIDE** per Walid's content-is-server-side rule ([[content-must-be-server-side]]). Now a client + small-server story: new per-scenario `end_phrases` field (migration 012 + YAML + seeder + `ScenarioListItem` exposure) delivered in the scenario list payload; client overlay reads `scenario.endPhrases`. Re-added the Smoke Test Gate (deploys). Scope boundary (Decision F): names/avatars/Rive stay client for 7.2; the full content migration is a separate ADR+story (generic-shared-body decided). |
+| 2026-06-09 | **All open decisions LOCKED for the dev** (Walid: "make decisions now so the dev doesn't think"). Authored the 6th set of phrases (cop-interrogation-01 / "The 8:30 Alibi" — Detective). Fixed the avatar/track color (avatar #38383A via CharacterAvatar, track #414143). **Zero open decisions remain** — the spec is fully deterministic for `/bmad-dev-story`. |
