@@ -118,6 +118,12 @@ _PROVIDER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 _VERDICT_VALUES = ("met", "unmet", "unsure")
 _VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure": None}
 
+# FR37 — reserved key for the abuse flag folded into the multi-goal verdict
+# object. `__`-wrapped so it can never collide with a YAML checkpoint id (which
+# are plain snake_case). The model returns it as a strict boolean; the caller
+# (`CheckpointManager`) pops it before the goal-advance rule.
+ABUSE_KEY = "__user_abusive__"
+
 # Story 6.10 (2026-05-29 structured-output) — the multi-goal classifier emits a
 # schema-pinned JSON object with ONE key per pending goal_id, each valued
 # `"met"|"unmet"|"unsure"`. The output length grows with the objective count
@@ -131,14 +137,17 @@ _VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure
 # call drained patience unfairly. (1 and 5 goals were fine; 20 was not.) We size
 # base + per-goal with headroom for long snake_case ids — still a fraction of a
 # cent per classify even at 20 goals.
-_MULTI_MAX_TOKENS_BASE = 64
+# FR37 — base bumped 64 → 96 to cover the extra `"__user_abusive__": false`
+# entry (~12 tokens) so the schema-pinned document can't truncate (Groq returns
+# HTTP 400 json_validate_failed on truncation — Story 6.16).
+_MULTI_MAX_TOKENS_BASE = 96
 _MULTI_MAX_TOKENS_PER_GOAL = 24
 
 
 def _multi_max_tokens(num_goals: int) -> int:
     """Completion-token budget for `classify_multi`, scaled to the pending-goal
     count so the schema-pinned verdict object can't be truncated mid-document
-    (Story 6.16). At 6 goals → 208; at 20 goals → 544."""
+    (Story 6.16). At 6 goals → 240; at 20 goals → 576."""
     return _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
 
 
@@ -627,12 +636,19 @@ def _build_verdict_schema(goal_ids: list[str]) -> dict:
     and produced a silent all-None (no checkpoint flipped) for the SAME
     input that worked moments earlier.
     """
+    properties: dict = {
+        gid: {"type": "string", "enum": list(_VERDICT_VALUES)} for gid in goal_ids
+    }
+    # FR37 — fold abuse detection into the SAME structured call (no extra LLM
+    # call, no added latency/cost beyond ~one boolean). `ABUSE_KEY` is a
+    # reserved boolean the caller (`CheckpointManager`) pops BEFORE the
+    # goal-advance rule, so it never pollutes goal judging; its `__`-wrapped
+    # name can never collide with a checkpoint id.
+    properties[ABUSE_KEY] = {"type": "boolean"}
     return {
         "type": "object",
-        "properties": {
-            gid: {"type": "string", "enum": list(_VERDICT_VALUES)} for gid in goal_ids
-        },
-        "required": list(goal_ids),
+        "properties": properties,
+        "required": list(goal_ids) + [ABUSE_KEY],
         "additionalProperties": False,
     }
 
@@ -696,4 +712,12 @@ def _parse_multi_classifier_output(
         logger.warning("exchange classifier multi output not a dict")
         return None
 
-    return {gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids}
+    verdicts: dict[str, bool | None] = {
+        gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids
+    }
+    # FR37 — surface the reserved abuse flag (strict bool) alongside the goal
+    # verdicts. The caller pops `ABUSE_KEY` before `advance_goals`, so it never
+    # reaches the goal-advance/outcome rule. A missing/non-bool value → False
+    # (conservative: never hang up on an ambiguous classifier output).
+    verdicts[ABUSE_KEY] = data.get(ABUSE_KEY) is True
+    return verdicts

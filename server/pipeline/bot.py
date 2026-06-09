@@ -616,6 +616,9 @@ async def run_bot(url: str, room: str, token: str) -> None:
         patience_tracker=patience_tracker,
         scenario_description=scenario_metadata.get("title", scenario_id),
         coherence_charter=COHERENCE_CHARTER,
+        # FR37 — env kill-switch for the abuse → inappropriate-content hang-up
+        # (the abuse flag rides the same classify_multi call; no extra LLM call).
+        abuse_detection_enabled=settings.abuse_detection_enabled,
     )
 
     # Story 6.8 Phase 1 AC3 — LLM→TTS streaming-overlap probe. Both

@@ -205,6 +205,16 @@ class Settings(BaseSettings):
     env_monitor_trigger_turns: int = 2  # ENV_MONITOR_TRIGGER_TURNS
     env_monitor_min_speaker_tokens: int = 3  # ENV_MONITOR_MIN_SPEAKER_TOKENS
 
+    # FR37 — inappropriate-content (abuse) detection kill-switch. When True
+    # (default), the SAME per-turn checkpoint classifier also flags a clearly
+    # abusive user turn (no extra LLM call), ending the call in-character with
+    # reason=inappropriate_content (→ the Story 7.1 debrief fills
+    # inappropriate_behavior). Set ABUSE_DETECTION_ENABLED=0 to disable instantly
+    # without a redeploy (the classifier still emits the flag; CheckpointManager
+    # just ignores it). Conservative by construction — the prompt flags only
+    # genuine abuse, and any non-bool/missing flag is treated as not-abusive.
+    abuse_detection_enabled: bool = True  # ABUSE_DETECTION_ENABLED
+
     # Story 6.24 — TTS connection warm-up kill-switch. When True (default), a
     # fire-and-forget Cartesia /tts/bytes warm-up fires at call start so the
     # opening line doesn't pay the first-synthesis cold-start (call_id=226:

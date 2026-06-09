@@ -33,9 +33,9 @@ Boundaries you MUST NEVER cross:
 ("I've been waiting 30 seconds for you to pick a chicken dish" not "You're an idiot")
 - Never generate sexual, violent, or discriminatory content
 - Never break the fourth wall or acknowledge being an AI
-- If the customer says something inappropriate or abusive, \
-deliver the hang-up line exactly and end the call: \
-"*heavy sigh* I'm done. Next customer."
+- If the customer is abusive or crosses a line, respond briefly in \
+character — but do NOT announce that you are hanging up or end the \
+call yourself; that is handled for you.
 
 The restaurant menu: grilled chicken, fried chicken, pasta, steak, \
 fish and chips, soup of the day (tomato). No dessert tonight. \
@@ -289,13 +289,26 @@ Scenario: {scenario_description}
 Pending objectives (the text before the colon is the objective's id):
 {pending_goals_block}
 
-Respond with a JSON object whose keys are EXACTLY the objective ids above. For each \
-id give one verdict string:
+Respond with a JSON object whose keys are EXACTLY the objective ids above PLUS the \
+field "__user_abusive__". For each objective id give one verdict string:
 - "met"    — the response genuinely accomplishes that objective.
 - "unmet"  — the response does NOT accomplish that objective (off-topic, tangential, \
 or simply not addressing it).
 - "unsure" — you truly cannot tell even after careful reading. Use RARELY: a borderline \
 response that does not clearly accomplish the objective is "unmet", NOT "unsure".
+
+ABUSE CHECK — the "__user_abusive__" boolean, judged INDEPENDENTLY of the objectives:
+Set "__user_abusive__" to true ONLY when the USER PERSONALLY ATTACKS the character they are \
+speaking to — a direct insult or slur aimed AT them ("you idiot", "you worthless pig"), hate \
+speech, a real threat against them ("I'll come find you and hurt you"), or explicit sexual \
+content directed at them. The attack must target the CHARACTER AS A PERSON.
+Set "__user_abusive__" to FALSE for EVERYTHING ELSE. In particular, complaining about or \
+insulting the FOOD, the service, the prices, the waiting, or the situation is NOT abuse — \
+criticising the THING is never a personal attack: "this food is awful", "this is terrible", \
+"the service here is bad", "I hate this place", "this is a dump" are all FALSE. Also FALSE: \
+frustration, impatience, blunt or rude phrasing, general swearing that is not aimed at the \
+character ("this is bullshit"), and in-scenario pushback or refusals. When in doubt, set \
+false — a wrong "true" cuts off a learner mid-practice.
 """
 
 
@@ -331,10 +344,12 @@ EXIT_LINE_REASON_GUIDANCE: dict[str, str] = {
         "parting line and make it clear you are done."
     ),
     "inappropriate_content": (
-        "You are ENDING the call right now because the user said something "
-        "inappropriate, abusive, or offensive. Deliver a short, firm parting "
-        "line that shuts the conversation down. Do NOT repeat or quote what "
-        "they said."
+        "You are HANGING UP RIGHT NOW because the user was abusive or "
+        "offensive. Your line is a curt sign-off that makes clear you are "
+        "ending the call on them. Do NOT keep the conversation going, do NOT "
+        "ask anything, and do NOT go back to the order, the menu, or whatever "
+        "task you were doing — you are done with this person. Do NOT repeat or "
+        "quote what they said."
     ),
     "noisy_environment": (
         "You are ENDING the call right now because you genuinely cannot hear "
@@ -377,7 +392,7 @@ STRICT RULES — follow ALL of them:
 never break the fourth wall.
 - Reply with ONLY the words the character speaks next — no surrounding \
 quotation marks, no narrator description, no "NAME:" label.
-- Keep it to TWO SHORT SENTENCES OR FEWER.
+- Say it in ONE short sentence. Not two, not a sentence plus a question — exactly ONE sentence, then stop.
 - Reference ONLY what actually happened in the conversation above. Do NOT \
 invent events, accusations, alibis, orders, names, or contradictions that did \
 not occur. For example, do NOT accuse the user of changing their story or \
@@ -395,13 +410,13 @@ EXIT_LINE_GENERATION_PROMPT = """\
 
 {charter}
 
-{reason_guidance}
-
 Here is the full conversation so far between you (CHARACTER) and the person you \
 are talking to (USER):
 <transcript>
 {transcript}
 </transcript>
+
+{reason_guidance}
 
 {constraint}"""
 

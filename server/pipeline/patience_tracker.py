@@ -974,6 +974,24 @@ class PatienceTracker(FrameProcessor):
         """
         self._schedule_hang_up(_REASON_NOISY_ENVIRONMENT)
 
+    def schedule_inappropriate_exit(self) -> None:
+        """Route to `_run_hang_up` with `reason='inappropriate_content'` and the
+        in-character inappropriate exit line. Idempotent re-call swallowed (the
+        `_hang_up_in_progress` guard in `_schedule_hang_up`).
+
+        FR37 — called by `CheckpointManager` when the SAME `classify_multi` call
+        that judges goals flags the user's turn as clearly abusive
+        (`__user_abusive__`). The character speaks an in-character closing line
+        (Story 6.18 generates it from the actual transcript + the inappropriate
+        reason → coherent, references what was said) and the call ends; the
+        teardown debrief then sets `inappropriate_behavior` (Story 7.1 AC7). No
+        `survival_pct` override (meter ratio, like the silence path) — the exit
+        is a behavioral cut, not a performance measure. This was the dormant
+        `_REASON_INAPPROPRIATE` path (previously only `abuse_classifier=None` in
+        prod); it is now wired with no extra LLM call.
+        """
+        self._schedule_hang_up(_REASON_INAPPROPRIATE)
+
     # ---------- silence ladder ----------
 
     def _start_silence_timer(self) -> None:
@@ -1226,19 +1244,26 @@ class PatienceTracker(FrameProcessor):
             )
             await asyncio.sleep(_HANG_UP_PRE_TTS_DELAY)
 
-            # Story 6.11 fix (2026-05-30, smoke call_id=200) — the
-            # noisy_environment path is the ONLY hang-up path that fires
-            # WHILE the character LLM is mid-generating a normal reply to
-            # the triggering turn (silence has no in-flight speech; survived
-            # is suppressed by CheckpointManager's terminal-turn sync). On
-            # call_id=200 the exit line was generated correctly but queued
-            # BEHIND that normal reply ("Grilled chicken. Okay...") and then
-            # flushed by the parasite's continued-speech interruption, so the
-            # user never heard it. Push an InterruptionFrame first to
-            # cancel the in-flight reply + clear the TTS queue, so the exit
-            # line is the only thing that speaks. Scoped to this reason so
-            # the proven silence/survived/inappropriate paths are untouched.
-            if reason == _REASON_NOISY_ENVIRONMENT:
+            # Story 6.11 fix (2026-05-30, smoke call_id=200) + FR37
+            # (2026-06-09, smoke call_id=261) — noisy_environment AND
+            # inappropriate_content BOTH fire WHILE the character LLM is
+            # mid-generating a normal reply to the triggering turn, so the
+            # generated exit line gets queued BEHIND that reply (silence has no
+            # in-flight speech; survived is suppressed by CheckpointManager's
+            # terminal-turn sync). call_id=200: the parasite's continued-speech
+            # interruption then flushed the queued exit line (user never heard
+            # it). call_id=261: the abusive turn drew a full normal reply (the
+            # waiter re-listed the whole menu) that buried the exit line until
+            # PAST the 6 s hang-up TTS timeout — the user perceived "she never
+            # hung up" and bailed. (The OLD persona prompt masked this on the
+            # inappropriate path by scripting a SHORT hang-up line as that
+            # reply; removing it — so the deterministic detector owns the
+            # hang-up — unmasked the same call_id=200 bug here.) Push an
+            # InterruptionFrame first to cancel the in-flight reply + clear the
+            # TTS queue, so the exit line is the only thing that speaks. Silence
+            # + survived stay un-interrupted
+            # (test_silence_hangup_does_not_push_interruption).
+            if reason in (_REASON_NOISY_ENVIRONMENT, _REASON_INAPPROPRIATE):
                 await self.push_frame(
                     InterruptionFrame(),
                     FrameDirection.DOWNSTREAM,

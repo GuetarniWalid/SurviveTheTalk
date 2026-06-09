@@ -134,7 +134,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from pipeline.exchange_classifier import ExchangeClassifier
+from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 
 # Story 6.9 review patch (D1) — after this many consecutive turns where
@@ -417,6 +417,7 @@ class CheckpointManager(FrameProcessor):
         patience_tracker: PatienceTracker,
         scenario_description: str,
         coherence_charter: str,
+        abuse_detection_enabled: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -453,6 +454,13 @@ class CheckpointManager(FrameProcessor):
         # the YAML-author convention is that the constant ships with its
         # own trailing newline.
         self._coherence_charter = coherence_charter
+        # FR37 — when True, an abusive user turn (flagged by the SAME
+        # classify_multi call, no extra LLM call) ends the call in-character with
+        # reason=inappropriate_content. Env kill-switch `ABUSE_DETECTION_ENABLED`
+        # (threaded from `Settings` in bot.py). The abuse key is popped from the
+        # verdicts regardless of this flag so it never reaches the goal-advance
+        # rule; the flag only gates the hang-up action.
+        self._abuse_detection_enabled = abuse_detection_enabled
 
         # Story 6.10 — goal-tracking state model. `self._goals` maps each
         # checkpoint id to "pending" | "met"; `self._id_to_index` maps id
@@ -1013,6 +1021,22 @@ class CheckpointManager(FrameProcessor):
                 self._consecutive_none_count,
                 len(pending),
             )
+            return
+
+        # FR37 — the SAME classify_multi call carries an abuse flag under a
+        # reserved key. POP it BEFORE the goal-advance rule unconditionally (a
+        # leftover `False` would read as a goal verdict and `advance_goals` would
+        # treat it as an "unmet" → spurious patience drain on every normal turn).
+        # When abuse detection is enabled and the turn is flagged, end the call
+        # in-character (reason=inappropriate_content → the Story 7.1 debrief sets
+        # inappropriate_behavior). On abuse the call is OVER → skip goal work.
+        abusive = bool(verdicts.pop(ABUSE_KEY, False))
+        if abusive and self._abuse_detection_enabled:
+            logger.info(
+                "checkpoint_abuse_detected → inappropriate-content hang-up text={!r}",
+                user_text[:80],
+            )
+            self._patience_tracker.schedule_inappropriate_exit()
             return
 
         # A real (parsed) verdict landed — reset the infra backstop.

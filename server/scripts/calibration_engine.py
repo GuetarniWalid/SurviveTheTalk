@@ -82,7 +82,7 @@ from pipeline.checkpoint_manager import (  # noqa: E402
     compose_goal_system_instruction,
     judgeable_goals,
 )
-from pipeline.exchange_classifier import ExchangeClassifier  # noqa: E402
+from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier  # noqa: E402
 from pipeline.llm_provider import (  # noqa: E402
     CHARACTER_MAX_TOKENS,
     CHARACTER_TEMPERATURE,
@@ -646,6 +646,11 @@ async def simulate_conversation(
                 ],
                 scenario_description=data.title,
             )
+            # FR37 — drop the abuse flag (irrelevant to GOAL calibration). It must
+            # NOT reach `advance_goals`, where a `False` would read as a goal
+            # "unmet" → spurious "fail". golden==prod for the goal logic holds.
+            if verdicts is not None:
+                verdicts.pop(ABUSE_KEY, None)
         else:
             verdicts = {}
         recorded_verdicts: dict[str, bool | None] = verdicts if verdicts else {}
@@ -933,6 +938,10 @@ async def run_golden(
             ],
             scenario_description=data.title,
         )
+        # FR37 — defensive: drop the abuse flag (the golden net only reads the
+        # single goal's verdict, but keep the harness clean of the reserved key).
+        if verdicts is not None:
+            verdicts.pop(ABUSE_KEY, None)
         verdict = None if verdicts is None else verdicts.get(cp["id"])
         results.append(
             GoldenCaseResult(

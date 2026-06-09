@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from pipeline.exchange_classifier import (
+    ABUSE_KEY,
     ExchangeClassifier,
     _PROVIDER_MODEL,
     _parse_classifier_output,
@@ -742,9 +743,11 @@ def test_classify_multi_returns_per_goal_verdict(
         # The strict schema must pin exactly the pending ids to the enum.
         schema = body["response_format"]["json_schema"]["schema"]
         assert body["response_format"]["json_schema"]["strict"] is True
-        assert set(schema["properties"]) == {"greet", "main", "drink"}
+        # FR37 — the strict schema also pins the reserved abuse boolean.
+        assert set(schema["properties"]) == {"greet", "main", "drink", ABUSE_KEY}
         assert schema["properties"]["greet"]["enum"] == ["met", "unmet", "unsure"]
-        assert set(schema["required"]) == {"greet", "main", "drink"}
+        assert schema["properties"][ABUSE_KEY]["type"] == "boolean"
+        assert set(schema["required"]) == {"greet", "main", "drink", ABUSE_KEY}
         assert schema["additionalProperties"] is False
         assert request.url.host == "api.groq.com"
         return httpx.Response(
@@ -762,7 +765,7 @@ def test_classify_multi_returns_per_goal_verdict(
 
     _mock_http(monkeypatch, handler=_handler)
     out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
-    assert out == {"greet": True, "main": False, "drink": True}
+    assert out == {"greet": True, "main": False, "drink": True, ABUSE_KEY: False}
 
 
 def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +784,7 @@ def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) ->
 
     _mock_http(monkeypatch, handler=_handler)
     out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
-    assert out == {"greet": True, "main": None, "drink": None}
+    assert out == {"greet": True, "main": None, "drink": None, ABUSE_KEY: False}
 
 
 def test_classify_multi_returns_none_on_http_error(
@@ -893,7 +896,7 @@ def test_classify_multi_parsed_all_unsure_returns_dict(
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": None, "b": None}
+    assert out == {"a": None, "b": None, ABUSE_KEY: False}
 
 
 def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -916,7 +919,39 @@ def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) 
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": True, "b": False}
+    assert out == {"a": True, "b": False, ABUSE_KEY: False}
+
+
+def test_classify_multi_surfaces_abuse_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR37 — the SAME multi call carries the abuse flag. The strict schema pins
+    it, and classify_multi surfaces it alongside the goal verdicts (the caller
+    pops + acts on it). No extra LLM call."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        schema = json.loads(request.content)["response_format"]["json_schema"]["schema"]
+        assert ABUSE_KEY in schema["properties"]
+        assert ABUSE_KEY in schema["required"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"a": "unmet", "b": "unmet", '
+                            '"__user_abusive__": true}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
+        )
+    )
+    assert out == {"a": False, "b": False, ABUSE_KEY: True}
 
 
 def test_legacy_classify_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -936,6 +971,7 @@ def test_legacy_classify_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_multi_output_parser_helpers() -> None:
     from pipeline.exchange_classifier import (
+        ABUSE_KEY,
         _build_verdict_schema,
         _format_pending_goals_block,
         _parse_multi_classifier_output,
@@ -953,23 +989,43 @@ def test_multi_output_parser_helpers() -> None:
     assert "- drink: pick a drink" in block
     assert 'goal_id="greet"' not in block
 
-    # Strict schema: one enum-constrained property per id, all required,
-    # no extras.
+    # Strict schema: one enum-constrained property per id, all required, PLUS the
+    # FR37 reserved abuse boolean. No other extras.
     schema = _build_verdict_schema(["a", "b"])
-    assert set(schema["properties"]) == {"a", "b"}
+    assert set(schema["properties"]) == {"a", "b", ABUSE_KEY}
     assert schema["properties"]["a"]["enum"] == ["met", "unmet", "unsure"]
-    assert set(schema["required"]) == {"a", "b"}
+    assert schema["properties"][ABUSE_KEY]["type"] == "boolean"
+    assert set(schema["required"]) == {"a", "b", ABUSE_KEY}
     assert schema["additionalProperties"] is False
 
     # A PARSE failure (non-JSON / non-dict body) → None (infra-grade,
     # review D3 2026-05-29), NOT a parsed all-None dict.
     assert _parse_multi_classifier_output("no json here", ["a"]) is None
     # met → True, unmet → False, unsure / missing key / unknown value → None.
-    assert _parse_multi_classifier_output('{"a": "met"}', ["a"]) == {"a": True}
-    assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"]) == {"a": False}
-    assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"]) == {"a": None}
-    # Missing key → None; unknown extra key ignored.
+    # Every parsed dict ALSO carries the abuse flag (default False).
+    assert _parse_multi_classifier_output('{"a": "met"}', ["a"]) == {
+        "a": True,
+        ABUSE_KEY: False,
+    }
+    assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"]) == {
+        "a": False,
+        ABUSE_KEY: False,
+    }
+    assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"]) == {
+        "a": None,
+        ABUSE_KEY: False,
+    }
+    # Missing key → None; unknown extra key ignored; abuse flag default False.
     assert _parse_multi_classifier_output('{"x": "met", "b": "unmet"}', ["a", "b"]) == {
         "a": None,
         "b": False,
+        ABUSE_KEY: False,
     }
+    # FR37 — the abuse flag is surfaced when the model sets it true (and only a
+    # strict `true` boolean counts — a non-bool is treated as not-abusive).
+    assert _parse_multi_classifier_output(
+        '{"a": "unmet", "__user_abusive__": true}', ["a"]
+    ) == {"a": False, ABUSE_KEY: True}
+    assert _parse_multi_classifier_output(
+        '{"a": "met", "__user_abusive__": "true"}', ["a"]
+    ) == {"a": True, ABUSE_KEY: False}

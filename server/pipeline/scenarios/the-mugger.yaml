@@ -54,7 +54,7 @@ base_prompt: |
   - Never insult the person's identity — insult their BEHAVIOUR only
   - Never pretend you are physically present — you are calling on the phone
   - Never break the fourth wall or acknowledge being an AI
-  - If the person is abusive, deliver the hang-up line exactly as written in exit_lines.hangup and end the call: "Forget it. You're not even worth robbing."
+  - If the person is abusive or crosses a line, respond briefly in character — but do NOT announce that you are hanging up or end the call yourself; that is handled for you.
 
 # ============================================================
 # CHECKPOINTS — ordered sequence, one active at a time

@@ -1889,6 +1889,44 @@ def test_schedule_noisy_environment_exit_speaks_line_and_emits_envelope(
     assert data["total_checkpoints"] == 6
 
 
+def test_schedule_inappropriate_exit_speaks_line_and_records_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR37 — `schedule_inappropriate_exit()` runs the hang-up with the
+    inappropriate exit line + `reason='inappropriate_content'`, and records the
+    reason on `call_end_reason` for the teardown debrief (Story 7.1 AC7)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_inappropriate="That's enough. We're done here.",
+        )
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.set_checkpoints_passed(2)
+        tracker.schedule_inappropriate_exit()
+        # Synchronous guard flips immediately (mirrors schedule_completion).
+        assert tracker.is_hanging_up is True
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    assert call_end[0].message["data"]["reason"] == "inappropriate_content"
+    # Story 7.1 — the reason is recorded for the teardown debrief generator.
+    assert tracker.call_end_reason == "inappropriate_content"
+
+
 def test_noisy_environment_interrupts_in_flight_speech_before_exit_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1932,12 +1970,59 @@ def test_noisy_environment_interrupts_in_flight_speech_before_exit_line(
     )
 
 
+def test_inappropriate_interrupts_in_flight_speech_before_exit_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR37 smoke (call_id=261) — like noisy_environment, the inappropriate
+    path fires WHILE the character LLM is mid-reply to the abusive turn, so an
+    InterruptionFrame must flush that reply BEFORE the exit-line TTSSpeakFrame.
+    Without it the (un-scripted, full-length) normal reply queues ahead of the
+    exit line and buries it past the 6 s hang-up TTS timeout — the user
+    perceives "no hang-up" and bails. Mirrors the noisy_environment guarantee."""
+    from pipecat.frames.frames import InterruptionFrame
+
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(hang_up_line_inappropriate="That's enough. We're done here.")
+    )
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.schedule_inappropriate_exit()
+        await asyncio.sleep(0.02)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    interrupt_idx = next(
+        (i for i, f in enumerate(captured) if isinstance(f, InterruptionFrame)),
+        None,
+    )
+    exit_idx = next(
+        (
+            i
+            for i, f in enumerate(captured)
+            if isinstance(f, TTSSpeakFrame)
+            and f.text == "That's enough. We're done here."
+        ),
+        None,
+    )
+    assert interrupt_idx is not None, (
+        "must push InterruptionFrame on inappropriate path"
+    )
+    assert exit_idx is not None, "must speak the inappropriate exit line"
+    assert interrupt_idx < exit_idx, (
+        "the interruption must flush in-flight speech BEFORE the exit line"
+    )
+
+
 def test_silence_hangup_does_not_push_interruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The interruption is scoped to noisy_environment — the proven
-    silence/survived paths (no competing in-flight speech) must NOT gain an
-    InterruptionFrame."""
+    """The interruption is scoped to noisy_environment + inappropriate_content
+    (both fire mid-reply) — the proven silence/survived paths (no competing
+    in-flight speech) must NOT gain an InterruptionFrame."""
     from pipecat.frames.frames import InterruptionFrame
 
     _shrink_timers(monkeypatch)

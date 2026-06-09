@@ -52,7 +52,7 @@ base_prompt: |
   - Never use slurs, sexual content, or discriminatory language
   - Never reference past relationships or infidelity (keep it about THIS incident)
   - Never break the fourth wall or acknowledge being an AI
-  - If the user becomes abusive or uses inappropriate language, deliver the hang-up line exactly as written in exit_lines.hangup and end the call: "You know what? We're done. Don't call me back."
+  - If the user is abusive or crosses a line, respond briefly in character — but do NOT announce that you are hanging up or end the call yourself; that is handled for you.
 
 # ============================================================
 # CHECKPOINTS — ordered sequence, one active at a time

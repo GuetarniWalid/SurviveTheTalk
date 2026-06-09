@@ -30,7 +30,7 @@ from pipecat.processors.frame_processor import FrameDirection
 import pipeline.checkpoint_manager as cm_mod
 from pipeline import scenarios
 from pipeline.checkpoint_manager import CheckpointManager, judgeable_goals
-from pipeline.exchange_classifier import ExchangeClassifier
+from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 
 
@@ -127,6 +127,7 @@ def _make_manager(
     coherence_charter: str = "CHARTER.",
     multi_response_fn: Callable[[list[dict], int], dict[str, bool | None]]
     | None = None,
+    abuse_detection_enabled: bool = True,
 ) -> tuple[CheckpointManager, ExchangeClassifier, MagicMock, _StubLLM, LLMContext]:
     """Build a fully-mocked manager. The classifier's `classify_multi`
     is replaced with an async stub.
@@ -218,6 +219,7 @@ def _make_manager(
         patience_tracker=patience_tracker,
         scenario_description=scenario_description,
         coherence_charter=coherence_charter,
+        abuse_detection_enabled=abuse_detection_enabled,
     )
 
     classifier._test_calls = classifier_calls  # type: ignore[attr-defined]
@@ -2360,3 +2362,116 @@ def test_cop_call_222_alibi_does_not_credit_correct_misquoted_time() -> None:
     # (no requires), so it's offered and (over-eager judge) credited. The point
     # of the test is only that the TRAP stayed pending.
     assert "lock_arrival_and_departure" in payload_ids
+
+
+# ---------- FR37: abuse → inappropriate-content hang-up --------------------
+
+
+def test_abuse_flag_schedules_inappropriate_exit() -> None:
+    """FR37 — when the SAME classify_multi call flags the turn abusive, the
+    manager ends the call in-character (reason=inappropriate_content) and does
+    NOT process goals for that turn."""
+
+    def _fn(pending_goals, idx):
+        # Clearly abusive turn: no goal met, abuse flag true.
+        out = {g["id"]: None for g in pending_goals}
+        out[ABUSE_KEY] = True
+        return out
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(multi_response_fn=_fn)
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("you stupid worthless piece of garbage"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_called_once()
+    # The abusive turn is NOT processed as a goal outcome.
+    tracker.apply_exchange_outcome.assert_not_called()
+    # No goal flipped on the abusive turn.
+    assert all(state == "pending" for state in manager.goals_state.values())
+
+
+def test_no_abuse_does_not_schedule_inappropriate_exit() -> None:
+    """A normal turn (abuse flag false) never triggers the inappropriate exit,
+    and goals advance as usual."""
+
+    def _fn(pending_goals, idx):
+        out = {g["id"]: None for g in pending_goals}
+        out[pending_goals[0]["id"]] = True  # first goal met
+        out[ABUSE_KEY] = False
+        return out
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(multi_response_fn=_fn)
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("Hi, I'd like the grilled chicken please"),
+            FrameDirection.DOWNSTREAM,
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_not_called()
+    assert manager.met_count == 1  # the goal still flipped normally
+
+
+def test_abuse_false_does_not_pollute_advance_goals() -> None:
+    """The reserved abuse key is POPPED before `advance_goals`. A normal
+    all-unsure turn with abuse=false must stay patience-NEUTRAL — if the
+    `False` leaked into the verdicts it would read as a goal 'unmet' → a
+    spurious 'fail' → patience drain on every benign turn."""
+
+    def _fn(pending_goals, idx):
+        out = {g["id"]: None for g in pending_goals}  # all unsure
+        out[ABUSE_KEY] = False
+        return out
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(multi_response_fn=_fn)
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("um, I'm not sure"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_not_called()
+    # NEUTRAL (all-unsure) — NOT a fail. The abuse-False did not pollute.
+    tracker.apply_exchange_outcome.assert_not_called()
+
+
+def test_abuse_ignored_when_detection_disabled() -> None:
+    """The ABUSE_DETECTION_ENABLED=0 kill-switch: the flag is still popped (so it
+    can't pollute goal judging) but the hang-up is NOT triggered."""
+
+    def _fn(pending_goals, idx):
+        out = {g["id"]: None for g in pending_goals}
+        out[ABUSE_KEY] = True
+        return out
+
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(
+        multi_response_fn=_fn, abuse_detection_enabled=False
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("you absolute idiot"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_not_called()
+    # Popped, so no spurious goal outcome from the abuse key either.
+    tracker.apply_exchange_outcome.assert_not_called()

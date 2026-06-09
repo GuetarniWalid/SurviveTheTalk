@@ -209,7 +209,7 @@ def test_prompt_includes_persona_charter_transcript_and_anti_fabrication(
     # present verbatim (it has no braces, so escaping is a no-op).
     assert EXIT_LINE_CONSTRAINT in prompt
     assert "changing their story" in prompt  # the explicit call-212 anti-example
-    assert "TWO SHORT SENTENCES" in prompt
+    assert "ONE short sentence" in prompt  # FR37 — one-sentence cap (was TWO)
 
 
 def test_prompt_uses_reason_specific_guidance(
