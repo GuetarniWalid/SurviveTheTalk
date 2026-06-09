@@ -702,6 +702,153 @@ def test_fast_respeak_into_completion_suppresses_second_user_frame() -> None:
     assert "first." in forwarded
 
 
+def test_fast_respeak_double_fail_drains_once_no_premature_hangup() -> None:
+    """Story 6.25 (AC1 + AC2 / D1) — regression for the await-not-cancel
+    double-drain + Deviation #7 frame-forward race.
+
+    Setup: a REAL `PatienceTracker` in the DANGER BAND (initial 50, fail
+    penalty -25, 6 checkpoints so completion never fires) — one fail is
+    survivable (50→25), two are fatal (→0). Two genuine FAIL turns arrive
+    back-to-back: turn 1's classify is still in flight (`classify_delay>0`) when
+    turn 2 arrives, so turn 2 serializes BEHIND it on the non-terminal path
+    (`_serialize_then_classify`), exactly the production fast-re-speak shape.
+
+    Before the fix (await-not-cancel, Story 6.20 AC1): turn 1's awaited fail
+    drained 50→25, then turn 2 scheduled its OWN fail → 25→0 → `character_hung_up`
+    fired a full turn early, and turn 2's frame was forwarded into the hang-up
+    (the LLM reply racing the silence exit line — Deviation #7).
+
+    After D1 (Task 2 coalescing): the rapid pair counts as ONE impatience event
+    — the meter drains EXACTLY ONCE (50→25, byte-identical to the old cancel-path
+    result), is NEVER zeroed, so NO hang-up fires (AC2) and turn 2 stays
+    non-terminal — there is no exit line for its forwarded frame to race (AC1).
+    """
+    tracker = PatienceTracker(
+        initial_patience=50,
+        fail_penalty=-25,
+        recovery_bonus=0,
+        silence_penalty=-10,
+        silence_prompt_seconds=6.0,
+        ladder_impatience_seconds=4.5,
+        silence_hangup_seconds=10.0,
+        escalation_thresholds=[25, 0],
+        total_checkpoints=6,
+    )
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        patience_tracker=tracker,
+        classify_responses=[False, False],
+        classify_delay=0.02,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Turn 1 returns immediately on the non-terminal path (its classify is
+        # NOT awaited there), so turn 2 finds turn 1's task still in flight and
+        # serializes behind it — the fast-re-speak window.
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        await manager.process_frame(
+            _make_user_frame("second."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        # Hygiene: drain the fire-and-forget warning/hang-up tasks the real
+        # tracker may have spawned so the loop closes without pending-task noise.
+        for task in (tracker._warning_task, tracker._hang_up_task):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    _run(_drive())
+
+    # AC2 — the meter drained EXACTLY ONCE (50 → 25), the same value the old
+    # cancel-path produced on identical FAIL/FAIL input. NOT 0 (a double drain).
+    assert tracker.patience == 25
+    # AC2 — the call did NOT hang up: turn 2's coalesced fail never zeroed it.
+    assert tracker.is_hanging_up is False
+    # AC1 — with no hang-up, turn 2 stays non-terminal and is forwarded normally
+    # (there is no exit line for it to race). Both turns reach the LLM.
+    forwarded = [f.text for f in captured if isinstance(f, TranscriptionFrame)]
+    assert forwarded == ["first.", "second."]
+
+
+def test_fast_respeak_hangup_during_await_suppresses_second_frame() -> None:
+    """Story 6.25 (AC1 / Task 1) — POSITIVE coverage for the post-serialize
+    `is_hanging_up` backstop (`checkpoint_suppress_post_serialize_hangup`).
+
+    The primary fix (Task 2 coalescing) makes the hang-up case unreachable on
+    the non-terminal path BY CONSTRUCTION, so the sibling
+    `test_fast_respeak_double_fail_drains_once_no_premature_hangup` can only
+    assert the precondition *vanished* (no hang-up, both frames forwarded) — it
+    never exercises the suppression branch itself. This test drives the residual
+    path the backstop exists for: the AWAITED PRIOR schedules a hang-up DURING
+    turn 2's `_serialize_then_classify` await, so `is_hanging_up` flips True
+    AFTER the top-of-frame Story 6.22 guard already let turn 2 through. The
+    backstop must then DROP turn 2's frame so the exit line stays the sole final
+    utterance (Deviation #7 / AC1).
+
+    A MagicMock tracker is used deliberately: the point is to force
+    `is_hanging_up=True` mid-await regardless of the meter arithmetic (the real
+    danger-band arithmetic is the sibling test's job). `apply_exchange_outcome(
+    success=False)` flips the hang-up, mirroring prod's step_patience → meter 0
+    → _schedule_hang_up chain (is_hanging_up set synchronously).
+    """
+    tracker = MagicMock()
+    tracker.is_hanging_up = False
+    tracker.patience = 100
+    tracker.fail_penalty = -15
+
+    def _schedule_hangup_on_fail(*, success: bool) -> None:
+        if not success:
+            tracker.is_hanging_up = True
+
+    tracker.apply_exchange_outcome.side_effect = _schedule_hangup_on_fail
+
+    # 6 checkpoints so completion (`met_count >= total`) can NEVER be the reason
+    # for suppression — isolating the hang-up backstop from the completion one.
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        patience_tracker=tracker,
+        classify_responses=[False, False],
+        classify_delay=0.02,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        # Turn 1: non-terminal (is_hanging_up False, 100-15=85 > 0, not the last
+        # goal) → schedules its classify in the background and is forwarded.
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        # Turn 2: a fast re-speak. is_hanging_up is still False at its top (turn
+        # 1's classify is in flight), so the Story 6.22 top guard lets it through
+        # to the non-terminal serialize path. Awaiting turn 1's classify then
+        # flips is_hanging_up True → the post-serialize backstop must drop it.
+        await manager.process_frame(
+            _make_user_frame("second."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    forwarded = [f.text for f in captured if isinstance(f, TranscriptionFrame)]
+    # Turn 1 was forwarded (hang-up not yet scheduled when it was processed)...
+    assert "first." in forwarded
+    # ...but turn 2 is SUPPRESSED by the post-serialize is_hanging_up backstop
+    # (Deviation #7 / AC1) — no parallel LLM reply races the exit line.
+    assert "second." not in forwarded
+    # The suppression is the HANG-UP backstop, NOT completion: no goal was met
+    # and schedule_completion was never called, so the `met_count >= total`
+    # suppression cannot have fired — this pins line 817 specifically.
+    assert manager.met_count == 0
+    tracker.schedule_completion.assert_not_called()
+    assert tracker.is_hanging_up is True
+    # Coalescing still held: only turn 1 drained the meter; turn 2's stacked fail
+    # coalesced (it never called apply_exchange_outcome a second time).
+    assert tracker.apply_exchange_outcome.call_count == 1
+
+
 # ---------- Test 10: last character line read from LLMContext ------------
 
 

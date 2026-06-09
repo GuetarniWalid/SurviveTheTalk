@@ -505,6 +505,24 @@ class CheckpointManager(FrameProcessor):
         # real (True/False) verdict.
         self._consecutive_none_count: int = 0
 
+        # Story 6.25 (D1 / Task 2) — fast-re-speak FAIL coalescing. Records
+        # whether the MOST RECENTLY-completed classify judged its turn an
+        # off-topic FAIL. A turn that serialized BEHIND an in-flight prior (a
+        # fast re-speak — `_serialize_then_classify` had to await a non-done
+        # prior) reads this to COALESCE its own fail into the prior's single
+        # meter drain: two stacked FAILs on the non-terminal path then count as
+        # ONE impatience event (the meter drains once — "the awaited prior's
+        # outcome is the one that counts"), restoring the pre-6.20 cancel-path
+        # patience EFFECT. Keeping the meter off zero on the non-terminal path
+        # ALSO closes the Deviation #7 frame-forward race (sub-issue B): turn 2
+        # stays non-terminal, so forwarding its frame can never race a hang-up
+        # exit line. Needs NO explicit reset: it is read ONLY by a turn that
+        # awaited a prior to completion (which sets it), and a coalesced fail
+        # still records `True` so the coalescing propagates across a longer
+        # chain; a fresh (non-stacking) turn ignores it and always owns the
+        # first drain.
+        self._last_outcome_was_fail: bool = False
+
         # Story 6.20 follow-up (call_id=225 echo) — True while the bot is
         # speaking (between BotStartedSpeakingFrame and BotStoppedSpeakingFrame,
         # both observed UPSTREAM at this pipeline position — see the class
@@ -773,12 +791,40 @@ class CheckpointManager(FrameProcessor):
                 # cancel-based path got this for free (a cancelled prior never
                 # reached schedule_completion); the await re-opened the window.
                 # `met_count == total` is the precise, mock-independent signal
-                # that the prior completed the call (the patience-hangup case
-                # is unreachable here: a non-terminal precheck means one more
-                # fail can't zero the meter).
+                # that the prior completed the call.
+                #
+                # Story 6.25 (AC4) — CORRECTION of the prior claim here that "the
+                # patience-hangup case is unreachable: a non-terminal precheck
+                # means one more fail can't zero the meter." That reasoning was
+                # INCOMPLETE: it accounted only for the single awaited-prior
+                # fail, but turn 2 then schedules its OWN classify (a SECOND
+                # fail) — two stacked FAILs CAN zero the meter where one could
+                # not (empirically reproduced: 50 → 25 → 0). D1 (Task 2) closes
+                # it by COALESCING the fast-re-speak window to a single fail, so
+                # the non-terminal meter stays off zero and turn 2 stays
+                # non-terminal — the hang-up case is now genuinely unreachable on
+                # this path BY CONSTRUCTION, not by the old (wrong) argument. The
+                # `is_hanging_up` check below is the cheap belt-and-suspenders
+                # backstop (Task 1) for any residual path.
                 if self.met_count >= len(self._checkpoints):
                     logger.info(
                         "checkpoint_suppress_post_serialize_completion text={!r}",
+                        text[:64],
+                    )
+                    return
+                # Story 6.25 (Task 1 / AC1 backstop) — symmetric hang-up case.
+                # With D1 coalescing (Task 2) the non-terminal meter can no
+                # longer reach zero on this path, so this is unreachable in
+                # normal operation — a cheap belt-and-suspenders, NOT the primary
+                # fix. It suppresses turn 2's frame if the AWAITED PRIOR scheduled
+                # a hang-up during the await (is_hanging_up flipping True after
+                # the top-of-frame 6.22 guard but before this forward), keeping
+                # the exit line the SOLE final utterance (Deviation #7). Logged
+                # distinctly so a smoke-gate journalctl tail shows if it ever
+                # DOES fire.
+                if self._patience_tracker.is_hanging_up:
+                    logger.info(
+                        "checkpoint_suppress_post_serialize_hangup text={!r}",
                         text[:64],
                     )
                     return
@@ -902,7 +948,12 @@ class CheckpointManager(FrameProcessor):
         `done()` and the await is a no-op (zero added latency).
         """
         prior = self._in_flight
-        if prior is not None and not prior.done():
+        # Story 6.25 (D1) — `stacked` is the precise signal of a fast re-speak:
+        # this turn arrived while the PRIOR turn's classify was still in flight,
+        # so it must AWAIT it rather than start fresh. It is also the gate for
+        # FAIL coalescing below.
+        stacked = prior is not None and not prior.done()
+        if stacked:
             await asyncio.gather(prior, return_exceptions=True)
 
         # Story 6.20 review — if the awaited prior classify completed every
@@ -913,10 +964,24 @@ class CheckpointManager(FrameProcessor):
         if not self.pending_goals:
             return
 
+        # Story 6.25 (D1 / Task 2 — PRIMARY FIX). Coalesce the fast-re-speak
+        # window to a SINGLE fail. If this turn stacked behind an in-flight
+        # prior that was itself an off-topic FAIL (it already drained the meter,
+        # or itself coalesced into an even-earlier fail this window — both
+        # recorded as `_last_outcome_was_fail = True`), then this turn's OWN
+        # fail must NOT drain the meter again: the rapid pair (or chain) is one
+        # impatience event. A non-stacking turn (a fresh window) NEVER coalesces
+        # — it owns the first drain. This keeps the non-terminal meter off zero,
+        # which is what also closes the Deviation #7 frame-forward race (AC1):
+        # turn 2 can no longer zero the meter, so it stays non-terminal and its
+        # frame-forward is safe. `coalesce_fail` is captured HERE (schedule
+        # time) and frozen into the task, so a later turn can't race it.
+        coalesce_fail = stacked and self._last_outcome_was_fail
+
         self._generation += 1
         gen = self._generation
         self._in_flight = asyncio.create_task(
-            self._classify_and_flip_goals(user_text, gen)
+            self._classify_and_flip_goals(user_text, gen, coalesce_fail=coalesce_fail)
         )
 
     async def _run_classifier_blocking(self, user_text: str) -> None:
@@ -932,10 +997,28 @@ class CheckpointManager(FrameProcessor):
         if in_flight is not None:
             await asyncio.gather(in_flight, return_exceptions=True)
 
-    async def _classify_and_flip_goals(self, user_text: str, generation: int) -> None:
+    async def _classify_and_flip_goals(
+        self, user_text: str, generation: int, *, coalesce_fail: bool = False
+    ) -> None:
         """Judge the user turn against all JUDGEABLE pending goals in one
         call and flip every goal the user met. Story 6.10 AC5 + Story 6.23
-        reactive gating."""
+        reactive gating.
+
+        `coalesce_fail` (Story 6.25 / D1): True only when this turn serialized
+        behind an in-flight prior that was itself a FAIL (a fast re-speak). When
+        the verdict is a fail, the meter drain is SUPPRESSED — the rapid pair
+        counts as a single impatience event. Goal flips are unaffected; only the
+        `apply_exchange_outcome(success=False)` drain is coalesced. Each JUDGMENT
+        branch (success / fail / neutral / forced-None backstop) records
+        `_last_outcome_was_fail` so a following stacked turn can coalesce in turn
+        (the window state propagates). The early-RETURN paths that do NOT record
+        it — empty `pending`, all-gated `judgeable`, the stale-generation guard,
+        and classify cancellation — are either provably unreachable on this
+        non-terminal path or leave the flag stale only in the SAFE direction (a
+        later stacked fail then coalesces = UNDER-drains = more lenient, never a
+        spurious hang-up). `coalesce_fail` is read only AFTER awaiting the single
+        in-flight prior, so in normal operation the flag reflects exactly that
+        prior's outcome."""
         pending = self.pending_goals
         if not pending:
             # All goals already met (completion path fired on a prior
@@ -1013,6 +1096,9 @@ class CheckpointManager(FrameProcessor):
                 )
                 self._patience_tracker.apply_exchange_outcome(success=False)
                 self._consecutive_none_count = 0
+                # Story 6.25 — the forced backstop drain IS a fail; record it so
+                # a following stacked turn coalesces (one drain per window).
+                self._last_outcome_was_fail = True
                 return
             logger.warning(
                 "checkpoint_classifier_inconclusive text={!r} consecutive_none={} "
@@ -1021,6 +1107,9 @@ class CheckpointManager(FrameProcessor):
                 self._consecutive_none_count,
                 len(pending),
             )
+            # Story 6.25 — patience-neutral (no drain) → a following stacked
+            # turn must NOT coalesce; it owns the first real drain.
+            self._last_outcome_was_fail = False
             return
 
         # FR37 — the SAME classify_multi call carries an abuse flag under a
@@ -1056,6 +1145,23 @@ class CheckpointManager(FrameProcessor):
                 self.met_count,
                 len(pending),
             )
+            # Story 6.25 — record the fail BEFORE the coalesce return so the
+            # window state propagates to a longer stacked chain.
+            self._last_outcome_was_fail = True
+            if coalesce_fail:
+                # Story 6.25 (D1 / AC2) — a fail already drained the meter
+                # earlier in this fast-re-speak window. Coalesce: the rapid pair
+                # counts as ONE impatience event, so do NOT drain again. This is
+                # what keeps the non-terminal meter off zero and thereby closes
+                # the Deviation #7 frame-forward race (AC1) — turn 2 stays
+                # non-terminal. Greppable line for the smoke-gate journalctl.
+                logger.info(
+                    "checkpoint_fail_coalesced_fast_respeak met_count={} pending={} "
+                    "(rapid double-FAIL drains once — D1)",
+                    self.met_count,
+                    len(pending),
+                )
+                return
             self._patience_tracker.apply_exchange_outcome(success=False)
             return
 
@@ -1069,9 +1175,15 @@ class CheckpointManager(FrameProcessor):
                 self.met_count,
                 len(pending),
             )
+            # Story 6.25 — neutral is not a fail → a following stacked turn
+            # owns its own (first) drain.
+            self._last_outcome_was_fail = False
             return
 
         # outcome == "success": >=1 objective flipped → SUCCESS turn.
+        # Story 6.25 — a success is not a fail; a following stacked fail must
+        # drain normally (the window did not charge an impatience event).
+        self._last_outcome_was_fail = False
         self._goals = advance.new_goals
         flipped_ids = advance.flipped_ids
         all_met = advance.all_met
