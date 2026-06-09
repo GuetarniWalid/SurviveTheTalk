@@ -25,9 +25,11 @@ from api.routes_calls import router as calls_router
 from api.routes_debriefs import router as debriefs_router
 from api.routes_health import router as health_router
 from api.routes_scenarios import router as scenarios_router
+from config import Settings
 from db.database import get_connection, run_migrations
 from db.janitor import sweep_abandoned_call_sessions
 from db.seed_scenarios import seed_scenarios
+from pipeline.bot_pool import BotPool
 
 # 15 min cadence. See Story 6.5 §"Why the janitor sweeps every 15 min".
 JANITOR_INTERVAL_SECONDS = 15 * 60
@@ -106,9 +108,17 @@ async def lifespan(app: FastAPI):
     Story 6.5: spawns `_janitor_loop` as a background task so abandoned
     `'pending'` call_sessions get flipped to `'failed'` (and stop burning
     quota). The task is cancelled + awaited on lifespan exit.
+
+    Story 6.26: builds the warm `BotPool` (`BOT_POOL_SIZE` parked bots) so calls
+    skip the ~4.7 s per-call cold-import boot. `size=0` makes the pool a no-op
+    (every call cold-spawns). Started after seed; stopped (idle bots terminated)
+    on lifespan exit.
     """
     await run_migrations()
     await seed_scenarios()
+    settings = Settings()
+    app.state.bot_pool = BotPool(size=settings.bot_pool_size)
+    await app.state.bot_pool.start()
     stop_event = asyncio.Event()
     janitor = asyncio.create_task(_janitor_loop(stop_event))
     try:
@@ -134,6 +144,9 @@ async def lifespan(app: FastAPI):
                 pass
         except asyncio.CancelledError:
             pass
+        # Story 6.26 — terminate idle parked bots so they don't outlive the
+        # server (a no-op when size=0). Bounded inside the pool's own teardown.
+        await app.state.bot_pool.stop()
 
 
 app = FastAPI(title="surviveTheTalk API", lifespan=lifespan)

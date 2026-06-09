@@ -325,8 +325,11 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
     # the DB row, not also try to kill an in-flight process. The rollback
     # opens a fresh connection because the hot-path connection closed when
     # `async with` exited above.
-    bot_env = {
-        **os.environ,
+    #
+    # The per-call env the bot needs (SCENARIO_*/SYSTEM_PROMPT/CALL_ID). The
+    # Story 6.26 pool job carries ONLY these (a parked bot already inherited the
+    # server's process env); the cold-spawn fallback merges them over os.environ.
+    per_call_env = {
         "SYSTEM_PROMPT": system_prompt,
         "SCENARIO_CHARACTER": rive_character,
         "SCENARIO_ID": scenario_id,
@@ -341,52 +344,85 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
     # scenario's authored difficulty (AC7). Validated already by the
     # `InitiateCallIn.difficulty` Literal (422 on a bad value).
     if payload.difficulty is not None:
-        bot_env["SCENARIO_DIFFICULTY"] = payload.difficulty
-    try:
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "pipeline.bot",
-                "--url",
-                settings.livekit_url,
-                "--room",
-                room_name,
-                "--token",
-                agent_token,
-            ],
-            env=bot_env,
-        )
-    except OSError as exc:
-        logger.exception(f"Failed to spawn pipeline bot for room {room_name}")
-        # Story 6.5 review (D3): flip the row to `'failed'` rather than
-        # hard-DELETE. The `count_user_call_sessions_*` filter excludes
-        # `'failed'` rows so the cap counter is freed immediately
-        # (same UX as the original DELETE), but the audit trail is
-        # preserved — operators can grep `'failed'` rows to monitor
-        # Popen failure rates. Symmetric with the janitor sweep, which
-        # also FLIPs abandoned `'pending'` rows to `'failed'`.
-        async with get_connection() as db:
-            await db.execute(
-                "UPDATE call_sessions SET status = 'failed' WHERE id = ?",
-                (call_id,),
-            )
-            await db.commit()
-        # Story 6.5: explicit LiveKit cleanup so the minted-but-unused
-        # room does not idle for ~5 min on the billing side. Wrapped in
-        # the safe helper (timeout + shield + log-only) so a LiveKit-side
-        # failure does NOT mask the BOT_SPAWN_FAILED envelope — the
-        # user's experience is identical.
-        await _safe_livekit_delete_room(settings, room_name)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": "BOT_SPAWN_FAILED",
-                "message": "Could not start the conversation agent.",
-            },
-        ) from exc
+        per_call_env["SCENARIO_DIFFICULTY"] = payload.difficulty
 
-    logger.info(f"Spawned tutorial bot for room {room_name} (user {user_id})")
+    # Story 6.26 — hand the call to a warm parked bot when one is ready (skips
+    # the ~4.7 s per-call cold-import boot = the opening blank). On an empty or
+    # disabled (`BOT_POOL_SIZE=0`) pool, or ANY pool error, fall through to the
+    # unchanged cold `Popen` path below so no call is ever dropped because of the
+    # pool. The pool is created in the app lifespan (`api/app.py`).
+    pool = getattr(request.app.state, "bot_pool", None)
+    used_pool = False
+    if pool is not None:
+        job = {
+            "url": settings.livekit_url,
+            "room": room_name,
+            "token": agent_token,
+            "env": per_call_env,
+        }
+        try:
+            used_pool = await pool.acquire(job)
+        except Exception:
+            logger.exception(
+                f"bot_pool acquire raised; cold-spawn fallback for room {room_name}"
+            )
+            used_pool = False
+
+    if used_pool:
+        logger.info(
+            f"Spawned tutorial bot for room {room_name} (user {user_id}) [pooled]"
+        )
+    else:
+        if pool is not None:
+            logger.info(f"bot_pool miss — cold spawn for room {room_name}")
+        bot_env = {**os.environ, **per_call_env}
+        try:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "pipeline.bot",
+                    "--url",
+                    settings.livekit_url,
+                    "--room",
+                    room_name,
+                    "--token",
+                    agent_token,
+                ],
+                env=bot_env,
+            )
+        except OSError as exc:
+            logger.exception(f"Failed to spawn pipeline bot for room {room_name}")
+            # Story 6.5 review (D3): flip the row to `'failed'` rather than
+            # hard-DELETE. The `count_user_call_sessions_*` filter excludes
+            # `'failed'` rows so the cap counter is freed immediately
+            # (same UX as the original DELETE), but the audit trail is
+            # preserved — operators can grep `'failed'` rows to monitor
+            # Popen failure rates. Symmetric with the janitor sweep, which
+            # also FLIPs abandoned `'pending'` rows to `'failed'`.
+            async with get_connection() as db:
+                await db.execute(
+                    "UPDATE call_sessions SET status = 'failed' WHERE id = ?",
+                    (call_id,),
+                )
+                await db.commit()
+            # Story 6.5: explicit LiveKit cleanup so the minted-but-unused
+            # room does not idle for ~5 min on the billing side. Wrapped in
+            # the safe helper (timeout + shield + log-only) so a LiveKit-side
+            # failure does NOT mask the BOT_SPAWN_FAILED envelope — the
+            # user's experience is identical.
+            await _safe_livekit_delete_room(settings, room_name)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "BOT_SPAWN_FAILED",
+                    "message": "Could not start the conversation agent.",
+                },
+            ) from exc
+
+        logger.info(
+            f"Spawned tutorial bot for room {room_name} (user {user_id}) [cold]"
+        )
 
     return ok(
         InitiateCallOut(

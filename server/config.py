@@ -223,6 +223,20 @@ class Settings(BaseSettings):
     # provider; never blocks or raises (pipeline/tts_warmup.py).
     tts_warmup_enabled: bool = True  # TTS_WARMUP_ENABLED
 
+    # Story 6.26 — warm bot-process pool size. Each call normally spawns a
+    # brand-new bot subprocess that pays a ~4.7 s cold import boot on the call's
+    # critical path (torch/pipecat/livekit/soniox/onnx) before it can speak —
+    # the opening blank. The pool keeps `bot_pool_size` already-booted "parked"
+    # bots idle (blocked on a stdin job line, zero CPU) and hands one its job at
+    # call start, skipping the boot. A parked bot serves exactly ONE call then
+    # exits (clean isolation, identical lifecycle to a cold spawn). `0` disables
+    # the pool entirely → every call cold-spawns exactly as before this story
+    # (clean kill-switch / code-free rollback). Default 1: ~1 concurrent call
+    # today, so one stand-by covers ~100 % of calls; raise via BOT_POOL_SIZE
+    # when concurrency grows (each parked bot holds the import stack in RAM —
+    # the fallback cold-spawn handles any overflow, no call is ever blocked).
+    bot_pool_size: int = 1  # BOT_POOL_SIZE
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #
@@ -320,6 +334,28 @@ class Settings(BaseSettings):
                 "USER_SPEECH_TIMEOUT must be <= 3.0 s — beyond that the character "
                 "waits seconds before replying (dead-air UX); keep it in the "
                 f"0.6-1.0 s range, got {value}"
+            )
+        return value
+
+    @field_validator("bot_pool_size")
+    @classmethod
+    def _validate_bot_pool_size(cls, value: int) -> int:
+        """Bound the warm-pool size at boot — fail-loud on a typo'd env.
+
+        Negative is meaningless; an absurdly large value (`BOT_POOL_SIZE=100`)
+        would try to spawn 100 heavy bot processes at startup and OOM the 2-core
+        VPS. `0` is the sanctioned kill-switch (pool disabled → every call
+        cold-spawns, exactly as before Story 6.26). The ceiling of 8 is a
+        generous sanity bound — each parked bot holds the full import stack in
+        RAM, and the cold-spawn fallback already covers any concurrency overflow.
+        """
+        if value < 0:
+            raise ValueError("BOT_POOL_SIZE must be >= 0 (0 disables the warm pool)")
+        if value > 8:
+            raise ValueError(
+                "BOT_POOL_SIZE must be <= 8 — each parked bot holds the full "
+                "import stack in RAM; a larger pool would OOM the VPS and the "
+                f"cold-spawn fallback already handles overflow, got {value}"
             )
         return value
 

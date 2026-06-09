@@ -753,6 +753,144 @@ def test_initiate_popen_failure_swallows_livekit_cleanup_failure(
     assert response.json()["error"]["code"] == "BOT_SPAWN_FAILED"
 
 
+# ---------- Story 6.26 — warm bot-process pool integration ----------
+
+
+class _FakePool:
+    """Minimal stand-in for `BotPool` injected into `app.state.bot_pool`.
+
+    `acquire` records the job and returns a configurable verdict so the route
+    tests can exercise the pool-hit / pool-miss / pool-raises branches WITHOUT
+    spawning real subprocesses. (Pool mechanics live in `test_bot_pool.py`.)
+    """
+
+    def __init__(self, *, result: bool = True, raises: bool = False) -> None:
+        self.jobs: list[dict] = []
+        self._result = result
+        self._raises = raises
+
+    async def acquire(self, job: dict) -> bool:
+        self.jobs.append(job)
+        if self._raises:
+            raise RuntimeError("pool boom")
+        return self._result
+
+    async def stop(self) -> None:
+        """Called by the app lifespan teardown (we replace the real pool)."""
+        return None
+
+
+def test_initiate_pool_is_disabled_in_test_env(client: TestClient) -> None:
+    """Sanity: the lifespan builds a size-0 (no-op) pool in the test env
+    (conftest BOT_POOL_SIZE=0), so the existing Popen-mocked tests exercise the
+    cold path. Confirms the pool object exists on app.state and spawns nothing."""
+    pool = client.app.state.bot_pool
+    assert pool.size == 0
+    assert pool.ready_count() == 0
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_uses_pool_when_a_parked_bot_is_available(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """AC1/AC2 — when the pool acquires a parked bot, the route hands it the job
+    (url/room/token + per-call env) and does NOT cold-spawn via Popen."""
+    fake = _FakePool(result=True)
+    client.app.state.bot_pool = fake
+
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "waiter_easy_01", "difficulty": "hard"},
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+    room_name = response.json()["data"]["room_name"]
+
+    # Pool served the call → no cold spawn.
+    mock_popen.assert_not_called()
+
+    assert len(fake.jobs) == 1
+    job = fake.jobs[0]
+    assert job["url"] == "wss://livekit.example.com"
+    assert job["room"] == room_name
+    assert job["token"] == "agent-token-abc"
+    # The per-call env mirrors exactly what the cold path packs.
+    env = job["env"]
+    assert "speak first" in env["SYSTEM_PROMPT"].lower()
+    assert env["SCENARIO_CHARACTER"] == "waiter"
+    assert env["SCENARIO_ID"] == "waiter_easy_01"
+    assert env["SCENARIO_DIFFICULTY"] == "hard"
+    assert env["CALL_ID"] == str(response.json()["data"]["call_id"])
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_cold_spawns_when_pool_misses(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """AC4 — an empty pool (acquire→False) falls back to the cold Popen path."""
+    fake = _FakePool(result=False)
+    client.app.state.bot_pool = fake
+
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json=_TUTORIAL_BODY,
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+
+    # Pool was tried, then the cold spawn ran.
+    assert len(fake.jobs) == 1
+    mock_popen.assert_called_once()
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_cold_spawns_when_pool_raises(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """AC4 fail-safe — a pool error must NOT drop the call: it falls through to
+    the cold spawn (the call still connects)."""
+    fake = _FakePool(raises=True)
+    client.app.state.bot_pool = fake
+
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json=_TUTORIAL_BODY,
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 200
+    mock_popen.assert_called_once()
+
+
 # ---------- Story 6.5 — POST /calls/{call_id}/end ----------
 
 

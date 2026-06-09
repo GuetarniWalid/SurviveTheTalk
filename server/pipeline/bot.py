@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 
 from loguru import logger
@@ -861,13 +862,106 @@ async def run_bot(url: str, room: str, token: str) -> None:
             )
 
 
+# Story 6.26 — warm bot-process pool. A bot launched with `--parked` pre-pays
+# the heavy module-import boot (already done by the time `main()` runs), prints
+# this sentinel to stdout so the pool manager knows it is ready, then blocks
+# reading ONE JSON job line from stdin. The job carries the per-call connection
+# args + env (room/token + SCENARIO_*/SYSTEM_PROMPT/CALL_ID) — the SAME data the
+# cold-spawn path passes via argv + the Popen `env=`. Keeping the per-call config
+# OUT of argv/env-at-exec is what lets an already-booted generic process adopt a
+# call. The pool (`pipeline/bot_pool.py`) matches this exact byte sequence.
+PARKED_READY_SENTINEL = "BOT_PARKED_READY"
+
+# The per-call env keys a parked job may carry (mirrors the `bot_env` the
+# cold-spawn path builds in `routes_calls.initiate_call`). ONLY these are applied
+# to `os.environ` — a parked bot never lets a job rewrite arbitrary process env
+# (the pipeline secrets/livekit creds are already inherited from the server).
+_PARKED_JOB_ENV_KEYS = frozenset(
+    {
+        "SYSTEM_PROMPT",
+        "SCENARIO_CHARACTER",
+        "SCENARIO_ID",
+        "CALL_ID",
+        "SCENARIO_DIFFICULTY",
+    }
+)
+
+
+def apply_parked_job(line: str) -> tuple[str, str, str]:
+    """Parse one stdin job line, apply its per-call env, return (url, room, token).
+
+    The job is a JSON object `{"url","room","token","env":{...}}`. `env` holds the
+    per-call values the cold path passes through Popen's `env=` — applied to
+    `os.environ` here so `run_bot` (which reads them via `os.environ.get` at call
+    time, bot.py:111-128) behaves IDENTICALLY to a cold spawn. Only the
+    whitelisted `_PARKED_JOB_ENV_KEYS` are applied (a `None` value is skipped, so
+    an absent `SCENARIO_DIFFICULTY` never leaks as the literal "None" — mirrors
+    the cold path's AC7 guard). Raises ValueError on malformed input or a missing
+    connection arg so the parked bot fails loud rather than connecting nowhere.
+    """
+    try:
+        job = json.loads(line)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"parked job is not valid JSON: {exc}") from exc
+    if not isinstance(job, dict):
+        raise ValueError("parked job must be a JSON object")
+    try:
+        url = job["url"]
+        room = job["room"]
+        token = job["token"]
+    except KeyError as exc:
+        raise ValueError(f"parked job missing required connection key: {exc}") from exc
+    env = job.get("env") or {}
+    if not isinstance(env, dict):
+        raise ValueError("parked job 'env' must be a JSON object")
+    for key in _PARKED_JOB_ENV_KEYS:
+        value = env.get(key)
+        if value is not None:
+            os.environ[key] = str(value)
+    return str(url), str(room), str(token)
+
+
+def _run_parked() -> None:
+    """Parked-mode entry: signal readiness, await one job on stdin, run it once.
+
+    The heavy imports are already paid (module load), so printing the sentinel
+    here means the boot is done. Then we block on a single stdin line — zero CPU
+    while parked. After the call, the process exits (single-use → clean
+    isolation, identical lifecycle to a cold spawn).
+    """
+    print(PARKED_READY_SENTINEL, flush=True)
+    line = sys.stdin.readline()
+    if not line:
+        # stdin closed before a job arrived (the pool is shutting us down) —
+        # exit cleanly without touching the pipeline.
+        logger.info("parked bot stdin closed before a job arrived; exiting")
+        return
+    url, room, token = apply_parked_job(line)
+    asyncio.run(run_bot(url=url, room=room, token=token))
+
+
 def main() -> None:
-    """Parse CLI args and launch the pipeline."""
+    """Parse CLI args and launch the pipeline (cold) or park for a job (pool)."""
     parser = argparse.ArgumentParser(description="Pipecat voice bot")
-    parser.add_argument("--url", required=True, help="LiveKit server URL")
-    parser.add_argument("--room", required=True, help="LiveKit room name")
-    parser.add_argument("--token", required=True, help="LiveKit agent token")
+    parser.add_argument("--url", help="LiveKit server URL")
+    parser.add_argument("--room", help="LiveKit room name")
+    parser.add_argument("--token", help="LiveKit agent token")
+    # Story 6.26 — warm-pool mode: ignore --url/--room/--token and wait for a
+    # job on stdin instead. Default off = the unchanged cold-spawn path, whose
+    # three args stay required.
+    parser.add_argument(
+        "--parked",
+        action="store_true",
+        help="Warm-pool mode: wait for a job on stdin instead of --url/--room/--token",
+    )
     args = parser.parse_args()
+
+    if args.parked:
+        _run_parked()
+        return
+
+    if not (args.url and args.room and args.token):
+        parser.error("--url, --room and --token are required unless --parked is set")
 
     asyncio.run(run_bot(url=args.url, room=args.room, token=args.token))
 

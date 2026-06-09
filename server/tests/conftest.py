@@ -36,6 +36,13 @@ TEST_ENV_VARS = {
     "RESEND_API_KEY": "test-resend",
     "RESEND_FROM_EMAIL": "noreply@example.com",
     "RESEND_FROM_NAME": "test",
+    # Story 6.26 — disable the warm bot-process pool in the test suite so the
+    # TestClient lifespan never spawns real (heavy) parked bot subprocesses.
+    # With size 0 the pool is a no-op: `acquire()` returns False, so
+    # `initiate_call` cold-spawns via the (mocked) `subprocess.Popen` exactly as
+    # the pre-6.26 tests expect. Pool mechanics are covered in `test_bot_pool.py`
+    # (stub subprocess) + the pool-hit path in `test_calls.py` (injected pool).
+    "BOT_POOL_SIZE": "0",
     # database_path is overridden per-test via monkeypatch
 }
 for _k, _v in TEST_ENV_VARS.items():

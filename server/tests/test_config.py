@@ -354,3 +354,46 @@ def test_settings_elevenlabs_fields_load_from_env() -> None:
         assert s.elevenlabs_api_key == "test-elevenlabs-key"
         assert s.elevenlabs_voice_id == "Xb7hH8MSUJpSbSDYk0k2"
         assert s.elevenlabs_model == "eleven_turbo_v2_5"
+
+
+# ---------- Story 6.26 — warm bot-process pool size -------------------------
+
+
+def test_settings_bot_pool_size_defaults_to_one() -> None:
+    """Story 6.26 — one always-ready parked bot by default (~1 concurrent
+    call today, so one stand-by covers ~100 % of calls). Env-overridable via
+    BOT_POOL_SIZE. `clear=True` so a stray BOT_POOL_SIZE in the dev shell can't
+    shadow the default."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.bot_pool_size == 1
+
+
+def test_settings_bot_pool_size_overrides_via_env() -> None:
+    """BOT_POOL_SIZE lets the operator scale the pool at deploy time without a
+    code release as concurrency grows."""
+    overrides = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32, "BOT_POOL_SIZE": "2"}
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.bot_pool_size == 2
+
+
+def test_settings_bot_pool_size_zero_disables_pool() -> None:
+    """AC4b — `BOT_POOL_SIZE=0` is the documented kill-switch: it parses cleanly
+    to 0 (the pool spawns nothing and every call cold-spawns, exactly as before
+    Story 6.26)."""
+    overrides = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32, "BOT_POOL_SIZE": "0"}
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.bot_pool_size == 0
+
+
+def test_settings_bot_pool_size_rejects_out_of_range() -> None:
+    """Fail-loud at boot on a typo'd env: negative (meaningless) or absurdly
+    large (would OOM the 2-core VPS by spawning that many heavy bot processes)."""
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    for bad in ("-1", "9", "100"):
+        with patch.dict(os.environ, {**base, "BOT_POOL_SIZE": bad}, clear=True):
+            with pytest.raises(ValidationError, match="BOT_POOL_SIZE"):
+                Settings(_env_file=None)  # type: ignore[call-arg]
