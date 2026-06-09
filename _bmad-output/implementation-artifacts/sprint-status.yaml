@@ -121,7 +121,7 @@ development_status:
   # Epic 7: Post-Call Debrief & Learning
   epic-7: in-progress
   7-1-build-debrief-generation-backend: review
-  7-2-build-call-ended-overlay-transition: backlog
+  7-2-build-call-ended-overlay-transition: ready-for-dev  # story created 2026-06-09 (client-only; 1 open decision: theatrical-phrase location + 15 phrases for Walid)
   7-3-build-debrief-screen: backlog
   7-4-build-pre-scenario-briefing-display: backlog
   epic-7-retrospective: optional
