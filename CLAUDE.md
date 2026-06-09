@@ -48,6 +48,17 @@ Rules:
 - Keep bullets concise (one line each)
 - Last bullet mentions test count if tests were added/changed
 
+### Commit Cadence — one commit per story STAGE (not per story)
+
+**RULE (Walid 2026-06-09): commit at EVERY stage of a story's lifecycle, each as its own normal commit.**
+
+- **create-story** → commit (the story spec + the `sprint-status.yaml` flip to `ready-for-dev`).
+- **dev-story** → commit (the implementation + the flip to `review`/`in-progress`).
+- **code-review** → commit (the review fixes + the flip).
+- Any further validated follow-up → its own commit.
+
+**This REVERSES the old "one story = one commit; amend follow-up fixes back in" rule.** Do **NOT** `git commit --amend`, `git reset --soft HEAD~1`, squash, or `git push --force*` to fold a story's stages into a single commit. It is simpler — and it stops stories from **overwriting each other** (amend/force-push on a shared `main` risks clobbering another story's work and tangling history). A clean commit per stage keeps each step independently recorded and recoverable. The commit FORMAT and pre-commit gates above still apply to every commit.
+
 ## Pre-Commit Validation
 
 **CRITICAL RULE**: Before EVERY commit, you MUST run validation checks.
