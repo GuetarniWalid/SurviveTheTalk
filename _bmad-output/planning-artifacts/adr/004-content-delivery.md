@@ -1,6 +1,6 @@
 # ADR 004 — Server-Driven Content Delivery (OTA Rive asset + scenario-served character data)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-06-09
 **Deciders:** Winston (Architect), Walid (Project Lead)
 **Related:** [[content-must-be-server-side]] (project memory); Story 7.2 (first slice — `end_phrases` server-side); `character_catalog.dart` "promotion to server-side" note; `architecture.md` §client-assets
@@ -75,4 +75,4 @@ This is a **multi-story** effort; the ADR records the target so the stories alig
 
 ## Status note
 
-Walid decided the core (Option C — OTA Rive with bundled fallback, character data via scenarios) on 2026-06-09. This ADR is **Proposed** pending his sign-off on the doc + the recommended sub-points above; on approval it flips to **Accepted** and seeds the phasing stories.
+**Accepted by Walid (Project Lead) on 2026-06-09**, including the recommended sub-points (launch-time silent check; `version`+`sha256` asset manifest; `.riv` hosted as a static file behind Caddy on the VPS; per-character avatar URLs). This ADR is the reference for the phasing stories (text → photos → `.riv` OTA). Story 7.2 ships the first slice (`end_phrases`).
