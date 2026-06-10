@@ -154,7 +154,7 @@ Should a global "hard" pick apply to easy/tutorial scenarios, or should tutorial
 - [ ] **T9 — validate, deploy, gate**
   - [x] `python -m ruff check .` + `python -m ruff format --check .` + full `pytest` (warm the sandbox first: `import aiohttp` — known Defender cold-start quirk) + `flutter analyze` + `flutter test` (zero client change expected, run anyway — pre-commit law). **✅ 2026-06-10: ruff check "All checks passed!", ruff format "108 files already formatted", pytest 840 passed (was 806, +34), flutter analyze "No issues found!", flutter test 451 "All tests passed!".**
   - [x] Run `server\scripts\calibrate.cmd waiter_easy_01` (live Groq; default 2.1 s throttle is fine) — must PASS post-edge; the ENGINE_VERSION bump will mark the other scenarios stale, which is expected (full sweep is a deliberate budgeted action — golden-only sweep `--golden-only` is the cheap alternative if quota is tight). **✅ 2026-06-10 — `--golden-only --force` verdict: `✅ PASS waiter_easy_01` (golden net incl. the NEW pure `implies` assertion + the 6.23 `requires` assertion, on live Scout). The FULL band calibration was attempted first and was killed mid-off-topic-phase by the Groq FREE-tier DAILY token cap (the known walled-Dev-tier situation — `infra_groq_capacity_and_scout_fallback`); its cooperative phase visibly completed every conversation cleanly before the cap (turn-1 `greet`+`main_course` multi-credits in the journal). Quota was genuinely tight → the story-blessed golden-only alternative is the recorded gate; the full-band revalidation (all scenarios stale under ENGINE_VERSION 4) is the next sweep's deliberate budgeted action after a daily reset. Report: `calibration-tests/calibrate_waiter_easy_01_2026-06-10T13-11-13Z.json`.**
-  - [ ] Deploy to VPS (`deploy-server.yml` path or scp + `systemctl restart pipecat.service`) and run the Smoke Test Gate below.
+  - [x] Deploy to VPS (`deploy-server.yml` path or scp + `systemctl restart pipecat.service`) and run the Smoke Test Gate below. **✅ 2026-06-10 — commit `d4e40af` pushed → CI run 27278791736 success (Test + Deploy jobs); `/health` git_sha `d4e40af6f74…` matches; service active since 13:16:23 UTC; agent-side gate boxes checked below — the two Pixel 9 calls remain with Walid.**
 
 ---
 
@@ -162,13 +162,13 @@ Should a global "hard" pick apply to easy/tutorial scenarios, or should tutorial
 
 > Every unchecked box is a stop-ship for `in-progress → review`. Paste the actual command + output as proof. This story has **no new endpoint and no migration** — the gate centres on deploy health + two scripted Pixel-9 calls.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ 2026-06-10 — `curl http://167.235.63.129/health` → `{"status":"ok","db":"ok","git_sha":"d4e40af6f745f0ba0441b11475c42fc411b6360d"}` (= the story commit); `systemctl is-active pipecat.service` → `active`, `ActiveEnterTimestamp=Wed 2026-06-10 13:16:23 UTC`; CI run 27278791736 (Test + Deploy) success.
 - [ ] **DB reseed carried the edge (read-only check).** The seeded waiter row's checkpoints JSON contains the `implies` key.
   - _Command:_ `ssh root@167.235.63.129 "/opt/survive-the-talk/current/server/.venv/bin/python -c \"import sqlite3,json; c=sqlite3.connect('/opt/survive-the-talk/data/db.sqlite'); cps=json.loads(c.execute(\\\"SELECT checkpoints FROM scenarios WHERE id='waiter_easy_01'\\\").fetchone()[0]); print([cp.get('implies') for cp in cps])\""`
   - _Expected:_ `[None, 'greet', None, None, None, None]`
-  - _Actual:_
-- [ ] **DB backup:** N/A — no migration, no schema change (reseed is an idempotent upsert).
+  - _Actual:_ `[None, 'greet', None, None, None, None]` ✅ (2026-06-10, post-deploy reseed — the exact expected value)
+- [x] **DB backup:** N/A — no migration, no schema change (reseed is an idempotent upsert). (The CI `deploy-server.yml` pre-deploy auto-backup ran anyway, as on every release.)
 - [ ] **Pixel 9 call 1 — the back-fill (MONEY CALL), script for Walid below.** Greet ticks via back-fill on a no-greeting opener; call completes 6/6.
   - _Proof (journal):_ `checkpoint_advanced` for `main_course` AND `greet` on the same turn; `checkpoint_verdicts` lines present; debrief shows 6/6.
 - [ ] **Pixel 9 call 2 — first-turn resilience.** The exact call-265/266 opening line gets a verdict on turn 1 (no silent ReadTimeout strand).
