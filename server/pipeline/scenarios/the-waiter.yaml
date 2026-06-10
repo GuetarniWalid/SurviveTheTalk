@@ -100,6 +100,16 @@ checkpoints:
       (e.g. "hi", "there are a lot of people here") does NOT count.
 
   - id: main_course
+    # Story 6.27 — `greet`'s criteria ("…or names a food item") is a strict
+    # logical SUPERSET of this beat's ("names a specific dish"): any turn that
+    # satisfies main_course also satisfies greet. The judge credits the
+    # narrower beat and strands greet (prod call_id=265/266). This edge makes
+    # the engine back-fill greet in code the moment main_course credits — so
+    # a no-greeting opener ("I'll have the chicken") auto-credits beat 0
+    # instead of permanently stranding it. Do NOT reword greet's criteria
+    # instead (D1 Option B rejected — the broad criteria + back-fill IS the
+    # desired UX).
+    implies: greet
     hint_text: "Order your main course."
     prompt_segment: |
       They've responded. Now ask what main course they want. List a

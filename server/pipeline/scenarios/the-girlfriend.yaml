@@ -84,6 +84,14 @@ checkpoints:
       crowd, how busy it is) does NOT count.
 
   - id: explain
+    # Story 6.27 — giving a concrete reason ⊂ react ("starts explaining" is
+    # one of react's enumerated forms): any turn that satisfies `explain`
+    # necessarily satisfies `react`. The edge back-fills react in code so the
+    # judge crediting only the narrower beat can't strand beat 0 (the
+    # call_id=266 class — see the-waiter.yaml). NOTE: reassure/make_right/
+    # commit carry NO edge — a bare "I love you" / bare plan / bare promise
+    # doesn't match react's enumerated forms (constructible counter-example).
+    implies: react
     hint_text: "Explain why you didn't call or text."
     prompt_segment: |
       They've responded but you're not satisfied. Reject their first
@@ -106,6 +114,9 @@ checkpoints:
       is only low or "almost dead" rather than fully dead).
 
   - id: acknowledge
+    # Story 6.27 — an empathetic response to her humiliation ⊂ react
+    # ("expresses … concern at why she is upset" + engages the situation).
+    implies: react
     hint_text: "Acknowledge how she felt sitting alone."
     prompt_segment: |
       They've given an excuse. Now hit them with the emotional

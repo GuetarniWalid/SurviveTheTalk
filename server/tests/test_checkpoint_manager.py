@@ -29,7 +29,11 @@ from pipecat.processors.frame_processor import FrameDirection
 
 import pipeline.checkpoint_manager as cm_mod
 from pipeline import scenarios
-from pipeline.checkpoint_manager import CheckpointManager, judgeable_goals
+from pipeline.checkpoint_manager import (
+    CheckpointManager,
+    advance_goals,
+    judgeable_goals,
+)
 from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 
@@ -2622,3 +2626,212 @@ def test_abuse_ignored_when_detection_disabled() -> None:
     tracker.schedule_inappropriate_exit.assert_not_called()
     # Popped, so no spurious goal outcome from the abuse key either.
     tracker.apply_exchange_outcome.assert_not_called()
+
+
+# ============================================================
+# Story 6.27 — `implies` superset back-fill in `advance_goals`
+# ============================================================
+#
+# A later beat may declare `implies: <earlier_id>` (the exact mirror of the
+# Story 6.23 `requires` edge): when the later beat flips to met and the
+# implied earlier beat is still pending, the engine auto-credits the earlier
+# one in code, same turn, no LLM — transitively. Kills the call_id=266 class
+# of bug (an earlier beat whose success_criteria is a logical SUPERSET of a
+# later beat's gets stranded when the judge credits only the narrower beat).
+
+
+def _implies_checkpoints(*entries: tuple[str, str | None]) -> list[dict]:
+    """Minimal checkpoint dicts for pure `advance_goals` tests: each entry is
+    `(id, implies_or_None)`."""
+    out: list[dict] = []
+    for cid, implies in entries:
+        cp = {
+            "id": cid,
+            "hint_text": cid,
+            "prompt_segment": cid,
+            "success_criteria": cid,
+        }
+        if implies is not None:
+            cp["implies"] = implies
+        out.append(cp)
+    return out
+
+
+def test_backfill_credits_implied_earlier_beat_same_turn() -> None:
+    """Direct back-fill: the later beat flips via verdict, the implied earlier
+    beat is auto-credited in the SAME GoalAdvance — no LLM verdict needed."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"), ("c", None))
+    goals = {"a": "pending", "b": "pending", "c": "pending"}
+
+    adv = advance_goals(
+        goals, {"a": False, "b": True, "c": False}, checkpoints=checkpoints
+    )
+
+    assert adv.new_goals == {"a": "met", "b": "met", "c": "pending"}
+    assert adv.met_count == 2
+    assert adv.all_met is False
+    assert adv.outcome == "success"
+
+
+def test_backfill_transitive_chain_resolves_in_one_pass() -> None:
+    """A←B←C chain: crediting C back-fills B, which back-fills A — all in the
+    same turn (edges point strictly earlier, so the pass terminates)."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"), ("c", "b"))
+    goals = {"a": "pending", "b": "pending", "c": "pending"}
+
+    adv = advance_goals(goals, {"c": True}, checkpoints=checkpoints)
+
+    assert adv.new_goals == {"a": "met", "b": "met", "c": "met"}
+    assert adv.flipped_ids == ["c", "b", "a"]
+    assert adv.all_met is True
+
+
+def test_backfill_noop_when_target_already_met() -> None:
+    """An `implies` edge whose target is already met changes nothing — the
+    back-fill only fires on a still-pending target."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"))
+    goals = {"a": "met", "b": "pending"}
+
+    adv = advance_goals(goals, {"b": True}, checkpoints=checkpoints)
+
+    assert adv.flipped_ids == ["b"]
+    assert adv.new_goals == {"a": "met", "b": "met"}
+
+
+def test_no_implies_behaviour_is_byte_identical() -> None:
+    """A scenario without any `implies` edge behaves exactly as pre-6.27:
+    same flips, same outcome classes (success / fail / neutral)."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", None))
+
+    success = advance_goals(
+        {"a": "pending", "b": "pending"}, {"b": True}, checkpoints=checkpoints
+    )
+    assert success.new_goals == {"a": "pending", "b": "met"}
+    assert success.flipped_ids == ["b"]
+    assert success.outcome == "success"
+
+    fail = advance_goals(
+        {"a": "pending", "b": "pending"},
+        {"a": False, "b": False},
+        checkpoints=checkpoints,
+    )
+    assert fail.flipped_ids == []
+    assert fail.outcome == "fail"
+
+    neutral = advance_goals(
+        {"a": "pending", "b": "pending"},
+        {"a": None, "b": None},
+        checkpoints=checkpoints,
+    )
+    assert neutral.flipped_ids == []
+    assert neutral.outcome == "neutral"
+
+
+def test_backfill_never_fires_without_a_direct_flip() -> None:
+    """No direct verdict flip → no back-fill (the queue seeds from the direct
+    flips). A fail turn cannot back-fill anything."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"))
+    goals = {"a": "pending", "b": "pending"}
+
+    adv = advance_goals(goals, {"b": False}, checkpoints=checkpoints)
+
+    assert adv.new_goals == goals
+    assert adv.flipped_ids == []
+    assert adv.outcome == "fail"
+
+
+def test_backfilled_ids_append_after_direct_flips() -> None:
+    """`flipped_ids` order: the direct verdict flips first (in verdict-dict
+    order), then the back-filled ids in discovery order — so the per-flip
+    envelope emission order stays stable."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"), ("c", None))
+    goals = {"a": "pending", "b": "pending", "c": "pending"}
+
+    adv = advance_goals(goals, {"b": True, "c": True}, checkpoints=checkpoints)
+
+    assert adv.flipped_ids == ["b", "c", "a"]
+
+
+def test_all_met_reachable_via_backfill() -> None:
+    """The completion path triggers when the LAST pending beat is credited via
+    back-fill (all_met computed AFTER the back-fill)."""
+    checkpoints = _implies_checkpoints(("a", None), ("b", "a"))
+    goals = {"a": "pending", "b": "pending"}
+
+    adv = advance_goals(goals, {"b": True}, checkpoints=checkpoints)
+
+    assert adv.all_met is True
+    assert adv.met_count == 2
+
+
+def test_call_266_replay_waiter_backfills_greet_to_six_of_six() -> None:
+    """Regression net for prod call_id=266 (2026-06-09, `waiter_easy_01`).
+
+    Replays the exact verdict sequence from the call-266 journal through the
+    REAL shipped waiter checkpoints (with the Story 6.27 `main_course →
+    implies: greet` edge). On the pre-6.27 engine this run ended 5/6 with
+    `greet` permanently stranded (the judge credited the narrower
+    `main_course` on "grilled chicken" and declined the superset `greet`);
+    with the back-fill it must end 6/6.
+    """
+    checkpoints = scenarios.load_scenario_checkpoints("waiter_easy_01")
+    assert [cp["id"] for cp in checkpoints] == [
+        "greet",
+        "main_course",
+        "clarify",
+        "drink",
+        "confirm",
+        "close",
+    ]
+    goals = {cp["id"]: "pending" for cp in checkpoints}
+
+    # Turn 1 — "Hi, good evening. Could I see the menu, please?" hit a
+    # classifier ReadTimeout → verdicts None → `advance_goals` never ran
+    # (patience-neutral infra failure). Nothing to replay.
+
+    # Turn 2 — "Hmm, I have the grilled chicken, please." credited
+    # main_course + clarify but NOT greet (the superset trap).
+    adv = advance_goals(
+        goals,
+        {
+            "greet": False,
+            "main_course": True,
+            "clarify": True,
+            "drink": False,
+            "confirm": False,
+            "close": False,
+        },
+        checkpoints=checkpoints,
+    )
+    goals = adv.new_goals
+    # THE FIX — greet is back-filled via main_course's `implies` edge.
+    assert goals["greet"] == "met"
+    assert adv.met_count == 3
+
+    # Turn 3 — "Grilled." → no flip in the real call.
+    adv = advance_goals(
+        goals,
+        {"drink": False, "confirm": False, "close": False},
+        checkpoints=checkpoints,
+    )
+    goals = adv.new_goals
+    assert adv.flipped_ids == []
+
+    # Turn 4 — "Water." → drink.
+    adv = advance_goals(
+        goals,
+        {"drink": True, "confirm": False, "close": False},
+        checkpoints=checkpoints,
+    )
+    goals = adv.new_goals
+
+    # Turn 5 — "No, it's right." → confirm.
+    adv = advance_goals(
+        goals, {"confirm": True, "close": False}, checkpoints=checkpoints
+    )
+    goals = adv.new_goals
+
+    # Turn 6 — "Okay." → close → 6/6 (was 5/6 + stranded greet pre-6.27).
+    adv = advance_goals(goals, {"close": True}, checkpoints=checkpoints)
+    assert adv.all_met is True
+    assert adv.met_count == 6

@@ -776,6 +776,45 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
                 f"`requires` {required!r} must reference an EARLIER checkpoint "
                 f"(a reactive beat cannot depend on itself or a later beat)."
             )
+    # Story 6.27 — validate the optional `implies` superset back-fill edge
+    # (the exact mirror of `requires`, same fail-fast posture). A beat
+    # carrying `implies: <id>` declares that satisfying it logically entails
+    # having satisfied that EARLIER beat (its criteria is a strict subset of
+    # the earlier one's); the engine (`checkpoint_manager.advance_goals`)
+    # auto-credits the implied beat in code when the carrier flips. The edge
+    # must point at an EXISTING, STRICTLY EARLIER checkpoint (acyclic by
+    # construction — note the field sits on the LATER beat, same direction as
+    # `requires`), and the TARGET must not itself carry `requires`: a
+    # reactive trap-response only makes sense after its trigger fired, so
+    # auto-crediting an unsprung trap is always wrong.
+    for idx, entry in enumerate(checkpoints):
+        implied = entry.get("implies")
+        if implied is None:
+            continue
+        if not isinstance(implied, str) or not implied.strip():
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) has "
+                f"a non-string/empty `implies` value {implied!r}."
+            )
+        if implied not in id_to_index:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`implies` points at unknown checkpoint id {implied!r}. It must "
+                f"name an existing, earlier checkpoint."
+            )
+        if id_to_index[implied] >= idx:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`implies` {implied!r} must reference an EARLIER checkpoint "
+                f"(a beat can only back-fill one that precedes it)."
+            )
+        if checkpoints[id_to_index[implied]].get("requires") is not None:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`implies` targets {implied!r}, which carries `requires` — a "
+                f"reactive trap-response must never be auto-credited (its "
+                f"trigger may not have fired)."
+            )
     return checkpoints
 
 

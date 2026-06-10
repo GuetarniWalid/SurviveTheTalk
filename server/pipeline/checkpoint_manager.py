@@ -313,13 +313,18 @@ class GoalAdvance:
 
     - `new_goals`: post-flip `{id: "pending"|"met"}` map (a fresh copy — the
       caller may assign it back to its state without aliasing).
-    - `flipped_ids`: the goal ids that flipped pending→met THIS turn, in the
-      order the verdicts dict presented them (so per-flip envelope emission
-      order is stable).
-    - `met_count` / `all_met`: progress over `new_goals`.
+    - `flipped_ids`: the goal ids that flipped pending→met THIS turn — the
+      direct verdict flips first (in the order the verdicts dict presented
+      them), then any Story 6.27 back-filled ids in discovery order (so
+      per-flip envelope emission order is stable and the back-filled beats
+      get their own envelopes too).
+    - `met_count` / `all_met`: progress over `new_goals` (computed AFTER the
+      back-fill, so completion is reachable via a back-filled final beat).
     - `outcome`: `"success"` (≥1 flip → recovery_bonus), `"fail"` (no flip but
       ≥1 goal actively `unmet` → genuine off-topic, drain patience, AC8), or
       `"neutral"` (no flip, all `unsure` → model ambiguity, patience-neutral).
+      The back-fill never changes the class: it only ever ADDS flips to a
+      turn that already had a direct flip (`"success"` either way).
     """
 
     new_goals: dict[str, str]
@@ -332,6 +337,8 @@ class GoalAdvance:
 def advance_goals(
     goals_state: dict[str, str],
     verdicts: dict[str, bool | None],
+    *,
+    checkpoints: list[dict],
 ) -> GoalAdvance:
     """Pure goal-advance decision shared by `CheckpointManager` (prod) and the
     Story 6.15 calibration harness.
@@ -343,6 +350,18 @@ def advance_goals(
     state, and the turn's outcome class. No side effects, no I/O — so the
     offline validator gets the EXACT flip/outcome rule prod uses (Story 6.15
     AC1: "does NOT re-implement the advance rule").
+
+    `checkpoints` (Story 6.27 — keyword-only and REQUIRED, the same author-
+    order list `judgeable_goals` takes, so both call sites thread it
+    consciously and golden==prod holds by construction) carries the optional
+    `implies: <earlier_checkpoint_id>` back-fill edge: when a beat flips to
+    met and the earlier beat it implies is still pending, the earlier one is
+    auto-credited in code, same turn, no LLM — transitively (A←B←C chains
+    resolve in one pass; the loader guarantees edges point strictly earlier,
+    so the pass terminates). This is the deterministic cure for the
+    call_id=266 superset-overlap class: an earlier beat whose
+    success_criteria logically SUBSUMES a later beat's can no longer be
+    stranded when the judge credits only the narrower beat.
     """
     flipped_ids = [
         gid
@@ -352,6 +371,20 @@ def advance_goals(
     new_goals = dict(goals_state)
     for gid in flipped_ids:
         new_goals[gid] = "met"
+    # Story 6.27 — `implies` back-fill to fixpoint, AFTER the direct verdict
+    # flips. For each newly-met beat whose `implies` target is still pending,
+    # flip the target, append it to `flipped_ids` (discovery order, after the
+    # direct flips) and re-queue it so transitive chains resolve this turn.
+    # Seeded from the direct flips only — a turn with no direct flip can
+    # never back-fill anything, so the outcome classes are untouched.
+    implies_map = {cp["id"]: cp.get("implies") for cp in checkpoints}
+    backfill_queue = list(flipped_ids)
+    while backfill_queue:
+        implied = implies_map.get(backfill_queue.pop(0))
+        if implied is not None and new_goals.get(implied) == "pending":
+            new_goals[implied] = "met"
+            flipped_ids.append(implied)
+            backfill_queue.append(implied)
     met_count = sum(1 for state in new_goals.values() if state == "met")
     all_met = all(state == "met" for state in new_goals.values())
     if flipped_ids:
@@ -1133,8 +1166,11 @@ class CheckpointManager(FrameProcessor):
 
         # Pure goal-advance decision (shared verbatim with the Story 6.15
         # text calibration harness via `advance_goals`) — keeps prod and the
-        # offline validator from forking the flip/outcome rule.
-        advance = advance_goals(self._goals, verdicts)
+        # offline validator from forking the flip/outcome rule. Story 6.27 —
+        # `checkpoints` threads the `implies` back-fill edges; back-filled ids
+        # ride `flipped_ids`, so the per-flip envelope loop below and the
+        # teardown debrief counts pick them up with zero extra code.
+        advance = advance_goals(self._goals, verdicts, checkpoints=self._checkpoints)
 
         if advance.outcome == "fail":
             # No objective flipped AND the classifier actively judged at

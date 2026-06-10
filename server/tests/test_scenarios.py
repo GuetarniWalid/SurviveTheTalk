@@ -1105,6 +1105,146 @@ def test_cop_scenario_requires_edges_load() -> None:
         assert by_id[beat]["requires"] == trigger
 
 
+# ---------- Story 6.27 — `implies` superset back-fill edge validation ----------
+
+
+def _implies_yaml(*, implies_value: str, second_requires: str | None = None) -> str:
+    """A 3-checkpoint synthetic YAML where the 3rd beat carries `implies`.
+
+    `second_requires` optionally puts a `requires` edge on the 2nd beat so the
+    "implies must not target a `requires` beat" rule can be exercised.
+    """
+    requires_line = f"\n    requires: {second_requires}" if second_requires else ""
+    return f"""
+metadata:
+  id: synth_imp
+  title: Synthetic
+  difficulty: easy
+  is_free: true
+  rive_character: waiter
+  language_focus: test
+  tts_voice_id: test
+  content_warning: null
+base_prompt: |
+  base
+checkpoints:
+  - id: first
+    hint_text: a
+    prompt_segment: a
+    success_criteria: a
+  - id: second{requires_line}
+    hint_text: b
+    prompt_segment: b
+    success_criteria: b
+  - id: third
+    implies: {implies_value}
+    hint_text: c
+    prompt_segment: c
+    success_criteria: c
+exit_lines:
+  hangup: "h"
+  completion: "c"
+"""
+
+
+def test_load_scenario_checkpoints_accepts_valid_implies_edge(
+    tmp_path, monkeypatch
+) -> None:
+    """An `implies` pointing at an existing, earlier, non-`requires` checkpoint
+    loads cleanly and the edge is preserved on the returned dict (it reaches
+    the runtime `advance_goals` back-fill)."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="first"),
+        scenario_id="synth_imp",
+    )
+    checkpoints = scenarios_mod.load_scenario_checkpoints("synth_imp")
+    assert checkpoints[2]["implies"] == "first"
+
+
+def test_load_scenario_checkpoints_rejects_implies_non_string(
+    tmp_path, monkeypatch
+) -> None:
+    """A present-but-non-string `implies` (e.g. a YAML list) raises at load."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="[first, second]"),
+        scenario_id="synth_imp",
+    )
+    with pytest.raises(RuntimeError, match="non-string/empty `implies`"):
+        scenarios_mod.load_scenario_checkpoints("synth_imp")
+
+
+def test_load_scenario_checkpoints_rejects_implies_unknown_id(
+    tmp_path, monkeypatch
+) -> None:
+    """An `implies` pointing at a non-existent checkpoint id raises at load."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="nope"),
+        scenario_id="synth_imp",
+    )
+    with pytest.raises(RuntimeError, match="unknown checkpoint id"):
+        scenarios_mod.load_scenario_checkpoints("synth_imp")
+
+
+def test_load_scenario_checkpoints_rejects_implies_self_or_later(
+    tmp_path, monkeypatch
+) -> None:
+    """An `implies` pointing at the beat itself (or any later beat) raises —
+    a beat can only back-fill an EARLIER one (acyclic by construction)."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="third"),
+        scenario_id="synth_imp",
+    )
+    with pytest.raises(RuntimeError, match="must reference an EARLIER checkpoint"):
+        scenarios_mod.load_scenario_checkpoints("synth_imp")
+
+
+def test_load_scenario_checkpoints_rejects_implies_targeting_requires_beat(
+    tmp_path, monkeypatch
+) -> None:
+    """An `implies` targeting a beat that itself carries `requires` raises —
+    auto-crediting an unsprung reactive trap is always wrong."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="second", second_requires="first"),
+        scenario_id="synth_imp",
+    )
+    with pytest.raises(RuntimeError, match="carries `requires`"):
+        scenarios_mod.load_scenario_checkpoints("synth_imp")
+
+
+def test_waiter_implies_edge_loads() -> None:
+    """End-to-end: the shipped waiter YAML carries the Story 6.27 superset
+    back-fill edge (`main_course → implies: greet`) and it loads through the
+    full validator stack."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    checkpoints = load_scenario_checkpoints("waiter_easy_01")
+    by_id = {c["id"]: c for c in checkpoints}
+    assert by_id["main_course"]["implies"] == "greet"
+    # greet itself is proactive (no edges) — the back-fill target is clean.
+    assert "implies" not in by_id["greet"]
+    assert "requires" not in by_id["greet"]
+
+
 def test_load_scenario_base_prompt_does_not_include_SPEAK_FIRST_directive() -> None:
     """The CheckpointManager composes the live system message from
     `base_prompt + checkpoint.prompt_segment` after every advance. The

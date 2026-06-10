@@ -81,6 +81,15 @@ checkpoints:
       coherent response that engages with the confrontation counts.
 
   - id: explain_late
+    # Story 6.27 — `acknowledge`'s criteria ends on an explicit catch-all
+    # ("Any coherent response that engages with the confrontation counts"),
+    # making it a strict logical SUPERSET of every later beat: explaining the
+    # rent, addressing the damage, negotiating, giving specifics and
+    # confirming terms all engage the confrontation coherently. Without these
+    # edges the judge can credit a narrower later beat on the user's first
+    # engaged turn and strand `acknowledge` forever (the call_id=266 class —
+    # see the-waiter.yaml).
+    implies: acknowledge
     hint_text: "Explain why rent is late — propose a date."
     prompt_segment: |
       They've responded. Now cite the tenancy agreement: rent was
@@ -97,6 +106,8 @@ checkpoints:
       date does NOT count.
 
   - id: damage
+    # Story 6.27 — addressing the damage ⊂ acknowledge (catch-all clause).
+    implies: acknowledge
     hint_text: "Address the bathroom damage issue."
     prompt_segment: |
       They've addressed the rent. Now bring up the second issue:
@@ -112,6 +123,8 @@ checkpoints:
       counts. Ignoring the question does NOT count.
 
   - id: negotiate
+    # Story 6.27 — negotiating a plan ⊂ acknowledge (catch-all clause).
+    implies: acknowledge
     hint_text: "Negotiate — ask for more time or propose a plan."
     prompt_segment: |
       They've addressed the damage. Now increase the pressure:
@@ -127,6 +140,8 @@ checkpoints:
       solution counts. Simply agreeing without a plan does NOT count.
 
   - id: credibility
+    # Story 6.27 — a specific, actionable answer ⊂ acknowledge (catch-all).
+    implies: acknowledge
     hint_text: "Give a specific, credible answer."
     prompt_segment: |
       They've proposed a plan. Test their credibility with a rapid
@@ -141,6 +156,8 @@ checkpoints:
       a concrete response. Any specific, actionable answer counts.
 
   - id: commit
+    # Story 6.27 — confirming the terms ⊂ acknowledge (catch-all clause).
+    implies: acknowledge
     hint_text: "Agree to his terms — confirm everything."
     prompt_segment: |
       They've given specifics. Final assessment: summarize what

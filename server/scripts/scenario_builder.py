@@ -222,13 +222,21 @@ Return STRICT JSON only (no prose, no fences): a JSON array of EXACTLY {n} objec
   "hint_text": "<one short imperative line telling the LEARNER what to do at this beat>",
   "prompt_segment": "<1-3 sentences instructing the CHARACTER what to ask/say/probe at THIS beat — difficulty-neutral: describe WHAT they pursue, never HOW hard they are on the learner's English>",
   "success_criteria": "<a SPECIFIC, judgeable description of what the LEARNER's turn must do to pass THIS beat>",
-  "requires": "<OPTIONAL — see the REACTIVE rule below. Omit entirely for normal beats.>"
+  "requires": "<OPTIONAL — see the REACTIVE rule below. Omit entirely for normal beats.>",
+  "implies": "<OPTIONAL — see the SUPERSET rule below. Omit entirely for normal beats.>"
 }}
 
 CRITICAL rules:
 - Each success_criteria must target a DISTINCT, beat-specific action, referencing the specific \
 information addressed at this beat — so that a single sentence CANNOT satisfy several checkpoints \
 at once. Being merely on-topic, coherent, or polite must NOT be enough to pass.
+- SUPERSET / `implies`: no EARLIER beat's success_criteria may be a logical SUPERSET of a LATER \
+beat's (i.e. every turn that satisfies the later beat would also satisfy the earlier one — e.g. an \
+opener that passes on "…or names a food item" vs a later "names a specific dish"). When such a \
+broader-earlier / narrower-later pair is INTENTIONAL (a deliberately wide warm-up beat), the \
+NARROWER LATER beat must declare "implies": "<the earlier beat's id>" so the engine auto-credits \
+the earlier beat the moment the later one passes. The implied beat must be EARLIER and must NOT \
+itself carry "requires". Otherwise rewrite the earlier criteria to remove the overlap.
 - Beats stay in the arc's time order; the conversation must ADVANCE (no two checkpoints that repeat \
 the same exchange).
 - ids unique. Do NOT include any "speak first" instruction anywhere.
@@ -251,7 +259,13 @@ the corrected set.
 
 1. OVERLAP / COLLAPSE: any pair of checkpoints that a single plausible user sentence could satisfy \
 at once. Rewrite their success_criteria so each requires a DISTINCT, beat-specific action. This is \
-the most important fix — a scenario where one sentence validates several checkpoints is broken.
+the most important fix — a scenario where one sentence validates several checkpoints is broken. \
+DIRECTIONAL special case (SUPERSET): if an EARLIER beat's success_criteria is a logical SUPERSET \
+of a LATER beat's (every turn passing the later beat would also pass the earlier one), either \
+rewrite the earlier criteria, OR — when the broad earlier beat is intentional — make the NARROWER \
+LATER beat declare "implies": "<earlier_id>" so the engine back-fills the earlier beat when the \
+later one passes (the implied beat must be earlier and must NOT carry "requires"). PRESERVE any \
+existing "implies" field verbatim unless you are fixing exactly this.
 2. CIRCULARITY: beats that repeat, regress, or could happen in any order. Reorder/rewrite so the \
 conversation STRICTLY ADVANCES in time (beat k builds on beat k-1's exchange). \
 EXCEPTION — a REACTIVE beat (one carrying a "requires" field) has a LEGITIMATE ordering dependency \
@@ -272,8 +286,8 @@ Checkpoints (JSON):
 {checkpoints_json}
 
 Return STRICT JSON only (no prose, no fences): a JSON array of EXACTLY {n} corrected checkpoint \
-objects with the SAME keys (id, hint_text, prompt_segment, success_criteria, plus "requires" on any \
-beat that had one), ids unique, in time order. Output ONLY the corrected array.
+objects with the SAME keys (id, hint_text, prompt_segment, success_criteria, plus "requires" and/or \
+"implies" on any beat that had one), ids unique, in time order. Output ONLY the corrected array.
 """
 
 # Story 6.19 — the per-difficulty "Difficulty behavior (…)" block is NO LONGER
@@ -408,6 +422,16 @@ def sanitize_checkpoints(raw_checkpoints: list[dict]) -> list[dict]:
             # loader / `validate_structure` "unknown id" fail-fast surfaces it
             # for the human to fix instead of shipping a lost gate.
             entry["requires"] = f"__malformed_requires__{slugify(str(raw_requires))}"
+        # Story 6.27 — preserve the OPTIONAL `implies` superset back-fill edge
+        # exactly like `requires` above (slugified so it matches the target's
+        # sanitized id; malformed-shape sentinel so an INTENDED edge is never
+        # silently dropped).
+        raw_implies = cp.get("implies")
+        if isinstance(raw_implies, str):
+            if raw_implies.strip():
+                entry["implies"] = slugify(raw_implies)
+        elif raw_implies not in (None, [], {}, ()):
+            entry["implies"] = f"__malformed_implies__{slugify(str(raw_implies))}"
         out.append(entry)
     return out
 
@@ -750,6 +774,35 @@ def validate_structure(scenario: dict) -> list[str]:
         elif id_to_index[required] >= i:
             problems.append(
                 f"checkpoint[{i}] 'requires' {required!r} must be an EARLIER checkpoint"
+            )
+    # Story 6.27 — mirror the loader's `implies` validation (existence +
+    # strictly-earlier order + target must not carry `requires`) so a
+    # generated scenario with a bad back-fill edge can't break boot.
+    for i, cp in enumerate(checkpoints):
+        if not isinstance(cp, dict):
+            continue
+        implied = cp.get("implies")
+        if implied is None:
+            continue
+        if not isinstance(implied, str) or not implied.strip():
+            problems.append(f"checkpoint[{i}] has a non-string/empty 'implies'")
+            continue
+        if implied not in id_to_index:
+            problems.append(
+                f"checkpoint[{i}] 'implies' points at unknown id {implied!r}"
+            )
+        elif id_to_index[implied] >= i:
+            problems.append(
+                f"checkpoint[{i}] 'implies' {implied!r} must be an EARLIER checkpoint"
+            )
+        elif (
+            isinstance(checkpoints[id_to_index[implied]], dict)
+            and checkpoints[id_to_index[implied]].get("requires") is not None
+        ):
+            problems.append(
+                f"checkpoint[{i}] 'implies' targets {implied!r}, which carries "
+                f"'requires' — a reactive trap-response must never be "
+                f"auto-credited"
             )
     return problems
 

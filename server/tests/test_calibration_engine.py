@@ -484,6 +484,133 @@ def test_scenario_hash_changes_on_requires_edit(monkeypatch):
 
 
 # ============================================================
+# Story 6.27 — `implies` back-fill: golden assertion + harness parity + hash
+# ============================================================
+
+
+def _cp_imp(cid: str, implies: str) -> dict:
+    cp = _cp(cid)
+    cp["implies"] = implies
+    return cp
+
+
+def test_implies_backfill_failures_clean_on_valid_edges():
+    """The pure back-fill assertion returns no failures for a valid `implies`
+    edge (it's a contract guard over the REAL shared `advance_goals`)."""
+    checkpoints = [_cp("first"), _cp_imp("later", "first")]
+    assert engine.implies_backfill_failures(checkpoints) == []
+
+
+def test_implies_backfill_failures_clean_on_shipped_scenarios():
+    """Every shipped scenario's `implies` edges satisfy the back-fill contract
+    — guards the Story 6.27 T3 data edits against drift."""
+    from pipeline.scenarios import _SCENARIO_INDEX, load_scenario_checkpoints
+
+    for sid in sorted(_SCENARIO_INDEX):
+        checkpoints = load_scenario_checkpoints(sid)
+        assert engine.implies_backfill_failures(checkpoints) == [], sid
+
+
+def test_implies_backfill_failures_detects_a_broken_backfill(monkeypatch):
+    """If `advance_goals` were reverted to the pre-6.27 rule (no back-fill —
+    the exact regression this assertion exists to catch), the golden net
+    flags every `implies` edge as wired wrong."""
+    from types import SimpleNamespace
+
+    def _no_backfill(goals_state, verdicts, *, checkpoints):
+        flipped = [
+            gid
+            for gid, verdict in verdicts.items()
+            if verdict is True and goals_state.get(gid) == "pending"
+        ]
+        new_goals = dict(goals_state)
+        for gid in flipped:
+            new_goals[gid] = "met"
+        return SimpleNamespace(new_goals=new_goals, flipped_ids=flipped)
+
+    monkeypatch.setattr(engine, "advance_goals", _no_backfill)
+    checkpoints = [_cp("first"), _cp_imp("later", "first")]
+    failures = engine.implies_backfill_failures(checkpoints)
+    assert any("does NOT back-fill" in f for f in failures)
+
+
+def test_run_golden_fails_when_backfill_is_broken(tmp_path, monkeypatch):
+    """AC2 — a broken back-fill makes the golden net FAIL even with a correct
+    judge, and `--golden-only` (which rides on `run_golden`) catches it."""
+    from types import SimpleNamespace
+
+    def _no_backfill(goals_state, verdicts, *, checkpoints):
+        flipped = [
+            gid
+            for gid, verdict in verdicts.items()
+            if verdict is True and goals_state.get(gid) == "pending"
+        ]
+        new_goals = dict(goals_state)
+        for gid in flipped:
+            new_goals[gid] = "met"
+        return SimpleNamespace(new_goals=new_goals, flipped_ids=flipped)
+
+    monkeypatch.setattr(engine, "advance_goals", _no_backfill)
+    data = _scenario_data(checkpoints=[_cp("first"), _cp_imp("later", "first")])
+    strict = FakeJudge(lambda user_text, goal_ids: {g: False for g in goal_ids})
+    g = _run(
+        engine.run_golden(
+            scenario_id="fake_test_01", judge=strict, data=data, fixture_dir=tmp_path
+        )
+    )
+    assert g.passed is False
+    assert g.implies_backfill_failures  # populated with the diagnostic
+
+
+def test_harness_backfills_implied_beat_same_as_prod():
+    """AC2 — the golden==prod coupling for the back-fill. `simulate_conversation`
+    threads `checkpoints=` into the REAL `advance_goals`, so a judge that
+    credits ONLY the narrower later beat still completes the scenario (the
+    implied earlier beat is back-filled, exactly as prod does)."""
+    data = _scenario_data(checkpoints=[_cp("first"), _cp_imp("later", "first")])
+    # The call-266 judge behaviour: credits the narrower beat, declines the
+    # broader earlier one on the same text.
+    judge = FakeJudge(lambda user_text, goal_ids: {g: (g == "later") for g in goal_ids})
+    result = _run(
+        engine.simulate_conversation(
+            scenario_id="fake_test_01",
+            strategy="cooperative",
+            character_llm=FakeChat(["..."]),
+            learner_llm=FakeChat(["I do the later thing."]),
+            judge=judge,
+            data=data,
+            max_turns=5,
+        )
+    )
+    assert result.outcome == "survived"
+    assert result.goals_met_count == 2
+
+
+def test_scenario_hash_changes_on_implies_edit(monkeypatch):
+    """Adding/removing an `implies` edge is behaviour-affecting → new hash."""
+    base = {
+        "metadata": {"id": "x", "difficulty": "easy"},
+        "base_prompt": "You are Tina.",
+        "checkpoints": [
+            {"id": "a", "prompt_segment": "A.", "success_criteria": "Does a."},
+            {"id": "b", "prompt_segment": "B.", "success_criteria": "Does b."},
+        ],
+        "briefing": {},
+        "exit_lines": {},
+    }
+    monkeypatch.setattr(engine, "_load_raw_scenario", lambda _sid: base)
+    h1 = engine.compute_scenario_hash("x")
+    base["checkpoints"][1]["implies"] = "a"
+    assert engine.compute_scenario_hash("x") != h1
+
+
+def test_engine_version_bumped_for_backfill_rule():
+    """The Story 6.27 flip-rule change must force ledger revalidation on the
+    next sweep."""
+    assert engine.ENGINE_VERSION == 4
+
+
+# ============================================================
 # Simulator (AC1) — faithful prod-path replay with fakes
 # ============================================================
 
@@ -835,6 +962,7 @@ def test_cli_amain_records_verdict_with_correct_arity(monkeypatch, tmp_path):
         positive_total=0,
         positive_met=0,
         requires_gating_failures=[],
+        implies_backfill_failures=[],
     )
     calibration = types.SimpleNamespace(
         passed=True,

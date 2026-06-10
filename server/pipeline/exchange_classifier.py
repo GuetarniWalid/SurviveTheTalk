@@ -243,6 +243,15 @@ class ExchangeClassifier:
         # lock as the connection-pool release so both client races and
         # post-close re-init races collapse to "raise RuntimeError".
         self._closed: bool = False
+        # Story 6.27 (D2b) — True once any `classify_multi` of this instance
+        # has returned a PARSED verdict. Until then, a `None` (infra failure)
+        # gets ONE bounded retry — the cold-start belt-and-suspenders for
+        # `warm_up()`. Calls 265/266 lost their opening turn to a first-
+        # classify ReadTimeout (cold TLS handshake + Groq first-hit can
+        # exceed the 1.5 s HTTP budget); the retry rides the now-warm(er)
+        # connection. Never retries after the first success; never twice
+        # within one call.
+        self._completed_one_classify: bool = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Return a shared `httpx.AsyncClient`, lazily instantiated on
@@ -270,6 +279,58 @@ class ExchangeClassifier:
                 if self._client is None:
                     self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
         return self._client
+
+    async def warm_up(self) -> None:
+        """Warm THIS instance's httpx client + the provider edge with one
+        throwaway `max_tokens=1` completion (Story 6.27, D2a).
+
+        The Story 6.24 `llm_warmup` does NOT cover the classifier: it warms
+        Groq through its own short-lived client, while the classifier's
+        connection (TCP + TLS) is created lazily on the FIRST classify —
+        which on calls 265/266 blew the 1.5 s HTTP budget and silently lost
+        the opening turn. Firing one tiny request through
+        ``await self._get_client()`` pre-pays that handshake on the exact
+        connection pool `classify_multi` will reuse.
+
+        Contract mirrors ``llm_warmup.warm_up_llm``: safe to launch
+        fire-and-forget via ``asyncio.create_task``; time-boxed by the
+        client's own ``_HTTP_TIMEOUT_SECONDS``; INFO only on a confirmed
+        2xx (a non-2xx is NOT a real warm-up — Story 6.24 review lesson);
+        DEBUG on any failure; NEVER raises. No `response_format` — the goal
+        is connection + model warmth, not a verdict.
+        """
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            client = await self._get_client()
+            response = await client.post(self._base_url, headers=headers, json=payload)
+            if response.status_code < 300:
+                logger.info(
+                    "exchange_classifier_warmup: classifier connection warmed "
+                    "(model={})",
+                    self._model,
+                )
+            else:
+                logger.debug(
+                    "exchange_classifier_warmup non-2xx (non-fatal): {}",
+                    response.status_code,
+                )
+        except Exception as exc:
+            # Best-effort: a cold first classify is a one-turn UX nit, a
+            # crashed call is not. Swallow everything (CancelledError is a
+            # BaseException and still propagates).
+            logger.debug(
+                "exchange_classifier_warmup failed (non-fatal): {} ({})",
+                exc,
+                type(exc).__name__,
+            )
 
     async def close(self) -> None:
         """Release the underlying httpx connection pool.
@@ -371,7 +432,48 @@ class ExchangeClassifier:
                 dicts (extra keys ignored). Only goals still pending
                 should be passed — already-met goals must not be re-judged.
             scenario_description: Short scenario context.
+
+        Story 6.27 (D2b) — bounded first-call retry: until this instance has
+        completed ONE parsed verdict, an infra-failure `None` is retried
+        exactly once (the cold-start class that lost the opening turn on
+        calls 265/266 — the failed attempt typically completes the TLS
+        handshake, so the retry rides a warm connection). Never retries
+        after the first success; never retries twice within one call. Worst
+        case adds ~one classifier budget (~2 s) on a fire-and-forget path
+        that does not block the character's reply.
         """
+        result = await self._classify_multi_guarded(
+            user_text=user_text,
+            last_character_line=last_character_line,
+            pending_goals=pending_goals,
+            scenario_description=scenario_description,
+        )
+        if result is None and not self._completed_one_classify:
+            logger.info(
+                "exchange classifier first-call retry (infra failure before any "
+                "completed classify — cold-start belt-and-suspenders)"
+            )
+            result = await self._classify_multi_guarded(
+                user_text=user_text,
+                last_character_line=last_character_line,
+                pending_goals=pending_goals,
+                scenario_description=scenario_description,
+            )
+        if result is not None:
+            self._completed_one_classify = True
+        return result
+
+    async def _classify_multi_guarded(
+        self,
+        *,
+        user_text: str,
+        last_character_line: str,
+        pending_goals: list[dict],
+        scenario_description: str,
+    ) -> dict[str, bool | None] | None:
+        """One timeout-guarded `_classify_multi` attempt (the pre-6.27 body of
+        `classify_multi`, factored out so the first-call retry re-runs the
+        WHOLE guarded attempt — outer timeout included)."""
         try:
             return await asyncio.wait_for(
                 self._classify_multi(
@@ -580,7 +682,7 @@ class ExchangeClassifier:
             return None
         # `_parse_multi_classifier_output` returns None on a parse failure
         # (malformed / non-dict body) — also infra-grade, propagated as None.
-        return _parse_multi_classifier_output(content, goal_ids)
+        return _parse_multi_classifier_output(content, goal_ids, model=self._model)
 
 
 def _parse_classifier_output(content: str) -> bool | None:
@@ -672,7 +774,7 @@ def _format_pending_goals_block(pending_goals: list[dict]) -> str:
 
 
 def _parse_multi_classifier_output(
-    content: str, valid_ids: list[str]
+    content: str, valid_ids: list[str], *, model: str = "<unset>"
 ) -> dict[str, bool | None] | None:
     """Parse the multi-goal verdict object into a `{goal_id: bool|None}`
     dict keyed by EVERY id in `valid_ids`, or `None` on a parse failure.
@@ -688,6 +790,9 @@ def _parse_multi_classifier_output(
     defensive belt-and-suspenders for a non-strict provider / model that
     wraps the JSON, even though Groq strict mode returns clean JSON on the
     happy path.
+
+    `model` (Story 6.27, AC5) only labels the `checkpoint_verdicts` log line
+    below — `_classify_multi` threads the live model id.
     """
     text = content.strip()
     fence_match = _FENCE_RE.match(text)
@@ -711,6 +816,18 @@ def _parse_multi_classifier_output(
     if not isinstance(data, dict):
         logger.warning("exchange classifier multi output not a dict")
         return None
+
+    # Story 6.27 (AC5) — ONE INFO line per successful parse with the full
+    # per-goal verdict map, rendered from the RAW enum values BEFORE the bool
+    # mapping so the journal distinguishes `unsure` from `unmet` (the exact
+    # distinction the call-266 forensics could not recover — bool-mapped,
+    # both unsure and a missing key collapse into None). Lives here, in the
+    # classifier, so prod AND the Story 6.15 calibration harness emit it.
+    logger.info(
+        "checkpoint_verdicts model={} verdicts={}",
+        model,
+        {gid: data.get(gid) for gid in valid_ids},
+    )
 
     verdicts: dict[str, bool | None] = {
         gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids

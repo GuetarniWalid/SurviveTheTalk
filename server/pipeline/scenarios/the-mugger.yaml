@@ -82,6 +82,13 @@ checkpoints:
       to the demand. Any coherent response counts.
 
   - id: refuse
+    # Story 6.27 — `react`'s criteria ends on an explicit catch-all ("Any
+    # coherent response counts"), making it a strict logical SUPERSET of every
+    # later beat in this scenario: refusing / challenging / deflecting /
+    # standing firm are all coherent reactions. Without these edges the judge
+    # can credit a narrower later beat on the user's first engaged turn and
+    # strand `react` forever (the call_id=266 class — see the-waiter.yaml).
+    implies: react
     hint_text: "Tell him you're not going to pay."
     prompt_segment: |
       They've reacted to your demand. Now push harder. Explain
@@ -95,6 +102,8 @@ checkpoints:
       money for you", "forget it" all count.
 
   - id: challenge
+    # Story 6.27 — challenging the racket ⊂ react ("asks a question").
+    implies: react
     hint_text: "Ask him what protection he actually offers."
     prompt_segment: |
       They've refused. You're annoyed. Double down with more
@@ -108,6 +117,8 @@ checkpoints:
       actually protect them, or questions his credibility.
 
   - id: deflect
+    # Story 6.27 — refusing to share info ⊂ react ("any coherent response").
+    implies: react
     hint_text: "He's asking personal questions — refuse to answer."
     prompt_segment: |
       They've called your bluff. You're losing control. Try to
@@ -121,6 +132,8 @@ checkpoints:
       telling you that", "stop asking me questions" all count.
 
   - id: stand_firm
+    # Story 6.27 — a firm closing statement ⊂ react ("any coherent response").
+    implies: react
     hint_text: "Tell him to stop calling you. Final refusal."
     prompt_segment: |
       You're desperate now. Make one last push — reduce the

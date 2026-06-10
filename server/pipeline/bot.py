@@ -608,6 +608,17 @@ async def run_bot(url: str, room: str, token: str) -> None:
         model=settings.classifier_model,
         base_url=resolve_llm_chat_url(settings),
     )
+    # Story 6.27 (D2a) — warm the classifier's OWN lazy httpx client at call
+    # start. The Story 6.24 llm_warmup above warms Groq through its own
+    # throwaway client, NOT this instance's: the classifier paid its cold TLS
+    # handshake on the FIRST classify, which blew the 1.5 s HTTP budget and
+    # silently lost the opening turn on calls 265/266. Fire-and-forget,
+    # never blocks, never raises; the 6.24/6.26 strong-ref + done-callback
+    # pattern keeps the task from being GC'd mid-flight. Runs at call start
+    # inside run_bot (NOT pool-park time — parked bots have no call context).
+    _classifier_warmup_task = asyncio.create_task(exchange_classifier.warm_up())
+    _BACKGROUND_TASKS.add(_classifier_warmup_task)
+    _classifier_warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)
     checkpoint_manager = CheckpointManager(
         base_prompt=scenario_base_prompt,
         checkpoints=scenario_checkpoints,

@@ -81,6 +81,13 @@ checkpoints:
       question counts.
 
   - id: explain_driving
+    # Story 6.27 — `respond`'s criteria enumerates "responds to the officer"
+    # and ends on a catch-all, making it a strict logical SUPERSET of every
+    # later beat: explaining / justifying / answering the curveball / closing
+    # are all coherent responses to the officer. Without these edges the judge
+    # can credit a narrower later beat on the user's first engaged turn and
+    # strand `respond` forever (the call_id=266 class — see the-waiter.yaml).
+    implies: respond
     hint_text: "Explain where you're coming from."
     prompt_segment: |
       They've responded. Now state the offense: they were drifting
@@ -95,6 +102,8 @@ checkpoints:
       counts.
 
   - id: justify
+    # Story 6.27 — justifying the driving ⊂ respond ("responds to the officer").
+    implies: respond
     hint_text: "Explain why you were swerving."
     prompt_segment: |
       They've said where they're coming from. Now the pointed
@@ -109,6 +118,8 @@ checkpoints:
       or "I don't know" does NOT count.
 
   - id: curveball
+    # Story 6.27 — engaging the officer's question ⊂ respond (same clause).
+    implies: respond
     hint_text: "Answer his question — stay calm."
     prompt_segment: |
       They've given an explanation. Now throw a curveball to test
@@ -129,6 +140,8 @@ checkpoints:
       answer, or hostility does NOT count.
 
   - id: closing
+    # Story 6.27 — a composed closing remark ⊂ respond (same clause).
+    implies: respond
     hint_text: "Make a clear, calm closing statement."
     prompt_segment: |
       They've handled the curveball. Final assessment: ask if

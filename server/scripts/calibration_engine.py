@@ -113,7 +113,11 @@ from pipeline.prompts import COHERENCE_CHARTER  # noqa: E402
 # persona edit self-invalidates that scenario), but NOT the code-constant blocks
 # — this bump forces the next sweep to revalidate every scenario's difficulty
 # band against the new neutral personas + tightened blocks.
-ENGINE_VERSION = 3
+# Story 6.27 — bumped 3 → 4: `advance_goals` gained the `implies` superset
+# back-fill (a later beat auto-credits the earlier beat it logically subsumes),
+# which changes the flip rule for EVERY scenario — the next sweep must
+# revalidate all cached PASSes against the new crediting behaviour.
+ENGINE_VERSION = 4
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —
@@ -655,7 +659,9 @@ async def simulate_conversation(
             verdicts = {}
         recorded_verdicts: dict[str, bool | None] = verdicts if verdicts else {}
         if verdicts is not None:
-            adv = advance_goals(goals, verdicts)
+            # Story 6.27 — thread the checkpoints so the harness applies the
+            # SAME `implies` back-fill rule prod does (golden==prod).
+            adv = advance_goals(goals, verdicts, checkpoints=data.checkpoints)
             goals = adv.new_goals
             if adv.all_met:
                 outcome = "survived"
@@ -731,6 +737,10 @@ class GoldenResult:
     # forces `passed=False`. NON-LLM (a pure function over the gate), so it runs
     # for free even in `--golden-only`.
     requires_gating_failures: list[str] = field(default_factory=list)
+    # Story 6.27 — same idea for the `implies` superset back-fill: any beat
+    # whose `implies` edge fails to back-fill its earlier target through the
+    # REAL shared `advance_goals`. Non-empty forces `passed=False`; non-LLM.
+    implies_backfill_failures: list[str] = field(default_factory=list)
 
 
 def requires_gating_failures(checkpoints: list[dict]) -> list[str]:
@@ -773,6 +783,43 @@ def requires_gating_failures(checkpoints: list[dict]) -> list[str]:
             failures.append(
                 f"{cp['id']!r} stays gated even after its required beat "
                 f"{required!r} is met (the trap could never land)."
+            )
+    return failures
+
+
+def implies_backfill_failures(checkpoints: list[dict]) -> list[str]:
+    """Pure back-fill assertion over the Story 6.27 `implies` edge.
+
+    For every beat carrying an ``implies`` edge, simulate that beat flipping
+    met (all others pending) through the REAL shared
+    ``checkpoint_manager.advance_goals`` — NOT a re-implementation — and
+    assert the implied earlier beat (1) lands ``met`` in the same turn and
+    (2) rides ``flipped_ids`` (so the prod per-flip envelope loop emits a
+    `checkpoint_advanced` for it and the HUD ticks both).
+
+    Returns a list of human-readable failure descriptions (empty == OK). No
+    LLM, no I/O — sibling of ``requires_gating_failures``, runs even in
+    ``--golden-only`` and costs nothing. The loader already rejected
+    malformed edges; this is the belt-and-suspenders proof that the engine
+    wires the back-fill up as intended.
+    """
+    failures: list[str] = []
+    for cp in checkpoints:
+        implied = cp.get("implies")
+        if implied is None:
+            continue
+        all_pending = {c["id"]: "pending" for c in checkpoints}
+        adv = advance_goals(all_pending, {cp["id"]: True}, checkpoints=checkpoints)
+        if adv.new_goals.get(implied) != "met":
+            failures.append(
+                f"{cp['id']!r} flipping met does NOT back-fill its implied "
+                f"earlier beat {implied!r} (the `implies` edge is wired wrong)."
+            )
+        elif implied not in adv.flipped_ids:
+            failures.append(
+                f"{cp['id']!r} back-fills {implied!r} but the back-filled id "
+                f"does not ride `flipped_ids` (no `checkpoint_advanced` "
+                f"envelope would be emitted — the HUD would never tick it)."
             )
     return failures
 
@@ -962,6 +1009,14 @@ async def run_golden(
     gating_failures = requires_gating_failures(data.checkpoints)
     if gating_failures:
         golden = replace(golden, passed=False, requires_gating_failures=gating_failures)
+    # Story 6.27 (AC2) — fold in the pure `implies` back-fill assertion the
+    # same way (a broken back-fill re-opens the call_id=266 stranded-beat
+    # class). Non-LLM, runs in --golden-only too.
+    backfill_failures = implies_backfill_failures(data.checkpoints)
+    if backfill_failures:
+        golden = replace(
+            golden, passed=False, implies_backfill_failures=backfill_failures
+        )
     return golden
 
 
@@ -1322,6 +1377,10 @@ def compute_scenario_hash(scenario_id: str) -> str:
                 # so it must invalidate the cached PASS (else editing a gate
                 # would not trigger a revalidation).
                 "requires": cp.get("requires"),
+                # Story 6.27 — the superset back-fill edge is behaviour-
+                # affecting too: adding/removing an `implies` changes WHICH
+                # beats credit on a turn, so it must invalidate the cached PASS.
+                "implies": cp.get("implies"),
             }
             for cp in (raw.get("checkpoints") or [])
         ],
@@ -1403,6 +1462,8 @@ def _golden_summary(golden: GoldenResult | None) -> dict:
         "positive_met": golden.positive_met,
         # Story 6.23 — reactive-gating assertion failures (AC6).
         "requires_gating_failures": list(golden.requires_gating_failures),
+        # Story 6.27 — `implies` back-fill assertion failures (AC2).
+        "implies_backfill_failures": list(golden.implies_backfill_failures),
     }
 
 
@@ -1536,6 +1597,19 @@ def format_failure_report(verdict: ScenarioVerdict, *, report_path: str = "") ->
         )
         lines.append("")
         for msg in golden.requires_gating_failures:
+            lines.append(f"- {msg}")
+        lines.append("")
+    if golden and golden.implies_backfill_failures:
+        lines.append("## Back-fill failures (Story 6.27 `implies` edge wired wrong)")
+        lines.append("")
+        lines.append(
+            "A beat carrying `implies: <id>` must auto-credit that earlier "
+            "beat (via `advance_goals`) the moment it flips met. These edges "
+            "are wired wrong — fix the `implies:` field in "
+            f"`server/pipeline/scenarios/` for `{sid}`:"
+        )
+        lines.append("")
+        for msg in golden.implies_backfill_failures:
             lines.append(f"- {msg}")
         lines.append("")
     if golden and not golden.passed:

@@ -259,6 +259,130 @@ def test_checkpoints_and_critique_prompts_document_requires():
     assert "PRESERVE" in builder.CRITIQUE_PROMPT
 
 
+# ============================================================
+# Story 6.27 — builder preserves + validates the `implies` back-fill edge
+# ============================================================
+
+
+def test_sanitize_preserves_implies_edge():
+    """`implies` survives the whitelist (mirror of the `requires` preservation)
+    and is slugified to match the target's sanitized id."""
+    raw = [
+        {
+            "id": "greet",
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+        {
+            "id": "main_course",
+            "implies": "Greet",  # mixed-case → slugified to match `greet`
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+    ]
+    out = builder.sanitize_checkpoints(raw)
+    assert out[1]["implies"] == "greet"
+
+
+def test_sanitize_drops_blank_implies_and_keeps_malformed_as_sentinel():
+    """A blank `implies` is omitted; a PRESENT but non-string one (a list the
+    draft LLM emitted) becomes the fail-loud sentinel so `validate_structure`'s
+    'unknown id' guard surfaces it instead of silently dropping the edge."""
+    raw = [
+        {
+            "id": "a",
+            "implies": "   ",
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+        {
+            "id": "b",
+            "implies": ["a", "c"],  # malformed: a list, not a single id string
+            "hint_text": "h",
+            "prompt_segment": "p",
+            "success_criteria": "s",
+        },
+    ]
+    out = builder.sanitize_checkpoints(raw)
+    assert "implies" not in out[0]
+    assert "implies" in out[1], "malformed back-fill edge must not be dropped"
+    assert out[1]["implies"].startswith("__malformed_implies__")
+    assert out[1]["implies"] not in {c["id"] for c in out}
+
+
+def test_validate_structure_accepts_valid_implies_edge():
+    good = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt="You are X.",
+        checkpoints=_checkpoints(3),
+        brief=_brief(3),
+    )
+    cps = good["checkpoints"]
+    cps[2]["implies"] = cps[0]["id"]  # point at an earlier beat
+    scenario = {**good, "checkpoints": cps}
+    assert builder.validate_structure(scenario) == []
+
+
+def test_validate_structure_rejects_bad_implies_edges():
+    """The 4 loader rules, mirrored: non-string/empty, unknown id, non-earlier
+    target, and a target that itself carries `requires`."""
+    good = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        difficulty="hard",
+        rive_character="cop",
+        base_prompt="You are X.",
+        checkpoints=_checkpoints(3),
+        brief=_brief(3),
+    )
+    cps = [dict(c) for c in good["checkpoints"]]
+
+    nonstring = [dict(c) for c in cps]
+    nonstring[1]["implies"] = "   "
+    assert any(
+        "non-string/empty 'implies'" in p
+        for p in builder.validate_structure({**good, "checkpoints": nonstring})
+    )
+
+    unknown = [dict(c) for c in cps]
+    unknown[1]["implies"] = "does_not_exist"
+    assert any(
+        "'implies' points at unknown id" in p
+        for p in builder.validate_structure({**good, "checkpoints": unknown})
+    )
+
+    forward = [dict(c) for c in cps]
+    forward[0]["implies"] = cps[2]["id"]  # points at a LATER beat
+    assert any(
+        "'implies'" in p and "EARLIER" in p
+        for p in builder.validate_structure({**good, "checkpoints": forward})
+    )
+
+    onto_reactive = [dict(c) for c in cps]
+    onto_reactive[1]["requires"] = cps[0]["id"]  # beat 1 is a reactive trap
+    onto_reactive[2]["implies"] = cps[1]["id"]  # back-filling it is forbidden
+    assert any(
+        "must never be auto-credited" in p
+        for p in builder.validate_structure({**good, "checkpoints": onto_reactive})
+    )
+
+
+def test_checkpoints_and_critique_prompts_document_implies():
+    """D1-C — both LLM passes teach the superset rule: the DRAFT prompt
+    documents the `implies` field, the CRITIQUE prompt's overlap pass knows the
+    directional SUPERSET special case + preserves existing edges."""
+    assert "implies" in builder.CHECKPOINTS_PROMPT
+    assert "SUPERSET" in builder.CHECKPOINTS_PROMPT
+    assert "implies" in builder.CRITIQUE_PROMPT
+    assert "SUPERSET" in builder.CRITIQUE_PROMPT
+
+
 def test_lexical_overlap_flags_near_duplicates():
     cps = [
         {

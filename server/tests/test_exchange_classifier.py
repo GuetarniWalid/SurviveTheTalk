@@ -1029,3 +1029,206 @@ def test_multi_output_parser_helpers() -> None:
     assert _parse_multi_classifier_output(
         '{"a": "met", "__user_abusive__": "true"}', ["a"]
     ) == {"a": True, ABUSE_KEY: False}
+
+
+# ============================================================
+# Story 6.27 — classifier warm-up + first-call retry + verdict logging
+# ============================================================
+
+
+def test_warm_up_posts_once_through_instance_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2a — `warm_up()` fires exactly ONE `max_tokens=1` completion through
+    the instance's own `_get_client()` (the whole point: warming THIS
+    instance's connection, not a throwaway one) and logs INFO only on a
+    confirmed 2xx (Story 6.24 review lesson — no phantom warm-up logs)."""
+    from loguru import logger as loguru_logger
+
+    calls: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "h"}}]})
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="INFO")
+    try:
+        _run(classifier.warm_up())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert len(calls) == 1
+    assert calls[0]["max_tokens"] == 1
+    assert "response_format" not in calls[0]  # connection warmth, not a verdict
+    assert any("exchange_classifier_warmup" in entry for entry in captured)
+    assert any("connection warmed" in entry for entry in captured)
+
+
+def test_warm_up_never_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D2a — the warm-up contract mirrors `warm_up_llm`: every failure is
+    swallowed (DEBUG), never raised — a cold first classify is a one-turn UX
+    nit, a crashed call is not."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated network failure")
+
+    _mock_http(monkeypatch, handler=_handler)
+    _run(_make_classifier().warm_up())  # must not raise
+
+
+def test_warm_up_non_2xx_does_not_log_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 6.24 review lesson — a non-2xx warm-up is NOT a real warm-up;
+    it must not emit the INFO success line (phantom-warm-up class)."""
+    from loguru import logger as loguru_logger
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    _mock_http(monkeypatch, handler=_handler)
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="INFO")
+    try:
+        _run(_make_classifier().warm_up())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert not any("connection warmed" in entry for entry in captured)
+
+
+def test_first_call_retry_recovers_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D2b / AC4 — the instance's FIRST `classify_multi` hitting an infra
+    failure (the calls-265/266 cold-start ReadTimeout) retries ONCE and the
+    verdicts still land. The opening turn is no longer silently stranded."""
+    from loguru import logger as loguru_logger
+
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ReadTimeout("simulated cold-start timeout")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"greet": "met", "main": "unmet"}'}}
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="INFO")
+    try:
+        out = _run(
+            _make_classifier().classify_multi(
+                **_multi_kwargs(pending_goals=_multi_pending("greet", "main"))
+            )
+        )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert len(attempts) == 2
+    assert out == {"greet": True, "main": False, ABUSE_KEY: False}
+    assert any("first-call retry" in entry for entry in captured)
+
+
+def test_no_retry_after_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D2b — once the instance has completed one parsed verdict, a later
+    failure is NOT retried (the retry is a cold-start measure only; steady-
+    state failures stay single-attempt + consecutive-None backstop)."""
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"greet": "met"}'}}]},
+            )
+        raise httpx.ReadTimeout("simulated mid-call timeout")
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+    kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
+
+    first = _run(classifier.classify_multi(**kwargs))
+    assert first == {"greet": True, ABUSE_KEY: False}
+
+    second = _run(classifier.classify_multi(**kwargs))
+    assert second is None
+    assert len(attempts) == 2  # no third POST — the failure was NOT retried
+
+
+def test_first_call_retry_never_retries_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2b — the retry is one-shot: first attempt + one retry, never a third
+    attempt within the same call."""
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ReadTimeout("simulated persistent outage")
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(
+        _make_classifier().classify_multi(
+            **_multi_kwargs(pending_goals=_multi_pending("greet"))
+        )
+    )
+    assert out is None
+    assert len(attempts) == 2  # exactly one retry, then give up
+
+
+def test_checkpoint_verdicts_logged_with_raw_enum_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC5 — every successful `classify_multi` logs ONE INFO
+    `checkpoint_verdicts` line with the RAW per-goal enum values (so the
+    journal distinguishes `unsure` from `unmet` — the exact distinction the
+    call-266 forensics could not recover). Loguru temp-sink per
+    server/CLAUDE.md §3 (`caplog` does not capture loguru)."""
+    from loguru import logger as loguru_logger
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"greet": "unsure", "main": "met", '
+                            '"drink": "unmet"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="INFO")
+    try:
+        out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert out == {"greet": None, "main": True, "drink": False, ABUSE_KEY: False}
+    verdict_lines = [e for e in captured if "checkpoint_verdicts" in e]
+    assert len(verdict_lines) == 1  # ONE line per successful classify
+    line = verdict_lines[0]
+    assert f"model={_PROVIDER_MODEL}" in line
+    # Raw enums, not the bool mapping: unsure and unmet must be distinct.
+    assert "'greet': 'unsure'" in line
+    assert "'main': 'met'" in line
+    assert "'drink': 'unmet'" in line

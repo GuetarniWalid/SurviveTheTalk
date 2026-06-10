@@ -787,3 +787,26 @@ def test_bot_sources_user_speech_timeout_from_settings() -> None:
     assert "user_speech_timeout=0.6" not in code, (
         "must not regress to the hardcoded 0.6 s that chopped B1 thinking pauses"
     )
+
+
+def test_bot_fires_classifier_warmup_at_call_start() -> None:
+    """Story 6.27 (D2a / AC4) — bot.py must fire `exchange_classifier.warm_up()`
+    fire-and-forget right after construction, with the 6.24/6.26 strong-ref +
+    done-callback pattern (a bare create_task can be GC'd mid-flight). The
+    llm_warmup does NOT cover this: it warms Groq through its own throwaway
+    client, while the classifier's lazy client paid a cold TLS handshake on
+    the FIRST classify — which blew the 1.5 s budget and silently lost the
+    opening turn on calls 265/266."""
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "asyncio.create_task(exchange_classifier.warm_up())" in code, (
+        "bot.py must fire the classifier warm-up at call start (D2a)"
+    )
+    assert "_BACKGROUND_TASKS.add(_classifier_warmup_task)" in code, (
+        "the warm-up task needs the strong-ref pattern (6.26 review lesson)"
+    )
+    assert (
+        "_classifier_warmup_task.add_done_callback(_BACKGROUND_TASKS.discard)" in code
+    )
