@@ -15,6 +15,13 @@ metadata:
   opening_line: "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
   content_warning: null
 
+  # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
+  # content-is-server-side rule; editing these never requires an app update).
+  end_phrases:
+    hung_up: "The waitress kicked you out"
+    voluntary: "You walked out"
+    survived: "You actually got your food"
+
   # Nullable difficulty overrides (null = use easy preset)
   patience_start: null       # effective: 100
   fail_penalty: null         # effective: -15

@@ -74,5 +74,54 @@ void main() {
       expect(scenario.isCompleted, isTrue);
       expect(scenario.isNotAttempted, isFalse);
     });
+
+    // Story 7.2 — server-authored Call Ended overlay phrases (AC-C1).
+    group('endPhrases', () {
+      test('parses the end_phrases map', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['end_phrases'] = <String, dynamic>{
+              'hung_up': 'The waitress kicked you out',
+              'voluntary': 'You walked out',
+              'survived': 'You actually got your food',
+            },
+        );
+
+        expect(scenario.endPhrases, {
+          'hung_up': 'The waitress kicked you out',
+          'voluntary': 'You walked out',
+          'survived': 'You actually got your food',
+        });
+      });
+
+      test('missing end_phrases key → null (legacy server payload)', () {
+        final scenario = Scenario.fromJson(_basePayload());
+
+        expect(scenario.endPhrases, isNull);
+      });
+
+      test('end_phrases: null → null', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()..['end_phrases'] = null,
+        );
+
+        expect(scenario.endPhrases, isNull);
+      });
+
+      test('non-string values are dropped, not crashed on (defensive)', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['end_phrases'] = <String, dynamic>{
+              'hung_up': 'The waitress kicked you out',
+              'voluntary': 42,
+              'survived': null,
+            },
+        );
+
+        expect(scenario.endPhrases, {
+          'hung_up': 'The waitress kicked you out',
+        });
+      });
+    });
   });
 }

@@ -153,6 +153,13 @@ class ScenarioListItem(BaseModel):
     content_warning: str | None = None
     best_score: int | None = None
     attempts: int
+    # Story 7.2 — Call Ended overlay theatrical phrases
+    # (`{"hung_up": …, "voluntary": …, "survived": …}`). Deliberately on the
+    # LIST item (not detail-only): the client carries the list `Scenario`
+    # into the call, so the overlay reads the phrases at call-end without a
+    # `GET /scenarios/{id}` round-trip. Nullable — legacy rows / YAMLs
+    # without the block → the overlay hides the phrase element (design P-7).
+    end_phrases: dict | None = None
 
 
 class ScenarioDetail(ScenarioListItem):

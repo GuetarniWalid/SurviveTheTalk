@@ -292,3 +292,26 @@ def test_migration_011_debrief_schema(test_db_path):
         )
     finally:
         conn.close()
+
+
+def test_migration_012_scenarios_end_phrases(test_db_path):
+    """Story 7.2 AC-S1 — migration 012 adds the nullable `end_phrases`
+    JSON-in-TEXT column to `scenarios` (the Call Ended overlay theatrical
+    phrases). Asserted against a freshly-migrated empty DB so a regression
+    in 012's DDL fails fast; the prod-snapshot replay above covers the
+    populated-DB case.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        cols = {
+            r[1]: r for r in conn.execute("PRAGMA table_info(scenarios)").fetchall()
+        }
+        assert "end_phrases" in cols, f"scenarios missing end_phrases: {set(cols)}"
+        # PRAGMA table_info row: (cid, name, type, notnull, dflt_value, pk).
+        # Must be nullable TEXT — legacy rows pre-date the column.
+        assert cols["end_phrases"][2] == "TEXT"
+        assert cols["end_phrases"][3] == 0, "end_phrases must be nullable"
+    finally:
+        conn.close()

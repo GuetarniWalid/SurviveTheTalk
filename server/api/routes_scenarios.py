@@ -97,6 +97,12 @@ async def list_scenarios(request: Request) -> dict:
                 # `attempts` is COALESCE'd to 0 in the SQL query, so it is
                 # already a non-nullable int here — no runtime fallback needed.
                 attempts=row["attempts"],
+                # Story 7.2 — theatrical phrases for the Call Ended overlay.
+                end_phrases=_safe_json_load(
+                    row["end_phrases"],
+                    scenario_id=row["id"],
+                    column="end_phrases",
+                ),
             )
             for row in rows
         ]

@@ -17,6 +17,13 @@ metadata:
     A firm officer questioning you about a traffic stop.
     He'll lean on you hard. No arrest, no detention.
 
+  # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
+  # content-is-server-side rule; editing these never requires an app update).
+  end_phrases:
+    hung_up: "The officer lost patience"
+    voluntary: "You hung up on the officer"
+    survived: "The officer let you off"
+
   # Nullable difficulty overrides (null = use hard preset)
   patience_start: null       # effective: 60
   fail_penalty: null         # effective: -25

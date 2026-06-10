@@ -110,6 +110,76 @@ def test_list_shape_includes_progression_fields(
         assert "content_warning" in item
 
 
+def test_list_items_carry_end_phrases(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.2 AC-S2/AC-S3 — `end_phrases` round-trips YAML → DB →
+    `ScenarioListItem`. Every shipped YAML carries the block, so every list
+    item must expose a dict with the 3 non-empty string variants the Call
+    Ended overlay picks from.
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    items = client.get("/scenarios", headers=_auth_header(token)).json()["data"]
+
+    assert len(items) > 0
+    for item in items:
+        phrases = item["end_phrases"]
+        assert isinstance(phrases, dict), f"{item['id']}: end_phrases={phrases!r}"
+        assert {"hung_up", "voluntary", "survived"} <= phrases.keys(), (
+            f"{item['id']}: missing variant in {phrases!r}"
+        )
+        for variant in ("hung_up", "voluntary", "survived"):
+            assert isinstance(phrases[variant], str) and phrases[variant].strip(), (
+                f"{item['id']}: empty end_phrases.{variant}"
+            )
+
+
+def test_list_end_phrases_matches_yaml_authoring(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.2 AC-S2 — the seeded waiter phrases are byte-identical to the
+    Walid-approved YAML copy (catches a seeder serialization drift)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    items = client.get("/scenarios", headers=_auth_header(token)).json()["data"]
+    waiter = next(item for item in items if item["id"] == "waiter_easy_01")
+
+    assert waiter["end_phrases"] == {
+        "hung_up": "The waitress kicked you out",
+        "voluntary": "You walked out",
+        "survived": "You actually got your food",
+    }
+
+
+def test_list_returns_500_on_corrupt_end_phrases_json(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.2 AC-S4 — corrupt `end_phrases` JSON → 500 SCENARIO_CORRUPT.
+
+    Unlike the 5 detail-route JSON columns covered by the parametrized test
+    below, `end_phrases` is decoded by the LIST route only (`get_scenario`
+    deliberately leaves it unset on the detail payload), so the corruption
+    probe must hit `GET /scenarios`.
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    conn = sqlite3.connect(test_db_path)
+    conn.execute(
+        "UPDATE scenarios SET end_phrases = ? WHERE id = ?",
+        ("not-valid-json{", "waiter_easy_01"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get("/scenarios", headers=_auth_header(token))
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "SCENARIO_CORRUPT"
+
+
 def test_list_includes_free_and_paid_mix(
     client: TestClient, mock_resend, test_db_path: str
 ) -> None:

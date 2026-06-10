@@ -27,6 +27,7 @@ import '../services/env_warning_payload.dart';
 import '../services/inbound_audio_stats_logger.dart';
 import '../services/viseme_scheduler.dart';
 import 'call_ended_notice_screen.dart';
+import 'call_ended_screen.dart';
 import 'scenario_backgrounds.dart';
 import 'widgets/animated_calling_text.dart';
 import 'widgets/character_avatar.dart';
@@ -718,9 +719,10 @@ class _CallScreenState extends State<CallScreen> {
           //   2. `character_hung_up` / `inappropriate_content` AND
           //      `wasGifted=true`: the short-call gift screen.
           //   3. Everything else (`user_hung_up`, `survived`,
-          //      non-gifted character/inappropriate >= 30 s):
-          //      straight pop to scenarios — Story 7.2 will own the
-          //      richer Call-Ended overlay for those later.
+          //      non-gifted character/inappropriate >= 30 s): the
+          //      Story 7.2 Call Ended overlay (identity + duration + %
+          //      + theatrical phrase, 3-10 s hold masking the debrief
+          //      fetch, auto-crossfade to the debrief).
           //
           // Defer to post-frame so the builder rebuilds with `canPop:
           // true` BEFORE the pop / pushReplacement is attempted —
@@ -754,7 +756,31 @@ class _CallScreenState extends State<CallScreen> {
                   ),
                 ),
               );
+            } else if (endReason != null) {
+              // Story 7.2 — Call Ended overlay for the debrief-eligible
+              // reasons. Metrics are captured AT PUSH TIME: the % comes
+              // from the HUD's reconciled checkpoint snapshot (Decision B
+              // — the server-authoritative met set after the call_end
+              // reconcile above, NOT the envelope's survival_pct, which
+              // uses a different formula and is absent on user_hung_up);
+              // duration + callId ride the CallEnded state (Decision D).
+              final snapshot = _checkpointNotifier.value;
+              nav.pushReplacement(
+                CallEndedScreen.route(
+                  scenario: widget.scenario,
+                  endReason: endReason,
+                  durationSec: state.durationSec,
+                  callId: state.callId,
+                  checkpointsPassed: snapshot?.metCount ?? 0,
+                  totalCheckpoints: snapshot?.total ?? 0,
+                  callRepository: _callRepository,
+                ),
+              );
             } else {
+              // `endReason == null` cannot happen on the bloc's normal
+              // exit paths (every one sets `_lastEndReason` before
+              // emitting CallEnded) — fall back to the plain pop rather
+              // than render an overlay with an unknown variant.
               nav.maybePop();
             }
           });

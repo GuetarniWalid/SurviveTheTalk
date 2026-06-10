@@ -85,4 +85,35 @@ class AppTypography {
     fontSize: 12,
     fontWeight: FontWeight.w500,
   );
+
+  // Call Ended overlay (Story 7.2 — call-ended-screen-design.md). The
+  // duration shares the 38px size of the character name (a prominent data
+  // point, not secondary info); "Call Ended" stays understated at 20
+  // Regular (design P-10 — SemiBold would compete with the 38px elements);
+  // the percentage and theatrical phrase form the variant-colored result
+  // block, the phrase in italic for its stage-direction quality.
+  static const TextStyle callEndedDuration = TextStyle(
+    fontFamily: fontFamily,
+    fontSize: 38,
+    fontWeight: FontWeight.w400,
+  );
+
+  static const TextStyle callEndedLabel = TextStyle(
+    fontFamily: fontFamily,
+    fontSize: 20,
+    fontWeight: FontWeight.w400,
+  );
+
+  static const TextStyle callEndedPercent = TextStyle(
+    fontFamily: fontFamily,
+    fontSize: 24,
+    fontWeight: FontWeight.w400,
+  );
+
+  static const TextStyle callEndedPhrase = TextStyle(
+    fontFamily: fontFamily,
+    fontSize: 24,
+    fontWeight: FontWeight.w400,
+    fontStyle: FontStyle.italic,
+  );
 }

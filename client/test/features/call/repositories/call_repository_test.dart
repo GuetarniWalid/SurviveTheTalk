@@ -230,4 +230,58 @@ void main() {
       });
     }
   });
+
+  // Story 7.2 — GET /debriefs/{call_id} for the Call Ended overlay.
+  group('CallRepository.fetchDebrief', () {
+    test('GETs /debriefs/{callId} and unwraps the data block', () async {
+      when(
+        () => mockApiClient.get<Map<String, dynamic>>('/debriefs/7'),
+      ).thenAnswer(
+        (_) async => Response<Map<String, dynamic>>(
+          requestOptions: RequestOptions(path: '/debriefs/7'),
+          statusCode: 200,
+          data: <String, dynamic>{
+            'data': <String, dynamic>{
+              'survival_pct': 83,
+              'character_name': 'The Waiter',
+            },
+            'meta': const {'timestamp': '2026-06-10T10:00:00Z'},
+          },
+        ),
+      );
+
+      final payload = await repository.fetchDebrief(callId: 7);
+
+      expect(payload, {
+        'survival_pct': 83,
+        'character_name': 'The Waiter',
+      });
+    });
+
+    test(
+      'propagates ApiException — the overlay branches on DEBRIEF_NOT_READY',
+      () async {
+        when(
+          () => mockApiClient.get<Map<String, dynamic>>('/debriefs/7'),
+        ).thenThrow(
+          const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'Debrief is still being generated.',
+            statusCode: 404,
+          ),
+        );
+
+        expect(
+          () => repository.fetchDebrief(callId: 7),
+          throwsA(
+            isA<ApiException>().having(
+              (e) => e.code,
+              'code',
+              'DEBRIEF_NOT_READY',
+            ),
+          ),
+        );
+      },
+    );
+  });
 }

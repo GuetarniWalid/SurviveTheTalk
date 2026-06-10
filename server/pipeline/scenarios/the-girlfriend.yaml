@@ -17,6 +17,13 @@ metadata:
     An angry, disappointed partner trying to guilt-trip you.
     No insults — just a real argument.
 
+  # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
+  # content-is-server-side rule; editing these never requires an app update).
+  end_phrases:
+    hung_up: "She hung up. Again."
+    voluntary: "You ended the call"
+    survived: "She's still on the line. Barely."
+
   # Nullable difficulty overrides (null = use medium preset)
   patience_start: null       # effective: 80
   fail_penalty: null         # effective: -20

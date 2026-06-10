@@ -12,6 +12,12 @@ class Scenario {
   final int attempts;
   final String tagline;
 
+  /// Story 7.2 — server-authored theatrical phrases for the Call Ended
+  /// overlay, keyed by variant (`hung_up` / `voluntary` / `survived`).
+  /// Null when the server omits the field (legacy payloads) — the overlay
+  /// hides the phrase element entirely (design P-7).
+  final Map<String, String>? endPhrases;
+
   const Scenario({
     required this.id,
     required this.title,
@@ -23,10 +29,23 @@ class Scenario {
     required this.bestScore,
     required this.attempts,
     required this.tagline,
+    this.endPhrases,
   });
 
   factory Scenario.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String;
+    // Story 7.2 — defensive parse: keep only string-valued entries so a
+    // malformed server variant can never crash the whole scenario-list
+    // parse (the overlay treats a missing variant as "hide the phrase").
+    final rawPhrases = json['end_phrases'];
+    Map<String, String>? endPhrases;
+    if (rawPhrases is Map) {
+      endPhrases = <String, String>{
+        for (final entry in rawPhrases.entries)
+          if (entry.key is String && entry.value is String)
+            entry.key as String: entry.value as String,
+      };
+    }
     return Scenario(
       id: id,
       title: json['title'] as String,
@@ -38,6 +57,7 @@ class Scenario {
       bestScore: json['best_score'] as int?,
       attempts: json['attempts'] as int? ?? 0,
       tagline: kScenarioTaglines[id] ?? '',
+      endPhrases: endPhrases,
     );
   }
 

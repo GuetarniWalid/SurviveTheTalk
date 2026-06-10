@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/theme/call_colors.dart';
@@ -5,8 +7,12 @@ import 'package:client/features/call/bloc/call_bloc.dart';
 import 'package:client/features/call/bloc/call_event.dart';
 import 'package:client/features/call/bloc/call_state.dart';
 import 'package:client/features/call/models/call_session.dart';
+import 'package:client/features/call/models/end_call_result.dart';
+import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/services/checkpoint_advanced_payload.dart';
 import 'package:client/features/call/services/data_channel_handler.dart';
+import 'package:client/features/call/views/call_ended_notice_screen.dart';
+import 'package:client/features/call/views/call_ended_screen.dart';
 import 'package:client/features/call/views/call_screen.dart';
 import 'package:client/features/call/views/widgets/animated_calling_text.dart';
 import 'package:client/features/call/views/widgets/character_avatar.dart';
@@ -26,6 +32,8 @@ class MockLocalParticipant extends Mock implements LocalParticipant {}
 class MockCallBloc extends MockBloc<CallEvent, CallState> implements CallBloc {}
 
 class MockDataChannelHandler extends Mock implements DataChannelHandler {}
+
+class MockCallRepository extends Mock implements CallRepository {}
 
 const _session = CallSession(
   callId: 1,
@@ -1258,6 +1266,150 @@ void main() {
         bloc.add(const PlaybackDrained());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  });
+
+  group('CallScreen — post-call navigation (Story 7.2)', () {
+    // Shared harness: pumps a real-bloc CallScreen with a mocked
+    // CallRepository (so the overlay's debrief fetch never hits the
+    // network) and captures the data-channel callbacks.
+    Future<
+      ({
+        MockCallRepository repo,
+        void Function(String, Map<String, dynamic>) onCallEnd,
+        void Function(CheckpointAdvancedPayload) onCheckpointAdvanced,
+      })
+    >
+    pumpRealBlocScreen(WidgetTester tester, {required bool gifted}) async {
+      final mock = MockDataChannelHandler();
+      when(() => mock.dispose()).thenAnswer((_) async {});
+
+      final repo = MockCallRepository();
+      when(
+        () => repo.endCall(
+          callId: any(named: 'callId'),
+          reason: any(named: 'reason'),
+        ),
+      ).thenAnswer(
+        (_) async => EndCallResult(
+          wasGifted: gifted,
+          giftsRemainingToday: gifted ? 2 : 3,
+          durationSec: 42,
+        ),
+      );
+      // Never resolves — the overlay holds on its own timers; the test
+      // never pumps past them.
+      when(
+        () => repo.fetchDebrief(callId: any(named: 'callId')),
+      ).thenAnswer((_) => Completer<Map<String, dynamic>>().future);
+
+      void Function(String, Map<String, dynamic>)? capturedOnCallEnd;
+      void Function(CheckpointAdvancedPayload)? capturedOnCheckpointAdvanced;
+
+      final fixture = _buildRoomFastConnect();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CallScreen(
+            scenario: _scenario,
+            callSession: _session,
+            room: fixture.room,
+            debugCanvasFallback: false,
+            debugPlaybackDrainBuffer: Duration.zero,
+            debugEndCallResultTimeout: Duration.zero,
+            callRepository: repo,
+            debugHandlerBuilder:
+                ({
+                  required room,
+                  required onEmotion,
+                  required onHangUpWarning,
+                  required onCallEnd,
+                  required onBotSpeakingEnded,
+                  required onCheckpointAdvanced,
+                  required onEnvWarning,
+                }) {
+                  capturedOnCallEnd = onCallEnd;
+                  capturedOnCheckpointAdvanced = onCheckpointAdvanced;
+                  return mock;
+                },
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1100));
+
+      expect(capturedOnCallEnd, isNotNull);
+      return (
+        repo: repo,
+        onCallEnd: capturedOnCallEnd!,
+        onCheckpointAdvanced: capturedOnCheckpointAdvanced!,
+      );
+    }
+
+    testWidgets(
+      'debrief-eligible CallEnded pushes the Call Ended overlay with the '
+      'checkpoint metrics captured at push time (AC-C12)',
+      (tester) async {
+        final harness = await pumpRealBlocScreen(tester, gifted: false);
+
+        // Mid-call HUD state: 3 of 6 goals met.
+        harness.onCheckpointAdvanced(
+          const CheckpointAdvancedPayload(
+            checkpointId: 'drink',
+            index: 2,
+            total: 6,
+            goalsMetIndices: [0, 1, 2],
+            hints: ['greet', 'order', 'drink', 'clarify', 'confirm', 'thanks'],
+          ),
+        );
+        await tester.pump();
+
+        final bloc = tester
+            .element(find.byType(Scaffold).first)
+            .read<CallBloc>();
+        harness.onCallEnd('character_hung_up', <String, dynamic>{});
+        await tester.pump(const Duration(milliseconds: 50));
+        bloc.add(const PlaybackDrained());
+        await tester.pump(const Duration(milliseconds: 50));
+        // Post-frame callback → pushReplacement; pump the entry frames.
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byType(CallEndedScreen), findsOneWidget);
+        expect(find.byType(CallEndedNoticeScreen), findsNothing);
+        final screen = tester.widget<CallEndedScreen>(
+          find.byType(CallEndedScreen),
+        );
+        expect(screen.endReason, 'character_hung_up');
+        expect(screen.checkpointsPassed, 3);
+        expect(screen.totalCheckpoints, 6);
+        expect(screen.callId, _session.callId);
+        expect(identical(screen.scenario, _scenario), isTrue);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
+      'gifted short-call still routes to CallEndedNoticeScreen — the '
+      'showsNotice path is untouched (AC-C12)',
+      (tester) async {
+        final harness = await pumpRealBlocScreen(tester, gifted: true);
+
+        final bloc = tester
+            .element(find.byType(Scaffold).first)
+            .read<CallBloc>();
+        harness.onCallEnd('character_hung_up', <String, dynamic>{});
+        await tester.pump(const Duration(milliseconds: 50));
+        bloc.add(const PlaybackDrained());
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byType(CallEndedNoticeScreen), findsOneWidget);
+        expect(find.byType(CallEndedScreen), findsNothing);
 
         await tester.pumpWidget(const SizedBox.shrink());
       },

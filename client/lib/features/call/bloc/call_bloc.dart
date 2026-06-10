@@ -593,6 +593,10 @@ class CallBloc extends Bloc<CallEvent, CallState> {
       endReason: _lastEndReason,
       wasGifted: result?.wasGifted,
       giftsRemainingToday: result?.giftsRemainingToday,
+      // Story 7.2 — the Call Ended overlay renders the server-computed
+      // duration and fetches the debrief by call id during its hold.
+      durationSec: result?.durationSec,
+      callId: _session.callId,
     );
   }
 

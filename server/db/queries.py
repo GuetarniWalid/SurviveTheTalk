@@ -298,7 +298,8 @@ INSERT INTO scenarios (
     silence_prompt_seconds, silence_hangup_seconds,
     ladder_impatience_seconds,
     escalation_thresholds,
-    tts_voice_id, tts_speed, scoring_model
+    tts_voice_id, tts_speed, scoring_model,
+    end_phrases
 ) VALUES (
     :id, :title, :scenario_title, :difficulty, :is_free, :rive_character,
     :base_prompt, :checkpoints, :briefing, :exit_lines, :language_focus,
@@ -307,7 +308,8 @@ INSERT INTO scenarios (
     :silence_prompt_seconds, :silence_hangup_seconds,
     :ladder_impatience_seconds,
     :escalation_thresholds,
-    :tts_voice_id, :tts_speed, :scoring_model
+    :tts_voice_id, :tts_speed, :scoring_model,
+    :end_phrases
 )
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
@@ -331,7 +333,8 @@ ON CONFLICT(id) DO UPDATE SET
     escalation_thresholds=excluded.escalation_thresholds,
     tts_voice_id=excluded.tts_voice_id,
     tts_speed=excluded.tts_speed,
-    scoring_model=excluded.scoring_model
+    scoring_model=excluded.scoring_model,
+    end_phrases=excluded.end_phrases
 """
 
 

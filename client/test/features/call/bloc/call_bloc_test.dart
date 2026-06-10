@@ -230,6 +230,50 @@ void main() {
   });
 
   group('_onHangUpPressed', () {
+    // Story 7.2 — the Call Ended overlay renders the server-computed
+    // duration and fetches the debrief by call id, both threaded through
+    // the terminal state by `_buildCallEnded`.
+    test('CallEnded carries durationSec from the POST + the session callId',
+        () async {
+      when(
+        () => mockCallRepository.endCall(
+          callId: any(named: 'callId'),
+          reason: any(named: 'reason'),
+        ),
+      ).thenAnswer(
+        (_) async => const EndCallResult(
+          wasGifted: false,
+          giftsRemainingToday: 3,
+          durationSec: 167,
+        ),
+      );
+      final fixture = _buildRoom();
+      final bloc = CallBloc(
+        session: _session,
+        scenario: _scenario,
+        room: fixture.room,
+        callRepository: mockCallRepository,
+        connectivityService: mockConnectivityService,
+        playbackDrainBuffer: Duration.zero,
+      );
+
+      bloc.add(const CallStarted());
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+      final states = <CallState>[];
+      final sub = bloc.stream.listen(states.add);
+      bloc.add(const HangUpPressed());
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await sub.cancel();
+
+      final ended = states.whereType<CallEnded>().single;
+      expect(ended.endReason, 'user_hung_up');
+      expect(ended.durationSec, 167);
+      expect(ended.callId, _session.callId);
+
+      await bloc.close();
+    });
+
     test('disconnects the room exactly once and emits CallEnded', () async {
       final fixture = _buildRoom();
       final bloc = CallBloc(

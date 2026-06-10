@@ -65,6 +65,11 @@ def _row_from_yaml(doc: dict) -> dict:
         content_warning = content_warning.strip() or None
 
     escalation = meta.get("escalation_thresholds")
+    # Story 7.2 — Call Ended overlay theatrical phrases. Nullable: a YAML
+    # without the block seeds NULL and the overlay hides the phrase element
+    # (design P-7). `json.dumps(None)` would store the string "null", so the
+    # conditional mirrors `escalation_thresholds` above.
+    end_phrases = meta.get("end_phrases")
     return {
         "id": meta["id"],
         "title": meta["title"],
@@ -95,6 +100,11 @@ def _row_from_yaml(doc: dict) -> dict:
         "escalation_thresholds": (
             json.dumps(escalation, ensure_ascii=False)
             if escalation is not None
+            else None
+        ),
+        "end_phrases": (
+            json.dumps(end_phrases, ensure_ascii=False)
+            if end_phrases is not None
             else None
         ),
         "tts_voice_id": meta.get("tts_voice_id"),

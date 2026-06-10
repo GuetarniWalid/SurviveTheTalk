@@ -51,4 +51,17 @@ class CallRepository {
     final data = response.data!['data'] as Map<String, dynamic>;
     return EndCallResult.fromJson(data);
   }
+
+  // Story 7.2 — GET /debriefs/{call_id}. Returns the unwrapped `data`
+  // block (the debrief JSON the Story 7.3 screen will render). Throws the
+  // mapped `ApiException` on any non-2xx: the Call Ended overlay treats
+  // `code == 'DEBRIEF_NOT_READY'` as "still generating → poll again" and
+  // every other failure as terminal (give up silently, no error chrome —
+  // UX-DR6).
+  Future<Map<String, dynamic>> fetchDebrief({required int callId}) async {
+    final response = await _apiClient.get<Map<String, dynamic>>(
+      '/debriefs/$callId',
+    );
+    return response.data!['data'] as Map<String, dynamic>;
+  }
 }

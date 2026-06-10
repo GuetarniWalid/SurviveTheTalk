@@ -17,6 +17,13 @@ metadata:
     A landlord threatening eviction, leaning on the law.
     No physical confrontation — it's a phone call.
 
+  # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
+  # content-is-server-side rule; editing these never requires an app update).
+  end_phrases:
+    hung_up: "The landlord hung up on you"
+    voluntary: "You hung up on him"
+    survived: "The landlord backed down"
+
   # Nullable difficulty overrides (null = use hard preset)
   patience_start: null       # effective: 60
   fail_penalty: null         # effective: -25

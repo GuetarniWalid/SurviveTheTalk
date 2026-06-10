@@ -43,9 +43,22 @@ final class CallEnded extends CallState {
   final bool? wasGifted;
   final int? giftsRemainingToday;
 
+  /// Story 7.2 — server-computed call duration from `EndCallResult`
+  /// (`POST /calls/{id}/end`). Null when the POST hadn't resolved by the
+  /// time the state was emitted (queued retry / timeout) — the Call Ended
+  /// overlay falls back to "00:00".
+  final int? durationSec;
+
+  /// Story 7.2 — the call-session id, threaded from `CallSession.callId`
+  /// so the Call Ended overlay can fetch `GET /debriefs/{callId}` during
+  /// its hold. Null only in tests that construct the state directly.
+  final int? callId;
+
   const CallEnded({
     this.endReason,
     this.wasGifted,
     this.giftsRemainingToday,
+    this.durationSec,
+    this.callId,
   });
 }
