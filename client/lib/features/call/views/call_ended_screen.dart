@@ -84,6 +84,44 @@ String formatCallDuration(int seconds) {
   return '${two(minutes)}:${two(secs)}';
 }
 
+/// Natural-speech duration for the announcement ("2 minutes 47 seconds"),
+/// not the raw "02:47" (design — screen reader section).
+@visibleForTesting
+String spokenCallDuration(int seconds) {
+  final clamped = seconds < 0 ? 0 : seconds;
+  final hours = clamped ~/ 3600;
+  final minutes = (clamped % 3600) ~/ 60;
+  final secs = clamped % 60;
+  final parts = <String>[
+    if (hours > 0) '$hours ${hours == 1 ? 'hour' : 'hours'}',
+    if (minutes > 0) '$minutes ${minutes == 1 ? 'minute' : 'minutes'}',
+    '$secs ${secs == 1 ? 'second' : 'seconds'}',
+  ];
+  return parts.join(' ');
+}
+
+/// P-5 — combined live-region announcement including the explicit outcome
+/// word so screen-reader users get the result without color. Degraded mode
+/// (unknown `riveCharacter` → catalog miss → empty role, e.g. a
+/// server-added scenario on an older app build): announce the bare name
+/// rather than a dangling "Name, .".
+@visibleForTesting
+String callEndedAnnouncement({
+  required String name,
+  required String role,
+  required int durationSec,
+  required int pct,
+  required bool success,
+  required String? phrase,
+}) {
+  final outcome = success ? 'survived' : 'failed';
+  final spoken = spokenCallDuration(durationSec);
+  final phraseTail = phrase != null ? ' $phrase.' : '';
+  final identity = role.isEmpty ? name : '$name, $role';
+  return '$identity. Call Ended. Duration: $spoken. '
+      'Achievement: $pct percent — $outcome.$phraseTail';
+}
+
 class CallEndedScreen extends StatefulWidget {
   /// Canonical hold/transition timings (call-ended-screen-design.md).
   static const Duration kEntryDuration = Duration(milliseconds: 1000);
@@ -344,37 +382,6 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
     return trimmed.isEmpty ? null : trimmed;
   }
 
-  /// P-5 — combined live-region announcement including the explicit
-  /// outcome word so screen-reader users get the result without color.
-  String _announcement({
-    required String name,
-    required String role,
-    required int pct,
-    required bool success,
-    required String? phrase,
-  }) {
-    final outcome = success ? 'survived' : 'failed';
-    final spoken = _spokenDuration(widget.durationSec ?? 0);
-    final phraseTail = phrase != null ? ' $phrase.' : '';
-    return '$name, $role. Call Ended. Duration: $spoken. '
-        'Achievement: $pct percent — $outcome.$phraseTail';
-  }
-
-  /// Natural-speech duration for the announcement ("2 minutes 47
-  /// seconds"), not the raw "02:47" (design — screen reader section).
-  String _spokenDuration(int seconds) {
-    final clamped = seconds < 0 ? 0 : seconds;
-    final hours = clamped ~/ 3600;
-    final minutes = (clamped % 3600) ~/ 60;
-    final secs = clamped % 60;
-    final parts = <String>[
-      if (hours > 0) '$hours ${hours == 1 ? 'hour' : 'hours'}',
-      if (minutes > 0) '$minutes ${minutes == 1 ? 'minute' : 'minutes'}',
-      '$secs ${secs == 1 ? 'second' : 'seconds'}',
-    ];
-    return parts.join(' ');
-  }
-
   @override
   Widget build(BuildContext context) {
     final identity = kCharacterCatalog[widget.scenario.riveCharacter];
@@ -397,114 +404,139 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
         body: Semantics(
           liveRegion: true,
           container: true,
-          label: _announcement(
+          label: callEndedAnnouncement(
             name: name,
             role: role,
+            durationSec: widget.durationSec ?? 0,
             pct: pct,
             success: success,
             phrase: phrase,
           ),
           child: SafeArea(
-            child: Column(
-              children: [
-                const SizedBox(height: 40),
-                // Identity zone — same specs as the incoming-call screen.
-                Text(
-                  name,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontFamily: 'Inter',
-                    fontSize: _kNameSize,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.textPrimary,
-                    height: 46 / 38,
-                  ),
-                ),
-                Text(
-                  role,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontFamily: 'Inter',
-                    fontSize: _kRoleSize,
-                    fontWeight: FontWeight.w400,
-                    color: CallColors.secondary,
-                    height: 19 / 16,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  formatCallDuration(widget.durationSec ?? 0),
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  style: AppTypography.callEndedDuration.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                // Status zone — avatar + understated "Call Ended".
-                const Spacer(),
-                CharacterAvatar(
-                  character: widget.scenario.riveCharacter,
-                  size: _kAvatarDiameter,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Call Ended',
-                  textAlign: TextAlign.center,
-                  style: AppTypography.callEndedLabel.copyWith(
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                // Result zone — variant-colored % + bar + phrase.
-                Text(
-                  '$pct%',
-                  textAlign: TextAlign.center,
-                  style: AppTypography.callEndedPercent.copyWith(
-                    color: variantColor,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: _kBarHorizontalPadding,
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(_kBarHeight / 2),
-                    child: LinearProgressIndicator(
-                      value: pct / 100,
-                      minHeight: _kBarHeight,
-                      // Track #414143 vs the avatar's #38383A circle —
-                      // LOCKED 2026-06-09 (story Dev Notes "Avatar vs
-                      // track color"); no new token, no inline hex.
-                      backgroundColor: AppColors.avatarBg,
-                      color: variantColor,
+            // Story 5.4 overflow pattern (mirrors `_buildDialSurface` on
+            // the sibling call screen): the Spacer-driven Column fills tall
+            // viewports and gracefully scrolls on small phones at large
+            // text scales instead of overflowing.
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
                     ),
-                  ),
-                ),
-                if (phrase != null)
-                  Padding(
-                    padding: const EdgeInsets.only(
-                      left: _kPhraseHorizontalPadding,
-                      right: _kPhraseHorizontalPadding,
-                      top: 16,
-                    ),
-                    child: Text(
-                      phrase,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppTypography.callEndedPhrase.copyWith(
-                        color: variantColor,
-                        height: 1.4,
+                    child: IntrinsicHeight(
+                      child: Column(
+                        children: [
+                          const SizedBox(height: 40),
+                          // Identity zone — same specs as the incoming-call
+                          // screen.
+                          Text(
+                            name,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: _kNameSize,
+                              fontWeight: FontWeight.w400,
+                              color: AppColors.textPrimary,
+                              height: 46 / 38,
+                            ),
+                          ),
+                          // Degraded mode (catalog miss): skip the empty
+                          // role line instead of rendering a blank 19px row.
+                          if (role.isNotEmpty)
+                            Text(
+                              role,
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: _kRoleSize,
+                                fontWeight: FontWeight.w400,
+                                color: CallColors.secondary,
+                                height: 19 / 16,
+                              ),
+                            ),
+                          const SizedBox(height: 12),
+                          Text(
+                            formatCallDuration(widget.durationSec ?? 0),
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            style: AppTypography.callEndedDuration.copyWith(
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          // Status zone — avatar + understated "Call Ended".
+                          const Spacer(),
+                          CharacterAvatar(
+                            character: widget.scenario.riveCharacter,
+                            size: _kAvatarDiameter,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Call Ended',
+                            textAlign: TextAlign.center,
+                            style: AppTypography.callEndedLabel.copyWith(
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          const Spacer(),
+                          // Result zone — variant-colored % + bar + phrase.
+                          Text(
+                            '$pct%',
+                            textAlign: TextAlign.center,
+                            style: AppTypography.callEndedPercent.copyWith(
+                              color: variantColor,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: _kBarHorizontalPadding,
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                _kBarHeight / 2,
+                              ),
+                              child: LinearProgressIndicator(
+                                value: pct / 100,
+                                minHeight: _kBarHeight,
+                                // Track #414143 vs the avatar's #38383A
+                                // circle — LOCKED 2026-06-09 (story Dev
+                                // Notes "Avatar vs track color"); no new
+                                // token, no inline hex.
+                                backgroundColor: AppColors.avatarBg,
+                                color: variantColor,
+                              ),
+                            ),
+                          ),
+                          if (phrase != null)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: _kPhraseHorizontalPadding,
+                                right: _kPhraseHorizontalPadding,
+                                top: 16,
+                              ),
+                              child: Text(
+                                phrase,
+                                textAlign: TextAlign.center,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppTypography.callEndedPhrase.copyWith(
+                                  color: variantColor,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ),
+                          const SizedBox(height: 50),
+                        ],
                       ),
                     ),
                   ),
-                const SizedBox(height: 50),
-              ],
+                );
+              },
             ),
           ),
         ),

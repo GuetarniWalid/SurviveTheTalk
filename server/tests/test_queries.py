@@ -501,3 +501,62 @@ def test_seed_scenarios_rejects_duplicate_ids(migrated_db, tmp_path, monkeypatch
     monkeypatch.setattr(seed_module, "_SCENARIOS_DIR", fake_dir)
     with pytest.raises(RuntimeError, match="Duplicate scenario id"):
         asyncio.run(seed_module.seed_scenarios())
+
+
+def test_seed_scenarios_rejects_malformed_end_phrases(
+    migrated_db, tmp_path, monkeypatch
+):
+    """Story 7.2 review — the seeder fail-fasts on a malformed `end_phrases`
+    block instead of seeding it and letting `GET /scenarios` 500 the WHOLE
+    catalog at request time (`SCENARIO_CORRUPT`). The daily-scenario VPS flow
+    seeds YAMLs that never went through CI, so the guard must live in the
+    seeder. An absent block stays legal (NULL → the overlay hides the phrase
+    element, design P-7)."""
+    import db.seed_scenarios as seed_module
+
+    def base_yaml(end_phrases_block: str) -> str:
+        return (
+            "metadata:\n"
+            "  id: bad_phrases_01\n"
+            "  title: 'A'\n"
+            "  difficulty: easy\n"
+            "  is_free: true\n"
+            "  rive_character: x\n"
+            "  language_focus: 'one, two'\n"
+            f"{end_phrases_block}"
+            "base_prompt: 'hi'\n"
+            "checkpoints: []\n"
+            "briefing: {vocabulary: '', context: '', expect: ''}\n"
+            "exit_lines: {hangup: '', completion: ''}\n"
+        )
+
+    fake_dir = tmp_path / "scenarios"
+    fake_dir.mkdir()
+    monkeypatch.setattr(seed_module, "_SCENARIOS_DIR", fake_dir)
+    yaml_path = fake_dir / "a.yaml"
+
+    rejected = [
+        # Non-mapping (a bare string).
+        ("  end_phrases: 'oops'\n", "must be a mapping"),
+        # Missing canonical variant (no `survived`).
+        ("  end_phrases: {hung_up: 'a', voluntary: 'b'}\n", "missing variants"),
+        # Present but blank variant value.
+        (
+            "  end_phrases: {hung_up: 'a', voluntary: 'b', survived: '  '}\n",
+            "non-empty",
+        ),
+    ]
+    for block, match in rejected:
+        yaml_path.write_text(base_yaml(block), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=match):
+            asyncio.run(seed_module.seed_scenarios())
+
+    # Absent block stays legal — seeds NULL (overlay hides the element).
+    yaml_path.write_text(base_yaml(""), encoding="utf-8")
+    asyncio.run(seed_module.seed_scenarios())
+    conn = sqlite3.connect(migrated_db)
+    stored = conn.execute(
+        "SELECT end_phrases FROM scenarios WHERE id = 'bad_phrases_01'"
+    ).fetchone()[0]
+    conn.close()
+    assert stored is None

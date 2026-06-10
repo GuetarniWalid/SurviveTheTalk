@@ -69,7 +69,32 @@ def _row_from_yaml(doc: dict) -> dict:
     # without the block seeds NULL and the overlay hides the phrase element
     # (design P-7). `json.dumps(None)` would store the string "null", so the
     # conditional mirrors `escalation_thresholds` above.
+    #
+    # Story 7.2 review — validate the shape HERE, not at request time: the
+    # daily-scenario flow seeds YAMLs straight on the VPS (no CI run), and a
+    # malformed block would otherwise seed fine and then 500 the WHOLE
+    # `GET /scenarios` catalog (`SCENARIO_CORRUPT`) for every user. Policy
+    # matches `test_list_items_carry_end_phrases`: absent is fine; a present
+    # block must be a mapping carrying the 3 canonical non-empty string
+    # variants (extra variants allowed).
     end_phrases = meta.get("end_phrases")
+    if end_phrases is not None:
+        if not isinstance(end_phrases, dict):
+            raise ValueError(
+                f"metadata.end_phrases must be a mapping; "
+                f"got {type(end_phrases).__name__}"
+            )
+        missing = {"hung_up", "voluntary", "survived"} - end_phrases.keys()
+        if missing:
+            raise ValueError(
+                f"metadata.end_phrases is missing variants {sorted(missing)}"
+            )
+        for variant, phrase in end_phrases.items():
+            if not isinstance(phrase, str) or not phrase.strip():
+                raise ValueError(
+                    f"metadata.end_phrases.{variant} must be a non-empty "
+                    f"string; got {phrase!r}"
+                )
     return {
         "id": meta["id"],
         "title": meta["title"],

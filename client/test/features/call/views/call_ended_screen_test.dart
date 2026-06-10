@@ -124,6 +124,35 @@ void main() {
       expect(formatCallDuration(3735), '1:02:15'); // H:MM:SS over 1 h
       expect(formatCallDuration(-5), '00:00'); // defensive
     });
+
+    test('callEndedAnnouncement drops the role cleanly on a catalog miss '
+        '(review patch — degraded server-added scenario)', () {
+      final announcement = callEndedAnnouncement(
+        name: 'The Stranger',
+        role: '',
+        durationSec: 30,
+        pct: 50,
+        success: false,
+        phrase: null,
+      );
+      expect(announcement, startsWith('The Stranger. Call Ended.'));
+      expect(announcement.contains(', .'), isFalse);
+
+      // Known character keeps the "Name, Role." form untouched.
+      final full = callEndedAnnouncement(
+        name: 'Tina',
+        role: 'Waitress',
+        durationSec: 167,
+        pct: 50,
+        success: false,
+        phrase: null,
+      );
+      expect(
+        full,
+        'Tina, Waitress. Call Ended. Duration: 2 minutes 47 seconds. '
+        'Achievement: 50 percent — failed.',
+      );
+    });
   });
 
   group('rendering', () {
@@ -303,6 +332,35 @@ void main() {
 
       expect(overflowErrors, isEmpty);
     });
+
+    testWidgets('no overflow at 320×480 with textScaler 1.5 — Story 5.4 scroll '
+        'wrapper (review patch)', (tester) async {
+      final overflowErrors = <FlutterErrorDetails>[];
+      final prior = FlutterError.onError;
+      FlutterError.onError = (details) {
+        if (details.toString().contains('overflowed')) {
+          overflowErrors.add(details);
+          return;
+        }
+        prior?.call(details);
+      };
+      addTearDown(() => FlutterError.onError = prior);
+
+      await tester.binding.setSurfaceSize(const Size(320, 480));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(1.5)),
+          child: MaterialApp(home: buildScreen()),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(overflowErrors, isEmpty);
+      // The wrapper degrades to scrolling, never clipping.
+      expect(find.byType(SingleChildScrollView), findsOneWidget);
+      expect(find.text('Call Ended'), findsOneWidget);
+    });
   });
 
   group('hold + debrief fetch + transition', () {
@@ -447,7 +505,10 @@ void main() {
 
       await pumpScreen(
         tester,
-        buildScreen(callId: null, debriefRouteBuilder: sentinelRoute(forwarded)),
+        buildScreen(
+          callId: null,
+          debriefRouteBuilder: sentinelRoute(forwarded),
+        ),
       );
       await tester.pump(const Duration(milliseconds: 150));
       await tester.pump(const Duration(milliseconds: 400));
