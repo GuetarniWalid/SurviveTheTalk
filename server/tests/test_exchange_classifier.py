@@ -1000,23 +1000,25 @@ def test_multi_output_parser_helpers() -> None:
 
     # A PARSE failure (non-JSON / non-dict body) → None (infra-grade,
     # review D3 2026-05-29), NOT a parsed all-None dict.
-    assert _parse_multi_classifier_output("no json here", ["a"]) is None
+    assert _parse_multi_classifier_output("no json here", ["a"], model="m") is None
     # met → True, unmet → False, unsure / missing key / unknown value → None.
     # Every parsed dict ALSO carries the abuse flag (default False).
-    assert _parse_multi_classifier_output('{"a": "met"}', ["a"]) == {
+    assert _parse_multi_classifier_output('{"a": "met"}', ["a"], model="m") == {
         "a": True,
         ABUSE_KEY: False,
     }
-    assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"]) == {
+    assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"], model="m") == {
         "a": False,
         ABUSE_KEY: False,
     }
-    assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"]) == {
+    assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"], model="m") == {
         "a": None,
         ABUSE_KEY: False,
     }
     # Missing key → None; unknown extra key ignored; abuse flag default False.
-    assert _parse_multi_classifier_output('{"x": "met", "b": "unmet"}', ["a", "b"]) == {
+    assert _parse_multi_classifier_output(
+        '{"x": "met", "b": "unmet"}', ["a", "b"], model="m"
+    ) == {
         "a": None,
         "b": False,
         ABUSE_KEY: False,
@@ -1024,10 +1026,10 @@ def test_multi_output_parser_helpers() -> None:
     # FR37 — the abuse flag is surfaced when the model sets it true (and only a
     # strict `true` boolean counts — a non-bool is treated as not-abusive).
     assert _parse_multi_classifier_output(
-        '{"a": "unmet", "__user_abusive__": true}', ["a"]
+        '{"a": "unmet", "__user_abusive__": true}', ["a"], model="m"
     ) == {"a": False, ABUSE_KEY: True}
     assert _parse_multi_classifier_output(
-        '{"a": "met", "__user_abusive__": "true"}', ["a"]
+        '{"a": "met", "__user_abusive__": "true"}', ["a"], model="m"
     ) == {"a": True, ABUSE_KEY: False}
 
 
@@ -1187,6 +1189,65 @@ def test_first_call_retry_never_retries_twice(
     )
     assert out is None
     assert len(attempts) == 2  # exactly one retry, then give up
+
+
+def test_retry_rearms_on_next_call_until_first_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2b disclosed semantics (6.27 review) — the one-shot retry re-arms on
+    EVERY call until the instance's first PARSED verdict: if turn 1 + its
+    retry both fail, turn 2 still gets its own single retry (the connection
+    may still be cold). Bounded: one retry per call, none after the first
+    success. Pins the Dev Agent Record's documented reading of D2b."""
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) <= 3:
+            raise httpx.ReadTimeout("simulated cold start outlasting turn 1")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"greet": "met"}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+    kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
+
+    # Turn 1: attempt + its one retry both fail → None (exactly 2 POSTs).
+    assert _run(classifier.classify_multi(**kwargs)) is None
+    assert len(attempts) == 2
+    # Turn 2: still no success ever → the retry re-arms (attempt 3 fails,
+    # retry 4 parses) — the verdicts land instead of stranding the turn.
+    assert _run(classifier.classify_multi(**kwargs)) == {
+        "greet": True,
+        ABUSE_KEY: False,
+    }
+    assert len(attempts) == 4
+
+
+def test_checkpoint_verdicts_log_caps_pathological_values() -> None:
+    """6.27 review — the fence-fallback parse path accepts arbitrary JSON
+    values for a goal id; the forensic `checkpoint_verdicts` line caps them
+    (repr, 32 chars) instead of ballooning a journal line. Strict-schema
+    prod values are short enums and render verbatim."""
+    from loguru import logger as loguru_logger
+
+    from pipeline.exchange_classifier import _parse_multi_classifier_output
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="INFO")
+    try:
+        out = _parse_multi_classifier_output(
+            '{"greet": {"deep": "' + "x" * 200 + '"}}', ["greet"], model="m"
+        )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    # An unknown (non-enum) value still maps to None — no verdict.
+    assert out == {"greet": None, ABUSE_KEY: False}
+    line = next(e for e in captured if "checkpoint_verdicts" in e)
+    assert "x" * 50 not in line  # the 200-char payload was capped, not echoed
 
 
 def test_checkpoint_verdicts_logged_with_raw_enum_values(

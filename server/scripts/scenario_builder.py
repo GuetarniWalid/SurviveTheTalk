@@ -776,8 +776,9 @@ def validate_structure(scenario: dict) -> list[str]:
                 f"checkpoint[{i}] 'requires' {required!r} must be an EARLIER checkpoint"
             )
     # Story 6.27 — mirror the loader's `implies` validation (existence +
-    # strictly-earlier order + target must not carry `requires`) so a
-    # generated scenario with a bad back-fill edge can't break boot.
+    # strictly-earlier order + target must not carry `requires` + no dead
+    # requires==implies edge) so a generated scenario with a bad back-fill
+    # edge can't break boot.
     for i, cp in enumerate(checkpoints):
         if not isinstance(cp, dict):
             continue
@@ -803,6 +804,12 @@ def validate_structure(scenario: dict) -> list[str]:
                 f"checkpoint[{i}] 'implies' targets {implied!r}, which carries "
                 f"'requires' — a reactive trap-response must never be "
                 f"auto-credited"
+            )
+        elif cp.get("requires") == implied:
+            problems.append(
+                f"checkpoint[{i}] 'implies' {implied!r} equals its own "
+                f"'requires' — a dead edge (the gate means the target is "
+                f"always met before this beat is judgeable)"
             )
     return problems
 

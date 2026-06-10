@@ -2835,3 +2835,54 @@ def test_call_266_replay_waiter_backfills_greet_to_six_of_six() -> None:
     adv = advance_goals(goals, {"close": True}, checkpoints=checkpoints)
     assert adv.all_met is True
     assert adv.met_count == 6
+
+
+def test_backfill_rides_flipped_ids_into_envelopes_and_journal() -> None:
+    """6.27 review — drive the call-266 turn-2 shape through the REAL
+    `CheckpointManager` (not just the pure function): the judge credits the
+    narrower later beat while judging the implied earlier beat unmet on the
+    SAME turn. The back-fill must ride `flipped_ids` into the per-flip
+    envelope loop — one URGENT `checkpoint_advanced` per beat (direct flip
+    first, the back-fill appended), every envelope carrying the same
+    post-flip full met set (the HUD double-tick of smoke call 274) — and the
+    journal must mark the back-fill explicitly (`checkpoint_backfilled`),
+    since the `checkpoint_verdicts` line on the same turn legitimately shows
+    that beat unmet."""
+    from loguru import logger as loguru_logger
+
+    checkpoints = _make_checkpoints(3)
+    checkpoints[1]["implies"] = "cp0"
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # The call-266 superset trap: cp1 met, its implied cp0 actively unmet.
+        return {"cp0": False, "cp1": True, "cp2": None}
+
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        multi_response_fn=_fn,
+    )
+    captured = _capture_pushed(manager)
+
+    log_lines: list[str] = []
+    sink_id = loguru_logger.add(log_lines.append, level="INFO")
+    try:
+
+        async def _drive() -> None:
+            await manager.process_frame(
+                _make_user_frame("I'll have the grilled chicken."),
+                FrameDirection.DOWNSTREAM,
+            )
+            await _drain(manager)
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    flips = _flip_envelopes(captured)
+    # Direct flip (cp1, index 1) first, the back-filled cp0 (index 0) appended.
+    assert [f.message["data"]["index"] for f in flips] == [1, 0]
+    # Every envelope carries the SAME post-flip full met set → HUD ticks both.
+    assert all(f.message["data"]["goals_met_indices"] == [0, 1] for f in flips)
+    # The journal marks the in-code credit so forensics never mistake it for
+    # a judge verdict.
+    assert any("checkpoint_backfilled" in line and "cp0" in line for line in log_lines)

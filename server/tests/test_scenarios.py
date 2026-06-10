@@ -1108,13 +1108,23 @@ def test_cop_scenario_requires_edges_load() -> None:
 # ---------- Story 6.27 — `implies` superset back-fill edge validation ----------
 
 
-def _implies_yaml(*, implies_value: str, second_requires: str | None = None) -> str:
+def _implies_yaml(
+    *,
+    implies_value: str,
+    second_requires: str | None = None,
+    third_requires: str | None = None,
+) -> str:
     """A 3-checkpoint synthetic YAML where the 3rd beat carries `implies`.
 
     `second_requires` optionally puts a `requires` edge on the 2nd beat so the
-    "implies must not target a `requires` beat" rule can be exercised.
+    "implies must not target a `requires` beat" rule can be exercised;
+    `third_requires` puts one on the CARRIER beat itself so the dead
+    requires==implies edge rule can be exercised (6.27 review).
     """
     requires_line = f"\n    requires: {second_requires}" if second_requires else ""
+    carrier_requires_line = (
+        f"\n    requires: {third_requires}" if third_requires else ""
+    )
     return f"""
 metadata:
   id: synth_imp
@@ -1136,7 +1146,7 @@ checkpoints:
     hint_text: b
     prompt_segment: b
     success_criteria: b
-  - id: third
+  - id: third{carrier_requires_line}
     implies: {implies_value}
     hint_text: c
     prompt_segment: c
@@ -1228,6 +1238,25 @@ def test_load_scenario_checkpoints_rejects_implies_targeting_requires_beat(
         scenario_id="synth_imp",
     )
     with pytest.raises(RuntimeError, match="carries `requires`"):
+        scenarios_mod.load_scenario_checkpoints("synth_imp")
+
+
+def test_load_scenario_checkpoints_rejects_dead_requires_implies_edge(
+    tmp_path, monkeypatch
+) -> None:
+    """A beat whose `implies` equals its own `requires` raises — the 6.23
+    gate guarantees the target is met before the beat is even judgeable, so
+    the back-fill could never fire (a dead edge is always an authoring
+    mistake). 6.27 review."""
+    from pipeline import scenarios as scenarios_mod
+
+    _write_synthetic_yaml(
+        tmp_path,
+        monkeypatch,
+        _implies_yaml(implies_value="first", third_requires="first"),
+        scenario_id="synth_imp",
+    )
+    with pytest.raises(RuntimeError, match="dead edge"):
         scenarios_mod.load_scenario_checkpoints("synth_imp")
 
 

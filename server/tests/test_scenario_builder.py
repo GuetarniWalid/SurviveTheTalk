@@ -372,6 +372,17 @@ def test_validate_structure_rejects_bad_implies_edges():
         for p in builder.validate_structure({**good, "checkpoints": onto_reactive})
     )
 
+    # 6.27 review — rule 5: implies == own requires is a provably dead edge
+    # (the gate means the target is always met before the carrier is
+    # judgeable, so the back-fill can never fire).
+    dead_edge = [dict(c) for c in cps]
+    dead_edge[2]["requires"] = cps[0]["id"]
+    dead_edge[2]["implies"] = cps[0]["id"]
+    assert any(
+        "dead edge" in p
+        for p in builder.validate_structure({**good, "checkpoints": dead_edge})
+    )
+
 
 def test_checkpoints_and_critique_prompts_document_implies():
     """D1-C — both LLM passes teach the superset rule: the DRAFT prompt

@@ -2,6 +2,12 @@
 
 Items flagged during code review but postponed — each entry records where the review surfaced it and why it was not actioned at the time.
 
+## Deferred from: code review of story-6.27 (2026-06-10)
+
+_The `implies` back-fill engine/loader/builder/classifier-resilience work is correct (auditor: 0/7 ACs violated, no "What NOT to do" breach); 6 patches were applied in-review (dead-edge validator rule, `checkpoint_verdicts` hardening, `checkpoint_backfilled` journal line, retry-semantics pin test, manager-level envelope test, story bookkeeping). This is the one quota-walled residual._
+
+- **🟡 AC2's full-band live calibration never completed — ALL scenarios are stale under ENGINE_VERSION 4.** The full `calibrate_scenario.py waiter_easy_01` band run was killed mid-off-topic-phase by the Groq free-tier DAILY token cap (the known walled-Dev-tier situation); the story-blessed `--golden-only --force` PASS (which DID exercise the new pure `implies` assertion + the 6.23 `requires` assertion on live Scout) is the recorded gate. Residual risk: the cooperative completion-rate bands (easy 60-80 etc.) are unvalidated against the new flip rule — for the waiter AND for the other 5 scenarios, all marked stale by the 3→4 ENGINE_VERSION bump. The next `calibrate_scenario.py` sweep (a deliberate budgeted action, after a daily quota reset or on a paid tier) must run the full band; the ledger will force it automatically. File: `server/scripts/calibration_engine.py` (ENGINE_VERSION), `calibration-tests/validation-ledger.json`. (acceptance audit)
+
 ## Deferred from: code review of story-7.1 (2026-06-09)
 
 _Server-only debrief backend (Option A — bot generates at teardown, server serves). The implementation is strong and the prior dev self-review already fixed the one CRITICAL (`HesitationObserver._clock`). This independent pass found **0 shipping defects at the current architecture** — the headline idempotency item is latent (one-shot subprocess today) and was kept as a `patch`; these are the lower-priority residuals. The top item is the deploy-owed `prod_snapshot.sqlite` refresh._

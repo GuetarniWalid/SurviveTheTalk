@@ -815,6 +815,13 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
                 f"reactive trap-response must never be auto-credited (its "
                 f"trigger may not have fired)."
             )
+        if entry.get("requires") == implied:
+            raise RuntimeError(
+                f"Scenario {scenario_id!r}: checkpoint[{idx}] ({entry['id']!r}) "
+                f"`implies` {implied!r} equals its own `requires` — a dead edge "
+                f"(the requires gate means the target is always met before this "
+                f"beat is judgeable, so the back-fill can never fire)."
+            )
     return checkpoints
 
 

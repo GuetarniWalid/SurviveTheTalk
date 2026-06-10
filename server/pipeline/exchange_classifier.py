@@ -773,8 +773,20 @@ def _format_pending_goals_block(pending_goals: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _log_safe_verdict(value: object) -> object:
+    """Cap pathological verdict values for the `checkpoint_verdicts` log line.
+
+    Strict-schema prod values are short enum strings, but the fence-fallback
+    parse path can theoretically deliver arbitrary JSON values (nested
+    objects, long strings) — never let one balloon a journal line.
+    """
+    if value is None or (isinstance(value, str) and len(value) <= 16):
+        return value
+    return repr(value)[:32]
+
+
 def _parse_multi_classifier_output(
-    content: str, valid_ids: list[str], *, model: str = "<unset>"
+    content: str, valid_ids: list[str], *, model: str
 ) -> dict[str, bool | None] | None:
     """Parse the multi-goal verdict object into a `{goal_id: bool|None}`
     dict keyed by EVERY id in `valid_ids`, or `None` on a parse failure.
@@ -792,7 +804,9 @@ def _parse_multi_classifier_output(
     happy path.
 
     `model` (Story 6.27, AC5) only labels the `checkpoint_verdicts` log line
-    below — `_classify_multi` threads the live model id.
+    below — `_classify_multi` threads the live model id. Keyword-REQUIRED
+    (no default) so a future call site cannot silently ship an unlabeled
+    forensic line (6.27 review).
     """
     text = content.strip()
     fence_match = _FENCE_RE.match(text)
@@ -826,11 +840,19 @@ def _parse_multi_classifier_output(
     logger.info(
         "checkpoint_verdicts model={} verdicts={}",
         model,
-        {gid: data.get(gid) for gid in valid_ids},
+        {gid: _log_safe_verdict(data.get(gid)) for gid in valid_ids},
     )
 
+    # Only the schema enum strings can map to a verdict; guard the lookup so a
+    # non-strict provider returning an UNHASHABLE value (nested object) for a
+    # goal id degrades to "no verdict" per the contract above instead of
+    # raising TypeError out of `.get()` (6.27 review — found by the
+    # pathological-value cap test).
     verdicts: dict[str, bool | None] = {
-        gid: _VERDICT_TO_BOOL.get(data.get(gid), None) for gid in valid_ids
+        gid: _VERDICT_TO_BOOL.get(raw)
+        if isinstance(raw := data.get(gid), str)
+        else None
+        for gid in valid_ids
     }
     # FR37 — surface the reserved abuse flag (strict bool) alongside the goal
     # verdicts. The caller pops `ABUSE_KEY` before `advance_goals`, so it never

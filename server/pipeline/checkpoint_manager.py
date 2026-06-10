@@ -1224,6 +1224,14 @@ class CheckpointManager(FrameProcessor):
         flipped_ids = advance.flipped_ids
         all_met = advance.all_met
 
+        # 6.27 review — make back-fill one-glance in the journal: an id that
+        # flipped WITHOUT a `met` verdict this turn was credited in code by an
+        # `implies` edge, not by the judge (the `checkpoint_verdicts` line may
+        # legitimately show it unmet/unsure on the same turn — call-274 shape).
+        backfilled_ids = [g for g in flipped_ids if verdicts.get(g) is not True]
+        if backfilled_ids:
+            logger.info("checkpoint_backfilled ids={} (implies edges)", backfilled_ids)
+
         # Keep PatienceTracker's checkpoints_passed in sync so a mid-flight
         # character_hung_up emits the real passed count in `call_end`
         # (Story 6.7 review). On completion met_count == total.
