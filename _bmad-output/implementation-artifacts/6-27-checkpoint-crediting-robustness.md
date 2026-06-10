@@ -1,6 +1,6 @@
 # Story 6.27: Checkpoint crediting robustness — superset-overlap back-fill + judge resilience
 
-Status: review
+Status: done
 
 > **Surfaced by the Story 7.1 Pixel-9 smoke gate (2026-06-09, call_id=266, scenario `waiter_easy_01`).** Walid completed 5 of 6 checkpoints, but the FIRST checkpoint (`greet`) never credited and the character never "came back" to it — he hung up himself at 5/6. He suspected a regression of Story 6.21 (the character returns to the lowest unmet beat). A 7-agent diagnostic workflow (log-evidence + code-audit + git-history bisect + 3 adversarial verifiers, all run against the prod call-266 journal + current `main`) returned a **HIGH-confidence verdict: NOT a regression** of 6.21 / 6.10 / 6.23 — the engine code is intact. The real cause is a latent **scenario-design fragility** (a superset criteria overlap), amplified by two LLM-behavioural misfires and a difficulty aggravator. This story is the "état des lieux" + the durable fix.
 
@@ -169,12 +169,14 @@ Should a global "hard" pick apply to easy/tutorial scenarios, or should tutorial
   - _Expected:_ `[None, 'greet', None, None, None, None]`
   - _Actual:_ `[None, 'greet', None, None, None, None]` ✅ (2026-06-10, post-deploy reseed — the exact expected value)
 - [x] **DB backup:** N/A — no migration, no schema change (reseed is an idempotent upsert). (The CI `deploy-server.yml` pre-deploy auto-backup ran anyway, as on every release.)
-- [ ] **Pixel 9 call 1 — the back-fill (MONEY CALL), script for Walid below.** Greet ticks via back-fill on a no-greeting opener; call completes 6/6.
+- [x] **Pixel 9 call 1 — the back-fill (MONEY CALL), script for Walid below.** Greet ticks via back-fill on a no-greeting opener; call completes 6/6.
   - _Proof (journal):_ `checkpoint_advanced` for `main_course` AND `greet` on the same turn; `checkpoint_verdicts` lines present; debrief shows 6/6.
-- [ ] **Pixel 9 call 2 — first-turn resilience.** The exact call-265/266 opening line gets a verdict on turn 1 (no silent ReadTimeout strand).
+  - _✅ VALIDATED 2026-06-10, call_id=274 (Walid + journal):_ turn-1 verdicts `{'greet': 'unmet', 'main_course': 'met', …}` — the judge made the EXACT call-266 mistake again — and the back-fill corrected it in code: `checkpoint_advanced index=1 id=main_course goals_met_indices=[0, 1]` + `checkpoint_advanced index=0 id=greet goals_met_indices=[0, 1]` at the same timestamp (13:50:54.452). Call completed **6/6**, `reason=survived`, `call_ended call_id=274 … duration_sec=55`. `exchange_classifier_warmup` fired at call start (13:50:44).
+- [x] **Pixel 9 call 2 — first-turn resilience.** The exact call-265/266 opening line gets a verdict on turn 1 (no silent ReadTimeout strand).
   - _Proof (journal):_ turn-1 `checkpoint_verdicts` line with `greet: met`; if a timeout still fires, the `first-call retry` line followed by a landed verdict.
-- [ ] **Server logs clean.** `journalctl -u pipecat.service --since "10 min ago"` shows no ERROR/Traceback for the two calls.
-  - _Proof:_
+  - _✅ VALIDATED 2026-06-10, call_id=275 (Walid + journal):_ `exchange_classifier_warmup` at 13:51:55, then turn-1 (13:52:04) `checkpoint_verdicts … {'greet': 'met', …}` + `checkpoint_advanced index=0 id=greet` — the line that silently timed out twice on calls 265/266 got its verdict on the first turn. No ReadTimeout, no retry needed (the warm-up alone closed the cold-start). Walid hung up after the validated turn as scripted (`user_hung_up`, 16 s).
+- [x] **Server logs clean.** `journalctl -u pipecat.service --since "10 min ago"` shows no ERROR/Traceback for the two calls.
+  - _Proof:_ 2026-06-10 — journal slice 13:50:00 → 13:53:30 (both calls): zero ERROR / Traceback / CRITICAL lines; both calls ended cleanly (`call_ended` 274 `reason=survived`, 275 `reason=user_hung_up`).
 
 ### 🎬 Ready-to-play script for Walid (hand this over verbatim at gate time)
 
@@ -329,3 +331,4 @@ claude-fable-5 (Claude Code dev-story workflow, 2026-06-10)
 ## Change Log
 
 - 2026-06-10 — Story 6.27 dev-story implementation (T1-T8 complete + automated T9 gates green: ruff clean, pytest 840, flutter analyze clean, flutter test 451). 16 `implies` edges shipped across 6 scenario YAMLs (audit verdicts in Completion Notes). ENGINE_VERSION 3→4. Live waiter validation: `--golden-only` ✅ PASS (full band calibration blocked by the Groq free-tier daily token cap — story-blessed alternative used; full sweep deferred to the next budgeted action). Status → review. Awaiting: VPS deploy, then Walid's Pixel 9 smoke gate for review → done.
+- 2026-06-10 — Pixel 9 smoke gate PASSED (calls 274 + 275, proofs in the gate boxes): back-fill corrected the judge's repeat of the exact call-266 mistake in code (6/6 survived), and the 265/266 opening line got its turn-1 verdict post-warm-up. Walid sign-off → **review → done** (both places, same turn per the flip rule). Side observation from call 274 (explicitly OUT of this story's scope, spun off to backlog `6-29-character-dialogue-coherence`): Tina's dialogue showed 3 incoherence patterns — answered-question re-asked ("Grilled or fried?" after "grilled chicken"), spoken meta/stage-direction ("(Actually, I still need to confirm…)"), verbatim prompt_segment re-recitation after the user already confirmed. Journal forensics attribute them to the Scout character-model fallback (2026-06-08) + the by-design one-turn steering lag + scripted example lines — all pre-existing mechanisms, NOT a 6.27 regression (6.27 touched neither the reply path nor the steering composition; it removed one incoherence source, the eternal steer-back to a stranded beat).
