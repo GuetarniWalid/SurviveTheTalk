@@ -101,19 +101,20 @@ All three must pass with zero issues.
 
 ## Sprint-Status — `review → done` Flip Discipline
 
-**RULE (Walid 2026-06-04): a fully-reviewed story must NEVER rot in `review`. The smoke gate stays a real blocker, but the flip is mandatory the instant it clears.**
+**RULE (Walid 2026-06-10 — SUPERSEDES the 2026-06-04 wording): `done` requires BOTH the formal code review AND the Pixel 9 smoke gate. NEVER flip a story from dev to `done` directly — a smoke-gate sign-off alone does NOT flip `done` if the code review has not run.** (The 2026-06-10 trigger: Story 6.27 was flipped `done` on the smoke gate with the code review skipped — wrong; it was reverted to `review`.)
 
-The convention (Story 6.5 D6) is that `review → done` is gated on Walid's on-device **Pixel 9 smoke gate**, not on the code review finishing. That is why code reviews leave stories in `review`. Keep that gate — but enforce these two non-negotiable halves so stories stop accumulating:
+The mandatory story lifecycle, every time, no shortcuts:
 
-1. **At the END of every code review** (all findings resolved + all automated gates green), if a Pixel 9 smoke gate is still owed, the story STAYS `review` — and the review summary MUST end with an explicit, one-line callout: *"Story X is review-complete; it is now waiting ONLY on your Pixel 9 smoke gate for the `review → done` flip."* Never finish a review silently leaving the status ambiguous.
+1. **dev-story complete** → flip the status to `review` (story file + `sprint-status.yaml`) → **commit**.
+2. **The reviewer runs the formal code review** (`/bmad-code-review`).
+3. **Only when ALL of these hold** — review findings resolved, automated gates green, AND the Pixel 9 smoke gate validated (or explicitly waived by Walid) — **the REVIEWER flips `review → done`** (both places) → **commit**.
 
-2. **The MOMENT Walid validates (or explicitly waives) the smoke gate**, the `review → done` flip is **mandatory and immediate**, in the SAME turn, in BOTH places:
-   - `sprint-status.yaml` (the story's status line), AND
-   - the story file's own `Status:` field.
+Whichever gate clears LAST triggers the flip — the order between code review and smoke gate is free, but BOTH are required:
 
-   "Walid says it passed / looks good / ship it / passe-la en done" IS the smoke-gate sign-off — flip immediately, do not wait to be asked twice.
+- **At the END of every code review**, if the smoke gate is still owed, the story STAYS `review` — and the review summary MUST end with an explicit, one-line callout: *"Story X is review-complete; it is now waiting ONLY on your Pixel 9 smoke gate for the `review → done` flip."* Never finish a review silently leaving the status ambiguous.
+- **When Walid validates the smoke gate** ("it passed / looks good / ship it / passe-la en done"): record the sign-off in the story's gate boxes immediately. If the code review is ALSO already complete, flip `review → done` in the SAME turn, in BOTH places (`sprint-status.yaml` + the story file `Status:`). If the code review has NOT run yet, the story stays `review` and the next step is to run it — say so explicitly.
 
-**Corollary — never re-propose a cleared story.** If you ever find a story in `review` whose smoke gate Walid has already signed off (or that he tells you to treat as done), flip it to `done` right away and do NOT surface it as a review target. A `review` status that has already been reviewed + smoke-validated is a bookkeeping bug, not a pending review.
+**Anti-rot half (kept from 2026-06-04):** a story with BOTH gates cleared must never rot in `review` — the flip is mandatory and immediate the instant the second gate clears. And never re-propose a story whose two gates are already cleared as a review target; that is a bookkeeping bug, not a pending review. A story in `review` with the smoke gate signed but NO code review yet IS a legitimate pending review target.
 
 ## Database Migrations — Test Against Production Shape
 
