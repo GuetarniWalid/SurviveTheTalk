@@ -71,7 +71,7 @@ As the **solo maintainer**, I also want **per-goal judge verdicts in the logs**,
 
 ---
 
-## Design Decisions — OPEN (Walid to resolve before `/bmad-dev-story`)
+## Design Decisions — ✅ ALL RESOLVED (Walid, 2026-06-10)
 
 ### Decision 1 — the crediting fix (primary)
 
@@ -81,7 +81,7 @@ Stop a superset-earlier beat from being stranded when a subset-later beat is cre
 - **Option B — re-author `greet`'s criteria** so a bare dish name does NOT satisfy it (greet = pure intent-to-order / menu-request, EXCLUDING a dish name). Narrow (waiter-only); the superset class can recur in any builder-generated scenario; and it makes the no-greeting opener ("I'll have the chicken") UNWINNABLE for beat 0 instead of auto-credited — strictly worse UX than A.
 - **Option C — builder-time superset guard** so future generated scenarios are born clean: instruct the checkpoint-draft + critique LLM passes that no earlier beat's `success_criteria` may be a logical superset of a later beat's, and that when a broader-earlier/narrower-later pair is intentional, the later beat must carry `implies: <earlier_id>`. Prevention, not cure — **pairs with A** (a pure-code superset detector is not feasible; supersetness is semantic, so the guard lives in the builder's existing LLM critique pass + the human review step, exactly like the 6.23 `requires` authoring rule).
 
-**Recommended resolution: A + C** (A = the engine cure, C = the authoring prevention). B not needed once A ships.
+**✅ RESOLVED → A + C** (Walid, 2026-06-10): A = the engine cure, C = the authoring prevention. B rejected — not needed once A ships. Reflected in AC1-AC3 + T1-T5.
 
 ### Decision 2 — judge resilience (secondary)
 
@@ -91,7 +91,7 @@ The first `classify_multi` of a call timed out on both attempts on the same open
 - **(b) One-shot retry on the FIRST classify failure of the instance** — if the first-ever `classify_multi` returns `None` (infra failure), retry once before giving up. Belt-and-suspenders for (a); bounded: only the first call, only one retry (worst case ~+2 s on a fire-and-forget path that doesn't block the character's reply).
 - **(c) Per-goal verdict logging** — one INFO line per successful classify with the full verdict map (`checkpoint_verdicts {goal_id: met|unmet|unsure, ...}`), emitted inside `ExchangeClassifier` so BOTH prod and the calibration harness get it. This is what would have made call-266 diagnosable from the journal (the 2026-06-09 evidence-gap verifier flagged exactly this hole).
 
-**Recommended resolution: all three** — each is small, they close different halves of the same hole.
+**✅ RESOLVED → all three (a + b + c)** (Walid, 2026-06-10) — each is small, they close different halves of the same hole. Reflected in AC4-AC5 + T6-T7.
 
 ### Decision 3 — difficulty-on-tutorial UX (design conversation, NOT a bug)
 
@@ -101,16 +101,18 @@ Should a global "hard" pick apply to easy/tutorial scenarios, or should tutorial
 - **(b) Clamp easy-authored scenarios** to at most medium when the global pick is hard (small `scenarios.py` change).
 - **(c) Defer to the future per-scenario difficulty-selector story** (already in memory as a planned feature) and record nothing now.
 
+**✅ RESOLVED → (a) keep as-is for THIS story (zero D3 code in 6.27)** (Walid, 2026-06-10) — **plus a bigger product ruling that supersedes option (c):** the notion of per-scenario difficulty must DISAPPEAR entirely. There are no "easy/medium/hard scenarios" anymore — the ONLY difficulty cursor is the user's GLOBAL setting; scenarios exist purely to vary the experience. The per-scenario `difficulty` field is legacy from the original design and now causes confusion (this very story's aggravator #4 was framed as "hard-on-easy", a frame that should not exist). The cleanup is a **separate story** (`6-28-remove-per-scenario-difficulty`, added to the backlog) — known touchpoints: YAML `metadata.difficulty`, the DB `scenarios.difficulty` column + CHECK + API/client exposure, the legacy `*_easy_01`-style scenario ids, and the calibration bands that derive from `difficulty` (difficulty-calibration.md §4.3 — must re-anchor on the global setting). **Implication for the 6.27 dev: do not introduce any NEW coupling to `metadata.difficulty`.** The future "per-scenario difficulty selector" idea in memory is retired by this ruling.
+
 ---
 
-## Acceptance Criteria (D1=A + D2=a/b/c assumed; adjust at decision time)
+## Acceptance Criteria (locked to the resolved decisions: D1=A+C, D2=a+b+c, D3=keep-as-is)
 
 1. **AC1 — deterministic back-fill.** Given a scenario where a later beat declares `implies: <earlier_id>`, when the later beat flips to met and the earlier one is still pending, then the earlier beat is credited the SAME turn, in code (no LLM verdict needed for it), transitively for chains, with a `checkpoint_advanced` envelope emitted for the back-filled beat too (HUD ticks both). A **call-266 replay regression test** drives the exact verdict sequence from the table above through the engine with `main_course → implies: greet` and asserts the final state is **6/6**.
 2. **AC2 — golden==prod.** The back-fill rule lives in the pure `advance_goals` shared with the Story 6.15 harness (no re-implementation); `compute_scenario_hash` includes `implies`; `ENGINE_VERSION` bumps 3 → 4; a pure (non-LLM) `implies` assertion runs in the golden net alongside `requires_gating_failures`. The waiter scenario carries the live `implies: greet` edge and `calibrate_scenario.py waiter_easy_01` passes post-change.
 3. **AC3 — loader + builder wiring (mirror of 6.23).** `load_scenario_checkpoints` fail-fasts on an `implies` that is non-string/empty, names an unknown id, names a non-EARLIER beat, or targets a beat that itself carries `requires` (a reactive trap-response must never be auto-credited). The builder preserves the field through `sanitize_checkpoints`, validates it in `validate_structure` with the same rules, and `CHECKPOINTS_PROMPT`/`CRITIQUE_PROMPT` teach the draft LLM the superset rule (D1-C).
 4. **AC4 — first-turn judge resilience.** A first-classify infra failure no longer silently strands the opening turn: `ExchangeClassifier.warm_up()` is fired at call start (fire-and-forget, never raises), and the first-ever `classify_multi` of an instance retries once on infra failure. Proven by a test that injects a single first-call `httpx.ReadTimeout` and asserts the verdicts still land.
 5. **AC5 — per-goal verdict logging.** Every successful `classify_multi` logs ONE INFO line with the full per-goal verdict map; the call-266 situation (greet=unmet/unsure while main_course=met on the same turn) would now be readable directly from `journalctl`. Asserted via a loguru temp-sink test (server/CLAUDE.md §3 — `caplog` does not capture loguru).
-6. **AC6 — D3 decision recorded.** The Decision 3 resolution is written into this story file (and implemented only if a clamp option is chosen).
+6. **AC6 — D3 decision recorded.** ✅ Satisfied at spec time — D3 resolved "keep as-is" (zero D3 code in this story), and the wider global-only difficulty ruling is recorded in the Decisions section + spun off to backlog story `6-28-remove-per-scenario-difficulty`. Dev constraint that remains active: introduce no NEW coupling to `metadata.difficulty`.
 7. **AC7 — zero client change.** No Flutter code: the envelope shape is unchanged (`goals_met_indices` already carries the full met set; the HUD already animates multi-tick turns). `flutter analyze` + `flutter test` stay green (pre-commit law), server suite grows by the new tests with everything green.
 
 ---
