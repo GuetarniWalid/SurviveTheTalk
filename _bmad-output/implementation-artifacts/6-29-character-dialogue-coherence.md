@@ -104,17 +104,17 @@ Decision-scoped ACs (struck or kept by the decision pass):
   - [x] Mood-tag directive constant in `prompts.py`, threaded through `compose_goal_system_instruction` (+ the boot composition in `bot.py`) so it survives every recompose. _Composer appends it BY DEFAULT (see Deviation D1)._
   - [x] Remove `emotion_emitter` from the `bot.py` pipeline list + constructor block; delete `pipeline/emotion_emitter.py` + `tests/test_emotion_emitter.py`; mark `EMOTION_MODEL` legacy.
   - [x] Tests: tag stripped from TTS text + transcript; valid tag → envelope; invalid/absent → no envelope; tag split across two TextFrames; barge-in mid-reply clears the buffer. _19 unit tests in `tests/test_reply_sanitizer.py` + the real-pipeline drive in `test_bot_pipeline_wiring.py`._
-- [ ] **T5 (D3=b) — Character model re-pin (AC10)**
-  - [ ] VPS `.env` `CHARACTER_MODEL=llama-3.3-70b-versatile` + `systemctl restart pipecat.service` at deploy time (backup the `.env` first); record the 100k TPD watch item in the deploy note. ~~Option (c) provider split~~ — struck by the decision pass, stays the durable post-launch plan.
+- [x] **T5 (D3=b) — Character model re-pin (AC10)**
+  - [x] VPS `.env` `CHARACTER_MODEL=llama-3.3-70b-versatile` + `systemctl restart pipecat.service` at deploy time (backup the `.env` first); record the 100k TPD watch item in the deploy note. ~~Option (c) provider split~~ — struck by the decision pass, stays the durable post-launch plan. _Done 2026-06-10 18:08 UTC: backup `/opt/survive-the-talk/.env.bak-6.29-20260610-200752`; CHARACTER_MODEL re-pinned to 70B; legacy `EMOTION_MODEL` line removed (config.py marks it legacy — nothing reads it); restart verified. **⚠️ 100k TPD watch item:** Groq free 70B = 100k tokens/day, a binding cap that froze a call on 2026-06-08 — fine for solo smoke-gate traffic, NOT durable for launch (provider split = the post-launch plan)._
 - [x] **T6 — Test suite (AC5, AC6)** — new tests as listed per task; confirm zero regressions on `test_checkpoint_manager.py` / `test_exchange_classifier.py` / `test_bot_pipeline_wiring.py`; add a `bot.py` source-text wiring contract test for the sanitizer slot (mirror 6.27's warm-up wiring test). _Full server pytest **866 passed** (844 baseline − 19 retired EmotionEmitter tests + 41 new); flutter **451 passed**, zero client diffs; ruff check + format clean. Sanitizer wiring contract test = `test_bot_wires_reply_sanitizer_mood_directive_and_wait_budget` + the pipeline-order pin in `test_bot_pipeline_ordering`._
-- [ ] **T7 — Deploy + smoke gate** — deploy to VPS, verify `[pooled]` boot, then hand Walid the ready-to-play script below.
+- [x] **T7 — Deploy + smoke gate handoff** — deploy to VPS, verify `[pooled]` boot, then hand Walid the ready-to-play script below. _Deployed via CI (run 27295872688 green) + `.env` re-pin + restart; `bot_pool ready size=1 ready=1` fresh-boot line confirmed; script handed 2026-06-10. The Pixel 9 validation itself is Walid's gate box below._
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
 > No new endpoints, no DB migration — endpoint/DB boxes are N/A by scope. The gate here is deploy + clean logs + the on-device behavior script.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_ <!-- paste the Active/Main PID line -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ `Active: active (running) since Wed 2026-06-10 18:08:04 UTC; Main PID: 1166991 (python)` — `/health` → `{"status":"ok","db":"ok","git_sha":"efa584874fb975d2c92f0f90b4a6770aad1cbd2e"}` (= the dev commit). Fresh-boot `bot_pool ready size=1 ready=1` at 18:08:11. `.env`: `CHARACTER_MODEL=llama-3.3-70b-versatile` (D3), backup `.env.bak-6.29-20260610-200752`.
 - [ ] **Happy-path endpoint round-trip.** N/A — this story adds/changes no HTTP endpoint (pipeline-only change). Existing `/scenarios` smoke covered by prior stories.
 - [ ] **Error / unauth path.** N/A — no endpoint surface touched.
 - [ ] **DB side-effect verified.** N/A — zero DB impact, no migration.
