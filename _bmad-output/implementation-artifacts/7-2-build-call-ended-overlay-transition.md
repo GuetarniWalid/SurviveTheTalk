@@ -138,18 +138,18 @@ No inline hex (theme-token test): reuse `AppColors`/`CallColors`; add the four c
 
 > Migration + a client-facing API field → this story deploys. Every unchecked box is a stop-ship for `in-progress → review`. Paste the actual command + output.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test. _Proof:_ <!-- Active/Main PID -->
-- [ ] **`GET /scenarios` returns `end_phrases`.** Production-like curl returns each scenario with an `end_phrases` object (`hung_up`/`voluntary`/`survived`).
-  - _Command:_ <!-- curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios -->
-  - _Expected/Actual:_ <!-- 200 + end_phrases present on items -->
-- [ ] **DB column present + populated.** Read back prod DB (via venv stdlib): `scenarios.end_phrases` exists and holds the JSON for each scenario.
-  - _Command:_ <!-- .venv/bin/python -c 'import sqlite3; c=sqlite3.connect("/opt/survive-the-talk/data/db.sqlite"); [print(r) for r in c.execute("SELECT id,end_phrases FROM scenarios")]' -->
-- [ ] **DB backup taken BEFORE deploy (migration 012).** _Command:_ `ssh root@167.235.63.129 "cp .../db.sqlite .../db.sqlite.bak-pre-7.2-$(date +%Y%m%d-%H%M%S)"` _Proof:_ <!-- filename -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test. _Proof:_ 2026-06-10 — CI run 27267831002 success; `/health` → `{"status":"ok","db":"ok","git_sha":"8e60ea05d173c5a02a3d475767d9c2fb6f8b8369"}`; `Active: active (running) since Wed 2026-06-10 09:49:51 UTC; Main PID: 1158183`.
+- [x] **`GET /scenarios` returns `end_phrases`.** Production-like curl returns each scenario with an `end_phrases` object (`hung_up`/`voluntary`/`survived`).
+  - _Command:_ JWT minted on VPS (`issue_token(1)`) + `curl -sS -H "Authorization: Bearer $JWT" http://127.0.0.1:8000/scenarios`
+  - _Expected/Actual:_ 200 — ALL 6 items carry the full `end_phrases` object, byte-identical to the locked Dev Notes table (e.g. `waiter_easy_01 -> {"hung_up": "The waitress kicked you out", "voluntary": "You walked out", "survived": "You actually got your food"}`).
+- [x] **DB column present + populated.** Read back prod DB (via venv stdlib): `scenarios.end_phrases` exists and holds the JSON for each scenario.
+  - _Command:_ `/opt/survive-the-talk/current/server/.venv/bin/python -c 'import sqlite3; … SELECT id, end_phrases FROM scenarios'` → all 6 rows populated (cop_hard_01, girlfriend_medium_01, landlord_hard_01, mugger_medium_01, waiter_easy_01, cop_interrogation_01).
+- [x] **DB backup taken BEFORE deploy (migration 012).** _Command:_ `ssh root@167.235.63.129 "sqlite3 /opt/survive-the-talk/data/db.sqlite \".backup '/opt/survive-the-talk/backups/db.pre-7.2-manual.sqlite'\""` _Proof:_ `db.pre-7.2-manual.sqlite` (184320 bytes, Jun 10 09:46 — BEFORE the 09:49 deploy) + the CI auto-backup `db.pre-8e60ea0.sqlite` from deploy-server.yml.
 - [ ] **On-device: failure variant.** End a call (tap hang-up, or character hangs up ≥30 s). Overlay shows name/role/avatar, `MM:SS`, a **red** % + bar matching the in-call checkpoint progress, and the scenario's red **server** phrase; holds ≥3 s; fades to debrief.
 - [ ] **On-device: success variant.** Complete a scenario → **green** 100% + the grudging "survived" phrase; auto-fades to debrief.
 - [ ] **Latency masking.** Hold feels deliberate (no overlay spinner); debrief appears already-rendered after the crossfade.
 - [ ] **Notice path intact.** `network_lost`/`noisy_environment`/very-short gifted call still shows `CallEndedNoticeScreen` (no regression).
-- [ ] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for `/scenarios`. _Proof:_ <!-- tail -->
+- [x] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for `/scenarios`. _Proof:_ 2026-06-10 09:55 — `journalctl --since '6 min ago' | grep -iE 'error|traceback|exception'` returned EMPTY (post-deploy boot + the verified `/scenarios` calls included in the window).
 
 ---
 
