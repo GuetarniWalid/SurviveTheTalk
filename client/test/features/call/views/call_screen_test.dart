@@ -1393,6 +1393,38 @@ void main() {
     );
 
     testWidgets(
+      'CallEnded renders a bare scene break — the dial surface never '
+      'reappears beneath the overlay (smoke-gate fix 2026-06-10)',
+      (tester) async {
+        // Pre-7.2 the CallEnded state fell through to the dial surface
+        // ("Calling" + hang-up button) — invisible then (instant pop), but
+        // plainly visible now through the overlay's 1 s entry fade. The
+        // device smoke gate caught it as a "second hang-up screen".
+        final harness = await pumpRealBlocScreen(tester, gifted: false);
+
+        final bloc = tester
+            .element(find.byType(Scaffold).first)
+            .read<CallBloc>();
+        harness.onCallEnd('character_hung_up', <String, dynamic>{});
+        await tester.pump(const Duration(milliseconds: 50));
+        bloc.add(const PlaybackDrained());
+        await tester.pump(const Duration(milliseconds: 50));
+
+        // State is CallEnded, overlay push still pending post-frame: the
+        // body must already be the bare dark break, not the dial surface.
+        expect(find.byType(AnimatedCallingText), findsNothing);
+
+        // Through the overlay's entry frames the route beneath stays bare.
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byType(AnimatedCallingText), findsNothing);
+        expect(find.byType(CallEndedScreen), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
+    testWidgets(
       'gifted short-call still routes to CallEndedNoticeScreen — the '
       'showsNotice path is untouched (AC-C12)',
       (tester) async {

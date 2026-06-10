@@ -813,9 +813,19 @@ class _CallScreenState extends State<CallScreen> {
     if (state is CallError) {
       return _buildErrorBody(context, state.reason);
     }
-    // CallConnecting (initial) and CallEnded (transient terminal state
-    // before pop) both fall through to the dial surface. CallEnded only
-    // renders for a single frame before the post-frame `maybePop` runs.
+    // Story 7.2 smoke-gate fix (2026-06-10) — CallEnded used to fall
+    // through to the dial surface below. Pre-7.2 that was effectively
+    // invisible (the route popped on the next frame), but the Call Ended
+    // overlay's 1 s entry fade now keeps THIS route visible underneath,
+    // so the stale "Calling" surface read as a second hang-up screen on
+    // device. Render a bare dark body instead (the Scaffold already paints
+    // AppColors.background): the in-call canvas cuts to the #1E1F23 scene
+    // break, then the overlay content fades in — ONE hang-up screen, as
+    // the design intends.
+    if (state is CallEnded) {
+      return const SizedBox.shrink();
+    }
+    // CallConnecting (initial) renders the dial surface.
     return _buildDialSurface(context);
   }
 
