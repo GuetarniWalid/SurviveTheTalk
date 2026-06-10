@@ -118,7 +118,14 @@ async def lifespan(app: FastAPI):
     await seed_scenarios()
     settings = Settings()
     app.state.bot_pool = BotPool(size=settings.bot_pool_size)
-    await app.state.bot_pool.start()
+    try:
+        await app.state.bot_pool.start()
+    except Exception:
+        # Story 6.26 review — the pool must never cost the SERVER, only ever
+        # degrade to cold spawns (AC4). `start()` is internally defensive
+        # (per-process failures map to None); this is the last-resort belt so
+        # an unexpected pool error can't abort startup.
+        logger.exception("bot_pool failed to start; calls will cold-spawn")
     stop_event = asyncio.Event()
     janitor = asyncio.create_task(_janitor_loop(stop_event))
     try:

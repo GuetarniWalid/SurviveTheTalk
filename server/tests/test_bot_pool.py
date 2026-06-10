@@ -17,6 +17,8 @@ import json
 import os
 import sys
 
+from loguru import logger as loguru_logger
+
 from pipeline.bot_pool import BotPool
 
 # --- Stub parked-bot processes -------------------------------------------------
@@ -195,6 +197,78 @@ def test_boot_timeout_discards_unready_bot() -> None:
         await pool.start()
         try:
             assert pool.ready_count() == 0
+        finally:
+            await pool.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_acquire_send_job_midflight_death_reports_miss() -> None:
+    """Story 6.26 review — the trickiest race in the module: the parked bot
+    passes the liveness check but its stdin breaks at the job write (it died
+    mid-flight). `acquire` must swallow the pipe error, WARN, and report a miss
+    so the caller cold-spawns — never drop the call, never re-queue that bot."""
+
+    async def _scenario() -> None:
+        pool = BotPool(
+            size=1,
+            command=_command(_GOOD_STUB),
+            env=_stub_env(),
+            maintain_interval=3600,
+        )
+        await pool.start()
+        try:
+            assert await _wait_until(lambda: pool.ready_count() == 1)
+            bot = pool._ready[0]  # noqa: SLF001 — white-box: fault-inject the write
+
+            async def _broken_send(job: dict) -> None:
+                raise BrokenPipeError("stdin gone mid-flight")
+
+            bot.send_job = _broken_send
+
+            captured: list[str] = []
+            sink_id = loguru_logger.add(captured.append, level="WARNING")
+            try:
+                assert (
+                    await pool.acquire({"url": "u", "room": "r", "token": "t"}) is False
+                )
+            finally:
+                loguru_logger.remove(sink_id)
+            assert any("died before job" in entry for entry in captured)
+            # The dead-at-write bot was popped and must NOT be back in the deque.
+            assert bot not in pool._ready  # noqa: SLF001
+            await bot.terminate()  # the stub is actually alive — reap it
+        finally:
+            await pool.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_concurrent_fills_never_overshoot_size() -> None:
+    """Story 6.26 review — the module's headline `_spawning` reserved-slot
+    invariant: N concurrent fills (acquire refills racing the maintainer) must
+    together spawn EXACTLY the deficit, never overshoot `size`."""
+
+    async def _scenario() -> None:
+        pool = BotPool(
+            size=2,
+            command=_command(_GOOD_STUB),
+            env=_stub_env(),
+            maintain_interval=3600,
+        )
+        spawned = 0
+        real_spawn_one = pool._spawn_one  # noqa: SLF001 — count the real spawns
+
+        async def _counting_spawn_one():
+            nonlocal spawned
+            spawned += 1
+            return await real_spawn_one()
+
+        pool._spawn_one = _counting_spawn_one  # noqa: SLF001
+        try:
+            await asyncio.gather(*(pool._ensure_full() for _ in range(5)))  # noqa: SLF001
+            assert pool.ready_count() == 2
+            assert spawned == 2  # exactly the deficit — no overshoot
         finally:
             await pool.stop()
 

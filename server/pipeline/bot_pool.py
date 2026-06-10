@@ -123,6 +123,10 @@ class BotPool:
         # Slots reserved by an in-flight `_spawn_one` (counted toward capacity so
         # concurrent fills can't overshoot `size`).
         self._spawning = 0
+        # Strong refs to fire-and-forget tasks (refill, terminate, stdout drain).
+        # The event loop keeps only WEAK refs to tasks — an unreferenced task can
+        # be GC'd mid-flight and silently vanish (documented asyncio gotcha).
+        self._bg_tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._maintainer: asyncio.Task | None = None
@@ -134,6 +138,13 @@ class BotPool:
     def ready_count(self) -> int:
         """Number of alive, idle parked bots currently ready to be acquired."""
         return sum(1 for b in self._ready if b.is_alive())
+
+    def _spawn_bg(self, coro) -> asyncio.Task:
+        """`create_task` + a strong ref + auto-discard when done."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def start(self) -> None:
         """Fill the pool to `size` and start the maintainer (no-op when size=0)."""
@@ -161,7 +172,7 @@ class BotPool:
                 )
                 return False
         # Refill outside the lock — spawning pays the full ~4.7 s boot.
-        asyncio.create_task(self._ensure_full())
+        self._spawn_bg(self._ensure_full())
         logger.info(
             f"bot_pool acquired parked bot pid={bot.pid} ready={self.ready_count()}"
         )
@@ -207,7 +218,7 @@ class BotPool:
                         continue
                     if self._stop.is_set():
                         # Stopped mid-spawn — don't leak the freshly booted bot.
-                        asyncio.create_task(bot.terminate())
+                        self._spawn_bg(bot.terminate())
                     else:
                         self._ready.append(bot)
 
@@ -244,7 +255,16 @@ class BotPool:
             ready = False
         if not ready:
             await _reap(proc, signal="kill")
+            # Release the write-pipe FD now (not at GC) and surface whatever the
+            # wedged boot DID print — the drain hits EOF at once (proc is dead).
+            if proc.stdin is not None:
+                proc.stdin.close()
+            self._spawn_bg(self._drain_stdout(proc))
             return None
+        # The bot may outlive the pool's bookkeeping (it serves a whole call
+        # after acquire), so hand its stdout to a lifetime drain task — see
+        # `_drain_stdout` for why this is load-bearing, not just logging.
+        self._spawn_bg(self._drain_stdout(proc))
         return ParkedBot(proc)
 
     async def _await_ready(self, proc: asyncio.subprocess.Process) -> bool:
@@ -256,6 +276,35 @@ class BotPool:
                 return False
             if _READY_SENTINEL in line:
                 return True
+
+    async def _drain_stdout(self, proc: asyncio.subprocess.Process) -> None:
+        """Drain a parked bot's stdout for its WHOLE life (post-sentinel).
+
+        Load-bearing, not cosmetic: the bot keeps `stdout=PIPE` while it serves
+        its call, and an un-drained pipe blocks the writer at the ~64 KB OS
+        buffer — anything chatty on stdout could freeze a LIVE call
+        mid-conversation. Draining also (a) surfaces output that would
+        otherwise be silently lost (the cold path inherits the server's stdio
+        → journald, the pooled path doesn't) and (b) pins the process handle
+        until exit so the transport can't be GC'd under a served bot. Chunk
+        reads (not readline) so an over-long line can't trip the StreamReader
+        limit.
+        """
+        assert proc.stdout is not None
+        try:
+            while True:
+                chunk = await proc.stdout.read(8192)
+                if not chunk:  # EOF — the process exited
+                    break
+                text = chunk.decode(errors="replace").strip()
+                if text:
+                    logger.info(f"parked-bot pid={proc.pid} stdout: {text}")
+            await proc.wait()
+        except asyncio.CancelledError:
+            # Pool shutdown reaps stragglers; the cgroup owns the child.
+            raise
+        except Exception:
+            logger.exception(f"bot_pool stdout drain failed for pid={proc.pid}")
 
     async def _maintain_loop(self) -> None:
         """Periodic safety net: reap idle crashes + top the pool back up."""
@@ -285,5 +334,17 @@ class BotPool:
         async with self._lock:
             idle = list(self._ready)
             self._ready.clear()
-        for bot in idle:
-            await bot.terminate()
+        if idle:
+            # Concurrently — a serial loop would wait up to `size × reap-timeout`
+            # on wedged bots, defeating the bounded-teardown promise above.
+            await asyncio.gather(
+                *(bot.terminate() for bot in idle), return_exceptions=True
+            )
+        # Reap background stragglers (a refill mid-spawn, drains of still-running
+        # served bots) so nothing outlives the event loop and warns at close; any
+        # surviving child process belongs to the systemd cgroup from here.
+        stragglers = [t for t in self._bg_tasks if not t.done()]
+        for task in stragglers:
+            task.cancel()
+        if stragglers:
+            await asyncio.gather(*stragglers, return_exceptions=True)
