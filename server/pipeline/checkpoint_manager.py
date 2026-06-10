@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -136,6 +137,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
+from pipeline.prompts import MOOD_TAG_DIRECTIVE
 
 # Story 6.9 review patch (D1) — after this many consecutive turns where
 # the classifier returns NO real verdict (all goals inconclusive — HTTP
@@ -226,34 +228,47 @@ def compose_goal_system_instruction(
     base_prompt: str,
     coherence_charter: str,
     pending_goals: list[dict],
+    mood_tag_directive: str = MOOD_TAG_DIRECTIVE,
 ) -> str:
     """Compose the full goal-based system instruction.
 
     `base_prompt + COHERENCE_CHARTER + REMAINING_GOALS_BLOCK +
-    SUGGESTED_FOCUS_BLOCK`. When ZERO goals remain pending, the
-    objectives blocks collapse to a single wrap-up directive so the LLM
-    closes the conversation naturally (the completion exit line is owned
-    by PatienceTracker, but the LLM may speak one last in-character turn
-    before the call ends). The charter ALWAYS sits between base_prompt
+    SUGGESTED_FOCUS_BLOCK + MOOD_TAG_DIRECTIVE`. When ZERO goals remain
+    pending, the objectives blocks collapse to a single wrap-up directive so
+    the LLM closes the conversation naturally (the completion exit line is
+    owned by PatienceTracker, but the LLM may speak one last in-character
+    turn before the call ends). The charter ALWAYS sits between base_prompt
     and the objectives so its position never moves across the call.
+
+    Story 6.29 (AC8) — `mood_tag_directive` is appended as the LAST block of
+    EVERY composition (boot + every recompose + the wrap-up collapse), same
+    positional invariance as the charter: it is a trailing-token output
+    contract, so it sits closest to the model's generation point. Defaulted
+    (not threaded like the charter) ON PURPOSE: the invariant is "every
+    composition carries it", and a default makes a future call site unable
+    to forget it. Pass "" to compose without it (tests).
     """
     base = base_prompt.rstrip()
     if not pending_goals:
-        return (
+        composed = (
             base
             + "\n\n"
             + coherence_charter
             + "\n\nAll objectives complete. Wrap up the conversation naturally."
         )
-    return (
-        base
-        + "\n\n"
-        + coherence_charter
-        + "\n\n"
-        + format_remaining_goals_block(pending_goals)
-        + "\n\n"
-        + format_suggested_focus_block(pending_goals[0])
-    )
+    else:
+        composed = (
+            base
+            + "\n\n"
+            + coherence_charter
+            + "\n\n"
+            + format_remaining_goals_block(pending_goals)
+            + "\n\n"
+            + format_suggested_focus_block(pending_goals[0])
+        )
+    if mood_tag_directive:
+        composed += "\n\n" + mood_tag_directive
+    return composed
 
 
 # ============================================================
@@ -451,6 +466,7 @@ class CheckpointManager(FrameProcessor):
         scenario_description: str,
         coherence_charter: str,
         abuse_detection_enabled: bool = True,
+        verdict_wait_budget_ms: int = 800,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -565,6 +581,21 @@ class CheckpointManager(FrameProcessor):
         # actually speaks. Default False: at construction the bot has not begun
         # its opening line yet.
         self._bot_speaking: bool = False
+
+        # Story 6.29 (D1 = bounded wait, ~800 ms fail-open) — how long the
+        # non-terminal path holds the user TranscriptionFrame for THIS turn's
+        # verdict side effects (goal flips, recompose, envelope, patience
+        # outcome) to land BEFORE the frame is forwarded to the LLM. Caps the
+        # worst case below the classifier's 2.0 s outer bound while capturing
+        # the p95 ≈ 320 ms typical verdict. On budget miss the frame forwards
+        # with STALE steering and the verdict applies late (exactly the
+        # pre-6.29 parallel behavior — fail-open; the character can never be
+        # muted by a judge failure). `0` disables the wait entirely (pure
+        # parallel = pre-6.29). Threaded from `Settings.verdict_wait_budget_ms`
+        # (env VERDICT_WAIT_BUDGET_MS) by bot.py.
+        self._verdict_wait_budget_seconds: float = (
+            max(0, verdict_wait_budget_ms) / 1000.0
+        )
 
         # Story 6.10 — compose the initial goal-based system instruction
         # so the FIRST LLM turn already reflects the full pending-goals
@@ -813,6 +844,18 @@ class CheckpointManager(FrameProcessor):
                 # goal (breaks_progress). The terminal-turn path above and
                 # the generation guard are unchanged.
                 await self._serialize_then_classify(text)
+                # Story 6.29 (D1 = bounded wait) — hold THIS turn's frame for
+                # its OWN verdict's side effects (flips + recompose +
+                # checkpoint_advanced envelope + patience outcome) to land
+                # BEFORE the LLM sees the turn, bounded by the wait budget.
+                # On budget miss / infra-`None` the frame falls through below
+                # with stale steering and the verdict applies late (fail-open
+                # — exactly the pre-6.29 parallel behavior). Sits BEFORE the
+                # two post-serialize suppression backstops so they observe the
+                # post-verdict state: a verdict that completes the call or
+                # schedules a hang-up within the budget is suppressed by the
+                # existing checks below — no new suppression path.
+                await self._await_verdict_within_budget()
                 # Story 6.20 review (async-correctness) — the awaited prior
                 # classify may have flipped the FINAL goal(s) and scheduled
                 # completion WHILE this turn was already committed to the
@@ -1015,6 +1058,53 @@ class CheckpointManager(FrameProcessor):
         gen = self._generation
         self._in_flight = asyncio.create_task(
             self._classify_and_flip_goals(user_text, gen, coalesce_fail=coalesce_fail)
+        )
+
+    async def _await_verdict_within_budget(self) -> None:
+        """Story 6.29 (D1 = bounded wait, fail-open) — await THIS turn's
+        in-flight classify task up to `_verdict_wait_budget_seconds`.
+
+        `asyncio.shield` keeps the in-flight task ALIVE on a budget miss: the
+        wait gives up, the frame forwards with stale steering, and the task
+        keeps running to apply its verdict late (generation guard and all
+        existing semantics unchanged) — bounded wait, never a cancel. The
+        classifier's own 2.0 s outer timeout means a budget ≥ 2 s degenerates
+        to wait-for-verdict; the default 800 ms caps the worst-case added
+        latency well below that.
+
+        Fail-open invariants:
+        - infra failure (`classify_multi` → None) RESOLVES the task within
+          the classifier bound, so the wait ends and the frame forwards — a
+          judge failure can never mute the character;
+        - a crashed task (bug) is swallowed + logged and the frame forwards;
+        - a TEARDOWN cancellation of process_frame propagates (not swallowed).
+
+        The per-turn INFO line is the AC9 smoke-gate observable — grep
+        `checkpoint_verdict_wait` in journalctl next to `checkpoint_verdicts`.
+        """
+        in_flight = self._in_flight
+        if in_flight is None or in_flight.done():
+            return
+        budget = self._verdict_wait_budget_seconds
+        if budget <= 0:
+            return
+        started = time.monotonic()
+        verdict_landed = True
+        try:
+            await asyncio.wait_for(asyncio.shield(in_flight), timeout=budget)
+        except asyncio.TimeoutError:
+            verdict_landed = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("checkpoint_verdict_wait task error (fail-open)")
+        waited_ms = (time.monotonic() - started) * 1000.0
+        logger.info(
+            "checkpoint_verdict_wait waited_ms={:.0f} budget_ms={:.0f} "
+            "verdict_landed={}",
+            waited_ms,
+            budget * 1000.0,
+            verdict_landed,
         )
 
     async def _run_classifier_blocking(self, user_text: str) -> None:

@@ -32,6 +32,7 @@ from pipeline import scenarios
 from pipeline.checkpoint_manager import (
     CheckpointManager,
     advance_goals,
+    compose_goal_system_instruction,
     judgeable_goals,
 )
 from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
@@ -132,9 +133,18 @@ def _make_manager(
     multi_response_fn: Callable[[list[dict], int], dict[str, bool | None]]
     | None = None,
     abuse_detection_enabled: bool = True,
+    verdict_wait_budget_ms: int = 800,
 ) -> tuple[CheckpointManager, ExchangeClassifier, MagicMock, _StubLLM, LLMContext]:
     """Build a fully-mocked manager. The classifier's `classify_multi`
     is replaced with an async stub.
+
+    `verdict_wait_budget_ms` (Story 6.29 D1) defaults to the PROD default
+    (800 ms bounded wait). Tests that model the STACKED fast-re-speak path
+    (a turn arriving while the prior classify is in flight) pass `0`: with
+    the wait on, `process_frame` holds each turn for its own verdict, so
+    sequential drives can no longer stack — in prod that path now exists
+    only AFTER a budget miss, which `0` (the sanctioned wait-disable /
+    pre-6.29 parallel mode) reproduces deterministically.
 
     Verdict control (most specific wins):
       - `multi_response_fn(pending_goals, call_index)` — full control;
@@ -224,6 +234,7 @@ def _make_manager(
         scenario_description=scenario_description,
         coherence_charter=coherence_charter,
         abuse_detection_enabled=abuse_detection_enabled,
+        verdict_wait_budget_ms=verdict_wait_budget_ms,
     )
 
     classifier._test_calls = classifier_calls  # type: ignore[attr-defined]
@@ -609,6 +620,9 @@ def test_fast_respeak_serializes_prior_classify_no_dropped_goal() -> None:
     manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
         classify_response=True,
         classify_delay=0.05,
+        # Story 6.29 — wait disabled: this test models the STACKED window,
+        # which now only exists after a budget miss (see _make_manager doc).
+        verdict_wait_budget_ms=0,
     )
     _capture_pushed(manager)
 
@@ -682,6 +696,8 @@ def test_fast_respeak_into_completion_suppresses_second_user_frame() -> None:
         checkpoints=checkpoints,
         multi_response_fn=_fn,
         classify_delay=0.02,
+        # Story 6.29 — wait disabled: stacked-window scenario (post-budget-miss).
+        verdict_wait_budget_ms=0,
     )
     captured = _capture_pushed(manager)
 
@@ -743,13 +759,15 @@ def test_fast_respeak_double_fail_drains_once_no_premature_hangup() -> None:
         patience_tracker=tracker,
         classify_responses=[False, False],
         classify_delay=0.02,
+        # Story 6.29 — wait disabled: stacked-window scenario (post-budget-miss).
+        verdict_wait_budget_ms=0,
     )
     captured = _capture_pushed(manager)
 
     async def _drive() -> None:
         # Turn 1 returns immediately on the non-terminal path (its classify is
-        # NOT awaited there), so turn 2 finds turn 1's task still in flight and
-        # serializes behind it — the fast-re-speak window.
+        # NOT awaited there — wait disabled), so turn 2 finds turn 1's task
+        # still in flight and serializes behind it — the fast-re-speak window.
         await manager.process_frame(
             _make_user_frame("first."), FrameDirection.DOWNSTREAM
         )
@@ -816,6 +834,8 @@ def test_fast_respeak_hangup_during_await_suppresses_second_frame() -> None:
         patience_tracker=tracker,
         classify_responses=[False, False],
         classify_delay=0.02,
+        # Story 6.29 — wait disabled: stacked-window scenario (post-budget-miss).
+        verdict_wait_budget_ms=0,
     )
     captured = _capture_pushed(manager)
 
@@ -898,6 +918,9 @@ def test_cleanup_cancels_inflight_task() -> None:
     manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
         classify_response=True,
         classify_delay=1.0,
+        # Story 6.29 — wait disabled so process_frame returns with the slow
+        # classify still in flight (the cleanup-cancel scenario under test).
+        verdict_wait_budget_ms=0,
     )
     _capture_pushed(manager)
 
@@ -2886,3 +2909,268 @@ def test_backfill_rides_flipped_ids_into_envelopes_and_journal() -> None:
     # The journal marks the in-code credit so forensics never mistake it for
     # a judge verdict.
     assert any("checkpoint_backfilled" in line and "cp0" in line for line in log_lines)
+
+
+# ============================================================
+# Story 6.29 — D1 bounded wait-for-verdict (AC7 / AC9)
+# ============================================================
+
+
+def test_verdict_within_budget_lands_before_frame_forwarded() -> None:
+    """AC7 core — on the non-terminal path the verdict's side effects (goal
+    flip, recompose, checkpoint_advanced envelope, patience outcome) land
+    BEFORE the user TranscriptionFrame is forwarded downstream. The captured
+    push order proves it: the flip envelopes precede the TF."""
+    manager, _classifier, tracker, stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        classify_response=True,
+        classify_delay=0.05,
+        verdict_wait_budget_ms=800,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("grilled chicken."), FrameDirection.DOWNSTREAM
+        )
+
+    _run(_drive())
+
+    # The verdict landed INSIDE process_frame — no drain needed.
+    assert manager.met_count == 1
+    tracker.apply_exchange_outcome.assert_called_once_with(success=True)
+    # Recompose already happened before the frame forward.
+    assert "prompt segment 1" in stub_llm._settings.system_instruction
+    # Push ORDER: flip envelope(s) BEFORE the forwarded TranscriptionFrame.
+    tf_positions = [
+        i for i, f in enumerate(captured) if isinstance(f, TranscriptionFrame)
+    ]
+    flip_positions = [
+        i
+        for i, f in enumerate(captured)
+        if isinstance(
+            f, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)
+        )
+        and f.message.get("type") == "checkpoint_advanced"
+    ]
+    assert tf_positions and flip_positions
+    assert max(flip_positions) < min(tf_positions), (
+        f"verdict side effects must land BEFORE the frame forward; "
+        f"got flips at {flip_positions}, TF at {tf_positions}"
+    )
+
+
+def test_budget_miss_forwards_frame_and_verdict_applies_late() -> None:
+    """D1(c) budget-miss half — a classify slower than the budget must NOT
+    block the turn: the frame forwards with stale steering and the verdict
+    applies late (pre-6.29 behavior). Fail-open, never a cancel
+    (`asyncio.shield` keeps the task alive through the miss)."""
+    manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        classify_response=True,
+        classify_delay=0.30,
+        verdict_wait_budget_ms=50,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("slow verdict."), FrameDirection.DOWNSTREAM
+        )
+        # Budget missed → frame already forwarded, verdict still pending.
+        assert manager.met_count == 0
+        forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+        assert len(forwarded) == 1, "budget miss must forward the frame"
+        # The shielded task survives the miss and applies late.
+        await _drain(manager)
+
+    _run(_drive())
+
+    assert manager.met_count == 1, "late verdict must still apply (shielded task)"
+    tracker.apply_exchange_outcome.assert_called_once_with(success=True)
+
+
+def test_wait_disabled_with_zero_budget_keeps_parallel_path() -> None:
+    """`VERDICT_WAIT_BUDGET_MS=0` is the sanctioned rollback to the pre-6.29
+    parallel behavior: process_frame forwards immediately, classify in flight."""
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        classify_response=True,
+        classify_delay=0.10,
+        verdict_wait_budget_ms=0,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("parallel turn."), FrameDirection.DOWNSTREAM
+        )
+        assert manager.met_count == 0, "no wait: verdict must still be in flight"
+        assert any(isinstance(f, TranscriptionFrame) for f in captured)
+        await _drain(manager)
+
+    _run(_drive())
+    assert manager.met_count == 1
+
+
+def test_verdict_wait_logs_per_turn_duration_line() -> None:
+    """AC9 — the greppable `checkpoint_verdict_wait` INFO line carries the
+    measured wait + budget + whether the verdict landed (smoke-gate
+    observable, sits next to `checkpoint_verdicts` in journalctl)."""
+    from loguru import logger as loguru_logger
+
+    manager, _classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        classify_response=True,
+        classify_delay=0.05,
+        verdict_wait_budget_ms=800,
+    )
+    _capture_pushed(manager)
+
+    log_lines: list[str] = []
+    sink_id = loguru_logger.add(log_lines.append, level="INFO")
+    try:
+
+        async def _drive() -> None:
+            await manager.process_frame(
+                _make_user_frame("logged turn."), FrameDirection.DOWNSTREAM
+            )
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    wait_lines = [e for e in log_lines if "checkpoint_verdict_wait" in e]
+    assert len(wait_lines) == 1
+    assert "budget_ms=800" in wait_lines[0]
+    assert "verdict_landed=True" in wait_lines[0]
+
+
+def test_verdict_wait_fail_open_on_crashed_classify_task() -> None:
+    """Fail-open invariant — a classify task that DIES (bug, not timeout)
+    must never mute the character: the frame still forwards."""
+    manager, classifier, _tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(6),
+        verdict_wait_budget_ms=800,
+    )
+
+    async def _boom(**kwargs):
+        raise RuntimeError("classifier exploded")
+
+    classifier.classify_multi = _boom  # type: ignore[assignment]
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("crash turn."), FrameDirection.DOWNSTREAM
+        )
+
+    _run(_drive())
+
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert len(forwarded) == 1, "a crashed judge must never mute the character"
+
+
+def test_completion_within_budget_suppresses_frame_via_existing_backstop() -> None:
+    """When THIS turn's verdict completes the call inside the budget, the
+    existing post-serialize completion check suppresses the frame — the
+    survived exit line stays the sole final utterance (Deviation #7), with
+    NO new suppression path added by 6.29."""
+    # 3 checkpoints, all pending → the precheck is NON-terminal (met_count
+    # 0 + 1 < 3, meter high), yet ONE verdict flips everything → completion
+    # fires DURING the bounded wait.
+    checkpoints3 = _make_checkpoints(3)
+
+    def _fn3(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        return {g["id"]: True for g in pending}
+
+    manager, _classifier, tracker, _stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints3,
+        multi_response_fn=_fn3,
+        classify_delay=0.03,
+        verdict_wait_budget_ms=800,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("everything at once."), FrameDirection.DOWNSTREAM
+        )
+
+    _run(_drive())
+
+    assert manager.met_count == 3
+    tracker.schedule_completion.assert_called_once()
+    forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert forwarded == [], (
+        "a turn whose own verdict completes the call must be suppressed "
+        "(checkpoint_suppress_post_serialize_completion)"
+    )
+
+
+# ============================================================
+# Story 6.29 — AC8 mood-tag directive in every composition
+# ============================================================
+
+
+def test_compose_appends_mood_tag_directive_by_default() -> None:
+    """AC8 — `compose_goal_system_instruction` appends MOOD_TAG_DIRECTIVE as
+    the LAST block by default (boot + every recompose can't forget it), in
+    BOTH the pending-goals shape and the all-met wrap-up collapse."""
+    from pipeline.prompts import MOOD_TAG_DIRECTIVE
+
+    pending = _make_checkpoints(2)
+    composed = compose_goal_system_instruction(
+        base_prompt="BASE.",
+        coherence_charter="CHARTER.",
+        pending_goals=pending,
+    )
+    assert composed.endswith(MOOD_TAG_DIRECTIVE)
+    assert composed.index("CHARTER.") < composed.index("<mood:VALUE>")
+
+    wrap_up = compose_goal_system_instruction(
+        base_prompt="BASE.",
+        coherence_charter="CHARTER.",
+        pending_goals=[],
+    )
+    assert "Wrap up the conversation naturally." in wrap_up
+    assert wrap_up.endswith(MOOD_TAG_DIRECTIVE)
+
+    # Tests may compose without it (empty string opt-out).
+    bare = compose_goal_system_instruction(
+        base_prompt="BASE.",
+        coherence_charter="CHARTER.",
+        pending_goals=pending,
+        mood_tag_directive="",
+    )
+    assert "<mood:VALUE>" not in bare
+
+
+def test_manager_recompose_carries_mood_directive_every_time() -> None:
+    """AC8 invariance — the directive survives construction AND every
+    recompose (it is composed in by default, exactly like the charter)."""
+    manager, _classifier, _tracker, stub_llm, _ctx = _make_manager(
+        checkpoints=_make_checkpoints(2),
+        classify_responses=[True, True],
+    )
+    _capture_pushed(manager)
+
+    assert stub_llm._settings.system_instruction.count("<mood:VALUE>") == 1
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("first."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        assert stub_llm._settings.system_instruction.count("<mood:VALUE>") == 1
+        await manager.process_frame(
+            _make_user_frame("second."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    # All-met wrap-up composition still carries it, exactly once.
+    final_si = stub_llm._settings.system_instruction
+    assert final_si.count("<mood:VALUE>") == 1
+    assert "Wrap up the conversation naturally." in final_si

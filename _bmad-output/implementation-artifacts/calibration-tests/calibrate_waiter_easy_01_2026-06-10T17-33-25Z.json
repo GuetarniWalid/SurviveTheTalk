@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-06-10T17:33:25.053038+00:00",
+  "scenario_id": "waiter_easy_01",
+  "engine_version": 5,
+  "scenario_hash": "317fd0eece4d66e05fd104ba124e7f0193b794262bb98e81ada8cd82fb9ceda3",
+  "verdict": "PASS",
+  "golden": {
+    "passed": true,
+    "reviewed_fixture": true,
+    "negative_total": 42,
+    "negative_failures": 0,
+    "negative_warnings": 1,
+    "positive_total": 18,
+    "positive_met": 18,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}

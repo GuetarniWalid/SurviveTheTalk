@@ -69,6 +69,15 @@ CARTESIA_VOICE_ID = (
 # (2026-05-19) explicit ask after Story 6.7 smoke test (call_id=118)
 # surfaced Tina re-asking the confirmed Coke order 70 s later and
 # hallucinating 3 different drink menus across turns.
+#
+# Story 6.29 (AC1) — rules 6-8 added after call_id=274 (2026-06-10, waiter)
+# surfaced three coherence failures in one call: (P1) an answered question
+# re-asked ("Grilled or fried?" right after "I have the grilled chicken"),
+# (P2) spoken stage directions ("(Actually, I still need to confirm…)"),
+# and (P3) a scripted objective example line recited verbatim after the
+# user had already confirmed. Rules stay scenario-independent and
+# difficulty-neutral (no `_PERSONA_DIFFICULTY_LEAK_PATTERNS` vocabulary);
+# `pipeline/reply_sanitizer.py` is the code-level backstop for rule 7.
 COHERENCE_CHARTER = """\
 Conversation memory rules (MUST FOLLOW, regardless of scenario):
 
@@ -98,6 +107,23 @@ Conversation memory rules (MUST FOLLOW, regardless of scenario):
 5. If you and the customer disagree about what was said, prefer the
    conversation history over your current guess. Re-read the recent
    exchanges before responding.
+
+6. Before you ask ANY question, re-read the other person's MOST
+   RECENT line. If it already contains the answer (even partially or
+   informally), do NOT ask — acknowledge what they gave you and move
+   on. Asking for something they literally just said makes you sound
+   like you were not listening.
+
+7. Your reply is ONLY the words you speak out loud. Never produce
+   parentheses, asterisks, stage directions, action descriptions,
+   planning notes, or commentary about your objectives or about this
+   conversation's rules. If it is not spoken dialogue, it must not
+   appear in your reply.
+
+8. Any quoted example lines in your objectives show tone and style
+   only — they are NEVER scripts. Do not recite an example line
+   word-for-word, and never repeat a question, in any wording, that
+   the other person has already answered.
 """
 
 
@@ -114,30 +140,33 @@ NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT = (
 )
 
 
-# Story 6.3 — emotion classifier prompt template.
-#
-# Tight, single-shot classification prompt for the user's most-recent line.
-# The character placeholder is filled per-call from the scenario YAML's
-# `metadata.rive_character` (e.g. "waiter", "cop"). The 7-value enum is the
-# subset of Story 2.6's `emotion` Rive enum that is *runtime-reactive*; the
-# remaining values (`sadness`, `boredom`, `impressed`) are owned by Stories
-# 6.4 / 6.6 and MUST NOT be emitted from this classifier.
-EMOTION_CLASSIFIER_PROMPT = """\
-You judge how a stylized character should react emotionally to the user's \
-last line in a high-pressure conversation. The character role is: {character}.
-
-Respond with strict JSON only — no prose, no preamble, no Markdown fences:
-{{"emotion": "<one of: satisfaction|smirk|frustration|impatience|anger|confusion|disgust_hangup>", "intensity": <float 0.0-1.0>}}
-
-Mapping rules:
-- Grammar mistakes or awkward phrasing → frustration or smirk
-- Off-topic / unclear / irrelevant content → confusion
-- Polite, clear, on-task line → satisfaction
-- Pushy or demanding tone → impatience
-- Hostile or insulting tone → anger
-- Abusive / sexual / threatening content → disgust_hangup
-
-User line: {text}
+# Story 6.29 (D2 — mood co-generation; replaces the Story 6.3
+# `EMOTION_CLASSIFIER_PROMPT` + `EmotionEmitter`, both retired). The reply
+# LLM tags its OWN emotional state at the very end of every reply;
+# `pipeline/reply_sanitizer.py` strips the tag from the streamed text (it
+# never reaches TTS, the transcript, or the LLM context) and re-emits it as
+# the same `{"type":"emotion"}` data-channel envelope the retired emitter
+# produced (Story 6.3 wire shape — byte-compatible, AC3/AC8). Co-generation
+# makes text↔face coherent BY CONSTRUCTION — the model that wrote the line
+# picks the face, instead of a separate classifier guessing it from the
+# USER's line without ever seeing the reply — and deletes one Groq
+# round-trip per turn. The 7-value enum is the runtime-reactive subset of
+# Story 2.6's Rive `emotion` enum; keep it in lockstep with
+# `reply_sanitizer._ALLOWED_EMOTIONS`. Appended at the END of EVERY
+# system-instruction composition (boot + every recompose — see
+# `compose_goal_system_instruction`), same positional invariance as the
+# charter. This is a plain-text trailing token, NOT structured output —
+# `response_format=json_schema` on the character LLM breaks streaming and
+# 70B rejects it (server/CLAUDE.md §4).
+MOOD_TAG_DIRECTIVE = """\
+Mood tag (machine-read, never spoken): end EVERY reply with exactly one
+tag in this exact form, as the very last thing you output: <mood:VALUE>
+VALUE must be exactly one of: satisfaction, smirk, frustration,
+impatience, anger, confusion, disgust_hangup. Pick the one that matches
+the tone of the line YOU just spoke. The tag is stripped out before the
+other person hears you — it is not spoken dialogue: never mention it,
+never explain it, never place any words after it, and never output more
+than one.
 """
 
 

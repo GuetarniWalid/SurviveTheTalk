@@ -92,6 +92,7 @@ from pipeline.llm_provider import (  # noqa: E402
 )
 from pipeline.patience_tracker import step_patience  # noqa: E402
 from pipeline.prompts import COHERENCE_CHARTER  # noqa: E402
+from pipeline.reply_sanitizer import sanitize_reply_text  # noqa: E402
 
 # ============================================================
 # Engine version + difficulty bands (AC10 / AC12)
@@ -117,7 +118,15 @@ from pipeline.prompts import COHERENCE_CHARTER  # noqa: E402
 # back-fill (a later beat auto-credits the earlier beat it logically subsumes),
 # which changes the flip rule for EVERY scenario — the next sweep must
 # revalidate all cached PASSes against the new crediting behaviour.
-ENGINE_VERSION = 4
+# Story 6.29 (2026-06-10) — bumped 4 → 5: COHERENCE_CHARTER gained three
+# system-wide rules (answered-question check, spoken-dialogue-only output,
+# example-lines-are-style-not-script) and the character LLM now appends a
+# machine-read trailing mood tag (`MOOD_TAG_DIRECTIVE`, stripped before
+# TTS/judge/learner by `reply_sanitizer`). Both are code constants OUTSIDE
+# `scenario_hash` that change every scenario's character behaviour — the next
+# sweep must revalidate all cached PASSes (same precedent as the 6.19
+# block-tightening bump).
+ENGINE_VERSION = 5
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —
@@ -622,6 +631,16 @@ async def simulate_conversation(
             temperature=CHARACTER_TEMPERATURE,
             max_tokens=CHARACTER_MAX_TOKENS,
         )
+        # Story 6.29 — golden==prod: `compose_goal_system_instruction` now
+        # appends MOOD_TAG_DIRECTIVE (the character co-generates a trailing
+        # `<mood:...>` tag) and prod strips it — plus `(...)`/`*...*` spans —
+        # in `reply_sanitizer` before the text reaches TTS / transcript /
+        # judge. Mirror that here with the SAME pure helper so the learner
+        # and the judge see exactly what a prod user would hear. A reply that
+        # sanitizes to empty is prod's rare silent turn; keep the raw line as
+        # a defensive fallback so the simulated dialogue never goes blank.
+        clean_line, _mood = sanitize_reply_text(character_line)
+        character_line = clean_line or character_line
         dialogue.append(("character", character_line))
 
         learner_messages = [

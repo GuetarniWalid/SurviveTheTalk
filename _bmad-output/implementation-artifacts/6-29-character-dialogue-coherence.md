@@ -1,6 +1,6 @@
 # Story 6.29: Character Dialogue Coherence
 
-Status: ready-for-dev
+Status: review
 
 > ✅ **DECISION PASS RESOLVED (Walid, 2026-06-10, same day):** **D1 = (c) bounded wait (~800 ms budget)** · **D2 = face half IN this story** · **D3 = (b) back to 70B on Groq**. All decision-scoped ACs (AC7-AC10) are ACTIVE; T5's option-(c) provider-split sub-task is struck (not built now). `dev-story` may start.
 
@@ -87,26 +87,26 @@ Decision-scoped ACs (struck or kept by the decision pass):
 
 ## Tasks / Subtasks
 
-- [ ] **T1 — Charter extension (AC1, AC4)**
-  - [ ] Add the three rules to `COHERENCE_CHARTER` in `prompts.py`; keep wording difficulty-neutral (no rephrase/idiom/pace vocabulary — see `_PERSONA_DIFFICULTY_LEAK_PATTERNS` for the family of words to avoid).
-  - [ ] Bump `ENGINE_VERSION` 4→5 with a dated comment explaining the charter change (mirror the 6.19/6.27 comment style).
-  - [ ] Run `python scripts/calibrate_scenario.py --golden-only` (live Groq) and paste the PASS summary; add the full-band-sweep deferred-work line.
-- [ ] **T2 — Reply sanitizer FrameProcessor (AC2, +AC8 if D2)**
-  - [ ] New `pipeline/reply_sanitizer.py` (name free): strips `(...)`/`*...*` spans from LLM `TextFrame`s; small tail-buffer for spans/tags split across streamed frames; flush on `LLMFullResponseEndFrame`; reset on interruption; pass-through for every other frame type. Do NOT name attributes after pipecat base-class ones (`_clock`, `_observer`, … — §1 trap).
-  - [ ] Wire into `bot.py` between `llm_first_text_probe` and `transcript_character` (so probes measure raw LLM TTFT, but transcript + TTS both see CLEAN text).
-  - [ ] (D2) Tag extraction: recognize the trailing mood tag, map to the 7-value enum, push the `emotion` `OutputTransportMessageFrame` DOWNSTREAM.
-- [ ] **T3 (D1) — Wait-for-verdict in CheckpointManager (AC7, AC9)**
-  - [ ] Extend `process_frame`'s non-terminal branch ([checkpoint_manager.py:803-863](../../server/pipeline/checkpoint_manager.py)): after `_serialize_then_classify`, await THIS turn's in-flight task (reuse the `_run_classifier_blocking` shape) bounded by the D1(c) wait budget (`asyncio.wait_for`-style with `asyncio.shield` so the in-flight task SURVIVES a budget miss and applies late) before falling through to `push_frame`. ONE env var for the budget, default 800 ms.
-  - [ ] Preserve: 6.25 coalescing (`coalesce_fail`), generation guard, echo guard, 6.22 post-hangup suppress, terminal-turn lock, and the two post-serialize suppress backstops.
-  - [ ] Per-turn wait-duration INFO log line (greppable for the smoke gate).
-  - [ ] Real-pipeline drive test per AC7 (PipelineTask + PipelineRunner — §1 convention; mirror `test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipeline_drive`).
-- [ ] **T4 (D2) — Mood co-generation + EmotionEmitter retirement (AC8)**
-  - [ ] Mood-tag directive constant in `prompts.py`, threaded through `compose_goal_system_instruction` (+ the boot composition in `bot.py`) so it survives every recompose.
-  - [ ] Remove `emotion_emitter` from the `bot.py` pipeline list + constructor block; delete `pipeline/emotion_emitter.py` + `tests/test_emotion_emitter.py`; mark `EMOTION_MODEL` legacy.
-  - [ ] Tests: tag stripped from TTS text + transcript; valid tag → envelope; invalid/absent → no envelope; tag split across two TextFrames; barge-in mid-reply clears the buffer.
+- [x] **T1 — Charter extension (AC1, AC4)**
+  - [x] Add the three rules to `COHERENCE_CHARTER` in `prompts.py`; keep wording difficulty-neutral (no rephrase/idiom/pace vocabulary — see `_PERSONA_DIFFICULTY_LEAK_PATTERNS` for the family of words to avoid).
+  - [x] Bump `ENGINE_VERSION` 4→5 with a dated comment explaining the charter change (mirror the 6.19/6.27 comment style).
+  - [x] Run `python scripts/calibrate_scenario.py --golden-only` (live Groq) and paste the PASS summary; add the full-band-sweep deferred-work line. _PASS summary in Dev Agent Record → Completion Notes #7; deferred-work entry added ("Deferred from: dev of story-6.29")._
+- [x] **T2 — Reply sanitizer FrameProcessor (AC2, +AC8 if D2)**
+  - [x] New `pipeline/reply_sanitizer.py` (name free): strips `(...)`/`*...*` spans from LLM `TextFrame`s; small tail-buffer for spans/tags split across streamed frames; flush on `LLMFullResponseEndFrame`; reset on interruption; pass-through for every other frame type. Do NOT name attributes after pipecat base-class ones (`_clock`, `_observer`, … — §1 trap).
+  - [x] Wire into `bot.py` between `llm_first_text_probe` and `transcript_character` (so probes measure raw LLM TTFT, but transcript + TTS both see CLEAN text).
+  - [x] (D2) Tag extraction: recognize the trailing mood tag, map to the 7-value enum, push the `emotion` `OutputTransportMessageFrame` DOWNSTREAM.
+- [x] **T3 (D1) — Wait-for-verdict in CheckpointManager (AC7, AC9)**
+  - [x] Extend `process_frame`'s non-terminal branch ([checkpoint_manager.py:803-863](../../server/pipeline/checkpoint_manager.py)): after `_serialize_then_classify`, await THIS turn's in-flight task (reuse the `_run_classifier_blocking` shape) bounded by the D1(c) wait budget (`asyncio.wait_for`-style with `asyncio.shield` so the in-flight task SURVIVES a budget miss and applies late) before falling through to `push_frame`. ONE env var for the budget, default 800 ms. _Implemented as `_await_verdict_within_budget` + `VERDICT_WAIT_BUDGET_MS` (validated 0..2000 in config.py; 0 = sanctioned wait-disable rollback)._
+  - [x] Preserve: 6.25 coalescing (`coalesce_fail`), generation guard, echo guard, 6.22 post-hangup suppress, terminal-turn lock, and the two post-serialize suppress backstops. _All untouched; the wait slots BEFORE the two backstops so they observe post-verdict state. See Deviation D2._
+  - [x] Per-turn wait-duration INFO log line (greppable for the smoke gate). _`checkpoint_verdict_wait waited_ms=… budget_ms=… verdict_landed=…`._
+  - [x] Real-pipeline drive test per AC7 (PipelineTask + PipelineRunner — §1 convention; mirror `test_checkpoint_manager_observes_finalized_TranscriptionFrame_via_real_pipeline_drive`). _`test_late_transcription_after_bounded_wait_yields_single_llm_run` — drives the REAL LLMContextAggregatorPair + bot.py's real turn strategies._
+- [x] **T4 (D2) — Mood co-generation + EmotionEmitter retirement (AC8)**
+  - [x] Mood-tag directive constant in `prompts.py`, threaded through `compose_goal_system_instruction` (+ the boot composition in `bot.py`) so it survives every recompose. _Composer appends it BY DEFAULT (see Deviation D1)._
+  - [x] Remove `emotion_emitter` from the `bot.py` pipeline list + constructor block; delete `pipeline/emotion_emitter.py` + `tests/test_emotion_emitter.py`; mark `EMOTION_MODEL` legacy.
+  - [x] Tests: tag stripped from TTS text + transcript; valid tag → envelope; invalid/absent → no envelope; tag split across two TextFrames; barge-in mid-reply clears the buffer. _19 unit tests in `tests/test_reply_sanitizer.py` + the real-pipeline drive in `test_bot_pipeline_wiring.py`._
 - [ ] **T5 (D3=b) — Character model re-pin (AC10)**
   - [ ] VPS `.env` `CHARACTER_MODEL=llama-3.3-70b-versatile` + `systemctl restart pipecat.service` at deploy time (backup the `.env` first); record the 100k TPD watch item in the deploy note. ~~Option (c) provider split~~ — struck by the decision pass, stays the durable post-launch plan.
-- [ ] **T6 — Test suite (AC5, AC6)** — new tests as listed per task; confirm zero regressions on `test_checkpoint_manager.py` / `test_exchange_classifier.py` / `test_bot_pipeline_wiring.py`; add a `bot.py` source-text wiring contract test for the sanitizer slot (mirror 6.27's warm-up wiring test).
+- [x] **T6 — Test suite (AC5, AC6)** — new tests as listed per task; confirm zero regressions on `test_checkpoint_manager.py` / `test_exchange_classifier.py` / `test_bot_pipeline_wiring.py`; add a `bot.py` source-text wiring contract test for the sanitizer slot (mirror 6.27's warm-up wiring test). _Full server pytest **866 passed** (844 baseline − 19 retired EmotionEmitter tests + 41 new); flutter **451 passed**, zero client diffs; ruff check + format clean. Sanitizer wiring contract test = `test_bot_wires_reply_sanitizer_mood_directive_and_wait_budget` + the pipeline-order pin in `test_bot_pipeline_ordering`._
 - [ ] **T7 — Deploy + smoke gate** — deploy to VPS, verify `[pooled]` boot, then hand Walid the ready-to-play script below.
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
@@ -195,13 +195,57 @@ No new dependencies. pipecat 0.0.108, httpx, Groq endpoints all pinned and worki
 
 ### Agent Model Used
 
+Claude Fable 5 (claude-fable-5) — dev-story 2026-06-10.
+
+### Implementation Plan
+
+Order: T1 charter+ENGINE_VERSION → T2 sanitizer module → T4 directive+retirement → T3 bounded wait → T6 tests/gates → (T5/T7 at deploy). The sanitizer's scanning core was extracted into a pure `_SpanScanner` (no pipecat) so the calibration harness strips simulated replies through `sanitize_reply_text` with the EXACT prod logic (golden==prod); the FrameProcessor wraps it for the streamed path.
+
 ### Debug Log References
+
+- AC7 drive test first failed with 0 LLM runs: queueing all frames at once let THIS turn's own user-turn-start interruption broadcast (pipecat cancels each processor's in-process frame on `InterruptionFrame`) race ahead and cancel the manager's hold of the SAME turn's TF — impossible in prod, where the start-interruption always fires before STT can finalize the turn. Fixed by pacing the drive like prod (interim → settle → VAD stop + finalized TF). Useful prod insight recorded in Completion Note #5.
+- `--golden-only` fleet sweep: 4/6 PASS + 2 pre-existing seed failures (Completion Note #7); a cop re-run also hit a transient Groq-side 400 `json_validate_failed` storm (Scout emitting empty documents — provider instability, retried clean).
 
 ### Completion Notes List
 
+1. **T1 (AC1).** `COHERENCE_CHARTER` gained rules 6 (answered-question check on the user's most recent line), 7 (spoken-dialogue-only output — no parens/asterisks/stage directions/meta), 8 (objective example lines are style, never scripts; never re-ask an answered question). Wording checked against `_PERSONA_DIFFICULTY_LEAK_PATTERNS` (no rephrase/idiom/grammar/pace vocabulary). `ENGINE_VERSION` 4→5 with dated comment.
+2. **T2 (AC2).** New `pipeline/reply_sanitizer.py`: streaming `_SpanScanner` strips `(...)` spans (nesting-aware), `*...*` actions (literal `2 * 3` preserved — span entry requires a non-space after `*`), and the `<mood:VALUE>` tag (split-across-frames safe, ≤24-char bounded hold; provably-not-a-tag `<` released as text). Plain text forwards immediately — the ONLY held-back text is a potential split tag prefix or a lone trailing `*`; frames are mutated in place so `LLMTextFrame.includes_inter_frame_spaces` survives (a rebuilt plain TextFrame would make TTS re-space chunks). Empty-after-strip reply → dropped whole + `reply_sanitizer_empty_reply_dropped` INFO (the call-274 P2 case); strip events log `reply_sanitizer_stripped spans=N`. Reset on `LLMFullResponseStartFrame` + `InterruptionFrame` (barge-in discards held text AND pending mood). `TTSSpeakFrame` exit lines pass untouched (not a TextFrame subclass + outside response brackets — double-protected); `TranscriptionFrame` (a TextFrame subclass in pipecat 0.0.108!) excluded defensively.
+3. **T2 wiring.** Slot: `llm → llm_first_text_probe → reply_sanitizer → transcript_character → tts` — probes measure raw LLM TTFT; transcript, TTS, AND the downstream assistant aggregator (= the LLM context = the judge's `last_character_line` = the exit-line transcript) all see clean spoken text only.
+4. **T4 (AC8).** `MOOD_TAG_DIRECTIVE` in prompts.py; `compose_goal_system_instruction` appends it BY DEFAULT as the LAST block (see Deviation D1); bot.py appends it in all three boot branches; `exit_line_persona` deliberately stays bare (exit lines ride TTSSpeakFrames that bypass the sanitizer — a tag there would be SPOKEN). EmotionEmitter retired: module + 19 tests deleted, `EMOTION_CLASSIFIER_PROMPT` removed (dead code), bot.py wiring/import/`SCENARIO_CHARACTER` read removed, `EMOTION_MODEL` marked legacy in config.py (kept parseable, like `OPENROUTER_API_KEY`), server/CLAUDE.md §4 updated. Valid tag → same `{"type":"emotion","data":{"emotion","intensity"}}` envelope (intensity pinned 0.5 — the old missing-intensity fallback; client-unused), absent/invalid → no envelope, prior pose holds. PatienceTracker's own escalation emotions (impatience/anger at thresholds) are a separate path — untouched.
+5. **T3 (AC7, D1c).** `_await_verdict_within_budget` in `process_frame`'s non-terminal branch, AFTER `_serialize_then_classify` and BEFORE the two existing post-serialize suppression backstops (which now observe post-verdict state — a verdict that completes the call or schedules a hang-up inside the budget is suppressed by the EXISTING checks, no new suppression path). `asyncio.wait_for(asyncio.shield(task), budget)`: budget miss → frame forwards with stale steering, the SHIELDED task survives and applies late (generation guard etc. unchanged); task crash → logged, frame forwards (fail-open — a judge failure can never mute the character); teardown CancelledError propagates. ONE env: `VERDICT_WAIT_BUDGET_MS` (default 800, validated 0..2000; 0 = sanctioned pre-6.29 parallel rollback without a redeploy). Per-turn `checkpoint_verdict_wait waited_ms= budget_ms= verdict_landed=` INFO line (AC9 observable). **Prod insight from the drive test:** pipecat cancels a processor's in-process frame on user-turn-start interruption, so a barge-in DURING the hold drops the held TF (pipecat-standard latest-line-wins — same class as the pre-existing terminal/stacked blocking paths) while the shielded classify still lands its verdict; the stacked/coalescing path (6.20/6.25) remains the safety net for the budget-miss + re-speak window.
+6. **AC5 (crediting untouched).** `advance_goals`, `judgeable_goals`, the judge prompt/schema/model, 6.25 coalescing semantics: zero edits — existing tests all green unmodified except 5 tests that pin the STACKED window and now pass `verdict_wait_budget_ms=0` (the stacked window only exists post-budget-miss now; 0 reproduces it deterministically — documented in `_make_manager`'s docstring).
+7. **T1/AC4 golden gate.** `calibrate_scenario.py --golden-only` fleet sweep under ENGINE_VERSION 5: **waiter_easy_01 ✅ (the hand-authored, `reviewed: true` GATING fixture) + cop_interrogation_01 ✅ + girlfriend_medium_01 ✅ + landlord_hard_01 ✅, and cop_hard_01 ✅ on `--force` re-run** (its first-sweep ❌ was borderline judge flake on a permissive opening criteria — flipping verdicts across runs proves the criteria sits on the seed boundary). **mugger_medium_01 ❌ STABLE** (failed identically twice): the universal off-topic seed "There are a lot of people here today." is judged `met` on the `react` checkpoint. **The failure is pre-existing and NOT caused by 6.29:** (a) this was the fleet's FIRST-EVER full golden run (no prior cop_hard/mugger reports in git, no ledger — the 6.27-era sweep ran only the waiter; the 4→5 bump forced the fleet), (b) 6.29 touched zero judge inputs (prompt/schema/model/criteria/seed — AC5), (c) root cause is the YAML authoring: the opening criteria literally accept "acknowledges the situation in any way", so the judge obeys it (cop_hard's `respond` has the same shape — hence its flakiness). Fix deferred as a scoped scenario-authoring pass on BOTH scenarios' opening criteria (deferred-work entry + spawn-task chip filed); full-band calibration stays quota-walled (deferred-work, mirrors 6.27). One transient Groq-side 400 `json_validate_failed` storm (Scout emitting empty schema documents) was also observed and self-resolved — provider instability, logged in Debug Log.
+8. **T6 gates.** Server pytest **866 passed** (baseline 844 − 19 retired EmotionEmitter tests + 41 new: 22 sanitizer + 8 wait/composer + 3 wiring/drive + 3 config + 5 reworked); `ruff check` + `ruff format --check` clean; flutter analyze **No issues** + flutter test **451 passed** with **zero client diffs** (AC3).
+
+### Deviations
+
+- **D1 — `mood_tag_directive` is a DEFAULTED kwarg on `compose_goal_system_instruction`, not a required one like `coherence_charter`.** The story says "threaded through"; the charter precedent is explicit-required (fail-loud on a dropped import). Chosen inversion: the AC8 invariant is "appended in EVERY composition" — a default makes a FUTURE call site unable to forget it (the failure mode that buried Story 6.12), while a required kwarg only makes forgetting loud. Tests opt out with `""`. bot.py's boot composition appends it explicitly (source-text-pinned by the new wiring test).
+- **D2 — wait placement exploits the existing backstops instead of adding a suppression path.** AC7 says verdict side effects land before the frame forwards; when the verdict ENDS the call (completion/abuse/hang-up) the frame must NOT forward at all — that suppression already existed post-serialize (6.20 review + 6.25), so the wait simply sits before it. Zero new suppress branches; the AC7 drive test + the new completion-within-budget test pin both halves.
+- **D3 — 5 stacked-path tests re-pinned to `verdict_wait_budget_ms=0`.** With the wait on, sequential `process_frame` drives can no longer stack (each turn holds for its own verdict). In prod the stacked window now exists only AFTER a budget miss; `0` (the sanctioned wait-disable) reproduces that window deterministically. The coalescing/generation/terminal-lock logic they protect is byte-untouched.
+- **D4 — `EMOTION_CLASSIFIER_PROMPT` deleted with the module.** The story names the module + tests; the prompt constant's only consumer was the deleted module (dead code otherwise — verified nothing else imports it, `test_prompts.py` never pinned it).
+
 ### File List
+
+- `server/pipeline/prompts.py` — charter rules 6-8; `EMOTION_CLASSIFIER_PROMPT` → `MOOD_TAG_DIRECTIVE`
+- `server/pipeline/reply_sanitizer.py` — NEW (T2/AC2 + AC8 tag extraction; pure `_SpanScanner` + `sanitize_reply_text` for the harness)
+- `server/pipeline/checkpoint_manager.py` — `compose_goal_system_instruction(mood_tag_directive=…)`; `verdict_wait_budget_ms` kwarg + `_await_verdict_within_budget` + wait call in the non-terminal branch
+- `server/pipeline/bot.py` — EmotionEmitter removed (import/construction/pipeline/`SCENARIO_CHARACTER` read); `ReplySanitizer` wired after `llm_first_text_probe`; `MOOD_TAG_DIRECTIVE` in all 3 boot compositions; `verdict_wait_budget_ms` threaded into CheckpointManager
+- `server/pipeline/emotion_emitter.py` — DELETED (retired)
+- `server/config.py` — `verdict_wait_budget_ms` (+validator 0..2000); `emotion_model` marked legacy; stale comments updated
+- `server/scripts/calibration_engine.py` — ENGINE_VERSION 4→5; `sanitize_reply_text` strip in `simulate_conversation` (golden==prod)
+- `server/tests/test_reply_sanitizer.py` — NEW (22 tests)
+- `server/tests/test_checkpoint_manager.py` — `_make_manager(verdict_wait_budget_ms=…)`; 5 stacked tests pinned to 0; 8 new wait/composer tests
+- `server/tests/test_bot_pipeline_wiring.py` — EmotionEmitter assertions → ReplySanitizer/retirement assertions; pipeline-order pin for the sanitizer slot; 3 new tests (wiring contract, sanitizer real-pipeline drive, AC7 late-TF drive)
+- `server/tests/test_config.py` — emotion-model legacy posture; 2 new verdict-wait tests
+- `server/tests/test_calibration_engine.py` — ENGINE_VERSION pin 4→5
+- `server/tests/test_emotion_emitter.py` — DELETED (retired with the module)
+- `server/CLAUDE.md` — §4 EmotionEmitter retirement note; model-defaults paragraph updated
+- `_bmad-output/implementation-artifacts/deferred-work.md` — "Deferred from: dev of story-6.29" (full-band quota wall + the 2 pre-existing golden seed failures)
+- `_bmad-output/implementation-artifacts/6-29-character-dialogue-coherence.md` — this file (checkboxes, record, status)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — status flips
 
 ## Change Log
 
 - 2026-06-10 — Story created via create-story (ultimate context engine analysis: 3 parallel artifact analyses — server pipeline, client envelope tolerance, scenario/prompt system — + call-274 forensics + 6.12 design-history reconciliation). Status: backlog → ready-for-dev. D1/D2/D3 decision pass pending with Walid; dev-story blocked until resolved.
 - 2026-06-10 (same day) — **Decision pass RESOLVED by Walid:** D1=(c) bounded wait (~800 ms budget, fail-open), D2=face half IN scope (mood co-generation + EmotionEmitter retirement), D3=(b) CHARACTER_MODEL back to 70B on Groq (.env re-pin, 100k TPD accepted watch item). AC7-AC10 active; T5 option (c) struck. Story fully unblocked for /bmad-dev-story.
+- 2026-06-10 (same day) — **dev-story COMPLETE (T1-T4, T6): in-progress → review.** Charter rules 6-8 + ENGINE_VERSION 5; new `reply_sanitizer.py` (P2 strip + AC8 mood-tag extraction) wired between probe and transcript; D1(c) bounded verdict wait (`VERDICT_WAIT_BUDGET_MS=800`, shield-protected fail-open) with per-turn wait log; EmotionEmitter retired (module+tests deleted, EMOTION_MODEL legacy); calibration harness strips replies via the same pure scanner (golden==prod). Gates: pytest 866 / ruff clean / flutter 451 + analyze clean, zero client diffs. Golden sweep: waiter (gating fixture) + 3 others PASS; 2 PRE-EXISTING seed failures surfaced on first-ever cop_hard/mugger golden runs → deferred scenario-authoring pass (see Completion Note #7). T5/T7 (deploy + .env 70B re-pin + Pixel 9 smoke gate) remain.

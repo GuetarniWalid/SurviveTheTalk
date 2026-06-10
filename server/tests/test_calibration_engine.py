@@ -604,10 +604,12 @@ def test_scenario_hash_changes_on_implies_edit(monkeypatch):
     assert engine.compute_scenario_hash("x") != h1
 
 
-def test_engine_version_bumped_for_backfill_rule():
-    """The Story 6.27 flip-rule change must force ledger revalidation on the
-    next sweep."""
-    assert engine.ENGINE_VERSION == 4
+def test_engine_version_bumped_for_charter_and_mood_directive():
+    """The Story 6.29 charter extension + mood-tag directive change every
+    scenario's character behaviour (both are code constants OUTSIDE
+    `scenario_hash`) — the bump forces ledger revalidation on the next sweep
+    (same contract as the 6.27 back-fill bump this test previously pinned)."""
+    assert engine.ENGINE_VERSION == 5
 
 
 # ============================================================

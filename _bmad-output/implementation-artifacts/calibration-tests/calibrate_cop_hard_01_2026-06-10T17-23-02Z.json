@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-06-10T17:23:02.877155+00:00",
+  "scenario_id": "cop_hard_01",
+  "engine_version": 5,
+  "scenario_hash": "b5ff07cc24e2e3e00b0604bdbda50ac86d5792bc73a8e19469348e57046f8858",
+  "verdict": "FAIL",
+  "golden": {
+    "passed": false,
+    "reviewed_fixture": false,
+    "negative_total": 25,
+    "negative_failures": 1,
+    "negative_warnings": 1,
+    "positive_total": 0,
+    "positive_met": 0,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [
+      {
+        "checkpoint_id": "respond",
+        "user_text": "I think the traffic was terrible this morning.",
+        "verdict": "met",
+        "source": "seed"
+      }
+    ],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}
