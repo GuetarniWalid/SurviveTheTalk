@@ -180,15 +180,25 @@ Bands were derived from the authored difficulty (`difficulty-calibration.md` §4
   - _Expected:_ the 6 ids in today's order + `False`
   - _Actual:_ `['waiter_easy_01', 'girlfriend_medium_01', 'mugger_medium_01', 'cop_hard_01', 'cop_interrogation_01', 'landlord_hard_01']` · `difficulty key present: False` · `display_order key present: False`
 
-- [ ] **Call initiation still carries the global pick.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"hard"}` → 200 envelope; journalctl shows the bot composing hard.
-  - _Note:_ deliberately NOT fired from the CLI (would create a real call_session + burn a quota slot for a call nobody answers). Covered by Pixel 9 script step 3 below — the global-Hard waiter call IS this box (watch `SCENARIO_DIFFICULTY` + `[pooled]` in journalctl during the call).
-  - _Actual:_ <!-- filled at the Pixel 9 gate -->
+- [x] **Call initiation still carries the global pick.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"hard"}` → 200 envelope; journalctl shows the bot composing hard.
+  - _Actual (server side, PROVEN by Walid's 2026-06-11 13:17-13:19 attempt):_ 4/4 real calls (3× waiter + 1× cop_interrogation, new APK, global pick = Hard) → `POST /calls/initiate 200` + `[pooled]` + the bot composed **`Difficulty behavior (hard):`** on EVERY call — the global pick drives composition with the authored label gone (the deleted fallback never fired, no RuntimeError). Voice-side perception (hearing the hard register, HUD ticks) belongs to the still-owed Pixel 9 gate below.
 
 - [x] **Error path intact.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"extreme"}` → 422 `{error}` envelope (Literal boundary).
   - _Actual:_ `HTTP 422` (local → Caddy port 80 → API, real JWT user_id=1, 2026-06-11 ~13:05 UTC).
 
 - [x] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for the requests above (the seeder vestige WARNING must NOT be firing post-deploy since the YAMLs are clean).
   - _Proof:_ post-restart window: `grep -ciE "error|traceback"` → **0**; `grep -i vestigial` → **empty** (clean YAMLs, warning correctly silent); `grep -c "Seeded scenario"` → **6** (full catalog re-seeded).
+
+### Pixel 9 smoke gate status — ATTEMPTED 2026-06-11, **NOT PASSED** (connection, not regression)
+
+> **Attempt record (2026-06-11 13:17-13:19 UTC, calls 278-281):** Walid's home connection was too degraded for a serious voice test — gate **NOT signed**, stays OWED on a good connection.
+>
+> **Forensic verdict: NO 6.28 regression — every failure marker is network-signed:**
+> - Calls 278/279/280 ended `reason=network_lost` after 8s/8s/13s (the CLIENT's own network-lost path fired; all 3 auto-gifted, quota refunded).
+> - Call 281 (39s): his "Okay." never received a Soniox endpoint — the 8s `endpoint_watchdog` had to synthesize the finalization (choppy uplink); the character heard mostly silence → silence relance ("Hello? Are you still there?") → patience drained → dynamic hang-up line generated (497 ms) → he hung up first (`reason=user_hung_up`).
+> - **The 6.28 machinery itself worked 4/4 live:** scenario list parsed (new APK, no difficulty key), initiate 200 `[pooled]`, `Difficulty behavior (hard):` composed on every call (global pick, authored fallback gone), checkpoint judge ran (verdicts logged), exit-line generation nominal. Zero tracebacks, zero scenario-load errors, zero vestige warnings in the whole window.
+>
+> Remaining for the gate when the connection is good: the perception half — hub order on-device, Tina actually SPEAKING the hard register, a checkpoint ticking on the HUD, normal Call Ended. Quota note: 3 gifts consumed today, 1 normal slot used → 2 calls left on 2026-06-11 (resettable via the usual procedure if needed).
 
 ### Pixel 9 voice smoke script (read-and-watch, ~3 min)
 
