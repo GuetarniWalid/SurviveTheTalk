@@ -1097,6 +1097,10 @@ class CheckpointManager(FrameProcessor):
         except asyncio.CancelledError:
             raise
         except Exception:
+            # Review 6.29 — a crashed task means NO verdict side effects
+            # landed; the AC9 observable must say so (it previously logged
+            # verdict_landed=True next to the exception traceback).
+            verdict_landed = False
             logger.exception("checkpoint_verdict_wait task error (fail-open)")
         waited_ms = (time.monotonic() - started) * 1000.0
         logger.info(

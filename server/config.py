@@ -149,14 +149,15 @@ class Settings(BaseSettings):
     # (`prompts.MOOD_TAG_DIRECTIVE`, stripped + re-emitted by
     # `pipeline/reply_sanitizer.py`), and the separate `EmotionEmitter`
     # classifier was retired — no runtime path reads this field anymore. Kept
-    # as an optional field (same posture as `openrouter_api_key` above) so an
-    # `.env` that still sets EMOTION_MODEL doesn't break boot; safe to remove
-    # from `/opt/survive-the-talk/.env`.
+    # as a defaulted no-op (same posture as `openrouter_api_key` above) purely
+    # to DOCUMENT the legacy knob — `extra="ignore"` already keeps a stale
+    # EMOTION_MODEL env harmless either way; safe to remove from
+    # `/opt/survive-the-talk/.env`.
     emotion_model: str = "llama-3.3-70b-versatile"  # EMOTION_MODEL (legacy)
 
     # 2026-05-29 — single OpenAI-compatible LLM provider switch (mirrors the
-    # TTS factory). ALL LLM calls (character, emotion, checkpoint judge,
-    # warm-up) hit `llm_base_url`. To move off Groq tomorrow, set
+    # TTS factory). ALL LLM calls (character — which also co-generates the
+    # face mood since 6.29 —, checkpoint judge, warm-up) hit `llm_base_url`. To move off Groq tomorrow, set
     # LLM_BASE_URL + LLM_API_KEY (+ the per-role *_MODEL vars) — ZERO code,
     # because every provider we'd realistically use (Groq / OpenRouter /
     # DashScope / OpenAI / Together / Fireworks…) speaks the same

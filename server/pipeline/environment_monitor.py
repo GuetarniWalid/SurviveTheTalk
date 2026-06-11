@@ -49,12 +49,12 @@ real turns. Requiring co-occurrence makes a lone re-labelled turn NOT
 parasitic, removing that whole false-positive class while a real two-voice
 turn still trips it.
 
-Pipeline position (AC2): wired BEFORE `emotion_emitter` so it observes
+Pipeline position (AC2): wired BEFORE `checkpoint_manager` so it observes
 the raw finalized `TranscriptionFrame` straight from STT, before any
-downstream processor. Mirrors EmotionEmitter / CheckpointManager
-placement (Story 6.6 Dev #5 — the user aggregator CONSUMES
-TranscriptionFrames, so any user-speech observer MUST sit upstream of
-`context_aggregator.user()`).
+downstream processor (the EmotionEmitter that used to sit between them
+was retired in Story 6.29). Mirrors CheckpointManager placement (Story
+6.6 Dev #5 — the user aggregator CONSUMES TranscriptionFrames, so any
+user-speech observer MUST sit upstream of `context_aggregator.user()`).
 
 Pass-through discipline: every observed frame is forwarded downstream
 unchanged (Story 6.3's lesson — an observer that swallows a frame breaks
@@ -152,8 +152,8 @@ class EnvironmentMonitor(FrameProcessor):
             return
         # Only finalized user transcriptions carry a complete turn's tokens.
         # `getattr(..., False)` defaults interim frames OUT (same
-        # conservative posture as EmotionEmitter / CheckpointManager —
-        # never act on a half-word).
+        # conservative posture as CheckpointManager — never act on a
+        # half-word).
         if not (
             isinstance(frame, TranscriptionFrame) and getattr(frame, "finalized", False)
         ):
@@ -237,9 +237,8 @@ class EnvironmentMonitor(FrameProcessor):
             detected_speakers,
         )
         # Emit DOWNSTREAM so the envelope flows toward `transport.output()`
-        # — the same proven client-bound path EmotionEmitter / Checkpoint
-        # advanced envelopes ride (this monitor sits just upstream of
-        # EmotionEmitter, which emits the same way in prod).
+        # — the same proven client-bound path the emotion / checkpoint
+        # advanced envelopes ride.
         await self.push_frame(
             OutputTransportMessageFrame(
                 message={

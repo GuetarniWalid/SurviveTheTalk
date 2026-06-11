@@ -38,7 +38,7 @@ the common case (Soniox finalizes correctly) costs nothing. It also
 fires at most once per pending turn — once the synthetic finalize is
 pushed, the watchdog clears and waits for the next interim stream.
 
-Placement: between `SonioxSTTService` and `EmotionEmitter` /
+Placement: between `SonioxSTTService` and the downstream TF observers /
 `LLMContextAggregatorPair.user()` in `bot.py`. Mirrors the Story 6.6
 Dev #5 / Dev #29 lessons — sit upstream of the user aggregator so the
 synthesised frame reaches every observer.

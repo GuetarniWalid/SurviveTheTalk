@@ -253,6 +253,39 @@ def test_last_tag_wins_when_model_emits_two() -> None:
     assert envelopes[0]["data"]["emotion"] == "smirk"
 
 
+def test_case_variant_tag_stripped_and_envelope_emitted() -> None:
+    """Review 6.29 — a case-deviant tag ("<Mood:Anger>") must NEVER be spoken:
+    match leniently, validate the lowercased value strictly."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["Took you long enough. <Mood:Anger>"]))
+    spoken = _spoken_text(captured)
+    assert "<" not in spoken and "Mood" not in spoken
+    envelopes = _emotion_envelopes(captured)
+    assert len(envelopes) == 1
+    assert envelopes[0]["data"]["emotion"] == "anger"
+
+
+def test_case_variant_tag_split_across_frames_still_held_and_extracted() -> None:
+    """The split-tag hold must use the same case-leniency as the whole-tag
+    match, or a case-deviant split tag is released mid-hold and spoken."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["Fine. <MO", "OD:Smirk>"]))
+    assert _spoken_text(captured) == "Fine. "
+    envelopes = _emotion_envelopes(captured)
+    assert len(envelopes) == 1
+    assert envelopes[0]["data"]["emotion"] == "smirk"
+
+
+def test_case_variant_invalid_value_still_rejected_and_stripped() -> None:
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["Hmm. <MOOD:ZEN>"]))
+    assert _emotion_envelopes(captured) == []
+    assert _spoken_text(captured) == "Hmm. "
+
+
 def test_envelope_shape_is_emotion_emitter_compatible() -> None:
     """AC3/AC8 — byte-compatible wire shape with the retired EmotionEmitter:
     `{"type":"emotion","data":{"emotion":<str>,"intensity":<float>}}` on a
@@ -306,6 +339,48 @@ def test_barge_in_mid_reply_clears_buffer_and_pending_mood() -> None:
     assert "<" not in spoken, f"held tag fragment leaked: {spoken!r}"
     assert "Look, I was going to say " in spoken
     assert "Fresh reply. " in spoken
+
+
+def test_straggler_end_frame_after_interruption_no_spurious_drop_log() -> None:
+    """Review 6.29 — a straggling LLMFullResponseEndFrame AFTER an
+    InterruptionFrame already reset the state (and a bare End with no Start)
+    must not flush: it would log a spurious `reply_sanitizer_empty_reply_
+    dropped` on every barge-in, polluting the smoke-gate journalctl grep."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+
+    logs: list[str] = []
+    sink_id = loguru_logger.add(logs.append, level="INFO")
+    try:
+
+        async def _drive() -> None:
+            # Barge-in mid-reply, then the straggling End arrives.
+            await sanitizer.process_frame(
+                LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM
+            )
+            await sanitizer.process_frame(
+                LLMTextFrame(text="I was saying <mood:ang"),
+                FrameDirection.DOWNSTREAM,
+            )
+            await sanitizer.process_frame(
+                InterruptionFrame(), FrameDirection.DOWNSTREAM
+            )
+            await sanitizer.process_frame(
+                LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM
+            )
+            # Bare End with no Start at all (processor added mid-call).
+            await sanitizer.process_frame(
+                LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM
+            )
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert not any("reply_sanitizer_empty_reply_dropped" in e for e in logs)
+    assert _emotion_envelopes(captured) == []
+    # The straggling End frames still pass through downstream.
+    assert sum(isinstance(f, LLMFullResponseEndFrame) for f in captured) == 2
 
 
 def test_interruption_frame_passes_through() -> None:

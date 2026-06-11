@@ -111,9 +111,9 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # env var but nothing reads it server-side anymore.)
     # Story 6.4 — `SCENARIO_ID` lets the bot resolve the PatienceTracker
     # config (silence ladder timing, patience meter, etc.) from the
-    # scenario YAML + difficulty preset. Same fallback shape as the env
-    # vars above: the legacy `/connect` path doesn't set it, so default
-    # to the tutorial scenario.
+    # scenario YAML + difficulty preset. Same fallback shape as
+    # `SYSTEM_PROMPT` (docstring above): the legacy `/connect` path
+    # doesn't set it, so default to the tutorial scenario.
     scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
     # Story 6.19 — the learner's GLOBAL difficulty pick, threaded from the
     # client via POST /calls/initiate → SCENARIO_DIFFICULTY env. Absent (legacy
@@ -579,8 +579,9 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # suppress). On detection it emits an `env_warning` envelope + calls
     # `patience_tracker.schedule_noisy_environment_exit()`, which speaks
     # the in-character exit line and ends the call (refunded server-side).
-    # Wired in the pipeline BEFORE emotion_emitter (raw-TF observation,
-    # mirror Story 6.6 Dev #5) — see the Pipeline list below.
+    # Wired UPSTREAM of CheckpointManager and the user aggregator so it
+    # observes raw TFs straight from STT (mirror Story 6.6 Dev #5) — see
+    # the Pipeline list below.
     # Story 6.11 fix (2026-05-30) — InputGate sits at the TOP of the pipeline
     # (right after transport.input(), before STT). EnvironmentMonitor arms it
     # on noise detection so the mic is muted ("stop listening") — the loud
@@ -729,9 +730,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # aggregator (as the original spec said) made it inert in
             # prod for the first deploy — same class of bug as
             # Déviation #28 (test and code mutually wrong on frame
-            # routing). Mirroring EmotionEmitter position is the correct
-            # fix: both observe finalized TranscriptionFrames straight
-            # from STT, before the aggregator absorbs them.
+            # routing). Mirroring the then-present EmotionEmitter's
+            # position (retired in 6.29) was the correct fix: observe
+            # finalized TranscriptionFrames straight from STT, before
+            # the aggregator absorbs them.
             checkpoint_manager,
             # Story 6.6 Deviation #29 (post-deploy 2026-05-18) — same
             # root cause as Dev #5 applied to PatienceTracker. Story 6.4

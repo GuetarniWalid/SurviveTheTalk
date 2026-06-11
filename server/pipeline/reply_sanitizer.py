@@ -100,9 +100,11 @@ _ALLOWED_EMOTIONS: frozenset[str] = frozenset(
 # does not use it (verified 2026-06-10, story Dev Notes).
 _DEFAULT_INTENSITY = 0.5
 
-# A complete mood tag, e.g. "<mood:frustration>". Lowercase snake_case values
-# only — exactly what MOOD_TAG_DIRECTIVE instructs.
-_MOOD_TAG_RE = re.compile(r"<mood:([a-z_]+)>")
+# A complete mood tag, e.g. "<mood:frustration>". MOOD_TAG_DIRECTIVE instructs
+# lowercase snake_case, but the match is case-INSENSITIVE as a defense (review
+# 6.29): a case-deviant tag ("<Mood:Anger>") must still never reach TTS — match
+# leniently, then validate the LOWERCASED value strictly against the enum.
+_MOOD_TAG_RE = re.compile(r"<mood:([a-z_]+)>", re.IGNORECASE)
 _MOOD_TAG_PREFIX = "<mood:"
 # Longest legal tag is "<mood:disgust_hangup>" (21 chars). A held '<…' run
 # longer than this without a '>' is provably not a tag — release it as text.
@@ -110,7 +112,13 @@ _MAX_TAG_HOLD = 24
 
 
 def _could_be_tag_prefix(s: str) -> bool:
-    """True if ``s`` (starting at ``<``) could still grow into a mood tag."""
+    """True if ``s`` (starting at ``<``) could still grow into a mood tag.
+
+    Case-insensitive, mirroring `_MOOD_TAG_RE` — a held split tag must use
+    the same leniency as the whole-tag match or a case-deviant split tag
+    would be released mid-hold and spoken.
+    """
+    s = s.lower()
     if len(s) >= _MAX_TAG_HOLD:
         return False
     if len(s) < len(_MOOD_TAG_PREFIX):
@@ -188,7 +196,7 @@ class _SpanScanner:
                 rest = text[i:]
                 match = _MOOD_TAG_RE.match(rest)
                 if match:
-                    value = match.group(1)
+                    value = match.group(1).lower()
                     if value in _ALLOWED_EMOTIONS:
                         self.mood = value
                     else:
@@ -265,7 +273,12 @@ class ReplySanitizer(FrameProcessor):
             return
 
         if isinstance(frame, LLMFullResponseEndFrame):
-            await self._flush_end_of_reply()
+            # Flush ONLY when a reply is actually open (review 6.29): a
+            # straggling End after an InterruptionFrame already reset the
+            # state (or an End with no Start) would otherwise log a spurious
+            # `reply_sanitizer_empty_reply_dropped` on every barge-in.
+            if self._in_llm_response:
+                await self._flush_end_of_reply()
             self._in_llm_response = False
             await self.push_frame(frame, direction)
             return

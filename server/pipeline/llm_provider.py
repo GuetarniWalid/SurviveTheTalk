@@ -1,15 +1,15 @@
 """2026-05-29 — single OpenAI-compatible LLM provider switch point.
 
-Every LLM call in the pipeline — the character brain (`bot.py`), the
-emotion classifier (`EmotionEmitter`), the checkpoint judge
+Every LLM call in the pipeline — the character brain (`bot.py`, which
+also co-generates the face mood since Story 6.29), the checkpoint judge
 (`ExchangeClassifier`), and the turn-1 warm-up (`llm_warmup`) — hits ONE
 provider, configured by `Settings.llm_base_url` + a resolved key. No call
 site hardcodes `api.groq.com` anymore.
 
 This mirrors `tts_factory.py`: to switch the LLM provider tomorrow (a
 cheaper/newer model, or off Groq entirely), set `LLM_BASE_URL` +
-`LLM_API_KEY` (and the per-role `CHARACTER_MODEL` / `EMOTION_MODEL` /
-`CLASSIFIER_MODEL`) in the env and restart — ZERO code change. This works
+`LLM_API_KEY` (and the per-role `CHARACTER_MODEL` / `CLASSIFIER_MODEL`)
+in the env and restart — ZERO code change. This works
 because every provider we'd realistically use (Groq, OpenRouter,
 DashScope, OpenAI, Together, Fireworks, …) speaks the same
 OpenAI-compatible chat-completions format, so only the base_url + key +
@@ -46,7 +46,7 @@ def resolve_llm_base_url(settings: Settings) -> str:
 
     For `OpenAILLMService` / the `openai` SDK, which appends the
     `/chat/completions` path itself. The raw-httpx call sites (classifier,
-    emotion, warm-up) must NOT use this directly — they POST to a full
+    warm-up) must NOT use this directly — they POST to a full
     endpoint, so they use `resolve_llm_chat_url` below. Conflating the two
     was the 2026-05-29 checkpoints-404 regression.
     """
@@ -56,9 +56,9 @@ def resolve_llm_base_url(settings: Settings) -> str:
 def resolve_llm_chat_url(settings: Settings) -> str:
     """The full chat-completions endpoint (`{base}/chat/completions`).
 
-    For the raw-httpx call sites (`ExchangeClassifier`, `EmotionEmitter`,
-    `llm_warmup`) which POST directly and need the complete URL — the
-    `openai` SDK appends `/chat/completions` on its own, raw httpx does not.
+    For the raw-httpx call sites (`ExchangeClassifier`, `llm_warmup`)
+    which POST directly and need the complete URL — the `openai` SDK
+    appends `/chat/completions` on its own, raw httpx does not.
     """
     return settings.llm_base_url.rstrip("/") + "/chat/completions"
 

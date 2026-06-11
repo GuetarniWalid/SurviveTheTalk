@@ -3048,7 +3048,12 @@ def test_verdict_wait_logs_per_turn_duration_line() -> None:
 
 def test_verdict_wait_fail_open_on_crashed_classify_task() -> None:
     """Fail-open invariant — a classify task that DIES (bug, not timeout)
-    must never mute the character: the frame still forwards."""
+    must never mute the character: the frame still forwards. Review 6.29:
+    the AC9 observable must report verdict_landed=False on the crash (no
+    verdict side effects landed) — not a deceptive True next to the
+    traceback."""
+    from loguru import logger as loguru_logger
+
     manager, classifier, _tracker, _stub_llm, _ctx = _make_manager(
         checkpoints=_make_checkpoints(6),
         verdict_wait_budget_ms=800,
@@ -3060,15 +3065,24 @@ def test_verdict_wait_fail_open_on_crashed_classify_task() -> None:
     classifier.classify_multi = _boom  # type: ignore[assignment]
     captured = _capture_pushed(manager)
 
-    async def _drive() -> None:
-        await manager.process_frame(
-            _make_user_frame("crash turn."), FrameDirection.DOWNSTREAM
-        )
+    logs: list[str] = []
+    sink_id = loguru_logger.add(logs.append, level="INFO")
+    try:
 
-    _run(_drive())
+        async def _drive() -> None:
+            await manager.process_frame(
+                _make_user_frame("crash turn."), FrameDirection.DOWNSTREAM
+            )
+
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
 
     forwarded = [f for f in captured if isinstance(f, TranscriptionFrame)]
     assert len(forwarded) == 1, "a crashed judge must never mute the character"
+    wait_lines = [e for e in logs if "checkpoint_verdict_wait waited_ms=" in e]
+    assert len(wait_lines) == 1
+    assert "verdict_landed=False" in wait_lines[0]
 
 
 def test_completion_within_budget_suppresses_frame_via_existing_backstop() -> None:

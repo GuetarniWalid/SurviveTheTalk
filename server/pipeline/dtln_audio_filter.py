@@ -5,7 +5,7 @@ MIT, ~4 MB ONNX model bundle) behind Pipecat's `BaseAudioFilter` interface so
 it slots into the existing `LiveKitParams(audio_in_filter=...)` extension
 point. Audio is denoised BEFORE pipecat's VAD + STT — same place Pipecat's
 own filters live — so every downstream observer (Silero VAD, Soniox STT,
-EmotionEmitter classifier, CheckpointManager classifier) sees clean speech.
+the CheckpointManager classifier) sees clean speech.
 
 **Architecture decision** — server-side denoising:
 The two product alternatives we rejected (Krisp, Picovoice Koala) ship as

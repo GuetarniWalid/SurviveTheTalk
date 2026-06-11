@@ -2,7 +2,13 @@
 
 Items flagged during code review but postponed — each entry records where the review surfaced it and why it was not actioned at the time.
 
-## Deferred from: dev of story-6.29 (2026-06-10)
+## Deferred from: code review of story-6.29 (2026-06-11)
+
+_The bounded-wait + sanitizer + mood co-generation implementation is sound (auditor: What-NOT-to-do 0 violations, Deviations D1-D4 match the code exactly, no pipecat base-attribute shadowing, AC5 crediting byte-untouched). This is the one out-of-diff residual._
+
+- **🟢 `SCENARIO_CHARACTER` is a dead producer since the EmotionEmitter retirement.** `routes_calls` still sets the env var and `_PARKED_JOB_ENV_KEYS` (`server/pipeline/bot.py:925`) still forwards it to parked pool bots, but nothing reads it server-side anymore (the 6.29 wiring test `test_bot_no_longer_reads_scenario_character_env_var` pins the non-read). Cleanup = remove the producer in `routes_calls`, drop the key from `_PARKED_JOB_ENV_KEYS`, re-pin/retire the test — touches files outside the 6.29 diff, zero prod risk meanwhile. (blind hunter, 6.29 formal review)
+
+
 
 _Charter rules 6-8 + the mood-tag directive change every scenario's character behaviour; ENGINE_VERSION bumped 4→5 so the ledger marks all scenarios stale. The story-blessed gate is `--golden-only` (judge-side regression net on live Scout); the cooperative-band half stays quota-walled, same situation as the 6.27 entry below._
 
