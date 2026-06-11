@@ -87,6 +87,7 @@ def _shrink_timers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pt_mod, "_HANG_UP_PRE_TTS_DELAY", 0.01)
     monkeypatch.setattr(pt_mod, "_HANG_UP_CLIENT_DRAIN_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(pt_mod, "_HANG_UP_TTS_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(pt_mod, "_HANG_UP_TTS_RETRY_TIMEOUT_SECONDS", 0.3)
 
 
 def _fast_easy(**overrides: Any) -> dict[str, Any]:
@@ -2428,3 +2429,183 @@ def test_patience_warning_falls_back_to_canned_when_generator_returns_none(
     warnings = [f for f in captured if isinstance(f, TTSSpeakFrame)]
     assert len(warnings) == 1
     assert warnings[0].text == "CANNED warning."
+
+
+# ============================================================
+# Call 277 (2026-06-11) — exit-line silent-TTS-stall single retry
+# ============================================================
+
+
+def test_hangup_tts_silent_stall_requeues_exit_line_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call 277 — the exit line was dispatched to TTS but zero audio ever
+    came back: the 6 s hang-up TTS wait expired and the call ended on dead
+    air with no audible goodbye. When that wait times out with NO
+    BotStartedSpeakingFrame observed since the exit push, the SAME line
+    must be re-queued exactly once (greppable INFO log), and call_end must
+    still be pushed strictly AFTER the retry (the retry never races the
+    call_end envelope)."""
+    from loguru import logger as loguru_logger
+
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy(hang_up_line_silence="Bye now. Goodbye."))
+    captured = _capture_pushed(tracker)
+
+    logs: list[str] = []
+    sink_id = loguru_logger.add(logs.append, level="INFO")
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        # Past the pre-TTS delay (0.01) + the first TTS wait (0.5 shrunk)
+        # with NO audio and NO BotStoppedSpeakingFrame → silent-stall
+        # retry fires. Still inside the retry wait (0.3 shrunk).
+        await asyncio.sleep(0.65)
+        # The retry succeeds: audio starts, then the turn completes.
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    try:
+        _run(_drive())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 2, "stalled exit line must be re-queued exactly once"
+    assert tts[0].text == "Bye now. Goodbye."
+    assert tts[1].text == "Bye now. Goodbye.", (
+        "the retry must reuse the SAME resolved line (no second generation)"
+    )
+    # The first push already records the line in the LLM context via its
+    # TTSTextFrame; the retry must not double-record it (the Story 7.1
+    # teardown debrief reads the transcript).
+    assert tts[1].append_to_context is False
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1, "the hang-up must still complete after the retry"
+    idx_retry = next(i for i, f in enumerate(captured) if f is tts[1])
+    idx_end = next(i for i, f in enumerate(captured) if f is call_end[0])
+    assert idx_retry < idx_end, (
+        "the retry TTSSpeakFrame must be pushed BEFORE the call_end envelope"
+    )
+
+    assert any("hangup_exit_line_retry" in entry for entry in logs), (
+        "the retry must emit a greppable hangup_exit_line_retry INFO line "
+        "for smoke gates"
+    )
+
+
+def test_hangup_tts_timeout_with_audio_flowing_never_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If audio DID start (BotStartedSpeakingFrame observed after the exit
+    push) but the turn doesn't close within the cap (long line, slow
+    playout), the pre-call-277 behavior holds: WARN + proceed to call_end
+    with NO second push — a retry here would double-speak the goodbye and
+    break the sole-final-utterance invariant (Story 6.25/6.22)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        # Let the exit-line TTSSpeakFrame go out, then signal audio start
+        # WITHOUT ever finishing the turn (no BotStoppedSpeakingFrame).
+        await asyncio.sleep(0.05)
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        # Past the first TTS wait → timeout path with audio observed.
+        await asyncio.sleep(0.65)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 1, "audio-started timeout must NOT re-queue the exit line"
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1, "call_end must still fire on the timeout path"
+
+
+def test_hangup_tts_double_stall_retries_only_once_then_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both the original synthesis AND the retry stall (zero audio ever):
+    exactly TWO TTSSpeakFrames total (never a third), and the call-end
+    backstops still run — call_end, then the safety EndFrame — in strict
+    order after the retry."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        # Never send any speaking frame: first wait (0.5 shrunk) expires →
+        # retry → retry wait (0.3 shrunk) expires → call_end → safety
+        # EndFrame after the client-drain timeout (0.1 shrunk). _drain
+        # runs the hang-up task to completion.
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 2, "the retry is single-shot — a double stall must not loop"
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    end_frames = [f for f in captured if isinstance(f, EndFrame)]
+    assert len(end_frames) == 1, (
+        "the safety EndFrame backstop must survive the retry path"
+    )
+    idx_first = next(i for i, f in enumerate(captured) if f is tts[0])
+    idx_retry = next(i for i, f in enumerate(captured) if f is tts[1])
+    idx_end_env = next(i for i, f in enumerate(captured) if f is call_end[0])
+    idx_end_frame = next(i for i, f in enumerate(captured) if f is end_frames[0])
+    assert idx_first < idx_retry < idx_end_env < idx_end_frame, (
+        "strict order: exit line < retry < call_end < EndFrame"
+    )
+
+
+def test_bot_speech_before_exit_push_does_not_mask_the_stall_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A BotStartedSpeakingFrame landing in the hang-up window BEFORE the
+    exit-line TTSSpeakFrame is pushed (e.g. the tail of a just-interrupted
+    reply on the inappropriate path, during the pre-TTS delay) must NOT
+    count as exit-line audio — the gate is `_speaking_done`'s existence,
+    created right before the push. Otherwise a stalled exit line would
+    silently skip its retry."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        # The hang-up coroutine hasn't run yet (no await since scheduling):
+        # this BotStartedSpeakingFrame precedes the exit-line push.
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        assert tracker._exit_line_audio_started is False, (
+            "bot speech before the exit push must not arm the audio flag"
+        )
+        # Now stall both attempts to completion.
+        await _drain(tracker)
+
+    _run(_drive())
+
+    tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+    assert len(tts) == 2, "the silent-stall retry must still fire"
