@@ -4,9 +4,11 @@ Status: ready-for-dev
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
-> ## ⛔ DECISION PASS REQUIRED BEFORE DEV
+> ## ✅ DECISION PASS RESOLVED — Walid 2026-06-11, dev UNBLOCKED
 >
-> **dev-story MUST NOT start until Walid resolves D1-D6 below** (6.27/6.29 precedent). The idea catalog has been pre-challenged; the decisions pick the locked scope. Every AC below is written for the RECOMMENDED option set and must be amended if Walid picks differently.
+> **D1=(b)** copy buttons + tap-detail bottom sheets (AC7-v2 ruling ratified: learning actions allowed, retry/nav CTAs banned) · **D2=(a)** practice prompts server-generated at teardown · **D3=(c) CLIENT-SIDE hesitation measurement** — the device measures felt gaps (character audio ends on the phone → user speech starts at the mic) and ships them over the data channel; server-side v1 measurement (escalation-fixed) stays as FALLBACK. The one pick that diverges from the recommendation — it is the biggest-scope option and drives Task 2's research spike. · **D4=(b)** small token extension (1-3) with UX-DR1 + theme-test update, design v2 before client dev · **D5=confirmed** (checkpoints YES, per-error depth YES, better-phrasings capped-2 YES, radar NO, transcript NO) · **D6=(a)** single story.
+>
+> ACs and tasks below are amended to this locked scope.
 
 ## Story
 
@@ -88,20 +90,20 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 | F3 | `_normalize_core` per-item validate-and-drop (one malformed item currently drops the WHOLE debrief on the fallback path) | Documented 7.1 residual |
 | F4 | Generation budget re-size for the bigger document (max_tokens 2048 / timeout 8s today) + decide single vs split LLM call | NFR7 holds: <5s target / 10s ceiling, masked by the 7.2 overlay |
 
-## Open Decisions — Walid (D1-D6)
+## Decision Pass — RESOLVED (Walid, 2026-06-11)
 
-- **D1 — Interactivity scope.** (a) copy buttons on areas only; **(b) RECOMMENDED: copy buttons + tap-detail bottom sheets on errors/idioms/areas**; (c) (b) + share + animations. Includes ratifying the E6 AC7-v2 ruling (learning actions allowed; retry/nav CTAs still banned).
-- **D2 — Practice-prompt origin.** **(a) RECOMMENDED: server-generated per area at teardown, stored in `debrief_json`** (content-is-server-side law — copy evolves without app release; user's real utterances baked in); (b) client-side template filled with debrief data (no extra LLM cost, but copy frozen per app version, violates the law's spirit).
-- **D3 — Hesitation re-anchor depth.** (a) minimal: C2 blind-spot + C3 id-pairing only, keep the raw anchor; **(b) RECOMMENDED: (a) + server-side compensation — subtract the known playout/jitter delay (`LIVEKIT_MIN_PLAYOUT_DELAY_MS`, default 200ms) + a calibrated RTT constant, validated on-device with a stopwatch during the smoke gate, + C5 "~" display honesty**; (c) full client-side measurement (device hears audio end → device detects speech start, shipped over the data channel) — most accurate, biggest scope (new protocol + client timing + sync).
-- **D4 — Visual restyle depth.** (a) restyle within the existing 13 tokens; **(b) RECOMMENDED: small token extension (1-3 additions, e.g. an elevated-card surface) — requires updating UX-DR1 + `theme_tokens_test` count + a design-spec v2 section BEFORE client dev**; (c) full re-skin (out of proportion). Also decide: design v2 authored as a section in this story during dev (recommended) vs a separate Sally/UX pass.
-- **D5 — Content additions set.** Recommended: checkpoint breakdown B7 = **YES**; per-error depth B1 = **YES**; better-phrasing B2 = **capped 2, YES**; radar B6 = **NO**; transcript B3 = **NO**. Confirm or amend.
-- **D6 — Story split.** **(a) RECOMMENDED: single 7.5** (one coherent wire-contract change, one deploy, one smoke gate; phased tasks server→client); (b) split 7.5-server / 7.6-client (smaller reviews, but risks a v2-payload/v1-screen limbo between them and two deploy+gate cycles).
+- **D1 = (b).** Copy buttons on areas + tap-detail bottom sheets on errors/idioms/areas. The E6 **AC7-v2 product ruling is RATIFIED**: in-place LEARNING actions (copy, expand) are allowed on the debrief; retry / navigation / share / monetization CTAs stay banned; no praise.
+- **D2 = (a).** Practice prompts are SERVER-generated per area at teardown and stored in `debrief_json` (content-is-server-side law — copy evolves without an app release; the user's real utterances are baked into the prompt text).
+- **D3 = (c) — CLIENT-SIDE measurement (diverges from the recommendation; biggest-scope option, deliberately chosen).** The DEVICE measures the felt gap: character audio finishes playing on the phone → user's speech starts at the mic. Measured gaps ship to the bot over the LiveKit data channel. The server-side v1 observer stays as the FALLBACK source (old app builds, channel failures) and gets the escalation-blind-spot fix on its path too. See Dev Notes §"D3-c architecture" — Task 2 opens with a research spike because neither the client speech-boundary events nor pipecat's data-receive path are proven yet.
+- **D4 = (b).** Small token extension (1-3 additions max) — UX-DR1 note + `AppColors.values` + `theme_tokens_test` count updated together; design-spec v2 authored BEFORE client dev (in-story).
+- **D5 = confirmed as recommended.** Checkpoint breakdown B7 YES · per-error depth B1 YES · better-phrasings B2 YES capped at 2 · radar B6 NO · transcript replay B3 NO.
+- **D6 = (a).** Single story 7.5 — one wire-contract change, one deploy, one smoke gate; tasks phased server → client.
 
 ## Acceptance Criteria (provisional — written for the recommended option set)
 
-1. **Given** the v2 schema, **when** a debrief is generated, **then** `debrief_json` carries (all nullable/defaulted for back-compat): `debrief_version: 2`, `checkpoints[]` (id, hint text, met/missed — B7), per-error `explanation` + `examples[]` (B1), ≤2 `better_phrasings[]` (B2), per-area `{title, evidence, practice_prompt}` (D-a, B5), and hesitations carrying `{id, duration_sec, context, resolved}` (C2/C3).
+1. **Given** the v2 schema, **when** a debrief is generated, **then** `debrief_json` carries (all nullable/defaulted for back-compat): `debrief_version: 2`, `checkpoints[]` (id, hint text, met/missed — B7), per-error `explanation` + `examples[]` (B1), ≤2 `better_phrasings[]` (B2), per-area `{title, evidence, practice_prompt}` (D-a, B5), and hesitations carrying `{id, duration_sec, context, resolved, source}` (C2/C3/D3-c — `source` ∈ `"device"|"server"`).
 2. **Given** old v1 rows in `debriefs`, **when** `GET /debriefs/{call_id}` serves them, **then** the response validates and the v2 client renders them without crash (absent v2 fields → sections hidden) — and a v2 payload parsed by the OLD client (7.3 build) must not break its `tryParse` (additive-only keys).
-3. **Given** hesitation measurement (D3-b), **when** a gap is recorded, **then** the stored duration subtracts the configured playout-delay compensation, a freeze that triggers character re-speak IS captured (closed at the bot's next speech start, flagged `resolved: false`), contexts pair to gaps by id (never index), and the UI renders durations as approximate ("~5s" rounding per design v2).
+3. **Given** hesitation measurement (D3-c), **when** the user pauses after a character turn, **then** the DEVICE measures the felt gap (character audio playback ends on the phone → user speech onset at the mic, both boundaries local — no network terms), gaps >3s ship to the bot over the data channel as versioned `hesitation` envelopes, the debrief stores device gaps as authoritative (`source: "device"`) and falls back to the server observer (`source: "server"`) when none arrived (old app build, channel failure), a freeze that triggers character re-speak IS captured on BOTH paths (closed at the character's next speech start, `resolved: false`), contexts pair to gaps by id (never index), and the UI renders durations as approximate ("~5s" per design v2). On-device validation: a stopwatch-timed deliberate freeze reports within ±0.5s.
 4. **Given** `areas_to_work_on` v2, **when** areas render, **then** each cites in-call evidence, order is priority (the first marked as the focus), and count stays ≤3.
 5. **Given** a non-null `practice_prompt` on an area, **when** the user taps its copy button, **then** the clipboard receives the complete self-contained prompt (coach role + the ONE focus area + the user's actual failing utterances + voice-conversation instructions), a "Copied" confirmation appears (informational pattern only), and NO network call is made.
 6. **Given** D1-b, **when** the user taps an error/idiom/area card, **then** a bottom sheet presents the depth content (rule, examples, full practice text where applicable) — reusing the established sheet pattern.
@@ -112,15 +114,17 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 
 ## Tasks / Subtasks (provisional — re-cut after the decision pass)
 
-- [ ] Task 0: Decision pass — Walid resolves D1-D6; amend ACs/tasks accordingly (BLOCKING)
+- [x] Task 0: Decision pass — RESOLVED 2026-06-11 (D1=b, D2=a, D3=c, D4=b, D5=confirmed, D6=a); ACs/tasks amended same day
 - [ ] Task 1: Design spec v2 (AC: 8)
   - [ ] 1.1 Author the v2 visual spec (new section appended to debrief-screen-design.md or a v2 doc): hierarchy, gauge/hero treatment, card anatomy incl. tap affordance + copy button, sheet layouts, approximate-duration display, section icons
-  - [ ] 1.2 If D4-b: define the new token(s), update UX-DR1 note + `AppColors.values` + `theme_tokens_test` count
-- [ ] Task 2: Server — hesitation accuracy (AC: 3)
-  - [ ] 2.1 `hesitation_observer.py`: id per gap; close-at-bot-restart capture (`resolved: false`); playout-delay compensation (config-driven, default = `LIVEKIT_MIN_PLAYOUT_DELAY_MS` + calibrated constant, floor at 0)
-  - [ ] 2.2 Threshold re-validation: with compensation in place, re-affirm or adjust the 3.0s threshold; document the rationale in-code
-  - [ ] 2.3 `_merge_hesitations` → id-based pairing; schema echoes `hesitation_id`
-  - [ ] 2.4 Unit tests incl. the escalation-blind-spot scenario and compensation floor
+  - [ ] 1.2 D4-b: define the new token(s) (1-3 max), update UX-DR1 note + `AppColors.values` + `theme_tokens_test` count together
+- [ ] Task 2: Hesitation accuracy — D3-c client-authoritative measurement + server fallback (AC: 3)
+  - [ ] 2.0 RESEARCH SPIKE (timeboxed; blocks 2.1+): prove the three unknowns — (a) character-audio-END signal on the phone (candidates: the 6.3b lip-sync/viseme machinery which already tracks character speech against real playback; livekit_client remote `SpeakingChangedEvent`/audioLevel — measure each candidate's lag); (b) user-speech-ONSET signal (local participant speaking/audioLevel events vs raw mic-energy threshold); (c) uplink data path: client `publishData` → pipecat LiveKitTransport data-received hook on the bot (the bot only SENDS envelopes today). Record findings + chosen signals in Dev Agent Record. If (a) or (b) proves unworkable in the timebox, STOP and re-open D3 with Walid (fallback = the D3-b server-compensation design).
+  - [ ] 2.1 Client `HesitationMeter` service: monotonic stopwatch between the proven boundary events; ships only gaps >3s; handles character-re-speak (close gap `resolved: false`), user-interrupt (no gap), mic-mute mid-gap (discard), lifecycle/backgrounding per CallEnded timer patterns
+  - [ ] 2.2 Client→server envelope `{type: "hesitation", id, duration_ms, resolved}` published reliably at gap close + final flush at call end; versioned type so old servers ignore it and old clients simply never send it
+  - [ ] 2.3 Server: bot-side collector for device gaps beside `HesitationObserver`; teardown prefers device gaps (`source: "device"`), falls back to the v1 observer (`source: "server"`); escalation-blind-spot fix applied to the FALLBACK path too; `_merge_hesitations` → id-based pairing (schema echoes `hesitation_id`)
+  - [ ] 2.4 Threshold re-affirmation on device-measured values (3.0s stands unless smoke data contradicts; document the rationale in-code)
+  - [ ] 2.5 Tests: client meter unit tests (boundary sequences incl. re-speak/interrupt/mute), envelope contract test both sides, server collector + fallback-preference + id-pairing tests
 - [ ] Task 3: Server — content v2 (AC: 1, 4, 9 + F2/F3/F4)
   - [ ] 3.1 Extend `_build_debrief_schema` + `DEBRIEF_SYSTEM_PROMPT` (per-error explanation/examples, better_phrasings cap, evidence-linked prioritized areas, per-area practice_prompt rules) — STRICT json_schema law holds (Scout)
   - [ ] 3.2 Thread checkpoint met/missed state from the bot teardown into assembly (B7)
@@ -164,7 +168,7 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 Draft shape (the dev finalizes exact lines + expected visuals once D1-D5 lock):
 
 1. Waiter scenario, normal short call with 2 seeded errors → hang up → debrief v2: new visual style, checkpoint breakdown matches the HUD ticks seen in-call.
-2. Second call: after the character's first question, FREEZE deliberately with a stopwatch (~6s) until the character re-speaks, then answer normally → debrief must list that hesitation (money moment: the duration shown ≈ stopwatch minus compensation, marked approximate; in v1 this freeze was invisible).
+2. Second call: after the character's first question, FREEZE deliberately with a stopwatch (~6s) until the character re-speaks, then answer normally → debrief must list that hesitation (money moment: the duration shown ≈ your stopwatch within ±0.5s, displayed as approximate, `source: "device"` in the payload; in v1 this freeze was invisible AND durations were network-inflated).
 3. Tap an error card → detail sheet opens with the rule + examples.
 4. Tap the copy button on area #1 → "Copied" → paste into ChatGPT (voice) → money moment: the pasted prompt sets up a one-focus coaching conversation using YOUR actual phrases from the call.
 5. Back arrow → list (no retry/nav CTAs anywhere).
@@ -204,6 +208,14 @@ Observer hygiene rules that MUST survive any edit: observe-never-consume (push_f
 - **Groq quotas** (infra memory): free tier; bigger debriefs burn more TPD — measure, and keep the one-call-per-call shape if possible.
 - **iOS untested** (Epic 10): clipboard behavior verified on Android (Pixel 9) only; note any iOS-conditional code for 10-4.
 
+### D3-c architecture — client-authoritative hesitation measurement (decided 2026-06-11)
+
+- **Why client-side:** the v1 server anchor includes downlink + the phone's jitter-buffer playout (our own `LIVEKIT_MIN_PLAYOUT_DELAY_MS` = 200ms) + uplink + VAD lag — felt time ≠ measured time, and no server-side constant can be exact. Measuring BOTH boundaries on the device removes every network term. The gap is computed locally with a monotonic clock — only the final `duration_ms` ships, so there is NO cross-device clock-sync problem.
+- **Boundary candidates (2.0 proves them):** character-audio-end — the Story 6.3b lip-sync stack (`viseme_scheduler`) already tracks character speech against actual playback for the puppet's mouth, likely the best anchor; alternative = remote participant `SpeakingChangedEvent`/audioLevel (beware built-in hysteresis, typically 100-300ms — measure it). User-speech-onset — local participant speaking/audioLevel events (same hysteresis caveat) or a raw mic-energy threshold; onset accuracy matters, word accuracy does not.
+- **Uplink path:** client `LocalParticipant.publishData` (reliable mode) → SFU → bot. pipecat's `LiveKitTransport` data-received hook must be PROVEN (today the bot only sends envelopes; the client only receives — `data_channel_handler.dart`'s unknown-type `default` branch silently drops, which is exactly why a new versioned `type` is safe in both directions).
+- **Robustness contract:** device measurements are authoritative WHEN PRESENT; the server observer (escalation fix + id tagging applied) covers old app builds and channel failures. The `source` field in the payload makes the active path visible to tests, the smoke gate, and future debugging.
+- **Edge cases owned by 2.1:** user interrupts the character (no gap to record); character re-speaks first (close `resolved: false` — the v1 invisible-freeze class); mic muted mid-gap (discard); app lifecycle/backgrounding (cancel/flush timers like the CallEnded patterns); one anchor at a time by construction.
+
 ### Practice-prompt content spec (B5/E1 — draft for the generator prompt)
 
 Each area's `practice_prompt` is a self-contained block the user pastes into ANY LLM:
@@ -215,7 +227,7 @@ Each area's `practice_prompt` is a self-contained block the user pastes into ANY
 
 ### Latest tech check
 
-No new packages required: clipboard = `flutter/services` `Clipboard.setData` (SDK); bottom sheets = existing house pattern (content-warning/difficulty sheets); icons = bundled Material set. Server: no new deps (httpx + Groq json_schema as today). If D3-c (client-side timing) were chosen, livekit_client 2.6.4 audio-event timing capabilities must be researched first — flagged as a research subtask, not assumed.
+No new packages required: clipboard = `flutter/services` `Clipboard.setData` (SDK); bottom sheets = existing house pattern (content-warning/difficulty sheets); icons = bundled Material set. Server: no new deps (httpx + Groq json_schema as today). **D3-c is chosen → the livekit_client 2.6.4 speech-boundary/timing capabilities and pipecat's data-receive hook are NOT assumed — they are Task 2.0's research spike, with an explicit STOP-and-re-decide exit if unworkable.**
 
 ### Project Structure Notes
 
