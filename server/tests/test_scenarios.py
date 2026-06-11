@@ -45,7 +45,7 @@ _ORIGINAL_IDS = {
 
 
 def _yaml_scenarios() -> dict:
-    """{id: {difficulty, is_free}} read straight from pipeline/scenarios/*.yaml."""
+    """{id: {display_order, is_free}} read straight from pipeline/scenarios/*.yaml."""
     import pathlib
 
     import yaml
@@ -57,16 +57,24 @@ def _yaml_scenarios() -> dict:
             "metadata"
         ) or {}
         out[meta["id"]] = {
-            "difficulty": meta["difficulty"],
+            "display_order": meta.get("display_order"),
             "is_free": bool(meta.get("is_free")),
         }
     return out
 
 
 def _expected_order(scn: dict) -> list:
-    """The list ordering contract: difficulty bucket (easy<medium<hard), then id ASC."""
-    rank = {"easy": 0, "medium": 1, "hard": 2}
-    return sorted(scn, key=lambda i: (rank[scn[i]["difficulty"]], i))
+    """The list ordering contract (Story 6.28): authored `display_order` ASC
+    with NULLs LAST (mirrors `COALESCE(display_order, 999999999)`), then id ASC.
+    """
+    return sorted(
+        scn,
+        key=lambda i: (
+            scn[i]["display_order"] is None,
+            scn[i]["display_order"] or 0,
+            i,
+        ),
+    )
 
 
 def test_list_returns_all_scenarios_ordered(
@@ -74,8 +82,8 @@ def test_list_returns_all_scenarios_ordered(
 ) -> None:
     """Authenticated GET /scenarios returns every catalog scenario in order.
 
-    Order contract (AC4): easy bucket first, then medium, then hard; inside each
-    bucket, `id` ASC. Computed from the YAML catalog so it survives new scenarios.
+    Order contract (Story 6.28 D1): authored `display_order` ASC (NULLs last),
+    then `id` ASC. Computed from the YAML catalog so it survives new scenarios.
     """
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
@@ -89,6 +97,55 @@ def test_list_returns_all_scenarios_ordered(
     ids = [item["id"] for item in body["data"]]
     assert ids == _expected_order(scn)
     assert _ORIGINAL_IDS.issubset(set(ids))
+
+
+def test_list_order_is_byte_identical_to_pre_6_28_hub(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 6.28 AC3 regression — dropping the difficulty bucket sort must NOT
+    change the visible hub order. The D1 `display_order` values reproduce the
+    exact pre-6.28 order for the 6 prod scenarios (waiter first — the gentle
+    free intro; raw-id order would put the cop first, a product regression).
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    ids = [
+        item["id"]
+        for item in client.get("/scenarios", headers=_auth_header(token)).json()["data"]
+    ]
+
+    assert ids == [
+        "waiter_easy_01",
+        "girlfriend_medium_01",
+        "mugger_medium_01",
+        "cop_hard_01",
+        "cop_interrogation_01",
+        "landlord_hard_01",
+    ]
+
+
+def test_scenario_payloads_do_not_expose_difficulty_or_display_order(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 6.28 AC3 — `difficulty` is removed from BOTH route payloads (the
+    per-scenario label no longer exists) and `display_order` is a server-side
+    ordering concern, never exposed.
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    items = client.get("/scenarios", headers=_auth_header(token)).json()["data"]
+    assert len(items) > 0
+    for item in items:
+        assert "difficulty" not in item
+        assert "display_order" not in item
+
+    detail = client.get(
+        "/scenarios/waiter_easy_01", headers=_auth_header(token)
+    ).json()["data"]
+    assert "difficulty" not in detail
+    assert "display_order" not in detail
 
 
 def test_list_shape_includes_progression_fields(
@@ -493,7 +550,6 @@ def test_resolve_patience_config_yaml_override_wins(tmp_path, monkeypatch) -> No
 metadata:
   id: synthetic_easy_01
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -547,7 +603,6 @@ def test_resolve_patience_config_rejects_non_positive_patience_start(
 metadata:
   id: synthetic_zero_01
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -579,41 +634,14 @@ checkpoints:
         scenarios_mod.resolve_patience_config("synthetic_zero_01")
 
 
-def test_resolve_patience_config_unknown_difficulty_raises(
-    tmp_path, monkeypatch
-) -> None:
-    """Difficulty outside `easy`/`medium`/`hard` is a fail-loud condition."""
-    from pipeline import scenarios as scenarios_mod
-
-    fake_yaml = tmp_path / "synthetic.yaml"
-    fake_yaml.write_text(
-        """
-metadata:
-  id: synthetic_trivial_01
-  title: Synthetic
-  difficulty: trivial
-  is_free: true
-  rive_character: waiter
-  language_focus: test
-  tts_voice_id: test
-  content_warning: null
-base_prompt: |
-  test
-checkpoints:
-  - id: a
-    hint_text: a
-    prompt_segment: a
-    success_criteria: a
-""",
-        encoding="utf-8",
-    )
-
-    patched_index = dict(scenarios_mod._SCENARIO_INDEX)
-    patched_index["synthetic_trivial_01"] = fake_yaml
-    monkeypatch.setattr(scenarios_mod, "_SCENARIO_INDEX", patched_index)
+def test_resolve_patience_config_unknown_difficulty_raises() -> None:
+    """A difficulty outside `easy`/`medium`/`hard` is a fail-loud condition
+    (Story 6.28 — the value now arrives ONLY as the caller's global pick; the
+    authored YAML read is gone)."""
+    from pipeline.scenarios import resolve_patience_config
 
     with pytest.raises(RuntimeError, match="trivial"):
-        scenarios_mod.resolve_patience_config("synthetic_trivial_01")
+        resolve_patience_config("waiter_easy_01", difficulty="trivial")
 
 
 # ============================================================
@@ -643,7 +671,6 @@ _BASE_YAML = """
 metadata:
   id: {scenario_id}
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -838,7 +865,6 @@ def test_resolve_patience_config_loads_patience_warning_line_from_yaml(
 metadata:
   id: synth_warning
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -875,7 +901,6 @@ def test_resolve_patience_config_patience_warning_falls_back_when_yaml_omits_it(
 metadata:
   id: synth_no_warn
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -940,7 +965,6 @@ def test_load_scenario_checkpoints_rejects_malformed_entry(
 metadata:
   id: synth_malformed
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -976,7 +1000,6 @@ def test_load_scenario_checkpoints_rejects_duplicate_ids(tmp_path, monkeypatch) 
 metadata:
   id: synth_dup
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1011,7 +1034,6 @@ def _requires_yaml(*, requires_value: str) -> str:
 metadata:
   id: synth_req
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1129,7 +1151,6 @@ def _implies_yaml(
 metadata:
   id: synth_imp
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1365,7 +1386,6 @@ def test_resolve_patience_config_rejects_exit_lines_list(tmp_path, monkeypatch) 
 metadata:
   id: synth_exit_list
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1399,7 +1419,6 @@ def test_resolve_patience_config_validates_silence_prompt_seconds_positive(
 metadata:
   id: synth_sps_neg
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1433,7 +1452,6 @@ def test_resolve_patience_config_validates_silence_penalty_non_positive(
 metadata:
   id: synth_sp_pos
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1469,7 +1487,6 @@ def test_load_scenario_base_prompt_rejects_speak_first_directive(
 metadata:
   id: synth_speak_first_in_base
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1520,42 +1537,42 @@ def test_easy_preset_ladder_impatience_seconds_is_4_5() -> None:
 # ============================================================
 
 
-def test_difficulty_override_swaps_preset_on_resolve_patience_config() -> None:
-    """AC3 — a global `hard` pick on the easy-authored waiter resolves to the
-    HARD patience preset (not easy), proving the override selects the base
-    preset for the call."""
+def test_global_difficulty_swaps_preset_on_resolve_patience_config() -> None:
+    """Story 6.19 AC3 (kwarg re-anchored by 6.28) — a global `hard` pick on the
+    waiter resolves to the HARD patience preset, proving the global pick selects
+    the base preset for the call."""
     from pipeline.scenarios import _DIFFICULTY_PRESETS, resolve_patience_config
 
     hard = _DIFFICULTY_PRESETS["hard"]
-    config = resolve_patience_config("waiter_easy_01", difficulty_override="hard")
+    config = resolve_patience_config("waiter_easy_01", difficulty="hard")
     assert config["initial_patience"] == hard["initial_patience"] == 60
     assert config["fail_penalty"] == hard["fail_penalty"] == -25
     assert config["escalation_thresholds"] == hard["escalation_thresholds"] == [30, 0]
     assert config["tts_speed"] == hard["tts_speed"] == 1.0
 
 
-def test_difficulty_override_none_uses_authored_difficulty() -> None:
-    """AC7 — no override → the scenario's authored difficulty (easy) is used,
-    exactly as before the story."""
-    from pipeline.scenarios import resolve_patience_config
+def test_difficulty_none_uses_default_easy() -> None:
+    """Story 6.28 D2 — no difficulty → the server constant DEFAULT_DIFFICULTY
+    ("easy"), NOT a per-scenario authored value (that fallback is gone)."""
+    from pipeline.scenarios import DEFAULT_DIFFICULTY, resolve_patience_config
+
+    assert DEFAULT_DIFFICULTY == "easy"
 
     config = resolve_patience_config("waiter_easy_01")
     assert config["initial_patience"] == 100  # easy preset
     assert config["tts_speed"] == 0.9
 
-    config_explicit_none = resolve_patience_config(
-        "waiter_easy_01", difficulty_override=None
-    )
+    config_explicit_none = resolve_patience_config("waiter_easy_01", difficulty=None)
     assert config_explicit_none["initial_patience"] == 100
 
 
-def test_resolve_patience_config_rejects_bad_difficulty_override() -> None:
-    """A bad override is a fail-loud condition (defensive; the API Literal
+def test_resolve_patience_config_rejects_bad_difficulty() -> None:
+    """A bad difficulty is a fail-loud condition (defensive; the API Literal
     already 422s before this point)."""
     from pipeline.scenarios import resolve_patience_config
 
-    with pytest.raises(RuntimeError, match="difficulty_override"):
-        resolve_patience_config("waiter_easy_01", difficulty_override="bogus")
+    with pytest.raises(RuntimeError, match="bogus"):
+        resolve_patience_config("waiter_easy_01", difficulty="bogus")
 
 
 def test_presets_carry_tts_speed_easy_slowed_medium_hard_natural() -> None:
@@ -1583,7 +1600,6 @@ def test_yaml_tts_speed_override_wins_over_preset(tmp_path, monkeypatch) -> None
 metadata:
   id: synth_speed
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1619,7 +1635,6 @@ def test_resolve_patience_config_rejects_out_of_range_tts_speed(
 metadata:
   id: synth_bad_speed
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1644,11 +1659,12 @@ exit_lines:
         scenarios_mod.resolve_patience_config("synth_bad_speed")
 
 
-def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
-    """AC4 — the composed base prompt carries the persona AND the authored
-    difficulty's behavior block (sourced from the code constant). Asserts on
-    rewrite-proof markers (the header + the constant itself), not a hand-picked
-    sentence, so future block tightening never breaks this test."""
+def test_load_scenario_base_prompt_none_appends_default_easy_block() -> None:
+    """Story 6.28 D2 — no difficulty → the composed base prompt carries the
+    persona AND the DEFAULT (easy) behavior block (the authored-difficulty
+    fallback is gone). Asserts on rewrite-proof markers (the header + the
+    constant itself), not a hand-picked sentence, so future block tightening
+    never breaks this test."""
     from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
 
     composed = load_scenario_base_prompt("waiter_easy_01")
@@ -1657,13 +1673,14 @@ def test_load_scenario_base_prompt_appends_authored_difficulty_block() -> None:
     assert composed.endswith(_DIFFICULTY_PROMPTS["easy"])
 
 
-def test_load_scenario_base_prompt_override_swaps_behavior_block() -> None:
-    """AC4 — a global `hard` pick on the easy waiter makes it SPEAK hard: the
-    hard block is composed in place of the easy one. Structural markers only
-    (rewrite-proof); the neutrality lint below is the real content guard."""
+def test_load_scenario_base_prompt_global_pick_swaps_behavior_block() -> None:
+    """Story 6.19 AC4 (kwarg re-anchored by 6.28) — a global `hard` pick on the
+    waiter makes it SPEAK hard: the hard block is composed instead of the
+    default. Structural markers only (rewrite-proof); the neutrality lint below
+    is the real content guard."""
     from pipeline.scenarios import _DIFFICULTY_PROMPTS, load_scenario_base_prompt
 
-    composed = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
+    composed = load_scenario_base_prompt("waiter_easy_01", difficulty="hard")
     assert "Difficulty behavior (hard):" in composed
     assert composed.endswith(_DIFFICULTY_PROMPTS["hard"])
     # The easy block must NOT leak through.
@@ -1681,7 +1698,6 @@ def test_load_scenario_base_prompt_rejects_inline_difficulty_block(
 metadata:
   id: synth_inline_block
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1707,12 +1723,12 @@ exit_lines:
         scenarios_mod.load_scenario_base_prompt("synth_inline_block")
 
 
-def test_load_scenario_base_prompt_rejects_bad_difficulty_override() -> None:
-    """A bad override is fail-loud (defensive; the API Literal 422s first)."""
+def test_load_scenario_base_prompt_rejects_bad_difficulty() -> None:
+    """A bad difficulty is fail-loud (defensive; the API Literal 422s first)."""
     from pipeline.scenarios import load_scenario_base_prompt
 
     with pytest.raises(RuntimeError, match="difficulty"):
-        load_scenario_base_prompt("waiter_easy_01", difficulty_override="bogus")
+        load_scenario_base_prompt("waiter_easy_01", difficulty="bogus")
 
 
 def test_shipped_scenarios_have_no_inline_difficulty_block() -> None:
@@ -1816,8 +1832,8 @@ def test_difficulty_blocks_are_distinct_and_personality_neutral() -> None:
         injected = [w for w in block_personality_denylist if w in text.lower()]
         assert not injected, f"{level} block injects personality: {injected}"
     # Composition actually threads difficulty: easy vs hard differ for a scenario.
-    easy = load_scenario_base_prompt("waiter_easy_01", difficulty_override="easy")
-    hard = load_scenario_base_prompt("waiter_easy_01", difficulty_override="hard")
+    easy = load_scenario_base_prompt("waiter_easy_01", difficulty="easy")
+    hard = load_scenario_base_prompt("waiter_easy_01", difficulty="hard")
     assert easy != hard
 
 
@@ -1868,7 +1884,6 @@ def test_resolve_patience_config_validates_ladder_impatience_seconds_range(
 metadata:
   id: synth_ladder_too_small
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test
@@ -1907,7 +1922,6 @@ def test_resolve_patience_config_accepts_ladder_impatience_seconds_override(
 metadata:
   id: synth_ladder_override
   title: Synthetic
-  difficulty: easy
   is_free: true
   rive_character: waiter
   language_focus: test

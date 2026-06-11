@@ -217,9 +217,11 @@ def test_initiate_omits_difficulty_env_when_absent(
     mock_resend,
     test_db_path: str,
 ) -> None:
-    """Story 6.19 AC7 — when the request omits `difficulty`, the bot env carries
-    NO `SCENARIO_DIFFICULTY` (the bot then uses the scenario's authored
-    difficulty). An unset preference must never leak as the literal 'None'."""
+    """Story 6.19 AC7 (re-anchored by 6.28) — when the request omits
+    `difficulty`, the bot env carries NO `SCENARIO_DIFFICULTY` (the bot's
+    loaders then resolve to the server default `scenarios.DEFAULT_DIFFICULTY`
+    — the authored fallback is gone). An unset preference must never leak as
+    the literal 'None'."""
     user_id = _register_user(client, test_db_path)
     token = issue_token(user_id)
 

@@ -3,7 +3,8 @@ metadata:
   title: The 8:30 Alibi
   # Story 7.1 — debrief "mission" title (distinct from the character name above).
   scenario_title: "Where were you at 8:30?"
-  difficulty: hard
+  # Story 6.28 — hub ordering (lower = earlier; null/absent = last).
+  display_order: 50
   is_free: false
   rive_character: cop
   language_focus: Past simple and past continuous for narrating last night ('I was working', 'I left at eight'); time and place prepositions (at 8:30, on Carver Street, in the back); giving consistent, specific details and politely standing your ground ('Actually, that's not what I said', 'Let me be clear').

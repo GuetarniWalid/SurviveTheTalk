@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-06-11T10:49:37.217026+00:00",
+  "scenario_id": "landlord_hard_01",
+  "engine_version": 6,
+  "scenario_hash": "f90b6cb5c7156c7088c9a3b54a39df40bef038f4e481a7111145b6b05f6b75df",
+  "verdict": "PASS",
+  "golden": {
+    "passed": true,
+    "reviewed_fixture": false,
+    "negative_total": 30,
+    "negative_failures": 0,
+    "negative_warnings": 1,
+    "positive_total": 0,
+    "positive_met": 0,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}

@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-06-11T10:47:31.891651+00:00",
+  "scenario_id": "girlfriend_medium_01",
+  "engine_version": 6,
+  "scenario_hash": "fbc7326dda0eb69fda47e8e091bf7b79f5e153c3c3fe4113745a53e88d677c72",
+  "verdict": "PASS",
+  "golden": {
+    "passed": true,
+    "reviewed_fixture": false,
+    "negative_total": 30,
+    "negative_failures": 0,
+    "negative_warnings": 0,
+    "positive_total": 0,
+    "positive_met": 0,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}

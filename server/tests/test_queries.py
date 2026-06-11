@@ -192,7 +192,7 @@ _ORIGINAL_IDS = {
 
 
 def _yaml_scenarios() -> dict:
-    """{id: {difficulty, is_free}} read straight from pipeline/scenarios/*.yaml."""
+    """{id: {display_order, is_free}} read straight from pipeline/scenarios/*.yaml."""
     import pathlib
 
     import yaml
@@ -204,16 +204,24 @@ def _yaml_scenarios() -> dict:
             "metadata"
         ) or {}
         out[meta["id"]] = {
-            "difficulty": meta["difficulty"],
+            "display_order": meta.get("display_order"),
             "is_free": bool(meta.get("is_free")),
         }
     return out
 
 
 def _expected_order(scn: dict) -> list:
-    """The list ordering contract: difficulty bucket (easy<medium<hard), then id ASC."""
-    rank = {"easy": 0, "medium": 1, "hard": 2}
-    return sorted(scn, key=lambda i: (rank[scn[i]["difficulty"]], i))
+    """The list ordering contract (Story 6.28): authored `display_order` ASC
+    with NULLs LAST (mirrors `COALESCE(display_order, 999999999)`), then id ASC.
+    """
+    return sorted(
+        scn,
+        key=lambda i: (
+            scn[i]["display_order"] is None,
+            scn[i]["display_order"] or 0,
+            i,
+        ),
+    )
 
 
 def test_seed_scenarios_populates_all_yaml_rows(migrated_db):
@@ -283,13 +291,14 @@ def test_get_all_scenarios_with_progress_left_joins_correctly(migrated_db):
     assert mugger["attempts"] == 0
 
 
-def test_scenarios_ordered_easy_medium_hard(migrated_db):
-    """List ordering: difficulty bucket (easy<medium<hard) then `id` ASC.
+def test_scenarios_ordered_by_display_order_then_id(migrated_db):
+    """List ordering (Story 6.28): `display_order` ASC (NULLs last) then `id`
+    ASC.
 
-    Asserts BOTH the bucket boundary AND the `id ASC` secondary key (within
-    medium: girlfriend < mugger; within hard: cop < landlord). A regression
-    that drops the secondary key and falls back to alphabetical would pass
-    a bucket-only check — asserting the full id sequence catches that.
+    Asserts the FULL id sequence (not just the leading item) so a regression
+    that drops the secondary key — or the COALESCE NULLs-last sentinel — is
+    caught. Also pins the exact 6-id prod order (AC3: byte-identical to the
+    pre-6.28 hub; raw-id order would put the cop first).
     """
     asyncio.run(seed_scenarios())
 
@@ -301,10 +310,37 @@ def test_scenarios_ordered_easy_medium_hard(migrated_db):
     rows = asyncio.run(_fetch())
     ids = [row["id"] for row in rows]
 
-    # Proves BOTH bucket ordering (easy<medium<hard) AND the id-ASC tiebreak
-    # inside each bucket — computed from the YAML catalog so it survives new
-    # scenarios (e.g. a 2nd hard 'cop_*' sorts between cop_hard_01 and landlord).
+    # Computed from the YAML catalog so it survives new scenarios (a future
+    # daily scenario seeded without display_order appends at the END).
     assert ids == _expected_order(_yaml_scenarios())
+    # Exact prod-order regression for the 6 shipped scenarios (Story 6.28 AC3).
+    assert ids == [
+        "waiter_easy_01",
+        "girlfriend_medium_01",
+        "mugger_medium_01",
+        "cop_hard_01",
+        "cop_interrogation_01",
+        "landlord_hard_01",
+    ]
+
+
+def test_seed_scenarios_writes_display_order(migrated_db):
+    """Story 6.28 — the seeder persists `metadata.display_order` so the SQL
+    ordering has real values to sort on (the D1 table)."""
+    asyncio.run(seed_scenarios())
+
+    conn = sqlite3.connect(migrated_db)
+    rows = dict(conn.execute("SELECT id, display_order FROM scenarios").fetchall())
+    conn.close()
+
+    assert rows == {
+        "waiter_easy_01": 10,
+        "girlfriend_medium_01": 20,
+        "mugger_medium_01": 30,
+        "cop_hard_01": 40,
+        "cop_interrogation_01": 50,
+        "landlord_hard_01": 60,
+    }
 
 
 def test_insert_call_session_returns_id_and_persists(migrated_db):
@@ -486,7 +522,6 @@ def test_seed_scenarios_rejects_duplicate_ids(migrated_db, tmp_path, monkeypatch
         "metadata:\n"
         "  id: dup_id_01\n"
         "  title: 'A'\n"
-        "  difficulty: easy\n"
         "  is_free: true\n"
         "  rive_character: x\n"
         "  language_focus: 'one, two'\n"
@@ -519,7 +554,6 @@ def test_seed_scenarios_rejects_malformed_end_phrases(
             "metadata:\n"
             "  id: bad_phrases_01\n"
             "  title: 'A'\n"
-            "  difficulty: easy\n"
             "  is_free: true\n"
             "  rive_character: x\n"
             "  language_focus: 'one, two'\n"
@@ -557,6 +591,91 @@ def test_seed_scenarios_rejects_malformed_end_phrases(
     conn = sqlite3.connect(migrated_db)
     stored = conn.execute(
         "SELECT end_phrases FROM scenarios WHERE id = 'bad_phrases_01'"
+    ).fetchone()[0]
+    conn.close()
+    assert stored is None
+
+
+def _minimal_seed_yaml(scenario_id: str, extra_meta: str = "") -> str:
+    """Minimal valid seeder YAML (Story 6.28 — no difficulty key)."""
+    return (
+        "metadata:\n"
+        f"  id: {scenario_id}\n"
+        "  title: 'A'\n"
+        "  is_free: true\n"
+        "  rive_character: x\n"
+        "  language_focus: 'one, two'\n"
+        f"{extra_meta}"
+        "base_prompt: 'hi'\n"
+        "checkpoints: []\n"
+        "briefing: {vocabulary: '', context: '', expect: ''}\n"
+        "exit_lines: {hangup: '', completion: ''}\n"
+    )
+
+
+def test_seed_scenarios_warns_on_vestigial_difficulty(
+    migrated_db, tmp_path, monkeypatch
+):
+    """Story 6.28 AC1 — a YAML still carrying `metadata.difficulty` (e.g.
+    hand-edited on the VPS) must NOT crash boot: the seeder logs ONE loguru
+    WARNING naming the file, ignores the key, and seeds the row. Loguru does
+    not propagate to caplog (server/CLAUDE.md §3) — use a temp sink."""
+    import db.seed_scenarios as seed_module
+    from loguru import logger as loguru_logger
+
+    fake_dir = tmp_path / "scenarios"
+    fake_dir.mkdir()
+    (fake_dir / "vestige.yaml").write_text(
+        _minimal_seed_yaml("vestige_01", "  difficulty: easy\n"), encoding="utf-8"
+    )
+    monkeypatch.setattr(seed_module, "_SCENARIOS_DIR", fake_dir)
+
+    captured: list[str] = []
+    sink_id = loguru_logger.add(captured.append, level="WARNING")
+    try:
+        asyncio.run(seed_module.seed_scenarios())
+    finally:
+        loguru_logger.remove(sink_id)
+
+    vestige_warnings = [
+        entry for entry in captured if "vestigial" in entry and "vestige.yaml" in entry
+    ]
+    assert len(vestige_warnings) == 1
+
+    # The row seeded despite the vestigial key (warn-and-ignore, not crash).
+    conn = sqlite3.connect(migrated_db)
+    seeded = conn.execute(
+        "SELECT COUNT(*) FROM scenarios WHERE id = 'vestige_01'"
+    ).fetchone()[0]
+    conn.close()
+    assert seeded == 1
+
+
+def test_seed_scenarios_rejects_non_int_display_order(
+    migrated_db, tmp_path, monkeypatch
+):
+    """Story 6.28 — `metadata.display_order` must be a real int when present
+    (bool is an int subclass in Python — `display_order: true` must be
+    rejected, mirroring the `is_free` strictness posture); absent/null is
+    legal and seeds NULL (sorts last)."""
+    import db.seed_scenarios as seed_module
+
+    fake_dir = tmp_path / "scenarios"
+    fake_dir.mkdir()
+    monkeypatch.setattr(seed_module, "_SCENARIOS_DIR", fake_dir)
+    yaml_path = fake_dir / "a.yaml"
+
+    for bad in ("  display_order: true\n", "  display_order: 'ten'\n"):
+        yaml_path.write_text(_minimal_seed_yaml("bad_order_01", bad), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="display_order must be an integer"):
+            asyncio.run(seed_module.seed_scenarios())
+
+    # Absent → NULL (legal, sorts last).
+    yaml_path.write_text(_minimal_seed_yaml("bad_order_01"), encoding="utf-8")
+    asyncio.run(seed_module.seed_scenarios())
+    conn = sqlite3.connect(migrated_db)
+    stored = conn.execute(
+        "SELECT display_order FROM scenarios WHERE id = 'bad_order_01'"
     ).fetchone()[0]
     conn.close()
     assert stored is None

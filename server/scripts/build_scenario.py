@@ -2,7 +2,7 @@
 
     cd server
     .venv\\Scripts\\python scripts/build_scenario.py \\
-        --id cop_interrogation_01 --character cop --difficulty hard --checkpoints 20 \\
+        --id cop_interrogation_01 --character cop --checkpoints 20 \\
         --description "A cop calls because your fingerprints were at a crime scene; you must
         justify why. He probes your gang ties and where you were at 8:30pm last night; he is
         suspicious you're lying. You succeed if he finds no flaw in your story."
@@ -101,7 +101,7 @@ async def _amain(args: argparse.Namespace) -> int:
     chat_llm = engine.ResilientChat(chat_llm)
     try:
         print(
-            f"🛠️  Building {args.id} ({args.character}/{args.difficulty}, "
+            f"🛠️  Building {args.id} ({args.character}, "
             f"{args.checkpoints} checkpoints)...",
             file=sys.stderr,
         )
@@ -109,7 +109,6 @@ async def _amain(args: argparse.Namespace) -> int:
             args.description,
             scenario_id=args.id,
             title=args.title,
-            difficulty=args.difficulty,
             rive_character=args.character,
             n_checkpoints=args.checkpoints,
             target_minutes=args.minutes,
@@ -181,7 +180,8 @@ async def _amain(args: argparse.Namespace) -> int:
             )
             print(
                 f"   Next: .venv\\Scripts\\python scripts/calibrate_scenario.py {args.id} "
-                f"(full calibration — needs the difficulty band check)."
+                f"(full calibration — band check at the run-level global "
+                f"difficulty, --difficulty, default easy)."
             )
 
         if args.deploy:
@@ -221,9 +221,6 @@ def main() -> None:
         required=True,
         choices=list(builder.RIVE_CHARACTERS),
         help="Rive puppet (must be an existing one)",
-    )
-    parser.add_argument(
-        "--difficulty", default="hard", choices=["easy", "medium", "hard"]
     )
     parser.add_argument(
         "--title", default="", help="scenario title (else the AI picks one)"

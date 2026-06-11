@@ -5,6 +5,17 @@ Authors: Alice (PO), Winston (Architect)
 Status: Active
 Epic 3 Dependency: Must be finalized before Story 3.2 (Create Launch Scenarios)
 
+> **⚠️ Story 6.28 (2026-06-11) — per-scenario difficulty REMOVED.** Scenarios
+> no longer carry an authored easy/medium/hard label (product ruling
+> 2026-06-10: the learner's GLOBAL setting is the only difficulty cursor;
+> scenarios exist purely to vary the experience). Wherever this document says
+> a scenario "is" a difficulty, read it as the GLOBAL level a session — or a
+> calibration run — plays at. The §4.3 survival bands now anchor on the
+> run-level difficulty a calibration targets (`calibrate_scenario.py
+> --difficulty`, default easy), not on a per-scenario label. The §4.3 preset
+> tables (patience/timing per level) remain the live source of truth for
+> `scenarios._DIFFICULTY_PRESETS`.
+
 ---
 
 ## 1. Purpose

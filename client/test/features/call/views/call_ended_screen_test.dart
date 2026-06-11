@@ -28,7 +28,6 @@ Scenario _scenario({Map<String, String>? endPhrases = _kPhrases}) {
   return Scenario(
     id: 'waiter_easy_01',
     title: 'The Waiter',
-    difficulty: 'easy',
     isFree: true,
     riveCharacter: 'waiter',
     languageFocus: const <String>['ordering food'],

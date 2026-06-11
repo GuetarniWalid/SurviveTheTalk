@@ -2,9 +2,11 @@
 
 Run it by double-clicking `scripts\new-scenario.cmd` (Windows). It asks you, in
 plain language, for: the character (shows the 5 available faces + what each looks
-like), your idea (one or two sentences), the difficulty, and a short name. Then it
-builds the WHOLE scenario (story + 20 steps + matching voice), checks it, and
-writes it — optionally deploying it to the app. No need to type the long command.
+like), your idea (one or two sentences), and a short name. Then it builds the
+WHOLE scenario (story + 20 steps + matching voice), checks it, and writes it —
+optionally deploying it to the app. No need to type the long command. (Story
+6.28 — scenarios carry no authored difficulty; the learner's global setting
+drives it at runtime.)
 
 Live generation needs `GROQ_API_KEY` (in server/.env); voice selection also uses
 `CARTESIA_API_KEY` if present (else the default voice is kept).
@@ -66,12 +68,6 @@ async def _amain() -> int:
         if not description:
             print("  -> écris au moins une phrase.")
 
-    difficulty = _ask(
-        "Difficulté — easy / medium / hard (défaut medium) : ", "medium"
-    ).lower()
-    if difficulty not in ("easy", "medium", "hard"):
-        difficulty = "medium"
-
     name = ""
     while not name:
         raw = _ask("Un mot-clé court pour nommer le scénario (ex: loyer) : ")
@@ -90,7 +86,7 @@ async def _amain() -> int:
 
     print(
         f"\nGénération + vérification automatique de « {scenario_id} » "
-        f"({character} / {difficulty})...\n"
+        f"({character})...\n"
         "  L'IA écrit l'histoire + les 20 étapes, choisit la voix, PUIS vérifie que les\n"
         "  réponses hors-sujet sont bien refusées — et corrige toute seule si besoin.\n"
         "  ⏳ Sur le forfait Groq gratuit, ça peut prendre plusieurs minutes (sois patient).\n"
@@ -103,7 +99,6 @@ async def _amain() -> int:
             validated = await builder.build_and_validate_scenario(
                 description,
                 scenario_id=scenario_id,
-                difficulty=difficulty,
                 rive_character=character,
                 cartesia_api_key=(settings.cartesia_api_key or None),
                 max_repair_rounds=10,

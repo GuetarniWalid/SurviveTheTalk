@@ -1,5 +1,5 @@
 # ============================================================
-# The Landlord — Hard Difficulty (Paid)
+# The Landlord (Paid)
 # ============================================================
 
 metadata:
@@ -7,7 +7,8 @@ metadata:
   title: "The Landlord"
   # Story 7.1 — debrief "mission" title (distinct from the character name above).
   scenario_title: "Your rent is late"
-  difficulty: hard
+  # Story 6.28 — hub ordering (lower = earlier; null/absent = last).
+  display_order: 60
   is_free: false
   rive_character: landlord
   language_focus: "housing vocabulary, negotiating payments, formal complaints"
@@ -24,15 +25,15 @@ metadata:
     voluntary: "You hung up on him"
     survived: "The landlord backed down"
 
-  # Nullable difficulty overrides (null = use hard preset)
-  patience_start: null       # effective: 60
-  fail_penalty: null         # effective: -25
-  silence_penalty: null      # effective: -20
-  recovery_bonus: null       # effective: +0
-  silence_prompt_seconds: null  # effective: 3
-  silence_hangup_seconds: null  # effective: 5
-  ladder_impatience_seconds: null  # effective: 2.5 (Story 6.13 AC3)
-  escalation_thresholds: null   # effective: [30, 0]
+  # Nullable patience overrides (null = use the ACTIVE GLOBAL-difficulty preset)
+  patience_start: null
+  fail_penalty: null
+  silence_penalty: null
+  recovery_bonus: null
+  silence_prompt_seconds: null
+  silence_hangup_seconds: null
+  ladder_impatience_seconds: null
+  escalation_thresholds: null
 
 # ============================================================
 # BASE PROMPT — constant identity across all checkpoints

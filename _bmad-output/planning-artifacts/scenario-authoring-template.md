@@ -58,7 +58,7 @@ calibration:    # Test results — filled after testing (§12)
 metadata:
   id: waiter_easy_01              # Unique identifier (database primary key)
   title: "The Waiter"             # Display name shown to user
-  difficulty: easy                # easy | medium | hard
+  display_order: 10               # Hub ordering (lower = earlier; null/absent = last) — Story 6.28
   is_free: true                   # true = free tier, false = paid only
   rive_character: waiter          # mugger | waiter | girlfriend | cop | landlord
   language_focus: "ordering food, polite requests, food adjectives"  # Comma-separated target areas
@@ -66,14 +66,21 @@ metadata:
   content_warning: null           # null for non-threatening, text for threatening scenarios
 ```
 
-### Difficulty Override Fields (all nullable)
+> **Story 6.28** — scenarios carry NO `difficulty` field. The learner's GLOBAL
+> difficulty setting (easy/medium/hard, picked once on the hub) selects the
+> preset + behavior block at call time; a scenario must play correctly at all
+> 3 levels (write the persona difficulty-NEUTRAL — see server/CLAUDE.md §8).
 
-Override difficulty preset defaults. **Leave as `null` unless calibration testing shows custom tuning is needed.**
+### Patience Override Fields (all nullable)
 
-Default values per difficulty level: [`difficulty-calibration.md`](difficulty-calibration.md) §4.3
+Experience-tuning knobs applied ON TOP of whichever global-difficulty preset is
+active for the call. **Leave as `null` unless calibration testing shows custom
+tuning is needed.**
+
+Preset values per global level: [`difficulty-calibration.md`](difficulty-calibration.md) §4.3
 
 ```yaml
-  # Nullable overrides — null = use difficulty preset
+  # Nullable overrides — null = use the ACTIVE GLOBAL-difficulty preset
   patience_start: null            # Starting patience meter value
   fail_penalty: null              # Patience cost per failed checkpoint attempt
   silence_penalty: null           # Patience cost per silence incident
@@ -98,14 +105,18 @@ The `base_prompt` defines everything about the character that stays **constant a
 **Required content:**
 1. **Character Identity** (2-3 sentences) — name, occupation, backstory, dominant trait
 2. **Personality Rules** (4-6 bullets) — speech style, tone, behavior constants
-3. **Difficulty Behavior Rules** — speech speed, vocabulary level, idioms, rephrasing (from [`difficulty-calibration.md`](difficulty-calibration.md) §4.2)
-4. **Behavioral Boundaries** — what the character MUST NEVER do (safety rules)
+3. **Behavioral Boundaries** — what the character MUST NEVER do (safety rules)
 
 **What does NOT go in `base_prompt`:**
 - Scenario context (goes in first checkpoint's `prompt_segment`)
 - Escalation stages (patience is managed by the pipeline, not the prompt)
 - Opening line (goes in first checkpoint's `prompt_segment`)
 - Exit lines (separate YAML key, injected by pipeline at the right moment)
+- **Difficulty behavior** (Stories 6.19/6.28) — the per-level "Difficulty
+  behavior (…)" block lives in the `scenarios._DIFFICULTY_PROMPTS` code
+  constant and is composed at LOAD time for the learner's GLOBAL pick; the
+  loader REJECTS a base_prompt that still carries an inline block, and the
+  persona must stay difficulty-NEUTRAL (server/CLAUDE.md §8)
 
 ```yaml
 base_prompt: |
@@ -117,15 +128,7 @@ base_prompt: |
   Rules you MUST follow:
   - Keep every response to 1-3 short sentences
   - Be sarcastic and impatient, but never cruel — you're tired, not evil
-  - If the customer hesitates, show frustration with sighs and sarcasm
-  - If they make grammar mistakes, react with mild annoyance
   - Speak English only. Never break character
-
-  Difficulty behavior (easy):
-  - Speak slowly and clearly, basic everyday vocabulary
-  - Short sentences (5-8 words), no idioms or slang
-  - If confused, describe the dish once — then escalate
-  - Never interrupt the customer mid-sentence
 
   Boundaries you MUST NEVER cross:
   - No slurs, threats, or truly offensive content
@@ -305,6 +308,8 @@ python scripts/score_transcript.py \
   --difficulty easy \
   --expected-exchanges 6 \
   --language-focus "ordering food,polite requests,food adjectives"
+# --difficulty = the GLOBAL difficulty level the recorded call was played at
+# (Story 6.28 — scenarios have no authored difficulty of their own)
 ```
 
 **Note:** During Epic 3, `--expected-exchanges` equals the number of checkpoints.
@@ -394,7 +399,7 @@ calibration:
 Before marking a scenario as production-ready:
 
 - [ ] YAML file has all metadata fields (§4)
-- [ ] `base_prompt` has character identity, personality rules, difficulty behavior, boundaries (§5)
+- [ ] `base_prompt` has character identity, personality rules, boundaries (§5) — difficulty-NEUTRAL, no inline difficulty block (Stories 6.19/6.28)
 - [ ] `base_prompt` starts with `/no_think`
 - [ ] Checkpoints defined (4-6 for launch scenarios) with id, hint_text, prompt_segment, success_criteria (§6)
 - [ ] Checkpoint count matches expected progression (not too many, not too few)

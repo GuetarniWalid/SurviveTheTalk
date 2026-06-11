@@ -3,7 +3,6 @@ import 'scenario_taglines.dart';
 class Scenario {
   final String id;
   final String title;
-  final String difficulty;
   final bool isFree;
   final String riveCharacter;
   final List<String> languageFocus;
@@ -21,7 +20,6 @@ class Scenario {
   const Scenario({
     required this.id,
     required this.title,
-    required this.difficulty,
     required this.isFree,
     required this.riveCharacter,
     required this.languageFocus,
@@ -49,7 +47,6 @@ class Scenario {
     return Scenario(
       id: id,
       title: json['title'] as String,
-      difficulty: json['difficulty'] as String,
       isFree: json['is_free'] as bool,
       riveCharacter: json['rive_character'] as String,
       languageFocus: (json['language_focus'] as List).cast<String>(),

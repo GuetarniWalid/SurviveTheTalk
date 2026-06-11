@@ -1,7 +1,7 @@
 """Story 6.16 — Scenario Builder: a fuzzy premise → a complete, validated scenario.
 
 The FRONT half of the authoring loop (this builds; Story 6.15 validates). Given a
-short free-text premise + a few knobs (id, difficulty, rive character, checkpoint
+short free-text premise + a few knobs (id, rive character, checkpoint
 count), an LLM pipeline invents a believable persona + a TIME-ORDERED conversation
 arc long enough for ~5 minutes, drafts one checkpoint per beat, then an adversarial
 critique pass de-overlaps the checkpoints (so a single sentence can't satisfy four
@@ -21,7 +21,7 @@ and through the Story 6.15 `calibrate_scenario` validator.
                           (NO speak-first directive — that is composed elsewhere).
     assemble_scenario   — PURE dict in the exact YAML schema.
     validate_structure  — PURE checks mirroring `scenarios.py` (unique ids, required
-                          fields, base_prompt has no speak-first, difficulty valid).
+                          fields, base_prompt has no speak-first).
 
 ## Why authoring-time enforcement of "advance in time" / "no 1-sentence-validates-4"
 
@@ -143,15 +143,11 @@ _SPEAK_FIRST_GUARD = "You will speak first when the call begins"
 # an inline "Difficulty behavior (…)" block. The builder must NOT weave one in.
 _DIFFICULTY_BLOCK_GUARD = "Difficulty behavior ("
 
-_VALID_DIFFICULTIES = ("easy", "medium", "hard")
-
-# Per-difficulty fail penalty (preset, from `scenarios._DIFFICULTY_PRESETS` /
-# difficulty-calibration.md §4.3) — used only to size a starting `patience_start`
-# so a long scenario is survivable enough to calibrate. Calibration then tunes it.
-_PRESET_FAIL_PENALTY = {"easy": 15, "medium": 20, "hard": 25}
-# Roughly how many genuine off-topic misses a cooperative user should be able to
-# absorb before hang-up, per difficulty (drains are per-miss, not per-checkpoint).
-_TARGET_ABSORBED_MISSES = {"easy": 6, "medium": 4, "hard": 3}
+# Story 6.28 — scenarios carry no authored difficulty anymore (global-only
+# ruling): the builder sizes `patience_start` on the MEDIUM preset constants
+# (fail_penalty 20 × 4 absorbable misses — from `scenarios._DIFFICULTY_PRESETS`
+# / difficulty-calibration.md §4.3), the middle of the global range a scenario
+# must work across. Calibration then tunes it.
 
 
 # ============================================================
@@ -168,17 +164,18 @@ times, places, specific facts) so the conversation can sustain {minutes} minutes
 itself or stalling.
 
 Premise: {description}
-Character role: {character}. Difficulty: {difficulty}.
+Character role: {character}.
 
-DIFFICULTY IS NOT A PERSONALITY KNOB. The Difficulty value tells you only how \
-demanding the conversation ARC should be — it must NEVER change WHO the character \
-is. Do NOT make the persona gentler, warmer, or more helpful for "easy", nor \
-sterner, colder, or more demanding for "hard". character_persona, setting, \
-opening_line, and every prompt_segment must read IDENTICALLY at easy, medium, and \
-hard. How hard the character is on the learner's English (vocabulary, idioms, \
-rephrasing, precision) is applied SEPARATELY by the engine at runtime — never \
-mention grammar mistakes, repeating/rephrasing, going easy or hard on them, or \
-speaking speed anywhere in what you write.
+DIFFICULTY IS NOT YOURS TO WRITE. The learner picks a GLOBAL difficulty setting \
+(easy/medium/hard) in the app, and the engine applies it at runtime on top of \
+whatever you write — the SAME scenario must play at every level. So \
+character_persona, setting, opening_line, and every prompt_segment must read \
+IDENTICALLY at easy, medium, and hard: do NOT make the persona gentler, warmer, \
+or more helpful, nor sterner, colder, or more demanding, to "set" a difficulty. \
+How hard the character is on the learner's English (vocabulary, idioms, \
+rephrasing, precision) is applied SEPARATELY by the engine — never mention \
+grammar mistakes, repeating/rephrasing, going easy or hard on them, or speaking \
+speed anywhere in what you write.
 
 VISUAL CONSTRAINT — the character is shown on screen as: {character_look}.
 Your persona MUST match this gender, approximate age, and overall look. You may freely \
@@ -552,16 +549,16 @@ def hint_prompt_drift_pairs(
     return flagged
 
 
-def suggest_patience_start(n_checkpoints: int, difficulty: str) -> int:
+def suggest_patience_start(n_checkpoints: int) -> int:
     """A survivable starting `patience_start` for a scenario of this length.
 
-    Patience drains per OFF-TOPIC miss (not per checkpoint), so this sizes the meter
-    to absorb a difficulty-appropriate number of misses, with a small bump for long
-    scenarios. A STARTING GUESS — the Story 6.15 calibration sweep tunes it.
+    Patience drains per OFF-TOPIC miss (not per checkpoint), so this sizes the
+    meter to absorb a reasonable number of misses, with a small bump for long
+    scenarios. Anchored on the MEDIUM preset constants (Story 6.28 — scenarios
+    have no authored difficulty; the meter must be playable at every global
+    level). A STARTING GUESS — the Story 6.15 calibration sweep tunes it.
     """
-    fail = _PRESET_FAIL_PENALTY.get(difficulty, 20)
-    misses = _TARGET_ABSORBED_MISSES.get(difficulty, 4)
-    base = fail * misses
+    base = 20 * 4  # medium fail_penalty × absorbable misses
     if n_checkpoints > 12:
         base += (n_checkpoints - 12) * 2
     return int(round(base / 5.0) * 5)
@@ -621,7 +618,6 @@ def assemble_scenario(
     *,
     scenario_id: str,
     title: str,
-    difficulty: str,
     rive_character: str,
     base_prompt: str,
     checkpoints: list[dict],
@@ -631,12 +627,14 @@ def assemble_scenario(
 ) -> dict:
     """PURE assembly of the full scenario dict in the exact YAML schema."""
     if patience_start is None:
-        patience_start = suggest_patience_start(len(checkpoints), difficulty)
+        patience_start = suggest_patience_start(len(checkpoints))
     return {
         "metadata": {
             "id": scenario_id,
             "title": title or brief.get("title", scenario_id),
-            "difficulty": difficulty,
+            # Story 6.28 — hub ordering placeholder (null = sorts last). The
+            # operator sets a value when the scenario should slot earlier.
+            "display_order": None,
             "is_free": False,
             "rive_character": rive_character,
             "language_focus": brief.get("language_focus", ""),
@@ -696,11 +694,6 @@ def validate_structure(scenario: dict) -> list[str]:
         return ["metadata is not a dict"]
     if not metadata.get("id"):
         problems.append("metadata.id missing")
-    if metadata.get("difficulty") not in _VALID_DIFFICULTIES:
-        problems.append(
-            f"metadata.difficulty must be one of {_VALID_DIFFICULTIES}, "
-            f"got {metadata.get('difficulty')!r}"
-        )
     if metadata.get("rive_character") not in RIVE_CHARACTERS:
         problems.append(
             f"metadata.rive_character must be one of {RIVE_CHARACTERS}, "
@@ -969,7 +962,6 @@ async def expand_brief(
     description: str,
     *,
     character: str,
-    difficulty: str,
     n_checkpoints: int,
     target_minutes: int,
     character_look: str = "",
@@ -979,7 +971,6 @@ async def expand_brief(
         description=description.strip(),
         character=character,
         character_look=character_look or "(no specific constraint)",
-        difficulty=difficulty,
         n=n_checkpoints,
         minutes=target_minutes,
     )
@@ -1037,7 +1028,6 @@ async def build_scenario(
     description: str,
     *,
     scenario_id: str,
-    difficulty: str,
     rive_character: str,
     title: str = "",
     n_checkpoints: int = DEFAULT_CHECKPOINTS,
@@ -1050,8 +1040,6 @@ async def build_scenario(
     selection (AC1-AC7 + Story 6.17 voice). If `cartesia_api_key` is provided the
     builder picks a matching voice; otherwise it leaves the voice null (the
     pipeline falls back to the default voice) and the result notes why."""
-    if difficulty not in _VALID_DIFFICULTIES:
-        raise ValueError(f"difficulty must be one of {_VALID_DIFFICULTIES}")
     if rive_character not in RIVE_CHARACTERS:
         raise ValueError(f"rive_character must be one of {RIVE_CHARACTERS}")
     profile = CHARACTER_PROFILES[rive_character]
@@ -1059,7 +1047,6 @@ async def build_scenario(
     brief = await expand_brief(
         description,
         character=rive_character,
-        difficulty=difficulty,
         n_checkpoints=n_checkpoints,
         target_minutes=target_minutes,
         character_look=profile["look"],
@@ -1095,7 +1082,6 @@ async def build_scenario(
         checkpoints=checkpoints,
         scenario_id=scenario_id,
         title=title,
-        difficulty=difficulty,
         rive_character=rive_character,
         voice_id=voice_id,
         voice_reason=voice_reason,
@@ -1109,7 +1095,6 @@ def finalize_build(
     checkpoints: list[dict],
     scenario_id: str,
     title: str,
-    difficulty: str,
     rive_character: str,
     voice_id: str | None = None,
     voice_reason: str = "",
@@ -1126,7 +1111,6 @@ def finalize_build(
     scenario = assemble_scenario(
         scenario_id=scenario_id,
         title=title,
-        difficulty=difficulty,
         rive_character=rive_character,
         base_prompt=base_prompt,
         checkpoints=checkpoints,
@@ -1219,7 +1203,7 @@ async def repair_checkpoints_from_golden(
     return sanitize_checkpoints(arr) if arr else checkpoints
 
 
-def _data_from_result(result: BuildResult, difficulty: str) -> _ScenarioData:
+def _data_from_result(result: BuildResult) -> _ScenarioData:
     """Build an in-memory `_ScenarioData` from a BuildResult so the golden net can
     validate WITHOUT writing the scenario to disk first (run_golden reads only the
     title + checkpoints)."""
@@ -1227,7 +1211,6 @@ def _data_from_result(result: BuildResult, difficulty: str) -> _ScenarioData:
     return _ScenarioData(
         scenario_id=md["id"],
         title=md.get("title", md["id"]),
-        difficulty=difficulty,
         base_prompt=result.scenario["base_prompt"],
         checkpoints=result.scenario["checkpoints"],
         briefing=result.scenario.get("briefing") or {},
@@ -1239,7 +1222,6 @@ async def validate_and_repair(
     result: BuildResult,
     *,
     scenario_id: str,
-    difficulty: str,
     rive_character: str,
     llm: ChatLLM,
     judge: JudgeLLM,
@@ -1252,7 +1234,7 @@ async def validate_and_repair(
     title = result.scenario["metadata"].get("title", scenario_id)
     rounds = 0
     golden = await run_golden(
-        scenario_id=scenario_id, judge=judge, data=_data_from_result(result, difficulty)
+        scenario_id=scenario_id, judge=judge, data=_data_from_result(result)
     )
     while not golden.passed and rounds < max_repair_rounds:
         rounds += 1
@@ -1264,7 +1246,6 @@ async def validate_and_repair(
             checkpoints=repaired,
             scenario_id=scenario_id,
             title=title,
-            difficulty=difficulty,
             rive_character=rive_character,
             voice_id=result.voice_id,
             voice_reason=result.voice_reason,
@@ -1272,7 +1253,7 @@ async def validate_and_repair(
         golden = await run_golden(
             scenario_id=scenario_id,
             judge=judge,
-            data=_data_from_result(result, difficulty),
+            data=_data_from_result(result),
         )
     return ValidatedBuild(result=result, golden=golden, repair_rounds=rounds)
 
@@ -1281,7 +1262,6 @@ async def build_and_validate_scenario(
     description: str,
     *,
     scenario_id: str,
-    difficulty: str,
     rive_character: str,
     title: str = "",
     n_checkpoints: int = DEFAULT_CHECKPOINTS,
@@ -1298,7 +1278,6 @@ async def build_and_validate_scenario(
         description,
         scenario_id=scenario_id,
         title=title,
-        difficulty=difficulty,
         rive_character=rive_character,
         n_checkpoints=n_checkpoints,
         target_minutes=target_minutes,
@@ -1309,7 +1288,6 @@ async def build_and_validate_scenario(
     return await validate_and_repair(
         result,
         scenario_id=scenario_id,
-        difficulty=difficulty,
         rive_character=rive_character,
         llm=llm,
         judge=judge,
@@ -1337,8 +1315,7 @@ def format_build_summary(result: BuildResult, *, width: int = 64) -> str:
     out: list[str] = [bar, f"  📋  {md.get('title', '(sans titre)')}", bar]
     out.append(f"  Personnage : {md.get('rive_character')}  ({look})")
     out.append(
-        f"  Difficulté : {md.get('difficulty')}    "
-        f"Étapes : {len(cps)}    Patience de départ : {md.get('patience_start')}"
+        f"  Étapes : {len(cps)}    Patience de départ : {md.get('patience_start')}"
     )
     out.append(f"  Voix       : {result.voice_id or '(voix par défaut)'}")
     if result.voice_reason:

@@ -1,5 +1,5 @@
 # ============================================================
-# The Mugger — Medium Difficulty (Free)
+# The Mugger (Free)
 # ============================================================
 
 metadata:
@@ -7,7 +7,8 @@ metadata:
   title: "The Mugger"
   # Story 7.1 — debrief "mission" title (distinct from the character name above).
   scenario_title: "Give me your wallet"
-  difficulty: medium
+  # Story 6.28 — hub ordering (lower = earlier; null/absent = last).
+  display_order: 30
   is_free: true
   rive_character: mugger
   language_focus: "refusing demands, asking for clarification, describing financial situation"
@@ -24,15 +25,15 @@ metadata:
     voluntary: "You hung up first"
     survived: "The mugger walked away empty-handed"
 
-  # Nullable difficulty overrides (null = use medium preset)
-  patience_start: null       # effective: 80
-  fail_penalty: null         # effective: -20
-  silence_penalty: null      # effective: -15
-  recovery_bonus: null       # effective: +3
-  silence_prompt_seconds: null  # effective: 4
-  silence_hangup_seconds: null  # effective: 7
-  ladder_impatience_seconds: null  # effective: 3.5 (Story 6.13 AC3)
-  escalation_thresholds: null   # effective: [60, 30, 0]
+  # Nullable patience overrides (null = use the ACTIVE GLOBAL-difficulty preset)
+  patience_start: null
+  fail_penalty: null
+  silence_penalty: null
+  recovery_bonus: null
+  silence_prompt_seconds: null
+  silence_hangup_seconds: null
+  ladder_impatience_seconds: null
+  escalation_thresholds: null
 
 # ============================================================
 # BASE PROMPT — constant identity across all checkpoints

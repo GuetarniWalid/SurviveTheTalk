@@ -318,8 +318,9 @@ show real amplitude at the watchdog if the server side is fine).
 
 **Adding or editing a scenario? Run the validation engine before trusting it.**
 The rigor lives in the engine, NOT in scenario authoring — author the YAML
-simply (set `difficulty`, write `success_criteria` in plain prose) and let the
-tool prove the logic:
+simply (write `success_criteria` in plain prose; scenarios carry NO difficulty
+since Story 6.28 — the learner's GLOBAL setting drives it at runtime) and let
+the tool prove the logic:
 
 ```bash
 cd server
@@ -346,18 +347,20 @@ or CI can branch on it):
   per-checkpoint cases that you `--generate-golden` then review (`reviewed: true`
   in `tests/fixtures/golden/<id>.json` makes them gating; the Waiter fixture is
   the hand-authored worked example).
-- **Calibration** — an AI learner plays N=10 conversations; the cooperative
-  completion rate must land in the difficulty band (derived from `difficulty`:
-  easy 60-80, medium 35-55, hard 15-35 per `difficulty-calibration.md` §4.3;
-  ±5 pts = ⚠️ warning, still passes), and an off_topic learner must NOT complete.
+- **Calibration** — an AI learner plays N=10 conversations COMPOSED at the
+  RUN-level global difficulty (`--difficulty`, default easy — Story 6.28:
+  scenarios carry no authored difficulty); the cooperative completion rate
+  must land in that level's band (easy 60-80, medium 35-55, hard 15-35 per
+  `difficulty-calibration.md` §4.3; ±5 pts = ⚠️ warning, still passes), and an
+  off_topic learner must NOT complete.
 
 On FAIL it prints a copy-pasteable Markdown diagnostic (named YAML field paths +
 likely cause/fix + reproduction command) you can hand straight to an AI agent.
 
 **Ledger + revalidate-only-what-changed.** A `calibration-tests/validation-ledger.json`
 records each PASS with a behaviour-only `scenario_hash` (covers base_prompt,
-checkpoints, difficulty, the 8 patience overrides, briefing, exit_lines — NOT
-cosmetic fields like `tts_voice_id`). The no-arg sweep skips scenarios that are
+checkpoints, the 8 patience overrides, briefing, exit_lines — NOT cosmetic
+fields like `tts_voice_id` or `display_order`). The no-arg sweep skips scenarios that are
 unchanged AND still PASS. Bumping `ENGINE_VERSION` in `calibration_engine.py`
 (when the rules change) forces a full revalidation on the next sweep.
 
@@ -432,7 +435,10 @@ hard safety boundaries. It must **NOT** encode any difficulty-coded behavior —
 "escalate gradually", "rephrase on confusion", idiom/slang-density mandate, or
 speech-pace line. ALL difficulty behavior (comprehension load + accommodation) is
 composed at LOAD time from `scenarios._DIFFICULTY_PROMPTS` by
-`load_scenario_base_prompt(difficulty_override=…)`.
+`load_scenario_base_prompt(difficulty=…)` — `difficulty` being the learner's
+GLOBAL pick, the product's ONLY difficulty cursor (Story 6.28 removed the
+per-scenario authored label; absent → `DEFAULT_DIFFICULTY`, "easy"). Neutrality
+is MORE critical now: every scenario must play correctly at all 3 global levels.
 
 **Why (the cop "squint" leak).** Before this, the cop persona was authored *hard*
 ("squint at them like you're assessing impairment", "overlap them if the person

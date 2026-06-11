@@ -41,7 +41,6 @@ Widget _defaultCallScreenBuilder(Scenario scenario, CallSession session) {
 const Scenario _kTutorialScenario = Scenario(
   id: TutorialScenario.id,
   title: 'The Waiter',
-  difficulty: 'easy',
   isFree: true,
   riveCharacter: TutorialScenario.riveCharacter,
   languageFocus: <String>['ordering food'],

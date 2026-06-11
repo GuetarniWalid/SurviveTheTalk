@@ -1,6 +1,6 @@
 # Story 6.28: Remove Per-Scenario Difficulty
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -102,58 +102,58 @@ Bands were derived from the authored difficulty (`difficulty-calibration.md` §4
 
 ## Tasks / Subtasks
 
-- [ ] **T1 — Migration 013** (AC2)
-  - [ ] Create `server/db/migrations/013_remove_scenario_difficulty.sql` with a header comment in the 012 style (story, what, why, replay note): `ALTER TABLE scenarios DROP COLUMN difficulty;` then `ALTER TABLE scenarios ADD COLUMN display_order INTEGER;`
-  - [ ] `pytest tests/test_migrations.py` green against the prod snapshot (no refresh needed pre-deploy — the 012-era snapshot still carrying the column is exactly what proves the drop replays; post-deploy refresh is optional housekeeping)
-- [ ] **T2 — Seeder** (`server/db/seed_scenarios.py`) (AC1, AC2)
-  - [ ] Remove `"difficulty": meta["difficulty"],` (line 107)
-  - [ ] Add `"display_order": meta.get("display_order")` with validation: present value must be a non-bool `int` (mirror the `is_free` strictness posture; ValueError on anything else); absent → None
-  - [ ] Add the vestige WARNING: if `"difficulty" in meta`, `logger.warning(...)` naming the file, continue seeding
-- [ ] **T3 — Queries** (`server/db/queries.py`) (AC3)
-  - [ ] `_SELECT_LIST_WITH_PROGRESS`: replace the `CASE s.difficulty … END ASC` block (lines 246-252) with `COALESCE(s.display_order, 999999999) ASC, s.id ASC`; rewrite the comment at 234-236 (it currently explains the CASE trick) + the docstring at 271-276
-  - [ ] `_UPSERT_SCENARIO_SQL`: drop `difficulty` from columns/values/`ON CONFLICT` SET (lines 294, 304, 317); add `display_order` to all three
-- [ ] **T4 — Schemas** (`server/models/schemas.py`) (AC3)
-  - [ ] Delete `difficulty: str` from `ScenarioListItem` (line 149)
-  - [ ] `ScenarioDetail` docstring 166-167: "every nullable difficulty-override column" → "every nullable patience-override column"
-  - [ ] `InitiateCallIn` docstring (lines 48-53): re-anchor — `difficulty` is the global pick; absent → server `DEFAULT_DIFFICULTY` ("easy"), authored fallback is GONE (Story 6.28)
-- [ ] **T5 — Scenario routes** (`server/api/routes_scenarios.py`) (AC3)
-  - [ ] Remove `difficulty=row["difficulty"],` at lines 87 and 140
-  - [ ] Docstring line 61: ordering description → display_order
-- [ ] **T6 — Runtime loaders** (`server/pipeline/scenarios.py`) (AC4)
-  - [ ] Add `DEFAULT_DIFFICULTY = "easy"` module constant (near the presets, documented: D2 — server-side default when the client/env omits the global pick)
-  - [ ] `resolve_patience_config`: signature `(scenario_id: str, difficulty: str | None = None)`; body: `difficulty = difficulty if difficulty is not None else DEFAULT_DIFFICULTY`; DELETE the `metadata.get("difficulty")` branch (lines 498-499); keep the `not in _DIFFICULTY_PRESETS` RuntimeError; rewrite the 6.19-era docstring (450-471)
-  - [ ] `load_scenario_base_prompt`: same signature/default treatment; DELETE the authored read (lines 930-932); keep the inline-block guard (896-902), the speak-first guard, and the leak WARN (915-925) verbatim; update docstring (849-857)
-  - [ ] Module-level comment at line 188 (`prompt(scenario_id, difficulty_override=…)`) → new kwarg name
-- [ ] **T7 — Bot + route comments** (AC4)
-  - [ ] `bot.py:129-130, 148-149`: `difficulty_override=scenario_difficulty` → `difficulty=scenario_difficulty`; comment block 119-123 re-worded (absent env → server default easy, not "authored difficulty")
-  - [ ] `bot.py:930` parked-mode allowlist: NO change (verify only)
-  - [ ] `routes_calls.py:340-347`: comment re-word (absence → `DEFAULT_DIFFICULTY`, drop the AC7-authored-fallback sentence); logic unchanged
-- [ ] **T8 — Scenario YAMLs ×6** (AC1)
-  - [ ] `the-waiter.yaml`: delete `difficulty: easy` (line 10); add `display_order: 10`; header comment line 2 → "The Waiter (Free)"; override comments lines 25-33 → "null = use the active GLOBAL-difficulty preset" (drop the per-level effective values)
-  - [ ] Same treatment: `the-girlfriend.yaml` (display_order 20), `the-mugger.yaml` (30), `the-cop.yaml` (40), `cop-interrogation-01.yaml` (50 — KEEP `patience_start: 90`), `the-landlord.yaml` (60)
-- [ ] **T9 — Tools** (AC5)
-  - [ ] `scripts/build_scenario.py`: drop the `--difficulty` argument (lines 225-227) + the docstring example (line 5); stop forwarding it
-  - [ ] `scripts/scenario_builder.py`: remove `difficulty` from the build params/docstring (line 4, 24); delete `_VALID_DIFFICULTIES` / `_PRESET_FAIL_PENALTY` / `_TARGET_ABSORBED_MISSES` (146-154); `suggest_patience_start(n_checkpoints: int)` anchored on the medium constants (`base = 20 * 4`, keep the `>12`-checkpoint bump + rounding); EXPAND_PROMPT: delete `Difficulty: {difficulty}.` from line 171 and re-word the 173-181 paragraph to mandate neutrality against the GLOBAL setting (the mandate itself STAYS — personas/segments must read identically at every global level); builder emits NO `difficulty` key in the YAML it writes (and may emit `display_order: null` placeholder with a comment)
-  - [ ] `scripts/compare_difficulty.py:66`: `difficulty_override=difficulty` → `difficulty=difficulty`; module docstring sentence re-anchored (it A/Bs the GLOBAL blocks)
-  - [ ] `scripts/calibrate_scenario.py`: add `--difficulty {easy,medium,hard}` (default `easy`), threaded to the engine; help text: "global difficulty level the calibration run plays at (band anchor)"
-  - [ ] `scripts/calibration_engine.py`: `ENGINE_VERSION = 6` (line 129, with a dated comment explaining the 6.28 bump); `ScenarioData` drops the `difficulty` field (551, 565) — run-level difficulty becomes a parameter threaded from the CLI into `build_scenario_data` (compose `load_scenario_base_prompt(scenario_id, difficulty=run_difficulty)` + `resolve_patience_config(scenario_id, difficulty=run_difficulty)` at lines 566-569) and into `evaluate_calibration`/ledger/report (1220+, 1494-1495); drop `"difficulty"` from `_HASH_FIELDS` (line 1356); keep `_DIFFICULTY_BANDS`/`band_for_difficulty`; diagnostics wording 1687-1716: "this scenario is X" → "this run played at X"
-- [ ] **T10 — Server tests** (AC2-AC5, AC9) — see the Test Inventory table in Dev Notes; headline moves:
-  - [ ] `test_scenarios.py`: rename/rewrite the override tests (1523-1558) to the new kwarg; REPLACE `test_difficulty_override_none_uses_authored_difficulty` (1537-1551) with `test_difficulty_none_uses_default_easy`; same treatment for the base-prompt pair (1654-1726, 1819-1820); ordering test re-anchored on display_order (add a regression asserting the exact 6-id prod order); seeder tests: difficulty assertions out, display_order + vestige-warning tests in (loguru temp-sink per server/CLAUDE.md §3); KEEP `test_shipped_personas_have_no_difficulty_coded_phrases`; synthetic-YAML fixtures in tests that author `difficulty:` keys → remove the key (they now exercise the default path)
-  - [ ] `test_calls.py`: env plumbing tests STAY (193-235, 832) — update the comment at 221-223 (absence → server default, not authored); API-shape tests asserting `difficulty` in scenario responses → assert ABSENCE
-  - [ ] `test_bot_parked_mode.py`: STAYS as-is (env passthrough unchanged — verify only)
-  - [ ] `test_bot_pipeline_wiring.py:348-352`: pin the new literal `difficulty=scenario_difficulty`
-  - [ ] `test_scenario_builder.py` / `test_calibration_engine.py` / `test_prompts.py` / `test_score_transcript.py`: align with T9 (builder difficulty tests deleted; engine tests thread run-difficulty; score_transcript untouched)
-- [ ] **T11 — Client** (AC6)
-  - [ ] `client/lib/features/scenarios/models/scenario.dart`: delete field (6), ctor param (24), fromJson line (52)
-  - [ ] `client/lib/features/call/views/incoming_call_screen.dart:41-52`: drop `difficulty: 'easy'` from the tutorial Scenario
-  - [ ] Sweep every test fixture constructing `Scenario(...)` (analyzer-driven; expected files: `scenario_test.dart`, `scenarios_bloc_test.dart`, `scenario_list_screen_test.dart`, `scenario_card_test.dart`, `scenario_card_semantics_label_test.dart`, `scenarios_repository_test.dart`, `call_screen_test.dart`, `call_bloc_test.dart`, `call_ended_screen_test.dart`, `content_warning_sheet_test.dart`) — remove the param + the `scenario_test.dart` difficulty round-trip assertion; DO NOT touch `difficulty_storage_test.dart`, `difficulty_sheet_test.dart`, the hub-line tests, or `call_repository_test.dart` (global feature)
-- [ ] **T12 — Docs** (AC7)
-  - [ ] `server/CLAUDE.md` §6 + §8 re-anchor (incl. the §8 line 435 kwarg reference)
-  - [ ] `_bmad-output/planning-artifacts/difficulty-calibration.md`: banner note at top (per-scenario difficulty removed 6.28; bands anchor on the run/global level)
-  - [ ] `_bmad-output/planning-artifacts/scenario-authoring-template.md`: drop `difficulty: easy` from the metadata example (line 61), re-word lines 71-76 + 305 + 397
-- [ ] **T13 — Golden gate + full gates** (AC8, AC9)
-  - [ ] `python scripts/calibrate_scenario.py --golden-only` post-EV6: waiter PASS; document mugger/cop_hard known-fails verbatim in the Dev Agent Record
-  - [ ] `ruff check .` + `ruff format --check .` + `pytest` (server) / `flutter analyze` + `flutter test` (client) — all green
+- [x] **T1 — Migration 013** (AC2)
+  - [x] Create `server/db/migrations/013_remove_scenario_difficulty.sql` with a header comment in the 012 style (story, what, why, replay note): `ALTER TABLE scenarios DROP COLUMN difficulty;` then `ALTER TABLE scenarios ADD COLUMN display_order INTEGER;`
+  - [x] `pytest tests/test_migrations.py` green against the prod snapshot (no refresh needed pre-deploy — the 012-era snapshot still carrying the column is exactly what proves the drop replays; post-deploy refresh is optional housekeeping)
+- [x] **T2 — Seeder** (`server/db/seed_scenarios.py`) (AC1, AC2)
+  - [x] Remove `"difficulty": meta["difficulty"],` (line 107)
+  - [x] Add `"display_order": meta.get("display_order")` with validation: present value must be a non-bool `int` (mirror the `is_free` strictness posture; ValueError on anything else); absent → None
+  - [x] Add the vestige WARNING: if `"difficulty" in meta`, `logger.warning(...)` naming the file, continue seeding
+- [x] **T3 — Queries** (`server/db/queries.py`) (AC3)
+  - [x] `_SELECT_LIST_WITH_PROGRESS`: replace the `CASE s.difficulty … END ASC` block (lines 246-252) with `COALESCE(s.display_order, 999999999) ASC, s.id ASC`; rewrite the comment at 234-236 (it currently explains the CASE trick) + the docstring at 271-276
+  - [x] `_UPSERT_SCENARIO_SQL`: drop `difficulty` from columns/values/`ON CONFLICT` SET (lines 294, 304, 317); add `display_order` to all three
+- [x] **T4 — Schemas** (`server/models/schemas.py`) (AC3)
+  - [x] Delete `difficulty: str` from `ScenarioListItem` (line 149)
+  - [x] `ScenarioDetail` docstring 166-167: "every nullable difficulty-override column" → "every nullable patience-override column"
+  - [x] `InitiateCallIn` docstring (lines 48-53): re-anchor — `difficulty` is the global pick; absent → server `DEFAULT_DIFFICULTY` ("easy"), authored fallback is GONE (Story 6.28)
+- [x] **T5 — Scenario routes** (`server/api/routes_scenarios.py`) (AC3)
+  - [x] Remove `difficulty=row["difficulty"],` at lines 87 and 140
+  - [x] Docstring line 61: ordering description → display_order
+- [x] **T6 — Runtime loaders** (`server/pipeline/scenarios.py`) (AC4)
+  - [x] Add `DEFAULT_DIFFICULTY = "easy"` module constant (near the presets, documented: D2 — server-side default when the client/env omits the global pick)
+  - [x] `resolve_patience_config`: signature `(scenario_id: str, difficulty: str | None = None)`; body: `difficulty = difficulty if difficulty is not None else DEFAULT_DIFFICULTY`; DELETE the `metadata.get("difficulty")` branch (lines 498-499); keep the `not in _DIFFICULTY_PRESETS` RuntimeError; rewrite the 6.19-era docstring (450-471)
+  - [x] `load_scenario_base_prompt`: same signature/default treatment; DELETE the authored read (lines 930-932); keep the inline-block guard (896-902), the speak-first guard, and the leak WARN (915-925) verbatim; update docstring (849-857)
+  - [x] Module-level comment at line 188 (`prompt(scenario_id, difficulty_override=…)`) → new kwarg name
+- [x] **T7 — Bot + route comments** (AC4)
+  - [x] `bot.py:129-130, 148-149`: `difficulty_override=scenario_difficulty` → `difficulty=scenario_difficulty`; comment block 119-123 re-worded (absent env → server default easy, not "authored difficulty")
+  - [x] `bot.py:930` parked-mode allowlist: NO change (verified — `SCENARIO_DIFFICULTY` present in `_PARKED_JOB_ENV_KEYS`, byte-identical)
+  - [x] `routes_calls.py:340-347`: comment re-word (absence → `DEFAULT_DIFFICULTY`, drop the AC7-authored-fallback sentence); logic unchanged
+- [x] **T8 — Scenario YAMLs ×6** (AC1)
+  - [x] `the-waiter.yaml`: delete `difficulty: easy` (line 10); add `display_order: 10`; header comment line 2 → "The Waiter (Free)"; override comments lines 25-33 → "null = use the active GLOBAL-difficulty preset" (drop the per-level effective values)
+  - [x] Same treatment: `the-girlfriend.yaml` (display_order 20), `the-mugger.yaml` (30), `the-cop.yaml` (40), `cop-interrogation-01.yaml` (50 — KEEP `patience_start: 90` ✓), `the-landlord.yaml` (60)
+- [x] **T9 — Tools** (AC5)
+  - [x] `scripts/build_scenario.py`: drop the `--difficulty` argument (lines 225-227) + the docstring example (line 5); stop forwarding it
+  - [x] `scripts/scenario_builder.py`: remove `difficulty` from the build params/docstring (line 4, 24); delete `_VALID_DIFFICULTIES` / `_PRESET_FAIL_PENALTY` / `_TARGET_ABSORBED_MISSES` (146-154); `suggest_patience_start(n_checkpoints: int)` anchored on the medium constants (`base = 20 * 4`, keep the `>12`-checkpoint bump + rounding); EXPAND_PROMPT: delete `Difficulty: {difficulty}.` from line 171 and re-word the 173-181 paragraph to mandate neutrality against the GLOBAL setting (the mandate itself STAYS — personas/segments must read identically at every global level); builder emits NO `difficulty` key in the YAML it writes (and may emit `display_order: null` placeholder with a comment)
+  - [x] `scripts/compare_difficulty.py:66`: `difficulty_override=difficulty` → `difficulty=difficulty`; module docstring sentence re-anchored (it A/Bs the GLOBAL blocks)
+  - [x] `scripts/calibrate_scenario.py`: add `--difficulty {easy,medium,hard}` (default `easy`), threaded to the engine; help text: "global difficulty level the calibration run plays at (band anchor)"
+  - [x] `scripts/calibration_engine.py`: `ENGINE_VERSION = 6` (line 129, with a dated comment explaining the 6.28 bump); `ScenarioData` drops the `difficulty` field (551, 565) — run-level difficulty becomes a parameter threaded from the CLI into `load_scenario_data` (compose `load_scenario_base_prompt(scenario_id, difficulty=run_difficulty)` + `resolve_patience_config(scenario_id, difficulty=run_difficulty)` at lines 566-569) and into `run_calibration`/`evaluate_calibration`/ledger/report; drop `"difficulty"` from `_BEHAVIOUR_META_KEYS` (line 1356); keep `_DIFFICULTY_BANDS`/`band_for_difficulty`; diagnostics wording: "this scenario is X" → "this run played at X" — PLUS `scripts/new_scenario.py` + `scripts/new-scenario.cmd` (the 6.17 wizard forwarded difficulty end-to-end: interactive question removed)
+- [x] **T10 — Server tests** (AC2-AC5, AC9) — see the Test Inventory table in Dev Notes; headline moves:
+  - [x] `test_scenarios.py`: rename/rewrite the override tests (1523-1558) to the new kwarg; REPLACED `test_difficulty_override_none_uses_authored_difficulty` with `test_difficulty_none_uses_default_easy`; same treatment for the base-prompt pair; ordering test re-anchored on display_order + NEW `test_list_order_is_byte_identical_to_pre_6_28_hub` (exact 6-id order) + NEW `test_scenario_payloads_do_not_expose_difficulty_or_display_order`; seeder display_order + vestige-warning tests added in `test_queries.py` (loguru temp-sink per server/CLAUDE.md §3); KEPT `test_shipped_personas_have_no_difficulty_coded_phrases`; synthetic-YAML fixtures dropped their `difficulty:` keys (default path)
+  - [x] `test_calls.py`: env plumbing tests STAY (193-235, 832) — comment at 220-222 re-worded (absence → server default, not authored); scenario payloads carried no difficulty assertions to flip (absence covered by the new test_scenarios.py test)
+  - [x] `test_bot_parked_mode.py`: env passthrough byte-identical (verified); one stale docstring re-worded (authored → server default — same edit class as the test_calls comment)
+  - [x] `test_bot_pipeline_wiring.py:348-352`: pinned the new literal `difficulty=scenario_difficulty`
+  - [x] `test_scenario_builder.py` / `test_calibration_engine.py` / `test_prompts.py` / `test_score_transcript.py`: aligned with T9 (builder difficulty tests deleted/rewritten incl. `suggest_patience_start` single-arg; engine tests thread run-difficulty, `_scenario_data` helper dropped the field, CLI-arity Namespace gained `difficulty="easy"`, EV pinned test → 6; test_prompts + score_transcript needed NO change — full suite green)
+- [x] **T11 — Client** (AC6)
+  - [x] `client/lib/features/scenarios/models/scenario.dart`: delete field (6), ctor param (24), fromJson line (52)
+  - [x] `client/lib/features/call/views/incoming_call_screen.dart:41-52`: drop `difficulty: 'easy'` from the tutorial Scenario
+  - [x] Swept every test fixture constructing `Scenario(...)` (analyzer-driven: analyze "No issues found!"): `scenario_test.dart` (payload key + round-trip assertion removed), `scenarios_repository_test.dart` (5 JSON fixtures), `scenarios_bloc_test.dart` (×2), `scenario_list_screen_test.dart`, `scenario_card_test.dart`, `scenario_card_semantics_label_test.dart`, `call_screen_test.dart`, `call_bloc_test.dart`, `call_ended_screen_test.dart`, `content_warning_sheet_test.dart`; `difficulty_storage_test.dart` / `difficulty_sheet_test.dart` / hub-line tests / `call_repository_test.dart` UNTOUCHED (global feature — verified the repo test's `difficulty: 'hard'` is the initiateCall POST param, not a Scenario ctor)
+- [x] **T12 — Docs** (AC7)
+  - [x] `server/CLAUDE.md` §6 + §8 re-anchor (incl. the §8 line 435 kwarg reference + ledger hash-coverage line)
+  - [x] `_bmad-output/planning-artifacts/difficulty-calibration.md`: banner note at top (per-scenario difficulty removed 6.28; bands anchor on the run/global level; §4.3 preset tables stay the live source of truth)
+  - [x] `_bmad-output/planning-artifacts/scenario-authoring-template.md`: metadata example drops `difficulty:`, gains `display_order` + a 6.28 note; "Difficulty Override Fields" → "Patience Override Fields"; §5 base-prompt anatomy purged of the inline difficulty block (it would be loader-REJECTED since 6.19) and its example made difficulty-neutral; score_transcript `--difficulty` example annotated as the GLOBAL level; checklist line re-worded
+- [x] **T13 — Golden gate + full gates** (AC8, AC9)
+  - [x] `python scripts/calibrate_scenario.py --golden-only` post-EV6 (2026-06-11): **waiter_easy_01 PASS** (the reviewed gating fixture), girlfriend_medium_01 PASS, landlord_hard_01 PASS, cop_interrogation_01 PASS; mugger_medium_01 + cop_hard_01 known-fails documented verbatim in the Dev Agent Record (NOT-6.28 — structural proof there: the golden judge sees only `data.title` + criteria, never the composed base_prompt, so the run-difficulty change cannot shift golden verdicts)
+  - [x] `ruff check .` (clean) + `ruff format --check .` (clean) + `pytest` **880 passed** (server) / `flutter analyze` (No issues found!) + `flutter test` **451 passed** (client) — all green
 - [ ] **T14 — Deploy + smoke gate** (Smoke Test Gate below)
   - [ ] Push → `deploy-server.yml` (auto DB backup pre-deploy) → verify migration 013 applied + seeder re-seeded + hub order intact → hand Walid the Pixel 9 script
 
@@ -282,8 +282,87 @@ Pure-removal refactor on pinned in-repo libs (FastAPI/Pydantic v2/aiosqlite/pipe
 
 ### Agent Model Used
 
+Claude Fable 5 (claude-fable-5) — dev-story executed 2026-06-11.
+
 ### Debug Log References
+
+- Migration RED→GREEN: after writing 013, `pytest tests/test_migrations.py` showed exactly the expected intermediate state — the 5 replay/FK/integrity tests PASSED (proving the DROP COLUMN replays against the prod snapshot incl. inbound-FK rows) while `test_full_lifespan_starts_against_prod_snapshot` failed on the seeder still writing `difficulty` ("table scenarios has no column named difficulty"). T2/T3 turned it green.
+- Initial failure inventory after T1-T8 (before test alignment): 49 failed / 291 passed across the impacted files — all in the expected categories (ordering helpers, override-kwarg tests, builder difficulty params, engine `_ScenarioData.difficulty`, seeder dict).
+- Golden-only sweep post-EV6 (2026-06-11): 4/6 PASS — `waiter_easy_01` ✅ (the reviewed gating fixture, AC8's headline), `girlfriend_medium_01` ✅, `cop_interrogation_01` ✅, `landlord_hard_01` ✅.
+- **Known-fail #1 (pre-existing, NOT-6.28): `mugger_medium_01`** — byte-identical signature to the 6.29-sweep documentation: checkpoint `react` (`checkpoints[0].success_criteria`), universal seed "There are a lot of people here today." judged **met** (should be unmet). Stable seed-fail from permissive opening criteria; deferred-work entry + chip already filed under 6.29. Report: `calibration-tests/calibrate_mugger_medium_01_2026-06-11T10-50-29Z.{json,md}`.
+- **Known-fail #2 (pre-existing flaky-borderline, NOT-6.28): `cop_hard_01`** — checkpoint `respond` (`checkpoints[0].success_criteria`), seed "I think the traffic was terrible this morning." judged **met**. Failed on the sweep AND on a solo re-run today (6.29's sweep day it passed on re-run — single-seed verdict flips on a borderline criteria, live Scout judge). **Structural proof this cannot be a 6.28 regression:** the golden judge payload carries only `scenario_description=data.title` + per-checkpoint criteria — it NEVER sees the composed base_prompt, so the EV6 run-difficulty change (authored-hard → default-easy composition) is invisible to golden verdicts. Same first-checkpoint-too-permissive class as the mugger. Watch item: it failed twice today vs pass-on-rerun on 2026-06-10 — flagged for the reviewer as possible (judge-side) drift, NOT silently absorbed. Per guardrail #6, no fix attempted in this story. Report: `calibration-tests/calibrate_cop_hard_01_2026-06-11T12-48-23Z.{json,md}`.
 
 ### Completion Notes List
 
+- **All 14 tasks T1-T13 complete** (T14 = deploy + Pixel 9 smoke gate, below). Net server test delta: **875 → 880 (+5)**; client **451 unchanged** (AC9/AC6).
+- **AC1-AC2**: migration 013 (DROP difficulty + ADD display_order, no table rebuild — SQLite ≥3.35 drops the inline CHECK with the column); seeder writes validated `display_order` (non-bool int or None), warns-and-ignores a vestigial `metadata.difficulty` (one loguru WARNING naming the file); all 6 YAMLs carry `display_order` per the D1 table (10/20/30/40/50/60), `patience_start: 90` preserved in cop-interrogation-01.
+- **AC3**: hub ordering `COALESCE(display_order, 999999999), id` — exact pre-6.28 order regression-asserted twice (API level in test_scenarios.py + SQL level in test_queries.py); `difficulty` absent from both payloads, `display_order` never exposed; `InitiateCallIn.difficulty` shape untouched.
+- **AC4**: both loaders are `(scenario_id, difficulty: str | None = None)` with `None → DEFAULT_DIFFICULTY ("easy")`; zero reads of `metadata.difficulty` remain under `server/pipeline/`; `SCENARIO_DIFFICULTY` env plumbing byte-identical (route conditional, pool job, `_PARKED_JOB_ENV_KEYS` allowlist verified); source-text contract test pins the new literal; presets/prompts/leak-lint/tts_speed untouched.
+- **AC5**: builder difficulty-free end-to-end (`build_scenario.py`, `scenario_builder.py`, the 6.17 wizard `new_scenario.py` + `.cmd`); `suggest_patience_start(n)` anchored on medium constants (base 80); EXPAND_PROMPT difficulty input dropped, neutrality mandate re-worded against the GLOBAL setting and KEPT; builder emits `display_order: null` placeholder; `compare_difficulty.py` kwarg updated (tool kept); `calibrate_scenario.py --difficulty` (default easy) threaded into `load_scenario_data`/`run_calibration`/`evaluate_calibration`; `ENGINE_VERSION = 6`.
+- **AC6**: `Scenario.difficulty` deleted (field/ctor/fromJson); tutorial literal updated; 10 client test files swept analyzer-driven; the global-difficulty feature files (storage/sheet/hub line/`call_repository`) untouched — verified `call_repository_test.dart`'s `difficulty: 'hard'` is the initiateCall POST param.
+- **AC7**: server/CLAUDE.md §6+§8 re-anchored; difficulty-calibration.md banner added; scenario-authoring-template.md re-anchored (also purged the §5 inline-difficulty-block example — it instructed authors to write a base_prompt the loader REJECTS since 6.19, and its example contained literal leak-lint phrases).
+- **AC8**: golden-only sweep post-EV6 documented above (waiter PASS; mugger/cop_hard known-fails NOT-6.28 with structural proof). Full N=10 band calibration explicitly deferred (Groq free-tier cap).
+- **AC9**: ruff check + ruff format --check + pytest 880 (server); flutter analyze No issues + flutter test 451 (client). This dev stage lands as its own commit (commit-per-stage law).
+- **Deviation D#1 (in spirit of T9, beyond its letter)**: `scripts/new_scenario.py` + `scripts/new-scenario.cmd` were not named by T9 but forwarded `difficulty` into `build_and_validate_scenario` — removing the builder param end-to-end (AC5) forced the wizard's interactive difficulty question out too. No behavioral loss: the wizard now builds difficulty-free scenarios playable at every global level.
+- **Deviation D#2**: `test_bot_parked_mode.py` was "verify only" per T10, but one docstring still claimed "the bot falls back to the scenario's authored difficulty" — factually wrong post-6.28; re-worded (same edit class as the T10 test_calls comment re-word). Env passthrough logic untouched.
+- **Deviation D#3**: the waiter YAML's `calibration.pipeline_validation.findings` historical log line ("follows easy difficulty guidelines", dated 2026-04-15) was left as-is — it is a dated record of a past observation, not authoring guidance; rewording history would falsify it.
+- **NOT done (out of scope per spec)**: scenario ids unrenamed; `users` table/client global storage untouched; `_DIFFICULTY_PROMPTS`/`_DIFFICULTY_PRESETS` content untuned; prod snapshot NOT refreshed (the stale shape IS the replay proof); mugger/cop_hard golden flakiness not "fixed"; `score_transcript.py --difficulty` kept.
+
 ### File List
+
+New:
+- server/db/migrations/013_remove_scenario_difficulty.sql
+
+Modified (server):
+- server/db/seed_scenarios.py
+- server/db/queries.py
+- server/models/schemas.py
+- server/api/routes_scenarios.py
+- server/api/routes_calls.py
+- server/pipeline/scenarios.py
+- server/pipeline/bot.py
+- server/pipeline/scenarios/the-waiter.yaml
+- server/pipeline/scenarios/the-girlfriend.yaml
+- server/pipeline/scenarios/the-mugger.yaml
+- server/pipeline/scenarios/the-cop.yaml
+- server/pipeline/scenarios/the-landlord.yaml
+- server/pipeline/scenarios/cop-interrogation-01.yaml
+- server/scripts/build_scenario.py
+- server/scripts/scenario_builder.py
+- server/scripts/new_scenario.py
+- server/scripts/new-scenario.cmd
+- server/scripts/compare_difficulty.py
+- server/scripts/calibrate_scenario.py
+- server/scripts/calibration_engine.py
+- server/CLAUDE.md
+- server/tests/test_scenarios.py
+- server/tests/test_queries.py
+- server/tests/test_calls.py
+- server/tests/test_bot_pipeline_wiring.py
+- server/tests/test_bot_parked_mode.py
+- server/tests/test_scenario_builder.py
+- server/tests/test_calibration_engine.py
+
+Modified (client):
+- client/lib/features/scenarios/models/scenario.dart
+- client/lib/features/call/views/incoming_call_screen.dart
+- client/test/features/scenarios/models/scenario_test.dart
+- client/test/features/scenarios/repositories/scenarios_repository_test.dart
+- client/test/features/scenarios/bloc/scenarios_bloc_test.dart
+- client/test/features/scenarios/views/scenario_list_screen_test.dart
+- client/test/features/scenarios/views/widgets/scenario_card_test.dart
+- client/test/features/scenarios/views/widgets/scenario_card_semantics_label_test.dart
+- client/test/features/scenarios/views/widgets/content_warning_sheet_test.dart
+- client/test/features/call/bloc/call_bloc_test.dart
+- client/test/features/call/views/call_screen_test.dart
+- client/test/features/call/views/call_ended_screen_test.dart
+
+Modified (docs/tracking):
+- _bmad-output/planning-artifacts/difficulty-calibration.md
+- _bmad-output/planning-artifacts/scenario-authoring-template.md
+- _bmad-output/implementation-artifacts/6-28-remove-per-scenario-difficulty.md
+- _bmad-output/implementation-artifacts/sprint-status.yaml
+
+## Change Log
+
+- 2026-06-11 — Story 6.28 dev-story complete (T1-T13): per-scenario difficulty removed across YAML/DB/API/runtime/tools/client/docs; `display_order` hub ordering (D1); `DEFAULT_DIFFICULTY = "easy"` server fallback (D2); calibration re-anchored on run-level difficulty, `ENGINE_VERSION` 5→6 (D3). Gates: server ruff clean + pytest 880 (+5 net); client analyze clean + 451 tests. Golden-only post-EV6: waiter/girlfriend/cop-interrogation/landlord PASS; mugger + cop_hard pre-existing known-fails documented (NOT-6.28). Status → review; T14 (deploy + Pixel 9 smoke gate) pending.

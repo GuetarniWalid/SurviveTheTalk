@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 Map<String, dynamic> _basePayload() => <String, dynamic>{
       'id': 'waiter_easy_01',
       'title': 'Tina',
-      'difficulty': 'easy',
       'is_free': true,
       'rive_character': 'waiter',
       'language_focus': <dynamic>['assertiveness', 'directness'],
@@ -20,7 +19,6 @@ void main() {
 
       expect(scenario.id, 'waiter_easy_01');
       expect(scenario.title, 'Tina');
-      expect(scenario.difficulty, 'easy');
       expect(scenario.isFree, isTrue);
       expect(scenario.riveCharacter, 'waiter');
       expect(scenario.languageFocus, <String>['assertiveness', 'directness']);

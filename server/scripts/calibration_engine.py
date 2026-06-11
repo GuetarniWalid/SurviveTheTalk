@@ -126,14 +126,22 @@ from pipeline.reply_sanitizer import sanitize_reply_text  # noqa: E402
 # `scenario_hash` that change every scenario's character behaviour — the next
 # sweep must revalidate all cached PASSes (same precedent as the 6.19
 # block-tightening bump).
-ENGINE_VERSION = 5
+# Story 6.28 (2026-06-11) — bumped 5 → 6: per-scenario authored difficulty is
+# REMOVED (global-only product ruling). Calibration now composes + bands on the
+# RUN-level global difficulty (`--difficulty`, default easy) instead of the
+# YAML's `metadata.difficulty`, and the loaders' no-difficulty fallback changed
+# (authored → server default) — every cached PASS predates that anchor and must
+# revalidate on the next sweep.
+ENGINE_VERSION = 6
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —
 # "B1 first-attempt survival target | 60-80% | 35-55% | 15-35%"). Rigor-in-
-# engine (AC12): the scenario author only sets `metadata.difficulty`; the band
-# is DERIVED here, never written per scenario. A scenario MAY add an optional
-# `calibration.target_band: [low, high]` to override, but it is not required.
+# engine (AC12): the band anchors on the RUN-level global difficulty the
+# calibration plays at (Story 6.28 — scenarios carry no authored difficulty;
+# the CLI `--difficulty` picks the level, default easy), never written per
+# scenario. A scenario MAY add an optional `calibration.target_band:
+# [low, high]` to override, but it is not required.
 _DIFFICULTY_BANDS: dict[str, tuple[int, int]] = {
     "easy": (60, 80),
     "medium": (35, 55),
@@ -548,25 +556,33 @@ class _ScenarioData:
 
     scenario_id: str
     title: str
-    difficulty: str
     base_prompt: str
     checkpoints: list[dict]
     briefing: dict
     patience: dict
 
 
-def load_scenario_data(scenario_id: str) -> _ScenarioData:
-    """Load every input the simulator needs via the prod scenario loaders."""
+def load_scenario_data(
+    scenario_id: str, difficulty: str | None = None
+) -> _ScenarioData:
+    """Load every input the simulator needs via the prod scenario loaders.
+
+    Story 6.28 — `difficulty` is the RUN-level global difficulty this
+    calibration plays at (scenarios carry no authored difficulty anymore); it
+    composes the behavior block + patience preset exactly as a live call
+    does. None → the prod default (`scenarios.DEFAULT_DIFFICULTY`).
+    """
     metadata = scenarios.load_scenario_metadata(scenario_id)
     raw = _load_raw_scenario(scenario_id)
     return _ScenarioData(
         scenario_id=scenario_id,
         title=metadata.get("title", scenario_id),
-        difficulty=metadata.get("difficulty", ""),
-        base_prompt=scenarios.load_scenario_base_prompt(scenario_id),
+        base_prompt=scenarios.load_scenario_base_prompt(
+            scenario_id, difficulty=difficulty
+        ),
         checkpoints=scenarios.load_scenario_checkpoints(scenario_id),
         briefing=(raw.get("briefing") or {}),
-        patience=scenarios.resolve_patience_config(scenario_id),
+        patience=scenarios.resolve_patience_config(scenario_id, difficulty=difficulty),
     )
 
 
@@ -1222,7 +1238,11 @@ def evaluate_calibration(
     offtopic_runs: list[ConversationResult],
     band_override: tuple[int, int] | None = None,
 ) -> CalibrationResult:
-    """Pure calibration gate over completed runs (AC4 / AC9)."""
+    """Pure calibration gate over completed runs (AC4 / AC9).
+
+    `difficulty` is the RUN-level global difficulty the conversations were
+    composed at (Story 6.28) — it anchors the band, nothing else.
+    """
     band = band_for_difficulty(difficulty, override=band_override)
     n = len(cooperative_runs)
     coop_rate = 100.0 * sum(1 for r in cooperative_runs if r.survived) / n if n else 0.0
@@ -1257,9 +1277,18 @@ async def run_calibration(
     n: int = DEFAULT_CALIBRATION_N,
     data: _ScenarioData | None = None,
     max_turns: int = 12,
+    difficulty: str | None = None,
 ) -> CalibrationResult:
-    """Run N cooperative + N off_topic conversations and gate (AC4)."""
-    data = data or load_scenario_data(scenario_id)
+    """Run N cooperative + N off_topic conversations and gate (AC4).
+
+    Story 6.28 — `difficulty` is the RUN-level global difficulty: it anchors
+    the band (`band_for_difficulty`) and, when `data` is not pre-loaded,
+    composes the scenario at that level. None → the prod default. A caller
+    that passes `data=` must have composed it at the SAME difficulty.
+    """
+    if difficulty is None:
+        difficulty = scenarios.DEFAULT_DIFFICULTY
+    data = data or load_scenario_data(scenario_id, difficulty=difficulty)
 
     # A cooperative learner needs at least one turn per checkpoint to be able to
     # complete the scenario AT ALL — plus headroom for off-topic slips. Without
@@ -1288,7 +1317,7 @@ async def run_calibration(
     offtopic_runs = await _runs("off_topic")
     return evaluate_calibration(
         scenario_id=scenario_id,
-        difficulty=data.difficulty,
+        difficulty=difficulty,
         cooperative_runs=cooperative_runs,
         offtopic_runs=offtopic_runs,
     )
@@ -1353,7 +1382,6 @@ def _load_raw_scenario(scenario_id: str) -> dict:
 # Cosmetic keys (tts_voice_id, rive_character, is_free, content_warning,
 # language_focus) are deliberately EXCLUDED so a voice swap doesn't burn a re-run.
 _BEHAVIOUR_META_KEYS = (
-    "difficulty",
     "patience_start",
     "fail_penalty",
     "silence_penalty",
@@ -1369,10 +1397,10 @@ def compute_scenario_hash(scenario_id: str) -> str:
     """SHA-256 over ONLY the behaviour-affecting fields (AC10 / Deviation #4).
 
     Covers: base_prompt, every checkpoint's id/prompt_segment/success_criteria
-    (in order), difficulty + the 8 patience overrides, briefing, and exit_lines.
-    Excludes cosmetic fields so editing a TTS voice id does NOT force an
-    (expensive) revalidation. `--force` is the escape hatch when you want one
-    anyway.
+    (in order), the 8 patience overrides, briefing, and exit_lines. Excludes
+    cosmetic fields (incl. `display_order` — hub ordering changes no runtime
+    behaviour) so editing a TTS voice id does NOT force an (expensive)
+    revalidation. `--force` is the escape hatch when you want one anyway.
     """
     raw = _load_raw_scenario(scenario_id)
     metadata = raw.get("metadata") or {}
@@ -1712,8 +1740,10 @@ def format_failure_report(verdict: ScenarioVerdict, *, report_path: str = "") ->
             )
         lines.append("")
         lines.append(
-            f"(Bands are derived from `difficulty` — see `difficulty-calibration.md` "
-            f"§4.3. This scenario is `{cal.difficulty}`.)"
+            f"(Bands anchor on the RUN-level global difficulty — see "
+            f"`difficulty-calibration.md` §4.3. This run played at "
+            f"`{cal.difficulty}` (Story 6.28: scenarios carry no authored "
+            f"difficulty).)"
         )
         lines.append("")
 

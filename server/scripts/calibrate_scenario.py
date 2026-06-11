@@ -68,8 +68,12 @@ async def _validate_one(
     n: int,
     max_turns: int,
     golden_only: bool,
+    difficulty: str,
 ) -> engine.ScenarioVerdict:
-    data = engine.load_scenario_data(scenario_id)
+    # Story 6.28 — `difficulty` is the RUN-level global level this validation
+    # plays at (scenarios carry no authored difficulty anymore): it composes
+    # the scenario AND anchors the calibration band.
+    data = engine.load_scenario_data(scenario_id, difficulty=difficulty)
     scenario_hash = engine.compute_scenario_hash(scenario_id)
     golden = await engine.run_golden(scenario_id=scenario_id, judge=judge, data=data)
     if golden_only:
@@ -90,6 +94,7 @@ async def _validate_one(
         n=n,
         data=data,
         max_turns=max_turns,
+        difficulty=difficulty,
     )
     return engine.combine_verdict(
         scenario_id=scenario_id,
@@ -214,6 +219,7 @@ async def _amain(args: argparse.Namespace) -> int:
                     n=args.n,
                     max_turns=args.max_turns,
                     golden_only=args.golden_only,
+                    difficulty=args.difficulty,
                 )
             except Exception as exc:  # noqa: BLE001
                 if _is_rate_limit(exc):
@@ -282,6 +288,13 @@ def main() -> None:
         "--generate-golden",
         action="store_true",
         help="LLM-generate the per-checkpoint golden fixture (reviewed:false) to review",
+    )
+    parser.add_argument(
+        "--difficulty",
+        default="easy",
+        choices=["easy", "medium", "hard"],
+        help="global difficulty level the calibration run plays at (band anchor; "
+        "Story 6.28 — scenarios carry no authored difficulty, default easy)",
     )
     parser.add_argument(
         "--n",

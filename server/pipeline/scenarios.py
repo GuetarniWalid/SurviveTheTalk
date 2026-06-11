@@ -107,6 +107,15 @@ def load_scenario_metadata(scenario_id: str) -> dict:
 # Story 6.4 — Difficulty presets + PatienceTracker config resolver
 # ============================================================
 
+# Story 6.28 (D2) — server-side default when the client / env omits the
+# learner's GLOBAL difficulty pick (legacy `/connect` path, older clients).
+# Mirrors the client's own default (`DifficultyStorage.defaultDifficulty`,
+# difficulty_storage.dart). The per-scenario authored fallback
+# (`metadata.difficulty`) was removed by Story 6.28 — the global pick is
+# the ONLY difficulty cursor; `None` resolves to this constant inside both
+# `resolve_patience_config` and `load_scenario_base_prompt`.
+DEFAULT_DIFFICULTY = "easy"
+
 # Source of truth: `difficulty-calibration.md` §4.3 cross-checked
 # against the `effective:` comments in each scenario YAML's metadata
 # block. Tied to the running schema — every scenario YAML's nullable
@@ -185,9 +194,10 @@ _DIFFICULTY_PRESETS: dict[str, dict] = {
 # 6.19 the "Difficulty behavior (…)" block lived INLINE in each YAML `base_prompt`,
 # so a global "hard" pick on an "easy"-authored scenario still *spoke* easy. The
 # three blocks now live HERE as the single source of truth; `load_scenario_base_
-# prompt(scenario_id, difficulty_override=…)` appends the chosen block onto the
-# raw persona, so the character's vocabulary / idioms / rephrasing actually match
-# the selected difficulty.
+# prompt(scenario_id, difficulty=…)` appends the block for the learner's GLOBAL
+# pick (the only difficulty cursor since Story 6.28; absent → DEFAULT_DIFFICULTY)
+# onto the raw persona, so the character's vocabulary / idioms / rephrasing
+# actually match the selected difficulty.
 #
 # THE LOAD-BEARING INVARIANT (2026-06-08 follow-up): the persona is DIFFICULTY-
 # NEUTRAL and the block is PERSONALITY-NEUTRAL. The persona (`base_prompt`)
@@ -442,9 +452,7 @@ def build_stt_terms(scenario_id: str, learner_name: str | None = None) -> list[s
     return out
 
 
-def resolve_patience_config(
-    scenario_id: str, difficulty_override: str | None = None
-) -> dict:
+def resolve_patience_config(scenario_id: str, difficulty: str | None = None) -> dict:
     """Return a non-null PatienceTracker config dict for `scenario_id`.
 
     Reads the scenario YAML, picks the difficulty preset row, and
@@ -453,22 +461,23 @@ def resolve_patience_config(
     `checkpoints` list length) so the caller can populate the
     `call_end` envelope's progress field.
 
-    Story 6.19 — `difficulty_override` (the learner's GLOBAL difficulty
-    pick, threaded from the client) selects which preset is the base in
-    place of the YAML's authored `metadata.difficulty`. Precedence
-    (AC3): the chosen difficulty swaps the *preset* (and, via
-    `load_scenario_base_prompt`, the behavior block + speech speed);
-    explicit per-field YAML overrides still win over individual preset
-    values. `None` (legacy `/connect`, older clients) → the authored
-    difficulty is used, exactly as before (AC7). The `copy.deepcopy`
-    stays FIRST; the override only changes which row we copy.
+    Story 6.28 — `difficulty` is the learner's GLOBAL difficulty pick
+    (threaded from the client); it is the ONLY difficulty cursor in the
+    product. `None` (legacy `/connect`, older clients) resolves to the
+    server default `DEFAULT_DIFFICULTY` ("easy") — the per-scenario
+    authored fallback (`metadata.difficulty`) is gone. Precedence
+    (Story 6.19 AC3, preserved): the chosen difficulty selects the
+    *preset* row (and, via `load_scenario_base_prompt`, the behavior
+    block + speech speed); explicit per-field YAML overrides still win
+    over individual preset values. The `copy.deepcopy` stays FIRST;
+    the difficulty only changes which row we copy.
 
     Raises:
         FileNotFoundError: Unknown scenario id (parity with the rest
             of this module).
-        RuntimeError: `metadata.difficulty` (or `difficulty_override`)
-            is missing or not one of `easy` / `medium` / `hard` —
-            defensive against future YAML drift / a bad override.
+        RuntimeError: `difficulty` is not one of `easy` / `medium` /
+            `hard` — defensive against a bad caller value (the API
+            Literal already 422s it at the boundary).
     """
     yaml_path = _SCENARIO_INDEX.get(scenario_id)
     if yaml_path is None:
@@ -484,23 +493,15 @@ def resolve_patience_config(
             f"Scenario {scenario_id!r} has malformed `metadata` (not a dict)."
         )
 
-    # Story 6.19 — a chosen global difficulty overrides the authored one for
-    # THIS call. Validate the override defensively even though the API boundary
+    # Story 6.28 — the global pick is the only difficulty cursor; absent →
+    # the server default. Validate defensively even though the API boundary
     # (`InitiateCallIn.difficulty`, a Literal) already 422s a bad value: this
     # resolver is also reachable from tests / future callers.
-    if difficulty_override is not None:
-        if difficulty_override not in _DIFFICULTY_PRESETS:
-            raise RuntimeError(
-                f"difficulty_override {difficulty_override!r} is not one of "
-                f"{sorted(_DIFFICULTY_PRESETS)}."
-            )
-        difficulty = difficulty_override
-    else:
-        difficulty = metadata.get("difficulty")
+    if difficulty is None:
+        difficulty = DEFAULT_DIFFICULTY
     if difficulty not in _DIFFICULTY_PRESETS:
         raise RuntimeError(
-            f"Scenario {scenario_id!r} has unknown difficulty {difficulty!r}; "
-            f"expected one of {sorted(_DIFFICULTY_PRESETS)}."
+            f"difficulty {difficulty!r} is not one of {sorted(_DIFFICULTY_PRESETS)}."
         )
 
     preset = _DIFFICULTY_PRESETS[difficulty]
@@ -834,9 +835,7 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
     return checkpoints
 
 
-def load_scenario_base_prompt(
-    scenario_id: str, difficulty_override: str | None = None
-) -> str:
+def load_scenario_base_prompt(scenario_id: str, difficulty: str | None = None) -> str:
     """Return the persona `base_prompt` composed with its difficulty behavior block.
 
     Story 6.6 — `CheckpointManager` composes the live system message as
@@ -848,19 +847,20 @@ def load_scenario_base_prompt(
 
     Story 6.19 AC4 — the "Difficulty behavior (…)" block used to live
     INLINE in each YAML's `base_prompt`, which froze a scenario's spoken
-    difficulty to its authored level. The three blocks now live in the
+    difficulty to its authored level. The three blocks live in the
     `_DIFFICULTY_PROMPTS` code constant (single source of truth); this
-    function appends the block for the *resolved* difficulty —
-    `difficulty_override` (the learner's global pick) when given, else
-    the YAML's authored `metadata.difficulty`. So a global "hard" pick on
-    an "easy"-authored scenario now actually SPEAKS hard. A load-time
-    guard rejects any YAML that still carries an inline block.
+    function appends the block for `difficulty` — the learner's GLOBAL
+    pick (Story 6.28: the only difficulty cursor; the authored
+    `metadata.difficulty` fallback is gone). `None` (legacy `/connect`,
+    older clients) resolves to the server default `DEFAULT_DIFFICULTY`
+    ("easy"). A load-time guard rejects any YAML that still carries an
+    inline block.
 
     Raises:
         FileNotFoundError: Unknown scenario id.
         RuntimeError: `base_prompt` is missing/not a string, still carries
-            an inline difficulty block, or the resolved difficulty is not
-            one of `easy` / `medium` / `hard`.
+            an inline difficulty block, or `difficulty` is not one of
+            `easy` / `medium` / `hard`.
     """
     yaml_path = _SCENARIO_INDEX.get(scenario_id)
     if yaml_path is None:
@@ -924,15 +924,14 @@ def load_scenario_base_prompt(
             leaks,
         )
 
-    # Resolve the difficulty: the learner's global pick wins, else the YAML's
-    # authored value. Validate defensively (the API Literal already 422s a bad
-    # override; this also guards a malformed YAML / a future direct caller).
-    metadata = data.get("metadata")
-    authored = metadata.get("difficulty") if isinstance(metadata, dict) else None
-    difficulty = difficulty_override if difficulty_override is not None else authored
+    # Story 6.28 — the global pick is the only difficulty cursor; absent →
+    # the server default. Validate defensively (the API Literal already 422s
+    # a bad value; this also guards a future direct caller).
+    if difficulty is None:
+        difficulty = DEFAULT_DIFFICULTY
     if difficulty not in _DIFFICULTY_PROMPTS:
         raise RuntimeError(
-            f"Scenario {scenario_id!r}: cannot compose base prompt — resolved "
+            f"Scenario {scenario_id!r}: cannot compose base prompt — "
             f"difficulty {difficulty!r} is not one of "
             f"{sorted(_DIFFICULTY_PROMPTS)}."
         )

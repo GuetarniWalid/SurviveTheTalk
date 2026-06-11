@@ -58,9 +58,10 @@ def _safe_json_load(value: str | None, *, scenario_id: str, column: str):
 async def list_scenarios(request: Request) -> dict:
     """Return every scenario with the caller's `best_score` / `attempts`.
 
-    Order is fixed to the difficulty bucket (easy → medium → hard) then
-    alphabetically by id. The full list is returned regardless of `is_free`
-    — the client renders the lock state.
+    Order is the authored `display_order` (NULLs last) then alphabetically
+    by id — a server-side concern, never exposed on the payload. The full
+    list is returned regardless of `is_free` — the client renders the lock
+    state.
     """
     user_id: int = request.state.user_id
     async with get_connection() as db:
@@ -84,7 +85,6 @@ async def list_scenarios(request: Request) -> dict:
             ScenarioListItem(
                 id=row["id"],
                 title=row["title"],
-                difficulty=row["difficulty"],
                 is_free=bool(row["is_free"]),
                 rive_character=row["rive_character"],
                 language_focus=_safe_json_load(
@@ -137,7 +137,6 @@ async def get_scenario(request: Request, scenario_id: str) -> dict:
         detail = ScenarioDetail(
             id=sid,
             title=row["title"],
-            difficulty=row["difficulty"],
             is_free=bool(row["is_free"]),
             rive_character=row["rive_character"],
             language_focus=_safe_json_load(

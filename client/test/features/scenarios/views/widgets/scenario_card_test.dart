@@ -17,7 +17,6 @@ Scenario _build({
   return Scenario(
     id: id,
     title: title,
-    difficulty: 'easy',
     isFree: true,
     riveCharacter: riveCharacter,
     languageFocus: const <String>[],

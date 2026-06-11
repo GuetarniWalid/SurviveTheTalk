@@ -27,9 +27,7 @@ void main() {
             'data': [
               {
                 'id': 'waiter_easy_01',
-                'title': 'Tina',
-                'difficulty': 'easy',
-                'is_free': true,
+                'title': 'Tina',                'is_free': true,
                 'rive_character': 'waiter',
                 'language_focus': ['assertiveness'],
                 'content_warning': null,
@@ -38,9 +36,7 @@ void main() {
               },
               {
                 'id': 'mugger_medium_01',
-                'title': 'Mugger',
-                'difficulty': 'medium',
-                'is_free': true,
+                'title': 'Mugger',                'is_free': true,
                 'rive_character': 'mugger',
                 'language_focus': ['de-escalation'],
                 'content_warning': 'violence',
@@ -49,9 +45,7 @@ void main() {
               },
               {
                 'id': 'girlfriend_medium_01',
-                'title': 'Maya',
-                'difficulty': 'medium',
-                'is_free': true,
+                'title': 'Maya',                'is_free': true,
                 'rive_character': 'girlfriend',
                 'language_focus': ['emotional-regulation'],
                 'content_warning': null,
@@ -60,9 +54,7 @@ void main() {
               },
               {
                 'id': 'cop_hard_01',
-                'title': 'Officer Reed',
-                'difficulty': 'hard',
-                'is_free': false,
+                'title': 'Officer Reed',                'is_free': false,
                 'rive_character': 'cop',
                 'language_focus': ['compliance'],
                 'content_warning': null,
@@ -71,9 +63,7 @@ void main() {
               },
               {
                 'id': 'landlord_hard_01',
-                'title': 'Mr. Dalton',
-                'difficulty': 'hard',
-                'is_free': false,
+                'title': 'Mr. Dalton',                'is_free': false,
                 'rive_character': 'landlord',
                 'language_focus': ['negotiation'],
                 'content_warning': null,

@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-06-11T10:50:29.771295+00:00",
+  "scenario_id": "mugger_medium_01",
+  "engine_version": 6,
+  "scenario_hash": "d3422058df4ca9f716f6dc42a0f1fb34cf0dea6794dbed9f4e383f573b1e279a",
+  "verdict": "FAIL",
+  "golden": {
+    "passed": false,
+    "reviewed_fixture": false,
+    "negative_total": 25,
+    "negative_failures": 1,
+    "negative_warnings": 0,
+    "positive_total": 0,
+    "positive_met": 0,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [
+      {
+        "checkpoint_id": "react",
+        "user_text": "There are a lot of people here today.",
+        "verdict": "met",
+        "source": "seed"
+      }
+    ],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}

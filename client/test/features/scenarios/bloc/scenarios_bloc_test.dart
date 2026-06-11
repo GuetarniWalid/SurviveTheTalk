@@ -16,7 +16,6 @@ class MockScenariosRepository extends Mock implements ScenariosRepository {}
 const _waiter = Scenario(
   id: 'waiter_easy_01',
   title: 'Tina',
-  difficulty: 'easy',
   isFree: true,
   riveCharacter: 'waiter',
   languageFocus: <String>['assertiveness'],
@@ -29,7 +28,6 @@ const _waiter = Scenario(
 const _mugger = Scenario(
   id: 'mugger_medium_01',
   title: 'Mugger',
-  difficulty: 'medium',
   isFree: true,
   riveCharacter: 'mugger',
   languageFocus: <String>['de-escalation'],

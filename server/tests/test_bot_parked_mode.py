@@ -38,8 +38,9 @@ def test_apply_parked_job_returns_connection_args_and_sets_env() -> None:
 
 def test_apply_parked_job_omits_absent_difficulty() -> None:
     """AC7 parity with the cold path — an absent SCENARIO_DIFFICULTY is NOT set
-    (the bot falls back to the scenario's authored difficulty); it must never
-    leak as the literal string "None"."""
+    (the bot's loaders then resolve to the server default
+    `scenarios.DEFAULT_DIFFICULTY` — Story 6.28); it must never leak as the
+    literal string "None"."""
     line = (
         '{"url": "wss://lk", "room": "call-2", "token": "tok", '
         '"env": {"SCENARIO_ID": "waiter_easy_01"}}'

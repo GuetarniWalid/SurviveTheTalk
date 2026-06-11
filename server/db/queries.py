@@ -231,9 +231,11 @@ async def end_call_session(
 # `api/routes_scenarios.py` owns the `json.loads` step. Keeping decoding out of
 # `queries.py` preserves Architecture Boundary 4 (raw-SQL only here).
 
-# `CASE s.difficulty WHEN 'easy' THEN 1 ...` keeps ordering inside SQLite.
-# A plain `ORDER BY difficulty` would sort the TEXT column alphabetically,
-# producing easy/hard/medium — the wrong UX bucket order.
+# Story 6.28 — hub ordering is the explicit authored `display_order` (YAML
+# `metadata.display_order`, server-side concern, never exposed on the API).
+# NULLs sort LAST via the COALESCE sentinel so a future daily scenario seeded
+# without an order appends at the end instead of jumping to the top; `id` is
+# the stable tiebreaker.
 _SELECT_LIST_WITH_PROGRESS = """
 SELECT
     s.*,
@@ -244,11 +246,7 @@ LEFT JOIN user_progress up
     ON up.scenario_id = s.id
     AND up.user_id = :user_id
 ORDER BY
-    CASE s.difficulty
-        WHEN 'easy' THEN 1
-        WHEN 'medium' THEN 2
-        WHEN 'hard' THEN 3
-    END ASC,
+    COALESCE(s.display_order, 999999999) ASC,
     s.id ASC
 """
 
@@ -270,8 +268,8 @@ async def get_all_scenarios_with_progress(
 ) -> list[aiosqlite.Row]:
     """Return every scenario row LEFT-JOINed with the caller's progression.
 
-    Ordering: difficulty bucket (easy < medium < hard), then `id` ASC as the
-    stable secondary key. `best_score` is NULL and `attempts` is 0 for
+    Ordering: authored `display_order` ASC (NULLs last), then `id` ASC as
+    the stable secondary key. `best_score` is NULL and `attempts` is 0 for
     scenarios the user has never attempted.
     """
     async with db.execute(_SELECT_LIST_WITH_PROGRESS, {"user_id": user_id}) as cursor:
@@ -291,7 +289,7 @@ async def get_scenario_by_id_with_progress(
 
 _UPSERT_SCENARIO_SQL = """
 INSERT INTO scenarios (
-    id, title, scenario_title, difficulty, is_free, rive_character,
+    id, title, scenario_title, display_order, is_free, rive_character,
     base_prompt, checkpoints, briefing, exit_lines, language_focus,
     content_warning,
     patience_start, fail_penalty, silence_penalty, recovery_bonus,
@@ -301,7 +299,7 @@ INSERT INTO scenarios (
     tts_voice_id, tts_speed, scoring_model,
     end_phrases
 ) VALUES (
-    :id, :title, :scenario_title, :difficulty, :is_free, :rive_character,
+    :id, :title, :scenario_title, :display_order, :is_free, :rive_character,
     :base_prompt, :checkpoints, :briefing, :exit_lines, :language_focus,
     :content_warning,
     :patience_start, :fail_penalty, :silence_penalty, :recovery_bonus,
@@ -314,7 +312,7 @@ INSERT INTO scenarios (
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
     scenario_title=excluded.scenario_title,
-    difficulty=excluded.difficulty,
+    display_order=excluded.display_order,
     is_free=excluded.is_free,
     rive_character=excluded.rive_character,
     base_prompt=excluded.base_prompt,

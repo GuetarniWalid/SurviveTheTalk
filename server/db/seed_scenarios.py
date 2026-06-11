@@ -64,6 +64,20 @@ def _row_from_yaml(doc: dict) -> dict:
     if isinstance(content_warning, str):
         content_warning = content_warning.strip() or None
 
+    # Story 6.28 — explicit hub ordering (replaces the dropped per-scenario
+    # difficulty bucket sort). Same strictness posture as `is_free`: a present
+    # value must be a real int (bool is an int subclass in Python — reject it,
+    # `display_order: true` would otherwise silently seed as 1). Absent/null →
+    # NULL → sorts last (`COALESCE(display_order, 999999999)`), so future daily
+    # scenarios append at the end by default.
+    display_order = meta.get("display_order")
+    if display_order is not None and (
+        isinstance(display_order, bool) or not isinstance(display_order, int)
+    ):
+        raise ValueError(
+            f"metadata.display_order must be an integer; got {display_order!r}"
+        )
+
     escalation = meta.get("escalation_thresholds")
     # Story 7.2 — Call Ended overlay theatrical phrases. Nullable: a YAML
     # without the block seeds NULL and the overlay hides the phrase element
@@ -104,7 +118,7 @@ def _row_from_yaml(doc: dict) -> dict:
         # has no `metadata.scenario_title` → NULL → the debrief falls back to
         # the character name.
         "scenario_title": meta.get("scenario_title"),
-        "difficulty": meta["difficulty"],
+        "display_order": display_order,
         "is_free": 1 if meta["is_free"] else 0,
         "rive_character": meta["rive_character"],
         "base_prompt": doc["base_prompt"],
@@ -169,6 +183,15 @@ async def seed_scenarios() -> None:
         except (yaml.YAMLError, KeyError, ValueError, TypeError) as exc:
             logger.error(f"seed_scenarios: failed to parse {path.name}: {exc}")
             raise RuntimeError(f"Invalid scenario YAML {path.name}: {exc}") from exc
+        # Story 6.28 — per-scenario difficulty is removed (global-only ruling).
+        # A vestigial `metadata.difficulty` key (e.g. a hand-edited YAML on the
+        # VPS) must NOT crash boot: warn once naming the file, then ignore it.
+        if isinstance(doc.get("metadata"), dict) and "difficulty" in doc["metadata"]:
+            logger.warning(
+                f"seed_scenarios: {path.name} still carries a vestigial "
+                f"metadata.difficulty key — per-scenario difficulty was removed "
+                f"(Story 6.28); the key is ignored. Remove it from the YAML."
+            )
         if row["id"] in seen_ids:
             raise RuntimeError(
                 f"Duplicate scenario id {row['id']!r} found in "

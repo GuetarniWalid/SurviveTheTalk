@@ -49,7 +49,6 @@ const _session = CallSession(
 const _scenario = Scenario(
   id: 'waiter_easy_01',
   title: 'The Waiter',
-  difficulty: 'easy',
   isFree: true,
   riveCharacter: 'waiter',
   languageFocus: <String>['ordering food'],

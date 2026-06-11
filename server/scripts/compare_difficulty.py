@@ -1,10 +1,11 @@
-"""Dev tool — compare a character's replies across difficulties (easy vs hard).
+"""Dev tool — A/B the GLOBAL difficulty blocks' behavioral effect on a scenario.
 
 Runs the REAL character LLM with the prod-composed system prompt for EACH
-difficulty on the SAME fixed user turns, then prints the replies side by side —
-so we can verify difficulty produces a flagrantly different register (vocabulary,
-idioms, willingness to help, demand for precision) WITHOUT making on-device
-calls. The turns deliberately probe the locked design's levers: a vague answer
+GLOBAL difficulty level (the only difficulty cursor since Story 6.28) on the
+SAME fixed user turns, then prints the replies side by side — so we can verify
+the `_DIFFICULTY_PROMPTS` blocks produce a flagrantly different register
+(vocabulary, idioms, willingness to help, demand for precision) WITHOUT making
+on-device calls. The turns deliberately probe the locked design's levers: a vague answer
 (does HARD demand precision while EASY accepts the gist?) and a "can you
 repeat?" (does HARD refuse to help while EASY rephrases?).
 
@@ -63,7 +64,7 @@ FIXED_TURNS = [
 
 def compose_system(scenario_id: str, difficulty: str) -> str:
     """Mirror bot.py::run_bot: persona + difficulty block + charter + goals."""
-    base = load_scenario_base_prompt(scenario_id, difficulty_override=difficulty)
+    base = load_scenario_base_prompt(scenario_id, difficulty=difficulty)
     cps = load_scenario_checkpoints(scenario_id)
     return "\n\n".join(
         [

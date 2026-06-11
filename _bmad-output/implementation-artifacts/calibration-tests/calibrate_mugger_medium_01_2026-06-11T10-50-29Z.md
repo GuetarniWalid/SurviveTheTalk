@@ -1,0 +1,15 @@
+# ❌ Scenario validation FAILED: `mugger_medium_01`
+
+Edit `server/pipeline/scenarios/` for `mugger_medium_01`, then re-run: `python scripts/calibrate_scenario.py mugger_medium_01 --force`
+Full JSON report: `C:\Users\gueta\Documents\Mes_projets\surviveTheTalk2\_bmad-output\implementation-artifacts\calibration-tests\calibrate_mugger_medium_01_2026-06-11T10-50-29Z.json`
+
+## Golden net failures (the judge mis-verdicts known cases)
+
+### Off-topic input was accepted (this is the 2026-05-30 'judge passes everything' class of bug)
+
+These off-topic / tangential lines were judged **met**, but they do NOT accomplish the objective. The `success_criteria` is too permissive — tighten it so only a genuine attempt passes.
+
+- checkpoint **react** (`checkpoints[0].success_criteria`): user said "There are a lot of people here today." → judged **met** (should be unmet). [seed]
+
+---
+Paste this whole block to an AI agent to propose the YAML edit, then re-run the command above to confirm.

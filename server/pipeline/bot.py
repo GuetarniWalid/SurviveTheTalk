@@ -117,17 +117,19 @@ async def run_bot(url: str, room: str, token: str) -> None:
     scenario_id = os.environ.get("SCENARIO_ID") or TUTORIAL_SCENARIO_ID
     # Story 6.19 — the learner's GLOBAL difficulty pick, threaded from the
     # client via POST /calls/initiate → SCENARIO_DIFFICULTY env. Absent (legacy
-    # /connect path, older clients) → None → the scenario's authored
-    # metadata.difficulty is used (AC7). It drives THREE things for this call:
-    # the patience preset (here), the character behavior block
-    # (load_scenario_base_prompt below), and the TTS speech speed (AC5).
+    # /connect path, older clients) → None → the loaders resolve it to the
+    # server default `scenarios.DEFAULT_DIFFICULTY` ("easy") — the authored
+    # per-scenario fallback is gone (Story 6.28, global-only ruling). It drives
+    # THREE things for this call: the patience preset (here), the character
+    # behavior block (load_scenario_base_prompt below), and the TTS speech
+    # speed (AC5).
     scenario_difficulty = os.environ.get("SCENARIO_DIFFICULTY") or None
     # Story 7.1 (Option A) — the DB call_id, threaded from `/calls/initiate`
     # via the CALL_ID env (mirrors SCENARIO_ID). Absent on the legacy
     # `/connect` path → no debrief is generated at teardown.
     call_id_env = os.environ.get("CALL_ID") or None
     patience_config = resolve_patience_config(
-        scenario_id, difficulty_override=scenario_difficulty
+        scenario_id, difficulty=scenario_difficulty
     )
 
     # Story 6.8 Phase 2 / Story 6.10 — load scenario data NOW (before LLM
@@ -142,11 +144,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # charter + goal framing never drift between init and recompose.
     scenario_metadata = load_scenario_metadata(scenario_id)
     scenario_checkpoints = load_scenario_checkpoints(scenario_id)
-    # Story 6.19 AC4 — compose the behavior block for the CHOSEN difficulty
-    # (override) so a global "hard" pick on an "easy" scenario actually speaks
-    # hard. None → the YAML's authored difficulty (unchanged behavior).
+    # Story 6.19 AC4 — compose the behavior block for the learner's GLOBAL
+    # pick so a "hard" pick on any scenario actually speaks hard. None → the
+    # server default easy (Story 6.28).
     scenario_base_prompt = load_scenario_base_prompt(
-        scenario_id, difficulty_override=scenario_difficulty
+        scenario_id, difficulty=scenario_difficulty
     )
 
     # The legacy `SYSTEM_PROMPT` env var path (used historically by

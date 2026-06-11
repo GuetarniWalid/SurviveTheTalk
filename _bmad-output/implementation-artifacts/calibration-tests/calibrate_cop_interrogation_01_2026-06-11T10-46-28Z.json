@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-06-11T10:46:28.574083+00:00",
+  "scenario_id": "cop_interrogation_01",
+  "engine_version": 6,
+  "scenario_hash": "d4c975bf5e52b087c56e1b18e69c30d96b0144b11f52e75ab3ee6ac677eee3f4",
+  "verdict": "PASS",
+  "golden": {
+    "passed": true,
+    "reviewed_fixture": false,
+    "negative_total": 100,
+    "negative_failures": 0,
+    "negative_warnings": 0,
+    "positive_total": 0,
+    "positive_met": 0,
+    "requires_gating_failures": [],
+    "implies_backfill_failures": [],
+    "negative_failure_cases": [],
+    "positive_miss_cases": []
+  },
+  "calibration": {},
+  "calibration_samples": {}
+}

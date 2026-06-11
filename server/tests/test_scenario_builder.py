@@ -178,7 +178,6 @@ def test_validate_structure_accepts_valid_requires_edge():
     good = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(3),
@@ -194,7 +193,6 @@ def test_validate_structure_rejects_bad_requires_edges():
     good = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(3),
@@ -221,7 +219,6 @@ def test_assemble_and_yaml_roundtrip_preserves_requires():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are Officer Dale.",
         checkpoints=builder.sanitize_checkpoints(
@@ -317,7 +314,6 @@ def test_validate_structure_accepts_valid_implies_edge():
     good = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(3),
@@ -335,7 +331,6 @@ def test_validate_structure_rejects_bad_implies_edges():
     good = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(3),
@@ -453,14 +448,15 @@ def test_hint_prompt_drift_skips_empty_hint_tokens():
     assert builder.hint_prompt_drift_pairs(cps) == []
 
 
-def test_suggest_patience_start_scales_with_length_and_difficulty():
-    short_hard = builder.suggest_patience_start(6, "hard")
-    long_hard = builder.suggest_patience_start(20, "hard")
-    assert long_hard > short_hard  # longer scenario gets more headroom
-    assert builder.suggest_patience_start(6, "easy") > builder.suggest_patience_start(
-        6, "hard"
-    )
-    assert short_hard > 0
+def test_suggest_patience_start_scales_with_length():
+    """Story 6.28 — single-arg, anchored on the medium preset constants
+    (scenarios carry no authored difficulty; the meter must be playable at
+    every global level)."""
+    short = builder.suggest_patience_start(6)
+    long = builder.suggest_patience_start(20)
+    assert long > short  # longer scenario gets more headroom
+    assert short == 80  # medium anchor: fail 20 × 4 absorbable misses
+    assert long % 5 == 0  # rounded to the nearest 5
 
 
 def test_build_base_prompt_has_facts_and_no_speak_first():
@@ -483,7 +479,6 @@ def test_assemble_scenario_matches_schema():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are Officer Dale.",
         checkpoints=_checkpoints(3),
@@ -491,7 +486,10 @@ def test_assemble_scenario_matches_schema():
     )
     md = scenario["metadata"]
     assert md["id"] == "cop_interrogation_01"
-    assert md["difficulty"] == "hard"
+    # Story 6.28 — the builder emits NO difficulty key; display_order is a
+    # null placeholder (sorts last) the operator may set later.
+    assert "difficulty" not in md
+    assert md["display_order"] is None
     assert md["rive_character"] == "cop"
     assert md["is_free"] is False
     # all 8 nullable patience override keys present
@@ -518,7 +516,6 @@ def test_validate_structure_rejects_difficulty_coded_persona():
     scenario = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt=(
             "You are Officer Dale. If they make grammar mistakes, squint at them."
@@ -534,7 +531,6 @@ def test_validate_structure_accepts_good_scenario():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are Officer Dale.",
         checkpoints=_checkpoints(3),
@@ -547,15 +543,11 @@ def test_validate_structure_rejects_bad_inputs():
     good = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(2),
         brief=_brief(2),
     )
-
-    bad_diff = {**good, "metadata": {**good["metadata"], "difficulty": "extreme"}}
-    assert any("difficulty" in p for p in builder.validate_structure(bad_diff))
 
     bad_char = {**good, "metadata": {**good["metadata"], "rive_character": "dragon"}}
     assert any("rive_character" in p for p in builder.validate_structure(bad_char))
@@ -601,7 +593,6 @@ def test_scenario_yaml_is_loadable_and_passes_structure():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are Officer Dale.\n\nBe suspicious.",
         checkpoints=_checkpoints(20),
@@ -669,7 +660,6 @@ def test_finalize_build_produces_valid_loadable_scenario():
         checkpoints=_checkpoints(20),
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
     )
     assert result.structural_problems == []
@@ -685,7 +675,6 @@ def test_finalize_build_flags_checkpoint_count_mismatch():
         checkpoints=_checkpoints(2),  # generator produced 2...
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         expected_checkpoints=20,  # ...but 20 were requested
     )
@@ -699,7 +688,6 @@ def test_finalize_build_no_count_problem_when_count_matches():
         checkpoints=_checkpoints(20),
         scenario_id="cop_interrogation_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         expected_checkpoints=20,
     )
@@ -722,7 +710,6 @@ def test_build_scenario_pipeline_with_fake_llm():
         builder.build_scenario(
             "A cop calls about your fingerprints at a crime scene.",
             scenario_id="cop_interrogation_01",
-            difficulty="hard",
             rive_character="cop",
             n_checkpoints=n,
             llm=llm,
@@ -872,7 +859,6 @@ def test_assemble_threads_opening_line_and_base_prompt_notes_it():
     sc = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt=bp,
         checkpoints=_checkpoints(2),
@@ -892,7 +878,6 @@ def test_assemble_scenario_threads_voice_id():
     sc = builder.assemble_scenario(
         scenario_id="x",
         title="X",
-        difficulty="hard",
         rive_character="cop",
         base_prompt="You are X.",
         checkpoints=_checkpoints(2),
@@ -917,7 +902,6 @@ def test_build_scenario_without_cartesia_key_leaves_voice_null():
         builder.build_scenario(
             "a premise",
             scenario_id="cop_x_01",
-            difficulty="hard",
             rive_character="cop",
             n_checkpoints=n,
             cartesia_api_key=None,
@@ -969,7 +953,6 @@ def test_build_scenario_with_cartesia_key_picks_voice(monkeypatch):
         builder.build_scenario(
             "a premise",
             scenario_id="cop_x_01",
-            difficulty="hard",
             rive_character="cop",
             n_checkpoints=n,
             cartesia_api_key="fake-key",
@@ -986,7 +969,6 @@ def test_format_build_summary_is_readable():
         checkpoints=_checkpoints(20),
         scenario_id="cop_x_01",
         title="The Suspect",
-        difficulty="hard",
         rive_character="cop",
         voice_id="vid-1",
         voice_reason="deep male fits the detective",
@@ -1082,14 +1064,12 @@ def test_validate_and_repair_fixes_then_passes():
         checkpoints=_checkpoints(n),
         scenario_id="fake_test_01",
         title="T",
-        difficulty="hard",
         rive_character="cop",
     )
     v = _run(
         builder.validate_and_repair(
             result,
             scenario_id="fake_test_01",
-            difficulty="hard",
             rive_character="cop",
             llm=_repair_llm(n, strict=True),
             judge=_StrictAwareJudge(),
@@ -1108,14 +1088,12 @@ def test_validate_and_repair_gives_up_after_max_rounds():
         checkpoints=_checkpoints(n),
         scenario_id="fake_test_01",
         title="T",
-        difficulty="hard",
         rive_character="cop",
     )
     v = _run(
         builder.validate_and_repair(
             result,
             scenario_id="fake_test_01",
-            difficulty="hard",
             rive_character="cop",
             llm=_repair_llm(n, strict=False),
             judge=_StrictAwareJudge(),
@@ -1134,7 +1112,6 @@ def test_build_scenario_rejects_bad_character():
             builder.build_scenario(
                 "x",
                 scenario_id="x",
-                difficulty="hard",
                 rive_character="dragon",
                 n_checkpoints=3,
                 llm=llm,

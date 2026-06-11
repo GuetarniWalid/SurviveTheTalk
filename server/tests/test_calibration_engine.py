@@ -60,12 +60,11 @@ class FakeJudge:
 
 
 def _scenario_data(
-    *, checkpoints, difficulty="easy", patience=None, title="Test", briefing=None
+    *, checkpoints, patience=None, title="Test", briefing=None
 ) -> engine._ScenarioData:
     return engine._ScenarioData(
         scenario_id="fake_test_01",
         title=title,
-        difficulty=difficulty,
         base_prompt="You are a test character.",
         checkpoints=checkpoints,
         briefing=briefing or {},
@@ -180,7 +179,7 @@ def test_evaluate_calibration_offtopic_breach_fails():
 
 def test_scenario_hash_ignores_cosmetic_changes(monkeypatch):
     base = {
-        "metadata": {"id": "x", "difficulty": "easy", "tts_voice_id": "voice-a"},
+        "metadata": {"id": "x", "tts_voice_id": "voice-a"},
         "base_prompt": "You are Tina.",
         "checkpoints": [
             {"id": "greet", "prompt_segment": "Greet.", "success_criteria": "Greets."}
@@ -203,7 +202,7 @@ def test_scenario_hash_ignores_cosmetic_changes(monkeypatch):
 
 def test_scenario_hash_changes_on_behaviour_edit(monkeypatch):
     base = {
-        "metadata": {"id": "x", "difficulty": "easy"},
+        "metadata": {"id": "x"},
         "base_prompt": "You are Tina.",
         "checkpoints": [
             {"id": "greet", "prompt_segment": "Greet.", "success_criteria": "Greets."}
@@ -468,7 +467,7 @@ def test_harness_gates_reactive_beat_same_as_prod():
 def test_scenario_hash_changes_on_requires_edit(monkeypatch):
     """Adding/removing a `requires` edge is behaviour-affecting → new hash."""
     base = {
-        "metadata": {"id": "x", "difficulty": "easy"},
+        "metadata": {"id": "x"},
         "base_prompt": "You are Tina.",
         "checkpoints": [
             {"id": "a", "prompt_segment": "A.", "success_criteria": "Does a."},
@@ -589,7 +588,7 @@ def test_harness_backfills_implied_beat_same_as_prod():
 def test_scenario_hash_changes_on_implies_edit(monkeypatch):
     """Adding/removing an `implies` edge is behaviour-affecting → new hash."""
     base = {
-        "metadata": {"id": "x", "difficulty": "easy"},
+        "metadata": {"id": "x"},
         "base_prompt": "You are Tina.",
         "checkpoints": [
             {"id": "a", "prompt_segment": "A.", "success_criteria": "Does a."},
@@ -604,12 +603,14 @@ def test_scenario_hash_changes_on_implies_edit(monkeypatch):
     assert engine.compute_scenario_hash("x") != h1
 
 
-def test_engine_version_bumped_for_charter_and_mood_directive():
-    """The Story 6.29 charter extension + mood-tag directive change every
-    scenario's character behaviour (both are code constants OUTSIDE
-    `scenario_hash`) — the bump forces ledger revalidation on the next sweep
-    (same contract as the 6.27 back-fill bump this test previously pinned)."""
-    assert engine.ENGINE_VERSION == 5
+def test_engine_version_bumped_for_global_only_difficulty():
+    """Story 6.28 — per-scenario authored difficulty is removed: calibration
+    now composes + bands on the RUN-level global difficulty and the loaders'
+    no-difficulty fallback changed (authored → server default). Every cached
+    PASS predates that anchor — the bump forces ledger revalidation on the
+    next sweep (same contract as the 6.29/6.27 bumps this test previously
+    pinned)."""
+    assert engine.ENGINE_VERSION == 6
 
 
 # ============================================================
@@ -996,7 +997,7 @@ def test_cli_amain_records_verdict_with_correct_arity(monkeypatch, tmp_path):
     monkeypatch.setattr(
         engine,
         "load_scenario_data",
-        lambda sid: _scenario_data(checkpoints=[_cp("greet")]),
+        lambda sid, difficulty=None: _scenario_data(checkpoints=[_cp("greet")]),
     )
     monkeypatch.setattr(engine, "run_golden", _fake_run_golden)
     monkeypatch.setattr(engine, "run_calibration", _fake_run_calibration)
@@ -1017,6 +1018,7 @@ def test_cli_amain_records_verdict_with_correct_arity(monkeypatch, tmp_path):
         no_ledger=False,
         throttle_ms=0,
         retries=0,
+        difficulty="easy",
     )
 
     rc = _run(cli._amain(args))

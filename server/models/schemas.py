@@ -48,9 +48,11 @@ class InitiateCallIn(BaseModel):
     Story 6.19 — `difficulty` is the learner's GLOBAL difficulty pick
     (set once on the hub, sent on every call). Optional + `default=None`
     for backward compatibility: older clients / the legacy `/connect`
-    path omit it, and the server then uses the scenario's authored
-    `metadata.difficulty` (AC7). The `Literal` rejects any other value
-    with a 422 at the schema boundary, BEFORE any scenario YAML I/O.
+    path omit it, and the server then resolves `None` to the module
+    constant `scenarios.DEFAULT_DIFFICULTY` ("easy") — the authored
+    per-scenario fallback is GONE (Story 6.28, global-only ruling). The
+    `Literal` rejects any other value with a 422 at the schema boundary,
+    BEFORE any scenario YAML I/O.
     """
 
     scenario_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
@@ -146,7 +148,6 @@ class ScenarioListItem(BaseModel):
 
     id: str
     title: str
-    difficulty: str
     is_free: bool
     rive_character: str
     language_focus: list[str]
@@ -164,7 +165,7 @@ class ScenarioListItem(BaseModel):
 
 class ScenarioDetail(ScenarioListItem):
     """Full payload for `GET /scenarios/{id}`. Adds the authoring body and
-    every nullable difficulty-override column from ADR 001.
+    every nullable patience-override column from ADR 001.
     """
 
     base_prompt: str

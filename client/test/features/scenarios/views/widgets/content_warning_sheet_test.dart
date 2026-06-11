@@ -9,7 +9,6 @@ Scenario _scenario({String? contentWarning = 'CW body 12345'}) {
   return Scenario(
     id: 's1',
     title: 'The Mugger',
-    difficulty: 'hard',
     isFree: true,
     riveCharacter: 'mugger',
     languageFocus: const <String>[],
