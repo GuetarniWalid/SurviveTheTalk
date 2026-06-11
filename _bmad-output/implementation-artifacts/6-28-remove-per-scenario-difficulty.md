@@ -163,32 +163,32 @@ Bands were derived from the authored difficulty (`difficulty-calibration.md` §4
 
 > **Transition rule:** every unchecked box is a stop-ship for `review → done` (deploy-gate convention, Story 6.5 D6). Paste the actual command + output as proof.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_ <!-- Active/Main PID line -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ `Active: active (running) since Thu 2026-06-11 12:59:58 UTC; Main PID: 1179525 (python)`; `readlink /opt/survive-the-talk/current` → `/opt/survive-the-talk/releases/8f86e90` (the dev commit). deploy-server.yml run 27348299928 = success.
 
-- [ ] **DB backup taken BEFORE deploy (migration story).** The `deploy-server.yml` auto-backup ran (or manual):
+- [x] **DB backup taken BEFORE deploy (migration story).** The `deploy-server.yml` auto-backup ran (or manual):
   - _Command:_ `ssh root@167.235.63.129 "ls -t /opt/survive-the-talk/backups/ | head -3"`
-  - _Proof:_ <!-- db.pre-<sha7>.sqlite filename -->
+  - _Proof:_ `db.pre-8f86e90.sqlite` (newest, pre-this-deploy), then `db.pre-c00fb5d.sqlite`, `db.pre-950102b.sqlite`.
 
-- [ ] **Migration 013 applied + column gone + display_order live.**
-  - _Command:_ `ssh root@167.235.63.129 "/opt/survive-the-talk/current/server/.venv/bin/python -c 'import sqlite3; c=sqlite3.connect(\"/opt/survive-the-talk/data/db.sqlite\"); print([r[1] for r in c.execute(\"PRAGMA table_info(scenarios)\")]); print(list(c.execute(\"SELECT id, display_order FROM scenarios ORDER BY COALESCE(display_order,999999999), id\")))'"`
+- [x] **Migration 013 applied + column gone + display_order live.**
+  - _Command:_ stdin python script over ssh (PRAGMA table_info + ordered SELECT + FK/integrity)
   - _Expected:_ column list WITHOUT `difficulty`, WITH `display_order`; rows in order waiter → girlfriend → mugger → cop → cop_interrogation → landlord
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ `difficulty present: False` · `display_order present: True` · `[('waiter_easy_01', 10), ('girlfriend_medium_01', 20), ('mugger_medium_01', 30), ('cop_hard_01', 40), ('cop_interrogation_01', 50), ('landlord_hard_01', 60)]` · `fk_check: []` · `integrity: ok`
 
-- [ ] **Happy-path endpoint round-trip — difficulty key absent, order preserved.**
-  - _Command:_ `curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/scenarios | python -c "import json,sys; d=json.load(sys.stdin)['data']; print([s['id'] for s in d]); print('difficulty' in d[0])"`
+- [x] **Happy-path endpoint round-trip — difficulty key absent, order preserved.**
+  - _Command:_ JWT-authenticated `GET /scenarios` on the VPS (user_id=1)
   - _Expected:_ the 6 ids in today's order + `False`
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ `['waiter_easy_01', 'girlfriend_medium_01', 'mugger_medium_01', 'cop_hard_01', 'cop_interrogation_01', 'landlord_hard_01']` · `difficulty key present: False` · `display_order key present: False`
 
 - [ ] **Call initiation still carries the global pick.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"hard"}` → 200 envelope; journalctl shows the bot composing hard.
-  - _Command:_ <!-- curl + journalctl -u pipecat.service | grep -E "SCENARIO_DIFFICULTY|pooled|cold" -->
-  - _Actual:_ <!-- paste -->
+  - _Note:_ deliberately NOT fired from the CLI (would create a real call_session + burn a quota slot for a call nobody answers). Covered by Pixel 9 script step 3 below — the global-Hard waiter call IS this box (watch `SCENARIO_DIFFICULTY` + `[pooled]` in journalctl during the call).
+  - _Actual:_ <!-- filled at the Pixel 9 gate -->
 
-- [ ] **Error path intact.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"extreme"}` → 422 `{error}` envelope (Literal boundary).
-  - _Actual:_ <!-- paste -->
+- [x] **Error path intact.** `POST /calls/initiate` with `{"scenario_id":"waiter_easy_01","difficulty":"extreme"}` → 422 `{error}` envelope (Literal boundary).
+  - _Actual:_ `HTTP 422` (local → Caddy port 80 → API, real JWT user_id=1, 2026-06-11 ~13:05 UTC).
 
-- [ ] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for the requests above (the seeder vestige WARNING must NOT be firing post-deploy since the YAMLs are clean).
-  - _Proof:_ <!-- paste -->
+- [x] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for the requests above (the seeder vestige WARNING must NOT be firing post-deploy since the YAMLs are clean).
+  - _Proof:_ post-restart window: `grep -ciE "error|traceback"` → **0**; `grep -i vestigial` → **empty** (clean YAMLs, warning correctly silent); `grep -c "Seeded scenario"` → **6** (full catalog re-seeded).
 
 ### Pixel 9 voice smoke script (read-and-watch, ~3 min)
 
