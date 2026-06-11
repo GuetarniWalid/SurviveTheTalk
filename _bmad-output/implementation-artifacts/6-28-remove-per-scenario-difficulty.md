@@ -1,6 +1,6 @@
 # Story 6.28: Remove Per-Scenario Difficulty
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -154,8 +154,8 @@ Bands were derived from the authored difficulty (`difficulty-calibration.md` §4
 - [x] **T13 — Golden gate + full gates** (AC8, AC9)
   - [x] `python scripts/calibrate_scenario.py --golden-only` post-EV6 (2026-06-11): **waiter_easy_01 PASS** (the reviewed gating fixture), girlfriend_medium_01 PASS, landlord_hard_01 PASS, cop_interrogation_01 PASS; mugger_medium_01 + cop_hard_01 known-fails documented verbatim in the Dev Agent Record (NOT-6.28 — structural proof there: the golden judge sees only `data.title` + criteria, never the composed base_prompt, so the run-difficulty change cannot shift golden verdicts)
   - [x] `ruff check .` (clean) + `ruff format --check .` (clean) + `pytest` **880 passed** (server) / `flutter analyze` (No issues found!) + `flutter test` **451 passed** (client) — all green
-- [ ] **T14 — Deploy + smoke gate** (Smoke Test Gate below)
-  - [ ] Push → `deploy-server.yml` (auto DB backup pre-deploy) → verify migration 013 applied + seeder re-seeded + hub order intact → hand Walid the Pixel 9 script
+- [x] **T14 — Deploy + smoke gate** (Smoke Test Gate below) — deploy verified on VPS (all boxes green); the remaining perception half of the Pixel 9 gate explicitly WAIVED by Walid 2026-06-11 ("ok pour moi tu peux passer en done")
+  - [x] Push → `deploy-server.yml` (auto DB backup pre-deploy) → verify migration 013 applied + seeder re-seeded + hub order intact → hand Walid the Pixel 9 script
 
 ### Review Findings (formal /bmad-code-review, 2026-06-11)
 
@@ -200,7 +200,7 @@ Gates re-run post-patch (review stage): `ruff check` clean · `ruff format --che
 - [x] **Server logs clean.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR/Traceback for the requests above (the seeder vestige WARNING must NOT be firing post-deploy since the YAMLs are clean).
   - _Proof:_ post-restart window: `grep -ciE "error|traceback"` → **0**; `grep -i vestigial` → **empty** (clean YAMLs, warning correctly silent); `grep -c "Seeded scenario"` → **6** (full catalog re-seeded).
 
-### Pixel 9 smoke gate status — ATTEMPTED 2026-06-11, **NOT PASSED** (connection, not regression)
+### Pixel 9 smoke gate status — ATTEMPTED 2026-06-11 NOT PASSED (connection) → **CLOSED 2026-06-11 by explicit Walid sign-off (waiver)**
 
 > **Attempt record (2026-06-11 13:17-13:19 UTC, calls 278-281):** Walid's home connection was too degraded for a serious voice test — gate **NOT signed**, stays OWED on a good connection.
 >
@@ -210,6 +210,8 @@ Gates re-run post-patch (review stage): `ruff check` clean · `ruff format --che
 > - **The 6.28 machinery itself worked 4/4 live:** scenario list parsed (new APK, no difficulty key), initiate 200 `[pooled]`, `Difficulty behavior (hard):` composed on every call (global pick, authored fallback gone), checkpoint judge ran (verdicts logged), exit-line generation nominal. Zero tracebacks, zero scenario-load errors, zero vestige warnings in the whole window.
 >
 > Remaining for the gate when the connection is good: the perception half — hub order on-device, Tina actually SPEAKING the hard register, a checkpoint ticking on the HUD, normal Call Ended. Quota note: 3 gifts consumed today, 1 normal slot used → 2 calls left on 2026-06-11 (resettable via the usual procedure if needed).
+>
+> **2026-06-11 — GATE CLOSED by explicit Walid sign-off** (*"ok pour moi tu peux passer en done"*, given right after the formal code review completed): the remaining perception half is **WAIVED** — the server-side machinery half was already verified live 4/4 during the 13:17-13:19 attempt (new-APK list parse, initiate 200 `[pooled]`, `Difficulty behavior (hard):` composed on every call, judge + dynamic exit line nominal, zero tracebacks) and every deploy-side box above is green. Both gates now cleared → `review → done` flipped by the reviewer in the same turn (both places).
 
 ### Pixel 9 voice smoke script (read-and-watch, ~3 min)
 
@@ -386,5 +388,6 @@ Modified (docs/tracking):
 
 ## Change Log
 
+- 2026-06-11 — **`review → done` flip (both places).** Walid explicit sign-off ("ok pour moi tu peux passer en done") closes the Pixel 9 gate by waiver of the remaining perception half (machinery half live-verified 4/4 on calls 278-281; deploy-side boxes all green); the formal code review completed the same day → both gates cleared, the reviewer flips. **Epic 6 fully done — 6.28 was its last open story (27/27).**
 - 2026-06-11 — Formal /bmad-code-review COMPLETE (3 layers: Blind Hunter / Edge Case Hunter / Acceptance Auditor). 0 decision-needed, 2 trivial patches applied same-turn (scenario-id context in the `resolve_patience_config` error message; seeder patience-override comment re-worded to global-difficulty), 0 deferred, 20 dismissed. Auditor: AC1-AC9 verified satisfied, all 10 guardrails respected, no undeclared deviations. Gates re-run green post-patch. **Story stays `review` — waiting ONLY on the Pixel 9 smoke gate (re-attempt on a good connection) for the `review → done` flip.**
 - 2026-06-11 — Story 6.28 dev-story complete (T1-T13): per-scenario difficulty removed across YAML/DB/API/runtime/tools/client/docs; `display_order` hub ordering (D1); `DEFAULT_DIFFICULTY = "easy"` server fallback (D2); calibration re-anchored on run-level difficulty, `ENGINE_VERSION` 5→6 (D3). Gates: server ruff clean + pytest 880 (+5 net); client analyze clean + 451 tests. Golden-only post-EV6: waiter/girlfriend/cop-interrogation/landlord PASS; mugger + cop_hard pre-existing known-fails documented (NOT-6.28). Status → review; T14 (deploy + Pixel 9 smoke gate) pending.
