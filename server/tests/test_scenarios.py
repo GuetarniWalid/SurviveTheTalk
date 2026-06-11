@@ -1829,6 +1829,11 @@ def test_build_stt_terms_returns_scenario_proper_nouns() -> None:
     assert "Tina" in waiter
     assert "The Golden Fork" in waiter
     assert "fish and chips" in waiter
+    # 2026-06-11 (call_id=276) — the drink beat's words must be biased too:
+    # a French-accented "cola" was transcribed "caller" and the `drink`
+    # checkpoint never ticked. All four menu drinks ride the bias list.
+    for drink in ("cola", "water", "juice", "coffee"):
+        assert drink in waiter
     cop = build_stt_terms("cop_interrogation_01")
     assert "Halloran's Electronics" in cop
     assert "Carver Street" in cop

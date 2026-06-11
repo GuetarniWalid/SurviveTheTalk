@@ -391,6 +391,15 @@ _SCENARIO_STT_TERMS: dict[str, list[str]] = {
         "fried chicken",
         "fish and chips",
         "tomato soup",
+        # 2026-06-11 (post-6.29 smoke, call_id=276) — the DRINKS were missing:
+        # a French-accented "cola, please" was transcribed "caller, please",
+        # so the (text-only) judge rightly refused the `drink` checkpoint and
+        # the learner felt unheard. The drink beat makes the learner SAY one
+        # of these four; bias them like the food items above.
+        "cola",
+        "water",
+        "juice",
+        "coffee",
     ],
     "girlfriend_medium_01": ["Rachel"],
     "mugger_medium_01": ["Danny"],
