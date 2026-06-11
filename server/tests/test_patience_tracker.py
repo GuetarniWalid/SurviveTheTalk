@@ -87,6 +87,7 @@ def _shrink_timers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pt_mod, "_HANG_UP_PRE_TTS_DELAY", 0.01)
     monkeypatch.setattr(pt_mod, "_HANG_UP_CLIENT_DRAIN_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(pt_mod, "_HANG_UP_TTS_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(pt_mod, "_HANG_UP_TTS_STALL_DETECT_SECONDS", 0.25)
     monkeypatch.setattr(pt_mod, "_HANG_UP_TTS_RETRY_TIMEOUT_SECONDS", 0.3)
 
 
@@ -2440,9 +2441,9 @@ def test_hangup_tts_silent_stall_requeues_exit_line_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Call 277 — the exit line was dispatched to TTS but zero audio ever
-    came back: the 6 s hang-up TTS wait expired and the call ended on dead
-    air with no audible goodbye. When that wait times out with NO
-    BotStartedSpeakingFrame observed since the exit push, the SAME line
+    came back: the hang-up TTS wait expired and the call ended on dead air
+    with no audible goodbye. When the stall-detection window expires with
+    NO BotStartedSpeakingFrame observed since the exit push, the SAME line
     must be re-queued exactly once (greppable INFO log), and call_end must
     still be pushed strictly AFTER the retry (the retry never races the
     call_end envelope)."""
@@ -2457,10 +2458,11 @@ def test_hangup_tts_silent_stall_requeues_exit_line_once(
 
     async def _drive() -> None:
         tracker._schedule_hang_up("character_hung_up")
-        # Past the pre-TTS delay (0.01) + the first TTS wait (0.5 shrunk)
-        # with NO audio and NO BotStoppedSpeakingFrame → silent-stall
-        # retry fires. Still inside the retry wait (0.3 shrunk).
-        await asyncio.sleep(0.65)
+        # Past the pre-TTS delay (0.01) + the stall-detection window (0.25
+        # shrunk) with NO audio and NO BotStoppedSpeakingFrame →
+        # silent-stall retry fires. Still inside the retry wait (0.3
+        # shrunk, expiring ~0.56).
+        await asyncio.sleep(0.35)
         # The retry succeeds: audio starts, then the turn completes.
         await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
@@ -2519,7 +2521,8 @@ def test_hangup_tts_timeout_with_audio_flowing_never_retries(
         # WITHOUT ever finishing the turn (no BotStoppedSpeakingFrame).
         await asyncio.sleep(0.05)
         await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-        # Past the first TTS wait → timeout path with audio observed.
+        # Past phase A (stall detect, 0.25 shrunk) AND phase B (completion
+        # cap remainder, 0.25) → timeout path with audio observed.
         await asyncio.sleep(0.65)
         await _drain(tracker)
 
@@ -2550,10 +2553,10 @@ def test_hangup_tts_double_stall_retries_only_once_then_ends(
 
     async def _drive() -> None:
         tracker._schedule_hang_up("character_hung_up")
-        # Never send any speaking frame: first wait (0.5 shrunk) expires →
-        # retry → retry wait (0.3 shrunk) expires → call_end → safety
-        # EndFrame after the client-drain timeout (0.1 shrunk). _drain
-        # runs the hang-up task to completion.
+        # Never send any speaking frame: stall-detection window (0.25
+        # shrunk) expires → retry → retry wait (0.3 shrunk) expires →
+        # call_end → safety EndFrame after the client-drain timeout (0.1
+        # shrunk). _drain runs the hang-up task to completion.
         await _drain(tracker)
 
     _run(_drive())
@@ -2579,6 +2582,35 @@ def test_hangup_tts_double_stall_retries_only_once_then_ends(
     assert idx_first < idx_retry < idx_end_env < idx_end_frame, (
         "strict order: exit line < retry < call_end < EndFrame"
     )
+
+
+def test_hangup_stall_retry_fires_at_detection_window_not_full_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call 277 follow-up (Walid: 6 s of dead air before the retry feels
+    like a bug) — the silent-stall verdict only needs to know whether the
+    line's audio ever STARTED, so the retry must fire at the
+    `_HANG_UP_TTS_STALL_DETECT_SECONDS` mark (0.25 shrunk), NOT at the
+    full completion cap (`_HANG_UP_TTS_TIMEOUT_SECONDS`, 0.5 shrunk)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_fast_easy())
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker._schedule_hang_up("character_hung_up")
+        # Past pre-TTS (0.01) + stall detect (0.25) but well SHORT of the
+        # 0.5 completion cap the pre-follow-up code waited for.
+        await asyncio.sleep(0.38)
+        tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
+        assert len(tts) == 2, (
+            "the retry must already be queued at the stall-detection mark "
+            "(it used to wait the full completion cap)"
+        )
+        # Release the retry wait and finish the sequence cleanly.
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
 
 
 def test_bot_speech_before_exit_push_does_not_mask_the_stall_retry(

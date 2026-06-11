@@ -62,10 +62,10 @@ The hang-up sequence is a second `asyncio.Task` that emits:
   2. ~0.5 s pause to let the envelope flush over SCTP
   3. `TTSSpeakFrame(<exit_line>)` — character delivers the line
   4. Wait for `BotStoppedSpeakingFrame` (6.0 s safeguard against stuck
-     TTS). If that wait expires with ZERO audio observed since the push,
-     re-queue the SAME line exactly once and wait up to 5.0 s more
-     (call 277, 2026-06-11 — a silent Cartesia stall ate the goodbye;
-     see `_await_exit_line_delivery`)
+     TTS). If ZERO audio has been observed by the 3.0 s stall-detection
+     mark, re-queue the SAME line exactly once and wait up to 5.0 s
+     more (call 277, 2026-06-11 — a silent Cartesia stall ate the
+     goodbye; see `_await_exit_line_delivery`)
   5. `{"type":"call_end","data":{...}}` envelope with reason + survival %
   6. Wait 8.0 s as a safety bound for the client to drain its local
      audio playback and disconnect itself (the canonical termination
@@ -159,17 +159,29 @@ _PROMPT_PLAYBACK_TIMEOUT_SECONDS = 10.0
 # ============================================================
 
 # Safety cap so a stuck TTS during the hang-up exit line cannot wedge
-# the call indefinitely. 6.0 s is generous for a 2-sentence line.
+# the call indefinitely. 6.0 s is generous for a 2-sentence line. This
+# governs LINE COMPLETION (BotStoppedSpeakingFrame) when audio is
+# actually flowing; the silent-stall decision happens much earlier, at
+# `_HANG_UP_TTS_STALL_DETECT_SECONDS` below.
 _HANG_UP_TTS_TIMEOUT_SECONDS = 6.0
 
+# Call 277 follow-up (2026-06-11, Walid: "6 s feels like a bug") — how
+# long after the exit-line push we wait before declaring a SILENT stall
+# (zero audio at the transport) and re-queuing. First audio normally
+# reaches the transport 0.3-1.0 s after dispatch, and this signal is
+# SERVER-side (Cartesia → us), untouched by the phone's network — so
+# 3.0 s is a 3-10x margin over the worst nominal case while halving the
+# dead air vs the 6.0 s completion cap. Do NOT lower it further: a
+# slow-but-alive synthesis riding a Cartesia WebSocket reconnect (~1-2 s)
+# would get re-queued on top of itself → back-to-back double goodbye.
+_HANG_UP_TTS_STALL_DETECT_SECONDS = 3.0
+
 # Call 277 (2026-06-11) — bounded wait for the SINGLE re-queue of an exit
-# line whose first synthesis stalled silently (zero audio ever reached the
-# transport; the TTSWatchdog's `no_audio_within_5.0s` WARN is the sibling
-# signal ~1 s before the wait above expires). 5.0 s covers synthesis
-# dispatch + first audio + a short line's playout-start on the retry; a
-# second stall simply expires this wait and the call-end path proceeds —
-# the worst-case extra delay on call teardown is exactly this constant.
-# See `_await_exit_line_delivery`.
+# line whose first synthesis stalled silently (zero audio ever reached
+# the transport). 5.0 s covers synthesis dispatch + first audio + a short
+# line's playout on the retry; a second stall simply expires this wait
+# and the call-end path proceeds — the worst-case extra delay on call
+# teardown is bounded by this constant. See `_await_exit_line_delivery`.
 _HANG_UP_TTS_RETRY_TIMEOUT_SECONDS = 5.0
 
 # Brief pauses to let envelopes flush over the data channel before the
@@ -1245,55 +1257,80 @@ class PatienceTracker(FrameProcessor):
         pre-call warm-up (`tts_warmup.py`); the exit line gets this bounded
         in-flight retry instead.
 
-        Decision matrix when the first wait times out:
-          - `_exit_line_audio_started` True → audio reached the transport;
-            the line is playing, just not finished within the cap (long line
-            or slow playout). Keep the pre-existing behavior: WARN + proceed
-            to `call_end` (the client drains in-flight audio after `call_end`
-            before disconnecting, so nothing is cut). NEVER re-queue here — a
-            second push would double-speak the goodbye, breaking the Story
+        Two-phase wait (call 277 follow-up — Walid: a 6 s gap before the
+        retry "feels like a bug"; the stall verdict doesn't need the line
+        to FINISH, only to know whether its audio ever STARTED, which is
+        knowable within ~1 s on the happy path):
+
+          Phase A — `_HANG_UP_TTS_STALL_DETECT_SECONDS` (3.0 s): wait for
+          the line to complete outright (short line, fast TTS). On expiry,
+          branch on `_exit_line_audio_started`:
+          - True → audio reached the transport; the line is playing, just
+            not finished. Phase B: keep waiting for completion up to the
+            original overall cap (`_HANG_UP_TTS_TIMEOUT_SECONDS` total).
+            On phase-B expiry: WARN + proceed to `call_end` (the client
+            drains in-flight audio after `call_end` before disconnecting,
+            so nothing is cut). NEVER re-queue on this branch — a second
+            push would double-speak the goodbye, breaking the Story
             6.25/6.22 invariant that the exit line is the sole final
             utterance.
-          - False → silent stall. Re-push the SAME resolved `line` once
-            (no second `_resolve_exit_line` round-trip) with
-            `append_to_context=False` — the first push already recorded the
-            text in the LLM context via its TTSTextFrame, and the Story 7.1
-            teardown debrief must not read a doubled goodbye — then wait a
-            further `_HANG_UP_TTS_RETRY_TIMEOUT_SECONDS`.
+          - False → silent stall, declared at 3 s instead of 6. Re-push
+            the SAME resolved `line` once (no second `_resolve_exit_line`
+            round-trip) with `append_to_context=False` — the first push
+            already recorded the text in the LLM context via its
+            TTSTextFrame, and the Story 7.1 teardown debrief must not read
+            a doubled goodbye — then wait a further
+            `_HANG_UP_TTS_RETRY_TIMEOUT_SECONDS`.
 
-        Bounded by construction: ONE retry maximum, so the call-end path is
-        delayed at most `_HANG_UP_TTS_RETRY_TIMEOUT_SECONDS` beyond today's
-        cap. `_run_hang_up` pushes the `call_end` envelope strictly AFTER
-        this method returns, so the retry can never race it. The TTSWatchdog
-        stays the untouched final backstop: the retry's own TTSStartedFrame
-        re-arms it (`test_watchdog_fires_at_most_once_per_turn`), and a
-        second stall just expires the second wait below.
+        Bounded by construction: ONE retry maximum. `_run_hang_up` pushes
+        the `call_end` envelope strictly AFTER this method returns, so the
+        retry can never race it. The TTSWatchdog backstop is untouched
+        code-wise; note its 5 s timer for the FIRST synthesis is re-armed
+        by the retry's own TTSStartedFrame
+        (`test_watchdog_fires_at_most_once_per_turn`), so on the hang-up
+        path the `hangup_exit_line_retry` INFO line below is the primary
+        journalctl signal for the stall, and a `cartesia_tts_watchdog_fired`
+        WARN after it means the RETRY stalled too.
         """
+        # Phase A — stall-detection window.
         try:
             await asyncio.wait_for(
                 self._speaking_done.wait(),
-                timeout=_HANG_UP_TTS_TIMEOUT_SECONDS,
+                timeout=_HANG_UP_TTS_STALL_DETECT_SECONDS,
             )
             return
         except asyncio.TimeoutError:
             pass
 
         if self._exit_line_audio_started:
-            # Audio flowed but the turn didn't close within the cap —
-            # pre-call-277 behavior, byte-identical log line.
-            logger.warning(
-                "PatienceTracker hang-up TTS timeout after {}s",
-                _HANG_UP_TTS_TIMEOUT_SECONDS,
-            )
-            return
+            # Audio is flowing — not a stall. Phase B: wait out the rest of
+            # the original completion cap; on expiry keep the pre-call-277
+            # behavior, byte-identical log line.
+            try:
+                await asyncio.wait_for(
+                    self._speaking_done.wait(),
+                    timeout=max(
+                        0.0,
+                        _HANG_UP_TTS_TIMEOUT_SECONDS
+                        - _HANG_UP_TTS_STALL_DETECT_SECONDS,
+                    ),
+                )
+                return
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "PatienceTracker hang-up TTS timeout after {}s",
+                    _HANG_UP_TTS_TIMEOUT_SECONDS,
+                )
+                return
 
-        # Smoke-gate grep anchor (the sibling `cartesia_tts_watchdog_fired`
-        # WARN has already landed ~1 s earlier for this same synthesis).
+        # Smoke-gate grep anchor — the primary stall signal on this path
+        # (the watchdog's 5 s timer gets re-armed by the retry's own
+        # TTSStartedFrame before it can fire for the first synthesis).
         logger.info(
             "hangup_exit_line_retry reason={} no_audio_within={}s — "
             "re-queuing exit line once",
             reason,
-            _HANG_UP_TTS_TIMEOUT_SECONDS,
+            _HANG_UP_TTS_STALL_DETECT_SECONDS,
         )
         # Fresh event so the retry's own BotStoppedSpeakingFrame releases
         # the wait below — assigned BEFORE the push, same non-None-target
