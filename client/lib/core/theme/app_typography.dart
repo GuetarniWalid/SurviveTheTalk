@@ -116,4 +116,14 @@ class AppTypography {
     fontWeight: FontWeight.w400,
     fontStyle: FontStyle.italic,
   );
+
+  // Debrief screen (Story 7.3 — debrief-screen-design.md). The hesitation
+  // duration number ("4.2 seconds") is its card's focal point — same 24px
+  // as callEndedPercent but Bold, per the design's big-number-then-context
+  // reading flow.
+  static const TextStyle debriefDuration = TextStyle(
+    fontFamily: fontFamily,
+    fontSize: 24,
+    fontWeight: FontWeight.w700,
+  );
 }

@@ -31,7 +31,7 @@ import '../../../core/api/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/theme/call_colors.dart';
-import '../../debrief/views/debrief_placeholder_screen.dart';
+import '../../debrief/views/debrief_screen.dart';
 import '../../scenarios/character_catalog.dart';
 import '../../scenarios/models/scenario.dart';
 import '../repositories/call_repository.dart';
@@ -332,12 +332,12 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
     Navigator.of(context).pushReplacement(route);
   }
 
-  /// AC-C11 / Decision E — the debrief route (currently the Story 7.x
-  /// placeholder). The fetched payload rides `RouteSettings.arguments` so
-  /// Story 7.3's real debrief screen can consume it without this story
-  /// touching the placeholder (boundary, Decision F). Fade-in over
-  /// 300-900 ms of the 900 ms window — overlapping this screen's 0-600 ms
-  /// fade-out for the design's 300 ms crossfade.
+  /// AC-C11 / Decision E — the real debrief route (Story 7.3). The
+  /// payload + callId + repository ride the constructor; the payload ALSO
+  /// stays on `RouteSettings.arguments` (the Decision-F handoff contract
+  /// this story's tests assert). Fade-in over 300-900 ms of the 900 ms
+  /// window — overlapping this screen's 0-600 ms fade-out for the
+  /// design's 300 ms crossfade.
   Route<void> _debriefRoute() {
     return PageRouteBuilder<void>(
       settings: RouteSettings(
@@ -345,8 +345,11 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
         arguments: _debriefPayload,
       ),
       transitionDuration: CallEndedScreen.kExitTransition,
-      pageBuilder: (_, _, _) =>
-          DebriefPlaceholderScreen(scenarioId: widget.scenario.id),
+      pageBuilder: (_, _, _) => DebriefScreen(
+        payload: _debriefPayload,
+        callId: widget.callId,
+        callRepository: widget.callRepository,
+      ),
       transitionsBuilder: (_, animation, _, child) => FadeTransition(
         opacity: CurvedAnimation(
           parent: animation,
