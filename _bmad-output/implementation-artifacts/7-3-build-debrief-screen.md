@@ -110,6 +110,8 @@ ACs 1-8 are verbatim from epics.md (Epic 7, Story 7.3, lines ~1337-1371). AC9-AC
 
 ## Pixel 9 Smoke Gate (on-device validation — owed before review → done)
 
+> **GATE RESULT — PASSED, signed off by Walid 2026-06-11** ("j'ai testé, ça marche bien. J'ai bien le rapport. Tout semble OK."). The debrief renders end-to-end on device. Side observation recorded at sign-off: Walid is unsatisfied with the report's STYLE and CONTENT (visual design, depth of explanations, hesitation-rule accuracy, areas-to-work-on quality, lack of actionable/tappable items) — explicitly NOT a 7.3 defect (the screen faithfully implements the locked design docs); the overhaul is spun off as Story 7.5. **Story stays `review` — waiting ONLY on the formal code review for the `review → done` flip.**
+
 Client-only story: no VPS deploy, no migration, no server change (the server Smoke Test Gate section is intentionally omitted). The on-device gate validates the post-call render path end-to-end. Ready-to-play script for Walid:
 
 1. **Scenario:** open **The Waiter** (any difficulty), start the call.
