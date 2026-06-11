@@ -157,6 +157,17 @@ Bands were derived from the authored difficulty (`difficulty-calibration.md` §4
 - [ ] **T14 — Deploy + smoke gate** (Smoke Test Gate below)
   - [ ] Push → `deploy-server.yml` (auto DB backup pre-deploy) → verify migration 013 applied + seeder re-seeded + hub order intact → hand Walid the Pixel 9 script
 
+### Review Findings (formal /bmad-code-review, 2026-06-11)
+
+Three parallel layers: Blind Hunter (diff-only, 11 raw findings), Edge Case Hunter (path tracing, 10 raw findings), Acceptance Auditor (diff vs spec: **0 violations** — AC1-AC9 all verified satisfied, 10/10 hard guardrails respected, the 3 self-declared deviations accurate, NO undeclared deviations). Triage: 0 decision-needed · 2 patch · 0 defer · 20 dismissed.
+
+- [x] [Review][Patch] `resolve_patience_config` unknown-difficulty RuntimeError lost the scenario context [server/pipeline/scenarios.py:502] — the 6.28 rewrite dropped the `Scenario {scenario_id!r}` prefix that every other RuntimeError in the function (and the twin message in `load_scenario_base_prompt`) carries. Applied: message now opens with the scenario id; the pinning test matches on the bad value (`"trivial"`), unaffected.
+- [x] [Review][Patch] Seeder comment still framed `ladder_impatience_seconds` as a "per-difficulty override" [server/db/seed_scenarios.py:136] — same retired-mental-model wording class as the T4 schemas.py re-word. Applied: "nullable patience override; null → use the ACTIVE global-difficulty preset value".
+
+Dismissed highlights (all disproven against the tree): bool `display_order` IS guarded + tested (`test_seed_scenarios_rejects_non_int_display_order`); ENGINE_VERSION ledger revalidation is the §6 design, no boot reset needed; the calibration hash is allowlist-based (`_BEHAVIOUR_META_KEYS`) so a vestigial YAML `difficulty` key cannot skew it; `run_calibration` resolves `None → DEFAULT_DIFFICULTY` and documents the `data=`-same-difficulty contract; the COALESCE 999999999 sentinel is the spec'd D1 design (collision needs a deliberately authored value); the "malformed Dart fixtures" claim was a diff-line-number misread (analyzer clean, 451 green); old-server+new-client is safe (`fromJson` ignores unknown keys).
+
+Gates re-run post-patch (review stage): `ruff check` clean · `ruff format --check` clean · `pytest` 880 passed · `flutter analyze` No issues · `flutter test` 451 passed.
+
 ---
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
@@ -375,4 +386,5 @@ Modified (docs/tracking):
 
 ## Change Log
 
+- 2026-06-11 — Formal /bmad-code-review COMPLETE (3 layers: Blind Hunter / Edge Case Hunter / Acceptance Auditor). 0 decision-needed, 2 trivial patches applied same-turn (scenario-id context in the `resolve_patience_config` error message; seeder patience-override comment re-worded to global-difficulty), 0 deferred, 20 dismissed. Auditor: AC1-AC9 verified satisfied, all 10 guardrails respected, no undeclared deviations. Gates re-run green post-patch. **Story stays `review` — waiting ONLY on the Pixel 9 smoke gate (re-attempt on a good connection) for the `review → done` flip.**
 - 2026-06-11 — Story 6.28 dev-story complete (T1-T13): per-scenario difficulty removed across YAML/DB/API/runtime/tools/client/docs; `display_order` hub ordering (D1); `DEFAULT_DIFFICULTY = "easy"` server fallback (D2); calibration re-anchored on run-level difficulty, `ENGINE_VERSION` 5→6 (D3). Gates: server ruff clean + pytest 880 (+5 net); client analyze clean + 451 tests. Golden-only post-EV6: waiter/girlfriend/cop-interrogation/landlord PASS; mugger + cop_hard pre-existing known-fails documented (NOT-6.28). Status → review; T14 (deploy + Pixel 9 smoke gate) pending.

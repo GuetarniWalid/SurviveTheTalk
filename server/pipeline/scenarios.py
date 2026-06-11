@@ -501,7 +501,8 @@ def resolve_patience_config(scenario_id: str, difficulty: str | None = None) -> 
         difficulty = DEFAULT_DIFFICULTY
     if difficulty not in _DIFFICULTY_PRESETS:
         raise RuntimeError(
-            f"difficulty {difficulty!r} is not one of {sorted(_DIFFICULTY_PRESETS)}."
+            f"Scenario {scenario_id!r}: difficulty {difficulty!r} is not one of "
+            f"{sorted(_DIFFICULTY_PRESETS)}."
         )
 
     preset = _DIFFICULTY_PRESETS[difficulty]
