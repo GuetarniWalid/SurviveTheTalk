@@ -7,9 +7,9 @@ Status: ready-for-dev
 | Stale statement (epics.md / architecture.md / UX spec) | Current truth (code wins) | Evidence |
 |---|---|---|
 | `briefing_text` column (architecture.md §scenarios table, epics.md AC "displays the scenario's `briefing_text`") | The column shipped in Story 5.1 as **`briefing`** — a JSON object `{vocabulary, context, expect}` stored as TEXT, `NOT NULL`. There is NO `briefing_text` column and none must be added. | `server/db/migrations/004_scenarios_and_user_progress.sql`, `server/db/seed_scenarios.py:126`, `server/pipeline/scenarios/the-waiter.yaml:222-225` |
-| "section-title (14px SemiBold) for headers" (epic AC4 / ux-design-specification.md typography table) | The **shipped** debrief section-header pattern is `AppTypography.headline` (18/600) + `Semantics(header: true)` (`_SectionHeader`). Mirror the shipped pattern — the AC's intent is "established styles", and the established style is the code. | `client/lib/features/debrief/views/debrief_screen.dart:484-499` |
+| "section-title (14px SemiBold) for headers" (epic AC4 / ux-design-specification.md typography table) | SUPERSEDED by the 2026-06-12 design pass (Walid-validated, see Decision E): section labels are 12/500 UPPERCASE eyebrow labels in `textSecondary` with +1.0 letter-spacing — NOT bold white headers. Epic AC4's intent ("established typography on the dark theme") is honored via tokens + composed Inter styles. | Decision E + §Layout spec below |
 | "a briefing screen **or dialog**" (epic AC1) | The app already committed to a **screen**: route `/briefing/:scenarioId` + `BriefingPlaceholderScreen` ("Stub screen used until Story 7.4 ships the real pre-scenario briefing") + the ScenarioCard's whole-card tap with semantic hint "View briefing" already navigates there. This story replaces the placeholder; it does not introduce a dialog. | `client/lib/app/router.dart:192-200`, `client/lib/features/briefing/views/briefing_placeholder_screen.dart:9`, `client/lib/features/scenarios/views/widgets/scenario_card.dart:37-47` |
-| No Figma frame exists for the briefing screen (checked `figma-export/.figma/` — no `*brief*` extract) | Layout below is derived from established tokens + shipped screen patterns. Walid iterates on-device post-implementation (this is the feature, not a defect — `feedback_mvp_iteration_strategy`). | — |
+| No Figma frame exists for the briefing screen (checked `figma-export/.figma/` — no `*brief*` extract) | The design was produced by a dedicated research pass and VALIDATED by Walid 2026-06-12 (Decision E) — the §Layout spec + §Copy deck are BINDING, not a derived default. On-device iteration remains possible post-implementation but starts from the validated design. | Decision E |
 
 ## Decisions (resolved defaults — follow unless Walid overrides before dev)
 
@@ -26,7 +26,10 @@ Expose the existing `scenarios.briefing` column on `GET /scenarios` list items, 
 Both handlers converge on a private `_startCall(scenario)` extracted from today's `_onCallTap` body (content-warning sheet → POST `/calls/initiate` → push `CallScreen` on the root navigator). The call-initiation orchestration NEVER moves into the briefing screen — the screen is a pure render + confirm surface, mirroring `showContentWarningSheet`'s await-a-bool contract.
 
 ### Decision D — Sequencing with the content warning (RESOLVED)
-Briefing FIRST, content warning AFTER confirm, for first-timers on warned scenarios (mugger/cop/landlord): briefing screen → "Call" → "HEADS UP / Buckle up" sheet → "Pick up" → POST. The warning's UX decision record is LAW (re-appears every time, no "don't show again", `content-warning-dialog.md`) — the briefing never absorbs or replaces it. Returning users keep today's flow untouched: warning sheet (if any) → POST.
+Briefing FIRST, content warning AFTER confirm, for first-timers on warned scenarios (mugger/cop/landlord): briefing screen → "Pick up" → "HEADS UP / Buckle up" sheet → "Pick up" → POST. Two consecutive "Pick up" taps on warned first attempts is INTENTIONAL (same fiction, same action). The warning's UX decision record is LAW (re-appears every time, no "don't show again", `content-warning-dialog.md`) — the briefing never absorbs or replaces it. Returning users keep today's flow untouched: warning sheet (if any) → POST.
+
+### Decision E — Visual + copy design: "The Handler's Brief" (RESOLVED — Walid validated 2026-06-12)
+A dedicated research pass (6 parallel researchers: acclaimed game mission briefings / award-winning wellness pre-session screens / speaking-practice apps / dark-minimal design canon / UX-writing masters / detail→start pattern anatomy → distilled rulebook → 3 competing concepts → 3-judge panel: taste, soul, reality) produced the winning design, corrected per the judges and validated by Walid. The full binding spec is §"Layout spec" + §"Copy deck" in Dev Notes — it REPLACES any earlier layout sketch. Key arbitrations baked in: the masked-phone-number prop was REJECTED (2/3 judges: reads as a glitch, anxiety amplifier); all color discipline is expressed in AppColors tokens (inline hex would fail `theme_tokens_test`); ONE new token `AppColors.hairline` is sanctioned with its full gate cost. Signature references: Hitman briefings (clinical second-person register, size-contrast-as-cinema), MGSV episode cards (fixed-lockup ritual), Speak (3 bounded blocks, quoted speakable phrases), Mela (weight-in-prose emphasis, no chips), Flighty (one rail, above-the-fold discipline), Persona 5/Opal (one flat consequence line at the threshold).
 
 ## Story
 
@@ -45,13 +48,13 @@ so that I know what to expect and can prepare key vocabulary.
 ### Client
 
 4. **AC-C1 — model parse.** `Scenario` gains `final Map<String, String>? briefing`, parsed defensively exactly like `endPhrases` (keep only string→string entries; absent / non-map → null; never throws). A `bool get hasBriefingContent` returns true iff at least one of the three values is a non-empty trimmed string.
-5. **AC-C2 — real BriefingScreen.** `BriefingPlaceholderScreen` is replaced by `BriefingScreen` (StatefulWidget, no bloc — sole state is a pop-once guard). Dark theme (`AppColors.background`), back arrow top-left (pop `false`; `canPop ? pop : go(root)` fallback kept from the placeholder), scrollable body: character avatar (100px circle, `assets/images/characters/<riveCharacter>.jpg` with `errorBuilder` → flat `avatarBg` circle fallback), scenario title, then up to three sections — **Context**, **What to expect**, **Key phrases** — each `_SectionHeader`-style header (`headline` + `Semantics(header: true)`) over `body`-style text rendered **verbatim** from the briefing map (`context` / `expect` / `vocabulary` respectively — do NOT split the vocabulary string on commas, it is authored prose). A section whose value is null/empty/whitespace is hidden entirely (no bare header). Pinned bottom CTA: full-width accent `ElevatedButton` (StadiumBorder, `Icons.phone_outlined`, label **"Call"**, `Semantics` label `Call <title>`) that pops `true` exactly once.
+5. **AC-C2 — real BriefingScreen ("The Handler's Brief", Decision E).** `BriefingPlaceholderScreen` is replaced by `BriefingScreen` (StatefulWidget, no bloc — state is the pop-once guard + the scroll controller for the conditional hairline). One left alignment rail for everything; nothing centered. Top to bottom: back arrow 44×44 top-left (pop `false`; `canPop ? pop : go(root)` fallback kept) → 72px circle character photo (`assets/images/characters/<riveCharacter>.jpg`, `errorBuilder` → flat `avatarBg` circle, `Semantics` label `'<title>, photo'`) → kicker **`INCOMING CALL`** (12/500 uppercase, +1.0 letter-spacing, `textSecondary`) → scenario title (`scenario.title`, 24/700 `textPrimary`, height 1.2, maxLines 2 ellipsis, `Semantics(header: true)`) → fact line **`Live voice call · English only · No script`** (caption 13/400 `textSecondary`) → the dossier triad in fixed order, three IDENTICAL eyebrow+prose sections wrapped in `MergeSemantics`: **`THE SITUATION`** → `briefing['context']` (16/400 `textPrimary`, height 1.5), **`WHAT TO EXPECT`** → `briefing['expect']` (16/400), **`SAY THIS`** → `briefing['vocabulary']` **verbatim** at **16/500** (weight + last-position are the ONLY emphasis — no box, no chips, no parsing; the authored quotation marks are the chips). A section whose value is null/empty/whitespace is hidden entirely (no bare eyebrow). Zero boxes, cards, icons, or dividers in the body — the 8px-inside / 32px-between spacing ratio does all grouping. Pinned threshold footer: conditional 1px `AppColors.hairline` top edge (visible ONLY when content actually scrolls beneath the footer) → stakes line **`They can hang up on you. So can you.`** (caption 13/400 *italic* `textSecondary`, no maxLines clamp) → 12px → the locked CTA pill (full-width, StadiumBorder, `AppColors.accent`, `Icons.phone_outlined`, label **"Pick up"** 14/700 dark text, height ≥48) that pops `true` exactly once.
 6. **AC-C3 — route carries the Scenario.** The `/briefing/:scenarioId` GoRoute passes the full `Scenario` via `state.extra` (both entries push with `extra: scenario`) and gains a route-level `redirect` → `AppRoutes.root` when `extra` is not a `Scenario` (deep-link / refresh entry — graceful bounce, no fallback widget).
 7. **AC-C4 — first-attempt gate (epic AC1).** Tapping the **call icon** on a scenario with `attempts == 0` that has briefing content and was not initiated this session pushes `BriefingScreen` BEFORE any call initiation — no `POST /calls/initiate` fires until the user confirms.
 8. **AC-C5 — confirm proceeds normally (epic AC2).** Briefing pops `true` → the unchanged chain runs: content-warning sheet if `contentWarning != null` (Decision D order) → `POST /calls/initiate` (with global difficulty) → `CallScreen` pushed on the root navigator (connecting animation untouched). Pop `false`/back → hub, zero network calls.
 9. **AC-C6 — skip for returning users (epic AC3).** `attempts > 0` OR already initiated this session OR no briefing content → call-icon tap runs the chain directly (content warning still shown when applicable), byte-identical to today's behavior.
 10. **AC-C7 — browse entry.** Whole-card tap pushes the same screen with the same confirm contract (confirm from browse starts the call chain too). Double-tap on the card or the call icon never double-pushes the route, and double-tap on the CTA / back never double-pops (a second pop would dismiss the hub).
-11. **AC-C8 — design-system + a11y compliance (epic AC4).** Zero new color tokens (theme_tokens_test stays green), zero new typography tokens (inline styles compose `AppTypography.fontFamily` like `_DifficultyHubLine` / the content-warning sheet where no token fits), ≥44px touch targets, `Semantics` on back/CTA/headers, no overflow at 320×568 with `textScaler` 1.5 (scrollable body absorbs growth; CTA stays reachable because it is pinned, not in-scroll).
+11. **AC-C8 — design-system + a11y compliance (epic AC4 + Decision E).** Exactly ONE new color token: `AppColors.hairline = Color(0x14FFFFFF)` added with its full gate cost (values list + `theme_tokens_test` count assertion bumped + the UX-DR1 governance note, per the house token procedure). Two-ink discipline in token terms: text colors are ONLY `textPrimary` (title + the 3 server strings) and `textSecondary` (all chrome: kicker, eyebrows, fact line, stakes line); `AppColors.accent` is referenced exactly ONCE (the pill fill — green is never a text/icon tint elsewhere); `destructive`/`warning`/`statusCompleted` zero references. Zero new typography tokens (inline composed Inter styles per the `_DifficultyHubLine`/content-warning-sheet precedent). ≥44px touch targets (exactly two interactive elements: back arrow + pill), `Semantics` on back/CTA/title-header/sections, no RenderFlex overflow at 320×568 with `textScaler` 1.5 **including the stakes line wrapping to 2 lines** (footer grows, body scrolls under it — never compress spacing/line-height to avoid scrolling).
 
 ## Tasks / Subtasks
 
@@ -66,11 +69,12 @@ so that I know what to expect and can prepare key vocabulary.
 - [ ] **Task 3 — Client: model** (AC-C1)
   - [ ] 3.1 `scenario.dart`: `briefing` field + defensive `fromJson` parse (copy the `endPhrases` block shape) + `hasBriefingContent` getter + doc comment citing Story 7.4.
   - [ ] 3.2 Model tests: present / absent / non-map / mixed-type entries filtered / all-empty → `hasBriefingContent == false`.
-- [ ] **Task 4 — Client: BriefingScreen + router** (AC-C2, AC-C3)
-  - [ ] 4.1 Create `client/lib/features/briefing/views/briefing_screen.dart` per AC-C2 layout (local layout consts like DebriefScreen; reuse `AppSpacing.screenHorizontal`/`screenVerticalList`/`avatarLarge`; title inline 24/700 `fontFamily` style, `textPrimary`).
-  - [ ] 4.2 `router.dart`: swap the briefing GoRoute to `BriefingScreen(scenario: state.extra! as Scenario)` + route-level `redirect` guarding non-`Scenario` extra → root. Keep `_fadePage`.
-  - [ ] 4.3 Delete `briefing_placeholder_screen.dart` (+ its test file if one exists; fix any harness references — `scenario_list_screen_test.dart:129` stubs its own briefing route, verify it still compiles).
-  - [ ] 4.4 Widget tests (`test/features/briefing/views/briefing_screen_test.dart`): renders avatar/title/3 sections; hides empty sections (waiter-style all-empty fixture → no headers); CTA pops `true`; back pops `false`; CTA double-tap pops once; 320×568 @ textScaler 1.5 no overflow; semantics (header flags, `Call <title>` button, back button).
+- [ ] **Task 4 — Client: BriefingScreen + router** (AC-C2, AC-C3, AC-C8)
+  - [ ] 4.1 Add `AppColors.hairline = Color(0x14FFFFFF)` to `app_colors.dart` with the UX-DR1 governance note; bump the `theme_tokens_test` count assertion + values list in the same change.
+  - [ ] 4.2 Create `client/lib/features/briefing/views/briefing_screen.dart` per the §Layout spec (local layout consts like DebriefScreen — `_kAvatarSize 72`, gaps 16/8/8/40/32/12; reuse `AppSpacing.screenHorizontal`; the four composed Inter styles defined once at the top of the file; the §Copy deck strings as consts UNDER the banned-copy comment block, verbatim).
+  - [ ] 4.3 `router.dart`: swap the briefing GoRoute to `BriefingScreen(scenario: state.extra! as Scenario)` + route-level `redirect` guarding non-`Scenario` extra → root. Keep `_fadePage` (the 500ms fade is the title-card beat — no further motion ever).
+  - [ ] 4.4 Delete `briefing_placeholder_screen.dart` (+ its test file if one exists; fix any harness references — `scenario_list_screen_test.dart:129` stubs its own briefing route, verify it still compiles).
+  - [ ] 4.5 Widget tests (`test/features/briefing/views/briefing_screen_test.dart`): renders avatar/kicker/title/fact line/3 eyebrow sections in order; vocabulary rendered verbatim in exactly one Text at w500; hides empty sections (all-empty fixture → no bare eyebrows); stakes line + "Pick up" pill present; CTA pops `true`; back pops `false`; CTA double-tap pops once; hairline hidden when content fits / visible when it scrolls; 320×568 @ textScaler 1.5 zero RenderFlex overflow incl. 2-line stakes wrap; semantics (title header flag, merged sections, back + pill buttons); review greps per AC-C8 (accent referenced once, destructive/warning zero, each server field feeds exactly one Text with no string operations).
 - [ ] **Task 5 — Client: hub gate** (AC-C4..C7)
   - [ ] 5.1 `scenario_list_screen.dart`: extract `_startCall(BuildContext, Scenario)` from `_onCallTap` (content-warning → POST → push CallScreen — chain order untouched); add `_initiatedThisSession` set, marked right after `initiateCall` succeeds. **Flag choreography (precise — avoid a self-block):** BOTH handlers (`_onCallTap`, `_onCardTap`) start with `if (_initiating) return; setState(() => _initiating = true);`, run their flow (briefing await included — so double-taps can't double-push the route), and reset the flag in `finally`. `_startCall` itself contains NO `_initiating` check or set — it is only ever invoked with the flag already held by its caller.
   - [ ] 5.2 `_onCallTap`: gate per Decision B → `context.push<bool>('${AppRoutes.briefing}/${scenario.id}', extra: scenario)` → `ready != true → return` → `context.mounted` check → `_startCall`.
@@ -113,16 +117,16 @@ so that I know what to expect and can prepare key vocabulary.
 **Ready-to-play script (responses approximate — live LLM; the briefing screen itself is deterministic):**
 
 1. Open the app → hub. The Waiter card shows NO stats line (reset worked). Tap the **phone icon** on The Waiter.
-   💰 **MONEY MOMENT #1:** instead of the call starting, the dark **briefing screen** fades in — waiter avatar + title + "Context" / "What to expect" / "Key phrases" sections + green **Call** button. No connecting screen, no audio.
+   💰 **MONEY MOMENT #1:** instead of the call starting, the dark **briefing screen** fades in — everything aligned on the LEFT edge: small waiter photo (72px), grey caps **INCOMING CALL** over the big white **The Waiter**, the line `Live voice call · English only · No script`, then three grey caps labels **THE SITUATION / WHAT TO EXPECT / SAY THIS** with white text under each, and at the bottom the italic line *They can hang up on you. So can you.* above the green **Pick up** pill. No connecting screen, no audio, nothing centered, no boxes.
 2. Tap the **back arrow**. → Back on the hub, NO call started, quota untouched.
-3. Tap the **phone icon** on The Waiter again → briefing appears again (still never attempted). Tap **Call**.
+3. Tap the **phone icon** on The Waiter again → briefing appears again (still never attempted). Tap **Pick up**.
    → Normal call start (no content warning on the waiter): connecting → Tina answers. Say: **"Hi, I'd like to order the soup of the day."** → she responds in character. Then hang up (red button), let Call Ended → Debrief play out, back-arrow to the hub.
 4. Tap the **phone icon** on The Waiter a third time.
    💰 **MONEY MOMENT #2:** the briefing does NOT appear — the call starts directly (session memory covers the stale list). Hang up immediately, back out to the hub.
 5. Tap the waiter **card itself** (name/avatar area, not the phone icon).
-   💰 **MONEY MOMENT #3:** the same briefing screen opens in browse mode — re-readable any time. Back-arrow out.
+   💰 **MONEY MOMENT #3:** the same briefing screen opens in browse mode — re-readable any time, identical layout (the "INCOMING CALL" ritual replays). Back-arrow out.
 6. Tap the **phone icon** on The Mugger (reset + content-warned).
-   💰 **MONEY MOMENT #4:** briefing first → tap **Call** → THEN the "HEADS UP / Buckle up" sheet slides up → tap **Not now** → hub, no call burned.
+   💰 **MONEY MOMENT #4:** briefing first → tap **Pick up** → THEN the "HEADS UP / Buckle up" sheet slides up (two "Pick up" buttons in a row is intentional — same fiction) → tap **Not now** → hub, no call burned.
 7. Kill the app completely, reopen → tap the **phone icon** on The Waiter: no briefing (server now reports attempts ≥ 1 — the restart path trusts the server). Hang up if it connects.
 
 Gate boxes: ☐ #1 briefing-before-first-call ☐ #2 session skip ☐ #3 card-tap browse ☐ #4 briefing→warning order ☐ #7 server-truth after restart ☐ no crash / no layout overflow on the briefing screen.
@@ -148,9 +152,53 @@ briefing:
 ```
 Authoring rules (scenario-authoring-template.md §8): ≤3 vocabulary items, no checkpoint/exit-line spoilers, written in English, clinical register (not the character's voice). Section→key mapping: Context→`context`, What to expect→`expect`, Key phrases→`vocabulary`.
 
-### Layout spec (default — Walid iterates on-device)
+### Layout spec — "The Handler's Brief" (BINDING — Walid-validated 2026-06-12, Decision E)
 
-Dark `Scaffold` (`AppColors.background`), `SafeArea`, h-pad `AppSpacing.screenHorizontal` (20), v-pad `screenVerticalList` (30). Column: back-arrow row (placeholder's exact `canPop ? pop : go(root)` + `Semantics(button, 'Back to scenarios')`, ≥44px) → `Expanded(SingleChildScrollView(...))`: centered avatar `avatarLarge` (100, `ClipOval`, asset + `errorBuilder` fallback per `scenario_card.dart:_Avatar`) → title (inline `TextStyle(fontFamily: AppTypography.fontFamily, fontSize: 24, fontWeight: w700)`, `textPrimary`, centered) → sections (left-aligned: header `AppTypography.headline` + `Semantics(header: true)` / gap / `AppTypography.body` `textPrimary`, local `_kSectionGap`-style consts) → pinned bottom CTA outside the scroll: full-width `ElevatedButton` styled exactly like the content-warning "Pick up" (`content_warning_sheet.dart:241-267`: accent bg, `AppColors.background` fg, StadiumBorder, `Icons.phone_outlined` + 'Call', 14/700) with bottom safe-area padding. Copy ('Call', section header wording) is a soft default — flag changes to Walid, don't ask permission.
+The screen masquerades as the phone's own incoming-call card; the briefing IS part of the fiction. One left alignment rail at x = `AppSpacing.screenHorizontal` (20) for EVERYTHING above the pill. Dark `Scaffold` (`AppColors.background`). Body = `Column[ Expanded(SingleChildScrollView(controller: …, child: contentColumn)), ThresholdFooter inside bottom SafeArea ]`.
+
+**Type styles (defined once at the top of the file, Inter only, all via `AppTypography.fontFamily`):**
+- `_eyebrow` 12/500, UPPERCASE strings, letterSpacing 1.0, `textSecondary` — kicker + the 3 section labels
+- `_title` 24/700, height 1.2, `textPrimary`
+- `_body` 16/400, height 1.5 (24px on-grid leading), `textPrimary` — + a w500 variant for vocabulary
+- `_caption` 13/400, `textSecondary` — fact line; italic variant for the stakes line
+
+**Content column (CrossAxisAlignment.start), top to bottom:**
+1. Top bar: back-arrow IconButton 44×44, 24px glyph `textPrimary`, glyph optically aligned to the rail (compensate IconButton's internal padding), `Semantics(button, 'Back to scenarios')`. Nothing else — no app-bar title.
+2. 16 → **hero**: 72px circle (`ClipOval`, `assets/images/characters/<riveCharacter>.jpg`, `errorBuilder` → flat `avatarBg` circle per `scenario_card.dart:_Avatar`), left on the rail, non-interactive, `Semantics(label: '<title>, photo')`. The ONLY pictorial element on screen.
+3. 16 → **kicker** `INCOMING CALL` (`_eyebrow`). Identical on every scenario, forever — the ritual (a retry reads as "they're calling again", not remediation; in browse mode the small fiction is accepted).
+4. 8 → **title** `scenario.title` (`_title`, maxLines 2, ellipsis, `Semantics(header: true)`). The 12-caps → 24/700 size jump is the screen's entire cinema budget.
+5. 8 → **fact line** `Live voice call · English only · No script` (`_caption`, ' · ' separators). Logistics live here and ONLY here.
+6. 40 → **dossier triad**: one reusable `_BriefingSection(label, body, {weight})` wrapped in `MergeSemantics` (eyebrow → 8 → body; server string fed RAW into exactly one `Text`): `THE SITUATION` → context (16/400) → 32 → `WHAT TO EXPECT` → expect (16/400) → 32 → `SAY THIS` → vocabulary verbatim at **16/500** (block-level weight bump + last position = the only differentiation; no box, no hairline, no parsing — the authored quotation marks are the chips; nearest the CTA = freshest in working memory at tap). Empty/whitespace value → section omitted entirely.
+
+**Threshold footer (pinned, `background`, padding LTRB(20,12,20,16) + bottom SafeArea inset):**
+- Top edge: 1px `AppColors.hairline` line, rendered ONLY when scroll content actually extends beneath the footer (`maxScrollExtent > 0` via the scroll controller; re-check on metrics changes). The single permitted line on screen.
+- **Stakes line** `They can hang up on you. So can you.` (`_caption` italic, left on the rail, NO maxLines clamp) → 12 → the locked pill (full-width `ElevatedButton`, StadiumBorder, `accent` bg, `background` fg, `Icons.phone_outlined` + 'Pick up', 14/700, height ≥48). Tapping = binary flip into the existing call flow (the content-warning sheet, when owed, belongs to that flow — no dialog, no countdown, no "ready?" interstitial).
+
+**Viewport contract:** hero + lockup + fact line + full triad + stakes line above the fold at textScaler 1.0 on a 360×800 baseline; at 320×568 or textScaler 1.5 the body scrolls under the footer and the hairline appears — NEVER compress spacing or line-height to avoid scrolling; the whitespace rhythm IS the calm. With 3 short server strings the screen may look "empty" on tall displays — that restraint is the design, not unfinished work; do not add furniture.
+
+**Fallback (pre-agreed, only if the Pixel 9 gate proves the footer too tall at large text scale):** move the stakes line to be the LAST SCROLL CHILD and keep a pill-only constant-height footer. Do not pre-emptively implement this.
+
+### Copy deck (BINDING — exact strings; voice lives ONLY in the kicker + stakes line)
+
+| Slot | String | Style |
+|---|---|---|
+| Kicker | `INCOMING CALL` | `_eyebrow` |
+| Fact line | `Live voice call · English only · No script` | `_caption` |
+| Section labels | `THE SITUATION` / `WHAT TO EXPECT` / `SAY THIS` | `_eyebrow` |
+| Stakes line | `They can hang up on you. So can you.` | `_caption` italic |
+| CTA | `Pick up` | pill, 14/700 |
+| Back semantics | `Back to scenarios` | — |
+| Avatar semantics | `<title>, photo` | — |
+
+App-owned word budget: 23 — anything new must displace something. Every chrome word must parse instantly for a French A2/B1 learner under stress (present tense, second person, no idioms). Paste this comment block above the const strings (it is the review gate):
+
+```dart
+// COPY LINT (Story 7.4 design pass, Walid-validated 2026-06-12). Banned on
+// this screen: exclamation marks, question marks, praise ("Good luck",
+// "You've got this"), emoji, "don't worry", tips, urgency cues, episode
+// numbering. Voice lives ONLY in the kicker + stakes line; everything else
+// is flat data. App-owned word budget: 23.
+```
 
 ### What NOT to do (hard guardrails)
 
@@ -160,18 +208,23 @@ Dark `Scaffold` (`AppColors.background`), `SafeArea`, h-pad `AppSpacing.screenHo
 4. **Do NOT touch the content-warning sheet** or weaken its every-time rule (`content-warning-dialog.md` is LAW). Sequence after the briefing, never merge.
 5. **Do NOT move call initiation into BriefingScreen.** It stays a render+confirm surface popping a bool; `_ListState` owns the chain (test seams `callRepository`/`callScreenBuilder` depend on it).
 6. **Do NOT add a bloc** to BriefingScreen (zero async state — CallEndedScreen/DebriefScreen precedent, and those at least had timers).
-7. **Do NOT split/parse the vocabulary string** — render verbatim (authored prose with quotes/commas inside).
-8. **Do NOT add color tokens or hex literals** outside `core/theme/` (theme_tokens_test scans `lib/`); compose inline TextStyles only where no token fits.
+7. **Do NOT split/parse the vocabulary string** — render verbatim (authored prose with quotes/commas inside); no chips, pills, bullets, or per-phrase rows, and no string operations on ANY server field.
+8. **Do NOT add hex literals** outside `core/theme/` (theme_tokens_test scans `lib/`); the ONE sanctioned token addition is `AppColors.hairline` via Task 4.1; all other colors via existing tokens.
 9. **Do NOT touch the debrief surface** (report-icon path, DebriefScreen, debrief payloads) — Story 7.5 owns the debrief overhaul; 7.4 must not collide.
 10. **Do NOT reintroduce any per-scenario difficulty** coupling (global-only ruling, Story 6.28).
+11. **Do NOT add furniture or drama props** (Decision E judges' rulings): no cards/boxes/dividers/per-section icons in the body, no masked phone number, no difficulty meters/XP/progress chrome, no animated/Rive character preview (the in-call reveal must stay unburned), no staggered entry animations (the 500ms route fade is the only motion, ever).
+12. **Do NOT soften or fatten the copy**: no words beyond the 23-word deck; green never as a text/icon color; no comfort copy ("anxiety reduction through predictability, never reassurance" — every comforting instinct becomes information or gets cut). The banned-copy comment block is the enforcement.
+13. **Do NOT add any step between briefing and call** — no confirmation dialog, countdown, or "ready?" interstitial; "Pick up" flips straight into the existing chain (the content-warning sheet, when owed, is part of that chain, not a new step).
 
 ### Edge cases the review WILL probe (handle in dev, not in review)
 
 - **Paywall/cap path:** briefing confirm → POST → 403 `CALL_LIMIT_REACHED` → PaywallSheet; session mark NOT set (initiate failed) so the briefing re-shows on the next tap — correct: no call ever started.
 - **Double-tap classes:** card/icon double-push (widened `_initiating` span), CTA/back double-pop (pop-once guard — the second pop would dismiss the HUB).
 - **`context.mounted` after every await** (`:262`/`:273` pattern), including after the briefing push resolves.
-- **Empty-section rendering:** test fixtures use `briefing: {vocabulary: '', context: '', expect: ''}` — all-empty must mean NO gate and NO bare headers (7.3 review precedent: empty areas section hidden).
-- **a11y:** textScaler 1.5 @ 320×568 overflow-free; decorative text excluded from semantics only where double-announce occurs (7.3 `ExcludeSemantics` patch precedent).
+- **Empty-section rendering:** test fixtures use `briefing: {vocabulary: '', context: '', expect: ''}` — all-empty must mean NO gate and NO bare eyebrows (7.3 review precedent: empty areas section hidden).
+- **Footer growth:** the stakes line has no maxLines clamp — at textScaler 1.5 on 320px it wraps to 2 lines and the footer grows (~135px); the body must keep scrolling cleanly under it (explicit wrap test). The pre-agreed fallback (stakes → last scroll child) triggers ONLY on a failed Pixel 9 verdict.
+- **Hairline visibility:** content fits → no hairline; content scrolls → hairline appears; re-evaluate on viewport/metrics changes (rotation, text-scale change), not just on first build.
+- **a11y:** textScaler 1.5 @ 320×568 overflow-free; decorative text excluded from semantics only where double-announce occurs (7.3 `ExcludeSemantics` patch precedent); the merged section semantics must read label + body as one unit.
 - **Old-APK back-compat:** old `Scenario.fromJson` ignores the new key (no strict keys) — server can deploy first, no coordination needed.
 
 ### Previous story intelligence (7.3 / 7.2)
@@ -187,7 +240,7 @@ Recent commits confirm the cadence and surfaces: `0c7d2fb` (7.3 review patches +
 ### Project structure notes
 
 - New: `client/lib/features/briefing/views/briefing_screen.dart`, `client/test/features/briefing/views/briefing_screen_test.dart`.
-- Modified: `client/lib/features/scenarios/models/scenario.dart`, `client/lib/features/scenarios/views/scenario_list_screen.dart`, `client/lib/app/router.dart`, `server/models/schemas.py`, `server/api/routes_scenarios.py`, `server/db/seed_scenarios.py`, `server/tests/test_scenarios.py` (+ seeder tests file), model/list-screen test files.
+- Modified: `client/lib/features/scenarios/models/scenario.dart`, `client/lib/features/scenarios/views/scenario_list_screen.dart`, `client/lib/app/router.dart`, `client/lib/core/theme/app_colors.dart` (+ `client/test/core/theme/theme_tokens_test.dart` — hairline token, Task 4.1), `server/models/schemas.py`, `server/api/routes_scenarios.py`, `server/db/seed_scenarios.py`, `server/tests/test_scenarios.py` (+ seeder tests file), model/list-screen test files.
 - Deleted: `client/lib/features/briefing/views/briefing_placeholder_screen.dart`.
 - Test-count baseline: client 489, server 880 (post-7.3/6.28).
 
@@ -199,6 +252,7 @@ Recent commits confirm the cadence and surfaces: `0c7d2fb` (7.3 review patches +
 - Content-warning law: `_bmad-output/planning-artifacts/ux-decisions/content-warning-dialog.md`.
 - Shipped patterns: `content_warning_sheet.dart` (await-bool gate + CTA styling), `debrief_screen.dart` (`_SectionHeader`, section gaps, a11y), `scenario_card.dart` (`_Avatar`, semantics), `router.dart` (`_fadePage`, route table).
 - Server precedents: `routes_scenarios.py` (`_safe_json_load` + ValidationError net), `seed_scenarios.py:82-111` (end_phrases validation shape to mirror), `queries.py:239-263` (`SELECT s.*` — already carries briefing).
+- Design provenance (Decision E): 2026-06-12 research workflow — 6 researchers → distilled rulebook (12 design + 10 copy rules) → 3 concepts ("The Handler's Brief" / "Front Matter" / "No Caller ID") → 3-judge panel (taste 9/10, soul 8/10 for the winner; reality fixes grafted from "Front Matter"). Key stolen moves: Hitman (clinical handler register, size-contrast cinema), MGSV (fixed-lockup ritual), Speak (3 bounded blocks, quoted speakable phrases), Mela (weight-in-prose emphasis), Flighty (one rail, above-the-fold discipline), Persona 5/Opal (one flat consequence line at the threshold).
 
 ## Dev Agent Record
 
@@ -215,3 +269,4 @@ Recent commits confirm the cadence and surfaces: `0c7d2fb` (7.3 review patches +
 | Date | Change |
 |---|---|
 | 2026-06-12 | Story 7.4 spec created (create-story) — exhaustive context pass: briefing column/YAMLs already shipped (5.1), placeholder route already wired, gate design resolved (Decisions A-D as defaults). Status `backlog` → `ready-for-dev`. |
+| 2026-06-12 | Design pass (Decision E) — Walid requested deep research on best-in-class briefing design; 13-agent workflow (6 researchers → rulebook → 3 concepts → 3-judge panel) produced "The Handler's Brief", Walid validated. AC-C2/C8, Tasks 4.x, Layout spec, Copy deck, guardrails 11-13, and the Pixel 9 script amended. Status stays `ready-for-dev`. |
