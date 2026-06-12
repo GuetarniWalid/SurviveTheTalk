@@ -1214,4 +1214,38 @@ void main() {
       expect(find.byKey(_kCallStubKey), findsOneWidget);
     },
   );
+
+  // Review patch (7.4) — AC-C7's double-PUSH half: the widened
+  // `_initiating` span must swallow the second tap before the route push,
+  // on BOTH entries. A double-push would stack two briefing routes, so one
+  // dismiss must land straight back on the hub.
+  for (final (label, target) in [
+    ('call icon', () => find.byIcon(Icons.phone_outlined)),
+    ('card', () => find.text('Waiter')),
+  ]) {
+    testWidgets(
+      '$label double-tap never double-pushes the briefing route',
+      (tester) async {
+        final scenario =
+            _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+        final mockRepo = happyRepo();
+        await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+        await tester.tap(target());
+        await tester.tap(target(), warnIfMissed: false);
+        await tester.pumpAndSettle();
+
+        expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+        verifyNoPost(mockRepo);
+
+        // One dismiss returns to the hub — a second stacked briefing
+        // route would still be showing the stub here.
+        await tester.tap(find.text('BRIEFING_DISMISS'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('BRIEFING_STUB'), findsNothing);
+        expect(find.byType(ScenarioCard), findsOneWidget);
+        verifyNoPost(mockRepo);
+      },
+    );
+  }
 }

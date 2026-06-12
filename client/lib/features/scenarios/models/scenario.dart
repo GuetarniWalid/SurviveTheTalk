@@ -81,10 +81,12 @@ class Scenario {
   bool get isCompleted => bestScore == 100;
   bool get isNotAttempted => attempts == 0;
 
-  /// Story 7.4 — true iff at least one briefing section has renderable
-  /// content (a non-empty trimmed string). Drives both the first-attempt
-  /// gate and the browse entry: an absent or all-empty briefing never
-  /// pushes the BriefingScreen.
-  bool get hasBriefingContent =>
-      briefing?.values.any((value) => value.trim().isNotEmpty) ?? false;
+  /// Story 7.4 — true iff at least one of the three canonical briefing
+  /// sections (`context` / `expect` / `vocabulary` — the only keys the
+  /// BriefingScreen renders) is a non-empty trimmed string. A value under
+  /// any other key never counts: it would gate into a blank dossier.
+  /// Drives the first-attempt call-icon gate ONLY — the browse card-tap
+  /// entry pushes the screen regardless of content (AC-C7).
+  bool get hasBriefingContent => const ['context', 'expect', 'vocabulary']
+      .any((key) => (briefing?[key])?.trim().isNotEmpty ?? false);
 }

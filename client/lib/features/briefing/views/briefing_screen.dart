@@ -121,8 +121,6 @@ class BriefingScreen extends StatefulWidget {
 }
 
 class _BriefingScreenState extends State<BriefingScreen> {
-  final ScrollController _scrollController = ScrollController();
-
   /// Pop-once guard shared by the CTA and the back arrow — a double-tap's
   /// second pop would dismiss the HUB underneath (AC-C7).
   bool _popped = false;
@@ -131,22 +129,22 @@ class _BriefingScreenState extends State<BriefingScreen> {
   /// the only state the hairline is allowed to render in.
   bool _showHairline = false;
 
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
+  /// Latest metrics verdict, re-read inside the deferred callback below —
+  /// a closure-captured value could latch stale state when two opposite
+  /// notifications land in the same frame (only the first one enqueues a
+  /// callback; the second would compare against the not-yet-applied flag).
+  bool _hairlineDesired = false;
 
   /// Tracks `maxScrollExtent > 0` across layout/metrics changes (first
   /// build, rotation, text-scale change) — ScrollMetricsNotification fires
   /// on all of them, not just user scrolling. The setState is deferred to
   /// post-frame because metrics notifications can arrive during layout.
   bool _onScrollMetrics(ScrollMetricsNotification notification) {
-    final shouldShow = notification.metrics.maxScrollExtent > 0;
-    if (shouldShow != _showHairline) {
+    _hairlineDesired = notification.metrics.maxScrollExtent > 0;
+    if (_hairlineDesired != _showHairline) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && shouldShow != _showHairline) {
-          setState(() => _showHairline = shouldShow);
+        if (mounted && _hairlineDesired != _showHairline) {
+          setState(() => _showHairline = _hairlineDesired);
         }
       });
     }
@@ -215,7 +213,6 @@ class _BriefingScreenState extends State<BriefingScreen> {
               child: NotificationListener<ScrollMetricsNotification>(
                 onNotification: _onScrollMetrics,
                 child: SingleChildScrollView(
-                  controller: _scrollController,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [

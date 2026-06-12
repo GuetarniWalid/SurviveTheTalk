@@ -11,6 +11,7 @@ import 'package:client/core/theme/app_theme.dart';
 import 'package:client/features/briefing/views/briefing_screen.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
@@ -95,6 +96,21 @@ Future<List<bool?>> _open(
 }
 
 void main() {
+  setUpAll(() async {
+    // Review patch (7.4): the §Layout spec viewport contract (360×800
+    // above-the-fold) is typographic — the test font's square glyphs wrap
+    // ~2× wider than Inter and fail it spuriously. Load the real family
+    // once for this suite (weights the screen composes: 400/500/700 +
+    // italic); narrower real glyphs only relax the other layout tests.
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final loader = FontLoader('Inter')
+      ..addFont(rootBundle.load('assets/fonts/inter/Inter-Regular.ttf'))
+      ..addFont(rootBundle.load('assets/fonts/inter/Inter-Italic.ttf'))
+      ..addFont(rootBundle.load('assets/fonts/inter/Inter-Medium.ttf'))
+      ..addFont(rootBundle.load('assets/fonts/inter/Inter-Bold.ttf'));
+    await loader.load();
+  });
+
   group('BriefingScreen — "The Handler\'s Brief" layout', () {
     testWidgets('renders the full dossier in the fixed left-rail order',
         (tester) async {
@@ -212,6 +228,22 @@ void main() {
       expect(find.text('Pick up'), findsOneWidget);
     });
 
+    testWidgets(
+        'null briefing (legacy payload) renders no eyebrows — browse entry stays graceful',
+        (tester) async {
+      // Review patch (7.4): the card-tap entry pushes regardless of content,
+      // so the null map must render exactly like the all-empty one.
+      await _open(tester, _scenario());
+
+      expect(find.text('THE SITUATION'), findsNothing);
+      expect(find.text('WHAT TO EXPECT'), findsNothing);
+      expect(find.text('SAY THIS'), findsNothing);
+      expect(find.text('INCOMING CALL'), findsOneWidget);
+      expect(find.text('The Waiter'), findsOneWidget);
+      expect(find.text(_kStakesLine), findsOneWidget);
+      expect(find.text('Pick up'), findsOneWidget);
+    });
+
     testWidgets('threshold footer carries the stakes line + a >=48px Pick up pill',
         (tester) async {
       await _open(tester, _scenario(briefing: _kFullBriefing));
@@ -224,6 +256,27 @@ void main() {
       expect(pill, findsOneWidget);
       expect(tester.getSize(pill).height, greaterThanOrEqualTo(48));
       expect(find.byIcon(Icons.phone_outlined), findsOneWidget);
+    });
+
+    testWidgets(
+        'viewport contract: the authored waiter briefing fits above the fold at 360×800',
+        (tester) async {
+      // §Layout spec baseline (BINDING, Decision E): hero + lockup + fact
+      // line + full triad + stakes line above the fold at textScaler 1.0 on
+      // 360×800. No hairline ⇔ nothing scrolls ⇔ everything is on screen.
+      await _open(
+        tester,
+        _scenario(briefing: _kFullBriefing),
+        size: const Size(360, 800),
+      );
+
+      expect(
+        find.byKey(const ValueKey('briefing-footer-hairline')),
+        findsNothing,
+      );
+      expect(find.text('SAY THIS'), findsOneWidget);
+      expect(find.text(_kFullBriefing['vocabulary']!), findsOneWidget);
+      expect(find.text(_kStakesLine), findsOneWidget);
     });
   });
 
@@ -298,6 +351,25 @@ void main() {
       );
 
       expect(find.byKey(hairlineKey), findsOneWidget);
+    });
+
+    testWidgets(
+        'toggles on viewport metrics changes after first build (not a first-build latch)',
+        (tester) async {
+      // Review patch (7.4) — spec probe: "re-evaluate on viewport/metrics
+      // changes (rotation, text-scale change), not just on first build".
+      await _open(tester, _scenario(briefing: _kFullBriefing));
+      expect(find.byKey(hairlineKey), findsNothing);
+
+      // Shrink the viewport: the same content now scrolls → it appears.
+      await tester.binding.setSurfaceSize(const Size(320, 400));
+      await tester.pumpAndSettle();
+      expect(find.byKey(hairlineKey), findsOneWidget);
+
+      // Restore: the content fits again → it hides.
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      await tester.pumpAndSettle();
+      expect(find.byKey(hairlineKey), findsNothing);
     });
   });
 

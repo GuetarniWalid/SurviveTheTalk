@@ -196,6 +196,24 @@ void main() {
         expect(scenario.briefing, isNotNull);
         expect(scenario.hasBriefingContent, isFalse);
       });
+
+      test(
+          'content under non-canonical keys never counts — '
+          'the gate must not push a blank dossier', () {
+        // Review patch (7.4): the screen renders only context / expect /
+        // vocabulary; a corrupt row like {"foo": "bar"} passes the server's
+        // dict-shape net, so the getter must not gate on it.
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['briefing'] = <String, dynamic>{
+              'foo': 'bar',
+              'context': '   ',
+            },
+        );
+
+        expect(scenario.briefing, isNotNull);
+        expect(scenario.hasBriefingContent, isFalse);
+      });
     });
   });
 }
