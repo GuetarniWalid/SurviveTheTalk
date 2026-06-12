@@ -169,14 +169,23 @@ class _List extends StatefulWidget {
 }
 
 class _ListState extends State<_List> {
-  /// Tap debounce — set to true while a `/calls/initiate` POST is in
-  /// flight, gates `_onCallTap` at the top so a second tap can't fire a
-  /// second POST. The bloc-level `if (state is ScenariosLoading) return`
+  /// Tap debounce — held for the WHOLE tap flow (briefing await included
+  /// since Story 7.4, so a double-tap can't double-push the route), reset
+  /// in `finally`. The bloc-level `if (state is ScenariosLoading) return`
   /// guard doesn't help here: the bloc isn't transitioning, only the local
   /// async closure is awaiting. Story 6.1 chose the StatefulWidget path
   /// (vs. ValueNotifier on ScenarioCard) because ScenarioCard has no
   /// per-tap visual feedback requirement in 6.1 — see Dev Notes.
   bool _initiating = false;
+
+  /// Story 7.4 Decision B — ids whose first call was successfully initiated
+  /// THIS session. The hub list never refetches after a call, so
+  /// `scenario.attempts` goes stale in-session; without this mark the
+  /// briefing would re-gate right after the first call (epic AC3
+  /// violation). Marked only after a successful `initiateCall` POST (a
+  /// failed POST means no call happened — re-showing the briefing is
+  /// correct). In-memory only: on app restart the server truth is fresh.
+  final Set<String> _initiatedThisSession = <String>{};
 
   late final CallRepository _callRepository =
       widget.callRepository ?? CallRepository(ApiClient());
@@ -242,9 +251,42 @@ class _ListState extends State<_List> {
     if (mounted) setState(() {});
   }
 
-  // Story 6.1 contract:
-  //   1. await content-warning sheet (existing behaviour).
-  //   2. await POST /calls/initiate (was: navigate to /call placeholder).
+  // Story 7.4 first-attempt gate (Decision B) — push the briefing BEFORE
+  // any call initiation when this is the scenario's first attempt (server
+  // truth at list-load AND not initiated this session) and it has
+  // renderable briefing content. Anything but an explicit `true` pop
+  // (back arrow, system back) aborts with zero network calls. Returning
+  // users (attempts > 0 / session mark / no content) run the chain
+  // directly — byte-identical to pre-7.4 behavior.
+  Future<void> _onCallTap(BuildContext context, Scenario scenario) async {
+    if (_initiating) return;
+    setState(() => _initiating = true);
+    try {
+      final needsBriefing = scenario.attempts == 0 &&
+          !_initiatedThisSession.contains(scenario.id) &&
+          scenario.hasBriefingContent;
+      if (needsBriefing) {
+        final ready = await context.push<bool>(
+          '${AppRoutes.briefing}/${scenario.id}',
+          extra: scenario,
+        );
+        if (ready != true) return;
+        if (!context.mounted) return;
+      }
+      await _startCall(context, scenario);
+    } finally {
+      if (mounted) {
+        setState(() => _initiating = false);
+      }
+    }
+  }
+
+  // Story 6.1 contract (extracted to `_startCall` in Story 7.4 — chain
+  // order untouched; both the call-icon and card-tap entries converge
+  // here AFTER their briefing gate resolves):
+  //   1. await content-warning sheet (existing behaviour — Decision D:
+  //      briefing first, warning after confirm, every time, no merge).
+  //   2. await POST /calls/initiate.
   //   3. push CallScreen via the *root* Navigator (ADR 003 §Tier 1 —
   //      detaches the call screen from go_router so PopScope is arbitrated
   //      against the root navigator instead of the GoRouter shell).
@@ -254,15 +296,16 @@ class _ListState extends State<_List> {
   //   - CALL_LIMIT_REACHED   → PaywallSheet.show (modal)
   //   - any other ApiException → stay on scenario list (no inline retry
   //                              banner — see feedback_error_ux.md)
-  Future<void> _onCallTap(BuildContext context, Scenario scenario) async {
-    if (_initiating) return;
+  //
+  // No `_initiating` logic here — the flag is always already held by the
+  // caller (`_onCallTap` / `_onCardTap`).
+  Future<void> _startCall(BuildContext context, Scenario scenario) async {
     if (scenario.contentWarning != null) {
       final proceed = await showContentWarningSheet(context, scenario);
       if (!proceed) return;
       if (!context.mounted) return;
     }
 
-    setState(() => _initiating = true);
     try {
       final session = await _callRepository.initiateCall(
         scenarioId: scenario.id,
@@ -270,6 +313,9 @@ class _ListState extends State<_List> {
         // call (read fresh so a mid-session change on the sheet is honored).
         difficulty: _difficultyStorage.getSync(),
       );
+      // Story 7.4 Decision B — the POST succeeded: a call happened, the
+      // server-side `attempts` is now stale until the next list load.
+      _initiatedThisSession.add(scenario.id);
       if (!context.mounted) return;
       final builder =
           widget.callScreenBuilder ?? _defaultCallScreenBuilder;
@@ -306,10 +352,6 @@ class _ListState extends State<_List> {
             type: AppToastType.error,
           );
       }
-    } finally {
-      if (mounted) {
-        setState(() => _initiating = false);
-      }
     }
   }
 
@@ -317,8 +359,26 @@ class _ListState extends State<_List> {
     context.push('${AppRoutes.debrief}/${scenario.id}');
   }
 
-  void _onCardTap(BuildContext context, Scenario scenario) {
-    context.push('${AppRoutes.briefing}/${scenario.id}');
+  // Story 7.4 AC-C7 — the whole-card tap opens the same briefing with the
+  // same confirm contract: confirming from browse ALSO starts the call
+  // (reading the briefing then hunting for the phone icon would be
+  // hostile). Replaces the bare `context.push` to the placeholder.
+  Future<void> _onCardTap(BuildContext context, Scenario scenario) async {
+    if (_initiating) return;
+    setState(() => _initiating = true);
+    try {
+      final ready = await context.push<bool>(
+        '${AppRoutes.briefing}/${scenario.id}',
+        extra: scenario,
+      );
+      if (ready != true) return;
+      if (!context.mounted) return;
+      await _startCall(context, scenario);
+    } finally {
+      if (mounted) {
+        setState(() => _initiating = false);
+      }
+    }
   }
 }
 

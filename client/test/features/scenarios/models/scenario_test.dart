@@ -121,5 +121,81 @@ void main() {
         });
       });
     });
+
+    // Story 7.4 — pre-scenario briefing (AC-C1).
+    group('briefing', () {
+      test('parses the briefing map', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['briefing'] = <String, dynamic>{
+              'vocabulary': '"I\'d like...", "soup of the day"',
+              'context': 'You are ordering food at a restaurant.',
+              'expect': 'The waitress is impatient.',
+            },
+        );
+
+        expect(scenario.briefing, {
+          'vocabulary': '"I\'d like...", "soup of the day"',
+          'context': 'You are ordering food at a restaurant.',
+          'expect': 'The waitress is impatient.',
+        });
+        expect(scenario.hasBriefingContent, isTrue);
+      });
+
+      test('missing briefing key → null (legacy server payload)', () {
+        final scenario = Scenario.fromJson(_basePayload());
+
+        expect(scenario.briefing, isNull);
+        expect(scenario.hasBriefingContent, isFalse);
+      });
+
+      test('briefing: null → null', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()..['briefing'] = null,
+        );
+
+        expect(scenario.briefing, isNull);
+        expect(scenario.hasBriefingContent, isFalse);
+      });
+
+      test('non-map briefing → null, never throws (defensive)', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()..['briefing'] = <dynamic>[1, 2],
+        );
+
+        expect(scenario.briefing, isNull);
+        expect(scenario.hasBriefingContent, isFalse);
+      });
+
+      test('non-string values are dropped, not crashed on (defensive)', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['briefing'] = <String, dynamic>{
+              'vocabulary': 42,
+              'context': 'You are ordering food.',
+              'expect': null,
+            },
+        );
+
+        expect(scenario.briefing, {
+          'context': 'You are ordering food.',
+        });
+        expect(scenario.hasBriefingContent, isTrue);
+      });
+
+      test('all-empty / whitespace values → hasBriefingContent is false', () {
+        final scenario = Scenario.fromJson(
+          _basePayload()
+            ..['briefing'] = <String, dynamic>{
+              'vocabulary': '',
+              'context': '   ',
+              'expect': '',
+            },
+        );
+
+        expect(scenario.briefing, isNotNull);
+        expect(scenario.hasBriefingContent, isFalse);
+      });
+    });
   });
 }

@@ -142,8 +142,8 @@ class ErrorBody(BaseModel):
 
 class ScenarioListItem(BaseModel):
     """Card-view payload for `GET /scenarios`. Heavy authoring fields
-    (`base_prompt`, `checkpoints`, `briefing`, `exit_lines`, override knobs)
-    are deliberately omitted — they are only needed by `GET /scenarios/{id}`.
+    (`base_prompt`, `checkpoints`, `exit_lines`, override knobs) are
+    deliberately omitted — they are only needed by `GET /scenarios/{id}`.
     """
 
     id: str
@@ -161,6 +161,15 @@ class ScenarioListItem(BaseModel):
     # `GET /scenarios/{id}` round-trip. Nullable — legacy rows / YAMLs
     # without the block → the overlay hides the phrase element (design P-7).
     end_phrases: dict | None = None
+    # Story 7.4 — pre-scenario briefing (`{"vocabulary": …, "context": …,
+    # "expect": …}`). On the LIST item for the same reason as `end_phrases`:
+    # the BriefingScreen renders from the `Scenario` the hub already holds,
+    # avoiding a `GET /scenarios/{id}` round-trip whose payload carries
+    # spoilers (`base_prompt`, checkpoint `success_criteria`) — Decision A.
+    # The column is NOT NULL so `None` is theoretical; `dict | None` keeps
+    # the constructor symmetric with the other `_safe_json_load` columns
+    # (the `ScenarioDetail` override stays a required `dict`).
+    briefing: dict | None = None
 
 
 class ScenarioDetail(ScenarioListItem):

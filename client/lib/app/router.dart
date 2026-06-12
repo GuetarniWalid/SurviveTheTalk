@@ -12,7 +12,7 @@ import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
 import '../features/auth/presentation/code_verification_screen.dart';
 import '../features/auth/presentation/email_entry_screen.dart';
-import '../features/briefing/views/briefing_placeholder_screen.dart';
+import '../features/briefing/views/briefing_screen.dart';
 import '../features/call/bloc/incoming_call_bloc.dart';
 import '../features/call/repositories/call_repository.dart';
 import '../features/call/views/incoming_call_screen.dart';
@@ -21,6 +21,7 @@ import '../features/onboarding/presentation/consent_screen.dart';
 import '../features/onboarding/presentation/mic_permission_screen.dart';
 import '../features/scenarios/bloc/scenarios_bloc.dart';
 import '../features/scenarios/bloc/scenarios_event.dart';
+import '../features/scenarios/models/scenario.dart';
 import '../features/scenarios/repositories/scenarios_repository.dart';
 import '../features/scenarios/views/scenario_list_screen.dart';
 
@@ -191,11 +192,16 @@ class AppRouter {
         ),
         GoRoute(
           path: '${AppRoutes.briefing}/:scenarioId',
+          // Story 7.4 AC-C3 — both hub entries push with `extra: scenario`.
+          // A deep-link / refresh entry carries no extra: bounce to the hub
+          // (graceful fade, no fallback widget) instead of rendering a
+          // briefing with nothing to show.
+          redirect: (context, state) =>
+              state.extra is Scenario ? null : AppRoutes.root,
+          // The 500ms fade IS the title-card beat — no further motion ever.
           pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
-            child: BriefingPlaceholderScreen(
-              scenarioId: state.pathParameters['scenarioId'] ?? 'unknown',
-            ),
+            child: BriefingScreen(scenario: state.extra! as Scenario),
           ),
         ),
       ],

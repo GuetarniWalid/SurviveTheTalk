@@ -1,6 +1,6 @@
 # Story 7.4: Build Pre-Scenario Briefing Display
 
-Status: ready-for-dev
+Status: review
 
 ## ⚠️ Source-Document Drift — READ FIRST
 
@@ -58,33 +58,33 @@ so that I know what to expect and can prepare key vocabulary.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Server: expose `briefing` on the list** (AC-S1, AC-S2)
-  - [ ] 1.1 `models/schemas.py`: add `briefing: dict | None = None` to `ScenarioListItem`; update the class docstring (it currently documents briefing as detail-only).
-  - [ ] 1.2 `api/routes_scenarios.py` list constructor: `briefing=_safe_json_load(row["briefing"], scenario_id=row["id"], column="briefing")` (the SQL already `SELECT s.*` — no query change).
-  - [ ] 1.3 Tests (`tests/test_scenarios.py`): list items carry the 3-key briefing dict (seeded fixture); corrupt-JSON briefing → 500 SCENARIO_CORRUPT; valid-JSON-wrong-shape (e.g. `"[1,2]"`) → 500 SCENARIO_CORRUPT. Mirror the existing `end_phrases` test trio.
-- [ ] **Task 2 — Server: seeder shape validation** (AC-S3)
-  - [ ] 2.1 `db/seed_scenarios.py`: validate `doc["briefing"]` before the `json.dumps` at line 126 — dict, keys exactly `{vocabulary, context, expect}`, all values `str` (empty OK). `ValueError` messages name the scenario id, matching the `end_phrases` / `resolve_patience_config` convention.
-  - [ ] 2.2 Tests: non-dict / missing key / extra key / non-string value each raise; confirm all 6 shipped YAMLs still seed (existing seed tests cover the happy path).
-  - [ ] 2.3 Run `ruff check . && ruff format --check . && pytest` (in-sandbox, warmed — full suite, ~880+ expected green incl. `test_migrations`).
-- [ ] **Task 3 — Client: model** (AC-C1)
-  - [ ] 3.1 `scenario.dart`: `briefing` field + defensive `fromJson` parse (copy the `endPhrases` block shape) + `hasBriefingContent` getter + doc comment citing Story 7.4.
-  - [ ] 3.2 Model tests: present / absent / non-map / mixed-type entries filtered / all-empty → `hasBriefingContent == false`.
-- [ ] **Task 4 — Client: BriefingScreen + router** (AC-C2, AC-C3, AC-C8)
-  - [ ] 4.1 Add `AppColors.hairline = Color(0x14FFFFFF)` to `app_colors.dart` with the UX-DR1 governance note; bump the `theme_tokens_test` count assertion + values list in the same change.
-  - [ ] 4.2 Create `client/lib/features/briefing/views/briefing_screen.dart` per the §Layout spec (local layout consts like DebriefScreen — `_kAvatarSize 72`, gaps 16/8/8/40/32/12; reuse `AppSpacing.screenHorizontal`; the four composed Inter styles defined once at the top of the file; the §Copy deck strings as consts UNDER the banned-copy comment block, verbatim).
-  - [ ] 4.3 `router.dart`: swap the briefing GoRoute to `BriefingScreen(scenario: state.extra! as Scenario)` + route-level `redirect` guarding non-`Scenario` extra → root. Keep `_fadePage` (the 500ms fade is the title-card beat — no further motion ever).
-  - [ ] 4.4 Delete `briefing_placeholder_screen.dart` (+ its test file if one exists; fix any harness references — `scenario_list_screen_test.dart:129` stubs its own briefing route, verify it still compiles).
-  - [ ] 4.5 Widget tests (`test/features/briefing/views/briefing_screen_test.dart`): renders avatar/kicker/title/fact line/3 eyebrow sections in order; vocabulary rendered verbatim in exactly one Text at w500; hides empty sections (all-empty fixture → no bare eyebrows); stakes line + "Pick up" pill present; CTA pops `true`; back pops `false`; CTA double-tap pops once; hairline hidden when content fits / visible when it scrolls; 320×568 @ textScaler 1.5 zero RenderFlex overflow incl. 2-line stakes wrap; semantics (title header flag, merged sections, back + pill buttons); review greps per AC-C8 (accent referenced once, destructive/warning zero, each server field feeds exactly one Text with no string operations).
-- [ ] **Task 5 — Client: hub gate** (AC-C4..C7)
-  - [ ] 5.1 `scenario_list_screen.dart`: extract `_startCall(BuildContext, Scenario)` from `_onCallTap` (content-warning → POST → push CallScreen — chain order untouched); add `_initiatedThisSession` set, marked right after `initiateCall` succeeds. **Flag choreography (precise — avoid a self-block):** BOTH handlers (`_onCallTap`, `_onCardTap`) start with `if (_initiating) return; setState(() => _initiating = true);`, run their flow (briefing await included — so double-taps can't double-push the route), and reset the flag in `finally`. `_startCall` itself contains NO `_initiating` check or set — it is only ever invoked with the flag already held by its caller.
-  - [ ] 5.2 `_onCallTap`: gate per Decision B → `context.push<bool>('${AppRoutes.briefing}/${scenario.id}', extra: scenario)` → `ready != true → return` → `context.mounted` check → `_startCall`.
-  - [ ] 5.3 `_onCardTap`: same push + same continuation (replaces the bare `context.push`).
-  - [ ] 5.4 Widget tests (extend `scenario_list_screen_test.dart`, mock-router harness already exists): first-attempt call tap pushes briefing + NO POST before confirm; confirm → POST + CallScreen; confirm on warned scenario → warning sheet between briefing and POST; decline → no POST; `attempts > 0` → direct chain (no briefing); null/empty briefing → direct chain; session mark → second call tap after a successful initiate skips the briefing despite stale `attempts == 0`; card tap → briefing + confirm continues.
+- [x] **Task 1 — Server: expose `briefing` on the list** (AC-S1, AC-S2)
+  - [x] 1.1 `models/schemas.py`: add `briefing: dict | None = None` to `ScenarioListItem`; update the class docstring (it currently documents briefing as detail-only).
+  - [x] 1.2 `api/routes_scenarios.py` list constructor: `briefing=_safe_json_load(row["briefing"], scenario_id=row["id"], column="briefing")` (the SQL already `SELECT s.*` — no query change).
+  - [x] 1.3 Tests (`tests/test_scenarios.py`): list items carry the 3-key briefing dict (seeded fixture); corrupt-JSON briefing → 500 SCENARIO_CORRUPT; valid-JSON-wrong-shape (e.g. `"[1,2]"`) → 500 SCENARIO_CORRUPT. Mirror the existing `end_phrases` test trio.
+- [x] **Task 2 — Server: seeder shape validation** (AC-S3)
+  - [x] 2.1 `db/seed_scenarios.py`: validate `doc["briefing"]` before the `json.dumps` at line 126 — dict, keys exactly `{vocabulary, context, expect}`, all values `str` (empty OK). `ValueError` messages name the scenario id, matching the `end_phrases` / `resolve_patience_config` convention.
+  - [x] 2.2 Tests: non-dict / missing key / extra key / non-string value each raise; confirm all 6 shipped YAMLs still seed (existing seed tests cover the happy path).
+  - [x] 2.3 Run `ruff check . && ruff format --check . && pytest` (in-sandbox, warmed — full suite, ~880+ expected green incl. `test_migrations`). → **884 passed**, ruff check + format clean.
+- [x] **Task 3 — Client: model** (AC-C1)
+  - [x] 3.1 `scenario.dart`: `briefing` field + defensive `fromJson` parse (copy the `endPhrases` block shape) + `hasBriefingContent` getter + doc comment citing Story 7.4.
+  - [x] 3.2 Model tests: present / absent / non-map / mixed-type entries filtered / all-empty → `hasBriefingContent == false`. → 6 new tests, 16/16 green.
+- [x] **Task 4 — Client: BriefingScreen + router** (AC-C2, AC-C3, AC-C8)
+  - [x] 4.1 Add `AppColors.hairline = Color(0x14FFFFFF)` to `app_colors.dart` with the UX-DR1 governance note; bump the `theme_tokens_test` count assertion + values list in the same change. → token #14, both tests bumped.
+  - [x] 4.2 Create `client/lib/features/briefing/views/briefing_screen.dart` per the §Layout spec (local layout consts like DebriefScreen — `_kAvatarSize 72`, gaps 16/8/8/40/32/12; reuse `AppSpacing.screenHorizontal`; the four composed Inter styles defined once at the top of the file; the §Copy deck strings as consts UNDER the banned-copy comment block, verbatim).
+  - [x] 4.3 `router.dart`: swap the briefing GoRoute to `BriefingScreen(scenario: state.extra! as Scenario)` + route-level `redirect` guarding non-`Scenario` extra → root. Keep `_fadePage` (the 500ms fade is the title-card beat — no further motion ever).
+  - [x] 4.4 Delete `briefing_placeholder_screen.dart` (+ its test file if one exists — none existed; `scenario_list_screen_test.dart` stub route upgraded to the pop-a-bool contract, compiles).
+  - [x] 4.5 Widget tests (`test/features/briefing/views/briefing_screen_test.dart`): renders avatar/kicker/title/fact line/3 eyebrow sections in order; vocabulary rendered verbatim in exactly one Text at w500; hides empty sections (all-empty fixture → no bare eyebrows); stakes line + "Pick up" pill present; CTA pops `true`; back pops `false`; CTA double-tap pops once; hairline hidden when content fits / visible when it scrolls; 320×568 @ textScaler 1.5 zero RenderFlex overflow incl. 2-line stakes wrap; semantics (title header flag, merged sections, back + pill buttons); review greps per AC-C8 (accent referenced once, destructive/warning zero, each server field feeds exactly one Text with no string operations). → 17 tests green.
+- [x] **Task 5 — Client: hub gate** (AC-C4..C7)
+  - [x] 5.1 `scenario_list_screen.dart`: extract `_startCall(BuildContext, Scenario)` from `_onCallTap` (content-warning → POST → push CallScreen — chain order untouched); add `_initiatedThisSession` set, marked right after `initiateCall` succeeds. **Flag choreography (precise — avoid a self-block):** BOTH handlers (`_onCallTap`, `_onCardTap`) start with `if (_initiating) return; setState(() => _initiating = true);`, run their flow (briefing await included — so double-taps can't double-push the route), and reset the flag in `finally`. `_startCall` itself contains NO `_initiating` check or set — it is only ever invoked with the flag already held by its caller.
+  - [x] 5.2 `_onCallTap`: gate per Decision B → `context.push<bool>('${AppRoutes.briefing}/${scenario.id}', extra: scenario)` → `ready != true → return` → `context.mounted` check → `_startCall`.
+  - [x] 5.3 `_onCardTap`: same push + same continuation (replaces the bare `context.push`).
+  - [x] 5.4 Widget tests (extend `scenario_list_screen_test.dart`, mock-router harness already exists): first-attempt call tap pushes briefing + NO POST before confirm; confirm → POST + CallScreen; confirm on warned scenario → warning sheet between briefing and POST; decline → no POST; `attempts > 0` → direct chain (no briefing); null/empty briefing → direct chain; session mark → second call tap after a successful initiate skips the briefing despite stale `attempts == 0`; card tap → briefing + confirm continues. → 9 tests green (null + all-empty as two cases).
 - [ ] **Task 6 — Gates, deploy, flip**
-  - [ ] 6.1 `cd client && flutter analyze` → "No issues found!"; `flutter test` → all pass (489 existing + ~18 new — indicative).
-  - [ ] 6.2 Server gates (Task 2.3) green.
+  - [x] 6.1 `cd client && flutter analyze` → "No issues found!"; `flutter test` → all pass (489 existing + ~18 new — indicative). → **analyze clean, 521 passed** (+32: 6 model, 17 screen, 9 hub).
+  - [x] 6.2 Server gates (Task 2.3) green. → ruff check + format clean, **pytest 884** (+4).
   - [ ] 6.3 Deploy server to VPS (normal release flow — no migration, no .env change), `systemctl restart pipecat.service`, fill the Smoke Test Gate boxes below.
-  - [ ] 6.4 Flip story + `sprint-status.yaml` → `review`; commit (one commit for the dev stage, list format, no Co-Authored-By).
+  - [x] 6.4 Flip story + `sprint-status.yaml` → `review`; commit (one commit for the dev stage, list format, no Co-Authored-By).
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -258,11 +258,47 @@ Recent commits confirm the cadence and surfaces: `0c7d2fb` (7.3 review patches +
 
 ### Agent Model Used
 
+claude-fable-5 (Claude Code)
+
 ### Debug Log References
+
+- Red-green honored on every code task: list-payload tests (4), model tests (6), and the seeder test failed first for the expected reasons (KeyError `briefing`, 200-not-500 on corruption, seeder accepting malformed blocks; compile error on the missing model field), then went green on implementation.
+- Server suite: 884 passed (880 baseline + 4) — `ruff check` + `ruff format --check` clean. In-sandbox, warmed (`import aiohttp` first per the Defender cold-scan note).
+- Client suite: 521 passed (489 baseline + 32) — `flutter analyze` "No issues found!" (one unused-import warning in the new test file fixed during the run).
+- Hairline visibility: `ScrollMetricsNotification` fires on first layout AND on metrics changes (verified by the two hairline tests passing without an initState fallback) — no extra plumbing needed.
 
 ### Completion Notes List
 
+- **Server (AC-S1..S3):** `briefing: dict | None` added to `ScenarioListItem` (docstring no longer lists briefing as detail-only); list constructor decodes via the existing `_safe_json_load` net; the detail route is untouched. Seeder validates the briefing shape at boot — mapping with EXACTLY `{vocabulary, context, expect}`, every value a string, EMPTY strings legal (fixtures rely on them), messages name the offending scenario id; the absent-key case now raises the same clear ValueError instead of a bare KeyError.
+- **Model (AC-C1):** defensive parse mirrors `endPhrases` byte-for-byte (string→string entries kept, non-map → null); `hasBriefingContent` = any value with non-empty trimmed content.
+- **BriefingScreen (AC-C2, AC-C8):** implemented to the §Layout spec — left rail, eyebrow/title/body/caption styles as file-top consts, copy deck verbatim under the banned-copy comment block, dossier triad with empty-section omission, threshold footer with stakes line (no maxLines) + accent pill (≥48px), conditional hairline via `ScrollMetricsNotification` (post-frame setState), pop-once guard shared by CTA + back. Two-ink discipline machine-checked by the AC-C8 source-grep tests (accent exactly once; destructive/warning/status colors zero; no string transformations; one read site per server field).
+- **Hub gate (AC-C4..C7):** `_startCall` extracted with the chain order untouched; gate = `attempts == 0 && !_initiatedThisSession.contains(id) && hasBriefingContent`; the session mark is set ONLY after a successful `initiateCall` POST (paywall/cap failures re-show the briefing — correct, no call happened); `_initiating` spans the whole flow in both handlers, reset in `finally`, no flag logic inside `_startCall`.
+- **Declared deviations:**
+  1. **AC-C3 redirect has no dedicated unit test** — no `AppRouter.createRouter` harness exists in the repo (nothing tests the production route table today); standing one up needs an authenticated AuthBloc + ConsentStorage rig, disproportionate for a one-line redirect. The extra-carry half of AC-C3 IS asserted (hub tests check `state.extra is Scenario` on every push); the bounce expression itself ships verified by `flutter analyze` only.
+  2. **Hairline rendered as a keyed 1px `SizedBox`/`ColoredBox` row** in the footer column rather than a `BoxDecoration` top border — identical visual (full-width 1px line at the footer's top edge), directly testable by key, zero layout-shift semantics.
+  3. **`_renderable` calls `trim()`** as the visibility predicate (AC-C1/AC-C2 mandate trimmed-emptiness checks); the RENDERED string stays the raw server value. The AC-C8 grep list bans transformation ops (`split`/`replaceAll`/`substring`/case changes/padding) and deliberately not `trim`, which never feeds the Text.
+  4. **Back-arrow glyph stays `Icons.arrow_back`** (the placeholder's glyph; spec names no glyph — DebriefScreen uses `arrow_back_ios_new`, the hub family uses Material defaults; kept the briefing surface's existing one).
+  5. **Avatar `Semantics` adds `image: true`** beyond the spec'd label string — honest node type for TalkBack, mirrors the spec's intent ("photo").
+
 ### File List
+
+- New: `client/lib/features/briefing/views/briefing_screen.dart`
+- New: `client/test/features/briefing/views/briefing_screen_test.dart`
+- Modified: `server/models/schemas.py`
+- Modified: `server/api/routes_scenarios.py`
+- Modified: `server/db/seed_scenarios.py`
+- Modified: `server/tests/test_scenarios.py`
+- Modified: `server/tests/test_queries.py`
+- Modified: `client/lib/features/scenarios/models/scenario.dart`
+- Modified: `client/lib/features/scenarios/views/scenario_list_screen.dart`
+- Modified: `client/lib/app/router.dart`
+- Modified: `client/lib/core/theme/app_colors.dart`
+- Modified: `client/test/core/theme/theme_tokens_test.dart`
+- Modified: `client/test/features/scenarios/models/scenario_test.dart`
+- Modified: `client/test/features/scenarios/views/scenario_list_screen_test.dart`
+- Deleted: `client/lib/features/briefing/views/briefing_placeholder_screen.dart`
+- Modified: `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- Modified: `_bmad-output/implementation-artifacts/7-4-build-pre-scenario-briefing-display.md`
 
 ## Change Log
 
@@ -270,3 +306,4 @@ Recent commits confirm the cadence and surfaces: `0c7d2fb` (7.3 review patches +
 |---|---|
 | 2026-06-12 | Story 7.4 spec created (create-story) — exhaustive context pass: briefing column/YAMLs already shipped (5.1), placeholder route already wired, gate design resolved (Decisions A-D as defaults). Status `backlog` → `ready-for-dev`. |
 | 2026-06-12 | Design pass (Decision E) — Walid requested deep research on best-in-class briefing design; 13-agent workflow (6 researchers → rulebook → 3 concepts → 3-judge panel) produced "The Handler's Brief", Walid validated. AC-C2/C8, Tasks 4.x, Layout spec, Copy deck, guardrails 11-13, and the Pixel 9 script amended. Status stays `ready-for-dev`. |
+| 2026-06-12 | dev-story complete — server briefing on the list payload + seeder shape validation; client model parse + BriefingScreen ("The Handler's Brief") + dual-entry hub gate with session mark; placeholder deleted; `AppColors.hairline` token added with full gate cost. Gates: ruff clean + pytest 884, flutter analyze clean + 521 tests. 5 declared deviations (see Dev Agent Record). Status `in-progress` → `review`; VPS deploy + Smoke Test Gate boxes + Pixel 9 gate remain (Task 6.3). |

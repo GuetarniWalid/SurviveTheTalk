@@ -237,6 +237,78 @@ def test_list_returns_500_on_corrupt_end_phrases_json(
     assert response.json()["error"]["code"] == "SCENARIO_CORRUPT"
 
 
+def test_list_items_carry_briefing(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.4 AC-S1 — `briefing` rides the LIST payload so the
+    BriefingScreen renders from the `Scenario` the hub already holds (no
+    spoiler-heavy `GET /scenarios/{id}` round-trip — Decision A). Every
+    shipped YAML authors the block (column is NOT NULL), so every list item
+    must expose the 3-key dict with string values.
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    items = client.get("/scenarios", headers=_auth_header(token)).json()["data"]
+
+    assert len(items) > 0
+    for item in items:
+        briefing = item["briefing"]
+        assert isinstance(briefing, dict), f"{item['id']}: briefing={briefing!r}"
+        assert briefing.keys() == {"vocabulary", "context", "expect"}, (
+            f"{item['id']}: wrong briefing keys {sorted(briefing)}"
+        )
+        for key, value in briefing.items():
+            assert isinstance(value, str), f"{item['id']}: briefing.{key}={value!r}"
+
+
+def test_list_returns_500_on_corrupt_briefing_json(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.4 AC-S2 — corrupt `briefing` JSON → 500 SCENARIO_CORRUPT on
+    the LIST route. The detail-route probe already exists (parametrized
+    test below); the list route now decodes the column too, so the same
+    manual-corruption class must surface the same clean envelope here.
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    conn = sqlite3.connect(test_db_path)
+    conn.execute(
+        "UPDATE scenarios SET briefing = ? WHERE id = ?",
+        ("not-valid-json{", "waiter_easy_01"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get("/scenarios", headers=_auth_header(token))
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "SCENARIO_CORRUPT"
+
+
+def test_list_returns_500_on_wrong_shape_briefing(
+    client: TestClient, mock_resend, test_db_path: str
+) -> None:
+    """Story 7.4 AC-S2 — *valid* JSON of the wrong shape (a list instead of
+    an object) in `briefing` → 500 SCENARIO_CORRUPT via the list route's
+    ValidationError net (`_safe_json_load` decodes fine; Pydantic rejects).
+    """
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    conn = sqlite3.connect(test_db_path)
+    conn.execute(
+        "UPDATE scenarios SET briefing = ? WHERE id = ?",
+        ("[1, 2]", "waiter_easy_01"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get("/scenarios", headers=_auth_header(token))
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "SCENARIO_CORRUPT"
+
+
 def test_list_includes_free_and_paid_mix(
     client: TestClient, mock_resend, test_db_path: str
 ) -> None:

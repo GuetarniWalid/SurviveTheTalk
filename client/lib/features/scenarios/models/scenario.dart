@@ -17,6 +17,12 @@ class Scenario {
   /// hides the phrase element entirely (design P-7).
   final Map<String, String>? endPhrases;
 
+  /// Story 7.4 — server-authored pre-scenario briefing, keyed by section
+  /// (`vocabulary` / `context` / `expect`). Null when the server omits the
+  /// field (legacy payloads) — the BriefingScreen gate is skipped entirely
+  /// when there is no renderable content (see [hasBriefingContent]).
+  final Map<String, String>? briefing;
+
   const Scenario({
     required this.id,
     required this.title,
@@ -28,6 +34,7 @@ class Scenario {
     required this.attempts,
     required this.tagline,
     this.endPhrases,
+    this.briefing,
   });
 
   factory Scenario.fromJson(Map<String, dynamic> json) {
@@ -44,6 +51,18 @@ class Scenario {
             entry.key as String: entry.value as String,
       };
     }
+    // Story 7.4 — same defensive shape as end_phrases above: a malformed
+    // briefing payload degrades to "no briefing" (gate skipped), never a
+    // list-parse crash.
+    final rawBriefing = json['briefing'];
+    Map<String, String>? briefing;
+    if (rawBriefing is Map) {
+      briefing = <String, String>{
+        for (final entry in rawBriefing.entries)
+          if (entry.key is String && entry.value is String)
+            entry.key as String: entry.value as String,
+      };
+    }
     return Scenario(
       id: id,
       title: json['title'] as String,
@@ -55,9 +74,17 @@ class Scenario {
       attempts: json['attempts'] as int? ?? 0,
       tagline: kScenarioTaglines[id] ?? '',
       endPhrases: endPhrases,
+      briefing: briefing,
     );
   }
 
   bool get isCompleted => bestScore == 100;
   bool get isNotAttempted => attempts == 0;
+
+  /// Story 7.4 — true iff at least one briefing section has renderable
+  /// content (a non-empty trimmed string). Drives both the first-attempt
+  /// gate and the browse entry: an absent or all-empty briefing never
+  /// pushes the BriefingScreen.
+  bool get hasBriefingContent =>
+      briefing?.values.any((value) => value.trim().isNotEmpty) ?? false;
 }

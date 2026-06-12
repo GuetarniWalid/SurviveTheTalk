@@ -86,6 +86,7 @@ Scenario _build({
   int? bestScore,
   int attempts = 0,
   String? contentWarning,
+  Map<String, String>? briefing,
 }) {
   return Scenario(
     id: id,
@@ -97,6 +98,7 @@ Scenario _build({
     bestScore: bestScore,
     attempts: attempts,
     tagline: tagline,
+    briefing: briefing,
   );
 }
 
@@ -125,13 +127,30 @@ GoRouter _router(Widget screen, MockScenariosBloc bloc) {
           ),
         ),
       ),
+      // Story 7.4 — the stub mirrors the real BriefingScreen's pop-a-bool
+      // contract so the hub's gate logic is exercised end-to-end; the real
+      // screen's render is covered by briefing_screen_test.dart. The
+      // EXTRA line surfaces whether the hub pushed the full Scenario
+      // (the production route's redirect bounces to root without it).
       GoRoute(
         path: '/briefing/:scenarioId',
         builder: (context, state) => Scaffold(
-          body: Center(
-            child: Text(
-              'BRIEFING_STUB:${state.pathParameters['scenarioId']}',
-            ),
+          body: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'BRIEFING_STUB:${state.pathParameters['scenarioId']}',
+              ),
+              Text('BRIEFING_EXTRA_IS_SCENARIO:${state.extra is Scenario}'),
+              TextButton(
+                onPressed: () => context.pop(true),
+                child: const Text('BRIEFING_CONFIRM'),
+              ),
+              TextButton(
+                onPressed: () => context.pop(false),
+                child: const Text('BRIEFING_DISMISS'),
+              ),
+            ],
           ),
         ),
       ),
@@ -924,6 +943,237 @@ void main() {
       expect(find.text('CALL_STUB'), findsNothing);
       expect(find.text('Buckle up'), findsNothing);
       expect(find.byType(ScenarioCard), findsOneWidget);
+    },
+  );
+
+  // ---------- Story 7.4 — first-attempt briefing gate ----------
+
+  const briefingContent = <String, String>{
+    'vocabulary': '"I\'d like..."',
+    'context': 'You are ordering food.',
+    'expect': 'The waitress is impatient.',
+  };
+
+  MockCallRepository happyRepo() {
+    final mockRepo = MockCallRepository();
+    when(
+      () => mockRepo.initiateCall(
+        scenarioId: any(named: 'scenarioId'),
+        difficulty: any(named: 'difficulty'),
+      ),
+    ).thenAnswer((_) async => _kFakeSession);
+    return mockRepo;
+  }
+
+  void verifyNoPost(MockCallRepository mockRepo) {
+    verifyNever(
+      () => mockRepo.initiateCall(
+        scenarioId: any(named: 'scenarioId'),
+        difficulty: any(named: 'difficulty'),
+      ),
+    );
+  }
+
+  testWidgets(
+    'first-attempt call tap pushes the briefing (with the Scenario extra) — no POST before confirm',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+      expect(find.text('BRIEFING_EXTRA_IS_SCENARIO:true'), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
+
+  testWidgets(
+    'briefing confirm → POST + CallScreen (unwarned scenario)',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'warned scenario: briefing confirm shows the content-warning sheet BEFORE any POST (Decision D order)',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Mugger',
+        contentWarning: 'CW body 12345',
+        briefing: briefingContent,
+      );
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      // Briefing first…
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+      expect(find.text('Buckle up'), findsNothing);
+
+      // …then the warning sheet after confirm, still no POST…
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+      expect(find.text('Buckle up'), findsOneWidget);
+      verifyNoPost(mockRepo);
+
+      // …and the second "Pick up" finally fires the chain.
+      await tester.tap(find.text('Pick up'));
+      await tester.pumpAndSettle();
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'briefing decline returns to the hub with zero network calls',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('BRIEFING_DISMISS'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ScenarioCard), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
+
+  testWidgets(
+    'attempts > 0 skips the briefing — direct chain (byte-identical to pre-7.4)',
+    (tester) async {
+      final scenario = _build(
+        id: 's1',
+        title: 'Waiter',
+        attempts: 3,
+        bestScore: 50,
+        briefing: briefingContent,
+      );
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('BRIEFING_STUB'), findsNothing);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+    },
+  );
+
+  for (final (label, briefing) in [
+    ('null briefing', null),
+    (
+      'all-empty briefing',
+      const <String, String>{'vocabulary': '', 'context': '', 'expect': ''}
+    ),
+  ]) {
+    testWidgets(
+      '$label skips the gate — call tap runs the chain directly',
+      (tester) async {
+        final scenario = _build(id: 's1', title: 'Waiter', briefing: briefing);
+        final mockRepo = happyRepo();
+        await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+        await tester.tap(find.byIcon(Icons.phone_outlined));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('BRIEFING_STUB'), findsNothing);
+        verify(() => mockRepo.initiateCall(
+            scenarioId: 's1',
+            difficulty: any(named: 'difficulty'),
+          )).called(1);
+        expect(find.byKey(_kCallStubKey), findsOneWidget);
+      },
+    );
+  }
+
+  testWidgets(
+    'session mark: after a successful initiate, the next call tap skips the briefing despite stale attempts == 0',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      // First call: gated, confirmed, POST fires, CallScreen mounts.
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+
+      // End the call (pop the root-navigator route) — the hub list does
+      // NOT refetch, so scenario.attempts still reads 0.
+      Navigator.of(tester.element(find.byKey(_kCallStubKey))).pop();
+      await tester.pumpAndSettle();
+
+      // Second call tap: the in-session mark covers the stale attempts.
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('BRIEFING_STUB'), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(2);
+    },
+  );
+
+  testWidgets(
+    'card tap opens the briefing in browse mode — confirm starts the call chain too',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      // Tap the description block (title text), not the phone icon.
+      await tester.tap(find.text('Waiter'));
+      await tester.pumpAndSettle();
+      expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+      verifyNoPost(mockRepo);
+
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
     },
   );
 }

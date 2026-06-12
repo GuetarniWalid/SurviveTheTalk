@@ -103,6 +103,12 @@ async def list_scenarios(request: Request) -> dict:
                     scenario_id=row["id"],
                     column="end_phrases",
                 ),
+                # Story 7.4 — pre-scenario briefing for the BriefingScreen.
+                briefing=_safe_json_load(
+                    row["briefing"],
+                    scenario_id=row["id"],
+                    column="briefing",
+                ),
             )
             for row in rows
         ]

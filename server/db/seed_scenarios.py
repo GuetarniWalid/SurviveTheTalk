@@ -19,6 +19,11 @@ from db.queries import upsert_scenario
 
 _SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "pipeline" / "scenarios"
 
+# Story 7.4 — the BriefingScreen renders exactly these three sections; the
+# seeder enforces the closed key set so a typo'd key fails at boot, not as a
+# silently-hidden section on-device.
+_BRIEFING_KEYS = frozenset({"vocabulary", "context", "expect"})
+
 
 def _row_from_yaml(doc: dict) -> dict:
     """Map an authored YAML doc to the canonical column dict (ADR 001).
@@ -109,6 +114,36 @@ def _row_from_yaml(doc: dict) -> dict:
                     f"metadata.end_phrases.{variant} must be a non-empty "
                     f"string; got {phrase!r}"
                 )
+
+    # Story 7.4 — the briefing rides `GET /scenarios` (BriefingScreen renders
+    # it verbatim), so a malformed block seeded by the daily-scenario VPS
+    # flow would otherwise 500 the WHOLE catalog at request time — same
+    # fail-fast posture as `end_phrases` above. Stricter shape (the column
+    # is NOT NULL and the screen knows exactly 3 sections): a mapping with
+    # exactly the canonical keys, every value a string. EMPTY strings are
+    # legal — fixtures use them and the client hides empty sections.
+    briefing = doc.get("briefing")
+    scenario_id = meta.get("id")
+    if not isinstance(briefing, dict):
+        raise ValueError(
+            f"`briefing` for scenario {scenario_id!r} must be a mapping "
+            f"with keys {sorted(_BRIEFING_KEYS)}; got {type(briefing).__name__}"
+        )
+    missing_keys = _BRIEFING_KEYS - briefing.keys()
+    extra_keys = briefing.keys() - _BRIEFING_KEYS
+    if missing_keys or extra_keys:
+        raise ValueError(
+            f"`briefing` for scenario {scenario_id!r} must carry exactly "
+            f"the keys {sorted(_BRIEFING_KEYS)}"
+            + (f"; missing {sorted(missing_keys)}" if missing_keys else "")
+            + (f"; unexpected {sorted(extra_keys)}" if extra_keys else "")
+        )
+    for key, value in briefing.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"`briefing`.{key} for scenario {scenario_id!r} must be a "
+                f"string (empty allowed); got {value!r}"
+            )
     return {
         "id": meta["id"],
         "title": meta["title"],
@@ -123,7 +158,7 @@ def _row_from_yaml(doc: dict) -> dict:
         "rive_character": meta["rive_character"],
         "base_prompt": doc["base_prompt"],
         "checkpoints": json.dumps(checkpoints, ensure_ascii=False),
-        "briefing": json.dumps(doc["briefing"], ensure_ascii=False),
+        "briefing": json.dumps(briefing, ensure_ascii=False),
         "exit_lines": json.dumps(doc["exit_lines"], ensure_ascii=False),
         "language_focus": json.dumps(language_focus, ensure_ascii=False),
         "content_warning": content_warning,

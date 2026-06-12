@@ -53,7 +53,14 @@ class AppColors {
   // ≈ 11.4 : 1 (AA + AAA).
   static const Color errorBody = Color(0xFFD8D8D8);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 13.
+  // Briefing screen footer hairline (Story 7.4 "The Handler's Brief",
+  // Walid-validated design pass 2026-06-12 — UX-DR1 amendment). 8%-alpha
+  // white: a structural edge, not content — it marks the pinned threshold
+  // footer ONLY while body content actually scrolls beneath it. Decorative
+  // (non-text), so no contrast-ratio requirement applies.
+  static const Color hairline = Color(0x14FFFFFF);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 14.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -68,5 +75,6 @@ class AppColors {
     headsUpBg,
     headsUpAccent,
     errorBody,
+    hairline,
   ];
 }

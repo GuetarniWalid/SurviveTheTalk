@@ -11,6 +11,7 @@ Tests wrap async code in `asyncio.run(...)` because the project uses plain
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 
 import pytest
@@ -594,6 +595,73 @@ def test_seed_scenarios_rejects_malformed_end_phrases(
     ).fetchone()[0]
     conn.close()
     assert stored is None
+
+
+def test_seed_scenarios_rejects_malformed_briefing(migrated_db, tmp_path, monkeypatch):
+    """Story 7.4 AC-S3 — the seeder fail-fasts on a malformed `briefing`
+    block: the briefing now rides `GET /scenarios`, so a bad block seeded by
+    the daily-scenario VPS flow (no CI run) would 500 the WHOLE catalog at
+    request time (`SCENARIO_CORRUPT`). Stricter than `end_phrases`: the
+    column is NOT NULL and the BriefingScreen knows exactly 3 sections, so
+    the mapping must carry exactly the canonical keys — but EMPTY string
+    values stay legal (fixtures use them; the client hides empty sections).
+    Messages name the offending scenario id."""
+    import db.seed_scenarios as seed_module
+
+    def base_yaml(briefing_line: str) -> str:
+        return (
+            "metadata:\n"
+            "  id: bad_briefing_01\n"
+            "  title: 'A'\n"
+            "  is_free: true\n"
+            "  rive_character: x\n"
+            "  language_focus: 'one, two'\n"
+            "base_prompt: 'hi'\n"
+            "checkpoints: []\n"
+            f"{briefing_line}"
+            "exit_lines: {hangup: '', completion: ''}\n"
+        )
+
+    fake_dir = tmp_path / "scenarios"
+    fake_dir.mkdir()
+    monkeypatch.setattr(seed_module, "_SCENARIOS_DIR", fake_dir)
+    yaml_path = fake_dir / "a.yaml"
+
+    rejected = [
+        # Non-mapping (a bare string) — and the id must be in the message.
+        ("briefing: 'oops'\n", "bad_briefing_01.*must be a mapping"),
+        # Absent entirely (column is NOT NULL — no silent KeyError).
+        ("", "bad_briefing_01.*must be a mapping"),
+        # Missing canonical key (no `expect`).
+        ("briefing: {vocabulary: 'a', context: 'b'}\n", "missing.*expect"),
+        # Extra key beyond the canonical 3.
+        (
+            "briefing: {vocabulary: 'a', context: 'b', expect: 'c', tips: 'd'}\n",
+            "unexpected.*tips",
+        ),
+        # Non-string value.
+        (
+            "briefing: {vocabulary: 1, context: 'b', expect: 'c'}\n",
+            "vocabulary.*must be a string",
+        ),
+    ]
+    for line, match in rejected:
+        yaml_path.write_text(base_yaml(line), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=match):
+            asyncio.run(seed_module.seed_scenarios())
+
+    # Empty-string values stay legal and round-trip to the DB.
+    yaml_path.write_text(
+        base_yaml("briefing: {vocabulary: '', context: '', expect: ''}\n"),
+        encoding="utf-8",
+    )
+    asyncio.run(seed_module.seed_scenarios())
+    conn = sqlite3.connect(migrated_db)
+    stored = conn.execute(
+        "SELECT briefing FROM scenarios WHERE id = 'bad_briefing_01'"
+    ).fetchone()[0]
+    conn.close()
+    assert json.loads(stored) == {"vocabulary": "", "context": "", "expect": ""}
 
 
 def _minimal_seed_yaml(scenario_id: str, extra_meta: str = "") -> str:
