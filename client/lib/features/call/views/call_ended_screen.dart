@@ -334,10 +334,10 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
 
   /// AC-C11 / Decision E — the real debrief route (Story 7.3). The
   /// payload + callId + repository ride the constructor; the payload ALSO
-  /// stays on `RouteSettings.arguments` (the Decision-F handoff contract
-  /// this story's tests assert). Fade-in over 300-900 ms of the 900 ms
-  /// window — overlapping this screen's 0-600 ms fade-out for the
-  /// design's 300 ms crossfade.
+  /// stays on `RouteSettings.arguments` (the Decision-F handoff contract —
+  /// asserted by the real-route test in call_ended_screen_test.dart).
+  /// Fade-in over 300-900 ms of the 900 ms window — overlapping this
+  /// screen's 0-600 ms fade-out for the design's 300 ms crossfade.
   Route<void> _debriefRoute() {
     return PageRouteBuilder<void>(
       settings: RouteSettings(

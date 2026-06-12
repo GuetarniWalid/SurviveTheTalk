@@ -183,9 +183,7 @@ void main() {
       expect(find.text('2. Articles (a/an/the)'), findsOneWidget);
 
       // Happy path made zero network calls.
-      verifyNever(
-        () => repository.fetchDebrief(callId: any(named: 'callId')),
-      );
+      verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
       // No overflow at the phone surface.
       expect(tester.takeException(), isNull);
     });
@@ -263,6 +261,15 @@ void main() {
 
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('degenerate empty areas_to_work_on hides the whole section '
+        '(review P2 — no bare card under an orphan header)', (tester) async {
+      final payload = minimalPayload()..['areas_to_work_on'] = <Object?>[];
+      await pumpScreen(tester, buildScreen(payload: payload));
+
+      expect(find.text('Areas to Work On'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('AC7 — no CTA, no praise', () {
@@ -302,43 +309,40 @@ void main() {
   });
 
   group('BS-7 fallback (AC10)', () {
-    testWidgets(
-      'null payload + callId shows the loading text (no spinner) and '
-      'fades the content in when polling resolves',
-      (tester) async {
-        var calls = 0;
-        when(() => repository.fetchDebrief(callId: 7)).thenAnswer((_) async {
-          calls++;
-          if (calls < 3) {
-            throw const ApiException(
-              code: 'DEBRIEF_NOT_READY',
-              message: 'still generating',
-              statusCode: 404,
-            );
-          }
-          return fullPayload();
-        });
+    testWidgets('null payload + callId shows the loading text (no spinner) and '
+        'fades the content in when polling resolves', (tester) async {
+      var calls = 0;
+      when(() => repository.fetchDebrief(callId: 7)).thenAnswer((_) async {
+        calls++;
+        if (calls < 3) {
+          throw const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'still generating',
+            statusCode: 404,
+          );
+        }
+        return fullPayload();
+      });
 
-        await pumpScreen(tester, buildScreen(payload: null));
-        await tester.pump(); // flush the first (NOT_READY) fetch
+      await pumpScreen(tester, buildScreen(payload: null));
+      await tester.pump(); // flush the first (NOT_READY) fetch
 
-        expect(find.text('Analyzing your conversation...'), findsOneWidget);
-        expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('Analyzing your conversation...'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
 
-        // Two more 50 ms poll ticks — third attempt resolves.
-        await tester.pump(const Duration(milliseconds: 60));
-        expect(find.text('Analyzing your conversation...'), findsOneWidget);
-        await tester.pump(const Duration(milliseconds: 60));
-        await tester.pump(); // rebuild with the settled payload
+      // Two more 50 ms poll ticks — third attempt resolves.
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(find.text('Analyzing your conversation...'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 60));
+      await tester.pump(); // rebuild with the settled payload
 
-        // Content is in the tree as the 300 ms fade starts…
-        expect(find.text('73%'), findsOneWidget);
-        // …and the loading text is gone once the fade completes.
-        await tester.pump(const Duration(milliseconds: 310));
-        expect(find.text('Analyzing your conversation...'), findsNothing);
-        expect(calls, 3);
-      },
-    );
+      // Content is in the tree as the 300 ms fade starts…
+      expect(find.text('73%'), findsOneWidget);
+      // …and the loading text is gone once the fade completes.
+      await tester.pump(const Duration(milliseconds: 310));
+      expect(find.text('Analyzing your conversation...'), findsNothing);
+      expect(calls, 3);
+    });
 
     testWidgets('poll budget exhaustion lands on the quiet terminal state', (
       tester,
@@ -373,14 +377,38 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets(
+      'a fetch already in flight when the budget fires still lands the '
+      'content (review P1 — success is honored, not discarded)',
+      (tester) async {
+        final completer = Completer<Map<String, dynamic>>();
+        when(
+          () => repository.fetchDebrief(callId: 7),
+        ).thenAnswer((_) => completer.future);
+
+        await pumpScreen(tester, buildScreen(payload: null));
+        expect(find.text('Analyzing your conversation...'), findsOneWidget);
+
+        // The 400 ms budget exhausts while the first fetch is in flight.
+        await tester.pump(const Duration(milliseconds: 450));
+        expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
+
+        // The in-flight response then resolves with a valid debrief — it
+        // must replace the terminal state, not be thrown away.
+        completer.complete(fullPayload());
+        await tester.pump(); // flush the microtask + rebuild
+        expect(find.text('73%'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 310)); // fade done
+        expect(find.text('Debrief unavailable for this call.'), findsNothing);
+      },
+    );
+
     testWidgets('null payload + null callId is unavailable immediately', (
       tester,
     ) async {
       await pumpScreen(tester, buildScreen(payload: null, callId: null));
       expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
-      verifyNever(
-        () => repository.fetchDebrief(callId: any(named: 'callId')),
-      );
+      verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
     });
 
     testWidgets('terminal ApiException (non-NOT_READY) → unavailable', (
@@ -410,16 +438,15 @@ void main() {
         buildScreen(payload: <String, dynamic>{'garbage': true}),
       );
       expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
-      verifyNever(
-        () => repository.fetchDebrief(callId: any(named: 'callId')),
-      );
+      verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
     });
 
     testWidgets('fetched payload failing structural parse → unavailable', (
       tester,
     ) async {
-      when(() => repository.fetchDebrief(callId: 7))
-          .thenAnswer((_) async => <String, dynamic>{'garbage': true});
+      when(
+        () => repository.fetchDebrief(callId: 7),
+      ).thenAnswer((_) async => <String, dynamic>{'garbage': true});
       await pumpScreen(tester, buildScreen(payload: null));
       await tester.pump();
       expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
@@ -431,7 +458,9 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(320, 568));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: Center(child: Text('HOME')))),
+        const MaterialApp(
+          home: Scaffold(body: Center(child: Text('HOME'))),
+        ),
       );
       final navigator = tester.state<NavigatorState>(find.byType(Navigator));
       unawaited(
@@ -474,10 +503,7 @@ void main() {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
 
       expect(find.bySemanticsLabel('Back to scenarios'), findsOneWidget);
-      expect(
-        find.bySemanticsLabel('73 percent survival rate'),
-        findsOneWidget,
-      );
+      expect(find.bySemanticsLabel('73 percent survival rate'), findsOneWidget);
 
       final header = tester.getSemantics(find.text('Language Errors'));
       expect(header.flagsCollection.isHeader, isTrue);

@@ -158,7 +158,10 @@ class _DebriefScreenState extends State<DebriefScreen> {
     if (callId == null) return; // loading is only entered with an id
     try {
       final payload = await widget.callRepository.fetchDebrief(callId: callId);
-      if (!mounted || _phase != _DebriefPhase.loading) return;
+      // A response already in flight when the 30 s budget fires is still
+      // honored (review P1): "unavailable" means a debrief we could not
+      // get, not one we discard. Failures past `loading` stay terminal.
+      if (!mounted || _phase == _DebriefPhase.content) return;
       _settle(Debrief.tryParse(payload));
       // Broad catch mirrors CallEndedScreen._attemptFetch: a post-call
       // fetch failure must never crash or surface error chrome — anything
@@ -244,9 +247,7 @@ class _DebriefScreenState extends State<DebriefScreen> {
         return _DebriefMessage(
           key: const ValueKey('debrief-unavailable'),
           message: 'Debrief unavailable for this call.',
-          style: AppTypography.caption.copyWith(
-            color: AppColors.textSecondary,
-          ),
+          style: AppTypography.caption.copyWith(color: AppColors.textSecondary),
         );
     }
   }
@@ -355,14 +356,20 @@ class _DebriefContent extends StatelessWidget {
                   '${d.survivalPct}%',
                   textAlign: TextAlign.center,
                   maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   semanticsLabel: '${d.survivalPct} percent survival rate',
                   style: AppTypography.display.copyWith(color: heroColor),
                 ),
                 const SizedBox(height: _kHeroTightGap),
-                Text(
-                  'Survival Rate',
-                  textAlign: TextAlign.center,
-                  style: mutedCaption,
+                // Excluded from semantics: the hero label above already
+                // announces "… percent survival rate" — without this,
+                // TalkBack reads "survival rate" twice back-to-back.
+                ExcludeSemantics(
+                  child: Text(
+                    'Survival Rate',
+                    textAlign: TextAlign.center,
+                    style: mutedCaption,
+                  ),
                 ),
                 const SizedBox(height: _kHeroIdentityGap),
                 Text(
@@ -382,6 +389,7 @@ class _DebriefContent extends StatelessWidget {
                   ),
                   textAlign: TextAlign.center,
                   maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: mutedCaption,
                 ),
                 // Encouraging framing (FR15b) — keyed on field presence,
@@ -454,11 +462,15 @@ class _DebriefContent extends StatelessWidget {
                   const SizedBox(height: _kCardGap),
                   _AboutThisCallCard(explanation: about),
                 ],
-                // Areas to Work On — always; server clamps to <= 3.
-                const SizedBox(height: _kSectionGap),
-                const _SectionHeader('Areas to Work On'),
-                const SizedBox(height: _kCardGap),
-                _AreasCard(areas: d.areasToWorkOn),
+                // Areas to Work On — always on a healthy payload (server
+                // clamps to 1-3); hidden like idioms on a degenerate empty
+                // parse so no bare card renders under the header.
+                if (d.areasToWorkOn.isNotEmpty) ...[
+                  const SizedBox(height: _kSectionGap),
+                  const _SectionHeader('Areas to Work On'),
+                  const SizedBox(height: _kCardGap),
+                  _AreasCard(areas: d.areasToWorkOn),
+                ],
                 const SizedBox(height: _kBottomPadding),
               ],
             ),
@@ -532,9 +544,7 @@ class _ErrorCard extends StatelessWidget {
           // Accent marks the learnable content (AC2).
           Text(
             error.correction,
-            style: AppTypography.bodyEmphasis.copyWith(
-              color: AppColors.accent,
-            ),
+            style: AppTypography.bodyEmphasis.copyWith(color: AppColors.accent),
           ),
           const SizedBox(height: _kCardBlockGap),
           Text(
@@ -603,9 +613,7 @@ class _IdiomCard extends StatelessWidget {
         children: [
           Text(
             "'${idiom.expression}'",
-            style: AppTypography.bodyEmphasis.copyWith(
-              color: AppColors.accent,
-            ),
+            style: AppTypography.bodyEmphasis.copyWith(color: AppColors.accent),
           ),
           const SizedBox(height: _kIdiomMeaningGap),
           Text(

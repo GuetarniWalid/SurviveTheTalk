@@ -1,6 +1,6 @@
 # Story 7.3: Build Debrief Screen
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -107,6 +107,19 @@ ACs 1-8 are verbatim from epics.md (Epic 7, Story 7.3, lines ~1337-1371). AC9-AC
   - [x] 7.1 `cd client && flutter analyze` → "No issues found!" (infos block CI)
   - [x] 7.2 `cd client && flutter test` → ALL pass (451 existing must stay green; 7.2's call_ended_screen tests use the route seam so they should not break — verify)
   - [x] 7.3 Commit per project format (`feat:` + bullets, no Co-Authored-By), flip story + sprint-status to `review`
+
+### Review Findings (formal code review 2026-06-12)
+
+3-layer adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor) of commit `e7e2f0e`. Triage: 0 decision-needed, 6 patch, 2 defer, 13 dismissed (noise / contract-guaranteed / spec'd behavior). Acceptance Auditor verdict: AC1-AC10 ALL satisfied, hard "What NOT to do" constraints all respected, the 3 declared deviations accurate. All 6 patches applied same-turn (+3 tests); gates re-run green post-patch: `flutter analyze` clean, `flutter test` 489/489 (486 + 3 new).
+
+- [x] [Review][Patch] BS-7 budget race: an in-flight fetch success is discarded once the 30 s budget fired — user sees "unavailable" with the debrief already in hand [client/lib/features/debrief/views/debrief_screen.dart:161] — fixed: success now settles unless already `content`; failures past `loading` stay terminal; regression test added
+- [x] [Review][Patch] Empty `areas_to_work_on` renders a bare grey card under an always-on header — hide the section like idioms (degenerate payload only) [client/lib/features/debrief/views/debrief_screen.dart:457] — fixed + widget test
+- [x] [Review][Patch] Hero % and attempt line: `maxLines: 1` without `overflow` clips mid-glyph at accessibility text scales [client/lib/features/debrief/views/debrief_screen.dart:354,378] — fixed: `TextOverflow.ellipsis` on both
+- [x] [Review][Patch] The real `_debriefRoute()` — the story's only behavioral change to an existing screen — had zero test coverage, and its comment claimed a test that did not exist [client/lib/features/call/views/call_ended_screen.dart:335] — fixed: real-route test asserts DebriefScreen wiring (payload/callId/repository) + Decision-F `RouteSettings` name/arguments; comment now points at it
+- [x] [Review][Patch] TalkBack announces "survival rate" twice — hero `semanticsLabel` immediately followed by the visible "Survival Rate" caption [client/lib/features/debrief/views/debrief_screen.dart:362] — fixed: caption wrapped in `ExcludeSemantics`
+- [x] [Review][Patch] Declare the a11y narrowing as a deviation: the design doc's full screen-reader announcement scheme was reduced to the Task 2.12 subset without being listed among the declared deviations (doc amendment) [7-3-build-debrief-screen.md] — fixed: declared deviation #4 added to Completion Notes
+- [x] [Review][Defer] BS-7 poll treats a transient network error as terminal inside the 30 s budget (one wifi blip → permanent "unavailable") [client/lib/features/debrief/views/debrief_screen.dart:167] — deferred, spec'd behavior (Task 3.2, mirrors the reviewed 7.2 pattern); retry-within-budget filed with the pre-MVP connection-resilience bundle in deferred-work.md
+- [x] [Review][Defer] Full design-doc screen-reader announcement scheme (on-appear live region, composed per-card announcements, "Longest pause:" label, phase-change announcements) [client/lib/features/debrief/views/debrief_screen.dart] — deferred to the Story 7.5 debrief overhaul (deferred-work.md entry)
 
 ## Pixel 9 Smoke Gate (on-device validation — owed before review → done)
 
@@ -295,6 +308,7 @@ claude-fable-5 (Claude Code)
 - **Task 6 — tests**: 21 widget tests (3 pure-helper + render/colors/FR37-border, empty/conditional states, AC7 no-CTA/no-praise negatives at 100%, 6 BS-7 machine paths, back-pop + loading-arrow, a11y labels/header-flag/44×44 target). House rules held: 320×568 surface + tearDown, mocktail `MockCallRepository`, explicit `pump(duration)` in every test with live poll timers.
 - **Implementation note (FR37 card)**: Flutter's `BoxDecoration` rejects a non-uniform border combined with a `borderRadius`, so the 12px radius comes from a `ClipRRect` wrapped around the left-striped container — both design specs honored.
 - **Testing note**: the back-pop test uses `pumpAndSettle` deliberately — the content state runs ZERO timers (payload provided → no polling), so the CLAUDE.md §3 ban (live poll timers) does not apply there; every loading-state test sticks to explicit pumps.
+- **Declared deviation #4 (review-added 2026-06-12, a11y narrowing)**: the design doc's full screen-reader announcement scheme (on-appear live-region announcement, composed per-card announcements, "Longest pause:" first-card label) is narrowed to the Task 2.12 subset (labeled back button, hero % label, header-flagged section titles, linear reading order; "Survival Rate" caption excluded from semantics per review P5). The full scheme is deferred to the Story 7.5 debrief overhaul — deferred-work.md entry 2026-06-12.
 - Gates: `flutter analyze` No issues found!; `flutter test` 486/486 green. Client-only story — no server diff, no migration, no deploy.
 
 ### File List
@@ -311,3 +325,5 @@ claude-fable-5 (Claude Code)
 ## Change Log
 
 - 2026-06-11: Story 7.3 implemented (dev-story) — debrief model layer + DebriefScreen render + BS-7 loading/terminal fallback + Call Ended handoff swap + 35 tests. Gates green (analyze clean, 486 flutter tests). Status `in-progress` → `review`; awaiting code review + Pixel 9 smoke gate.
+- 2026-06-11: Pixel 9 smoke gate PASSED, signed by Walid — report renders end-to-end on device. Story stays `review` (code review owed). Style/content dissatisfaction spun off as Story 7.5 (not a 7.3 defect).
+- 2026-06-12: Formal code review complete (3 layers: Blind Hunter / Edge Case Hunter / Acceptance Auditor). AC1-AC10 all satisfied; 0 decision-needed, 6 patches applied same-turn (BS-7 in-flight-success-after-budget honored + areas-empty section hidden + hero/attempt overflow ellipsis + real `_debriefRoute` handoff test + "Survival Rate" caption semantics dedup + declared deviation #4), 2 deferred (deferred-work.md), 13 dismissed. Gates re-run green: analyze clean + 489 flutter tests (486 + 3 new). Both gates now clear → Status `review` → `done` (flip per root-CLAUDE.md rule, smoke gate was already signed).
