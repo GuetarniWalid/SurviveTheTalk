@@ -1153,6 +1153,44 @@ void main() {
   );
 
   testWidgets(
+    'failed POST (CALL_LIMIT_REACHED) does NOT set the session mark — the briefing re-shows on the next tap',
+    (tester) async {
+      final scenario =
+          _build(id: 's1', title: 'Waiter', briefing: briefingContent);
+      final mockRepo = MockCallRepository();
+      when(
+        () => mockRepo.initiateCall(
+          scenarioId: any(named: 'scenarioId'),
+          difficulty: any(named: 'difficulty'),
+        ),
+      ).thenThrow(
+        const ApiException(
+          code: 'CALL_LIMIT_REACHED',
+          message: "You've used all your calls.",
+        ),
+      );
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      // First attempt: briefing → confirm → POST fails → PaywallSheet.
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+
+      // Dismiss the paywall sheet (scrim tap).
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pumpAndSettle();
+
+      // No call ever started → the gate must re-show the briefing.
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'card tap opens the briefing in browse mode — confirm starts the call chain too',
     (tester) async {
       final scenario =

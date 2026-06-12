@@ -79,31 +79,31 @@ so that I know what to expect and can prepare key vocabulary.
   - [x] 5.1 `scenario_list_screen.dart`: extract `_startCall(BuildContext, Scenario)` from `_onCallTap` (content-warning → POST → push CallScreen — chain order untouched); add `_initiatedThisSession` set, marked right after `initiateCall` succeeds. **Flag choreography (precise — avoid a self-block):** BOTH handlers (`_onCallTap`, `_onCardTap`) start with `if (_initiating) return; setState(() => _initiating = true);`, run their flow (briefing await included — so double-taps can't double-push the route), and reset the flag in `finally`. `_startCall` itself contains NO `_initiating` check or set — it is only ever invoked with the flag already held by its caller.
   - [x] 5.2 `_onCallTap`: gate per Decision B → `context.push<bool>('${AppRoutes.briefing}/${scenario.id}', extra: scenario)` → `ready != true → return` → `context.mounted` check → `_startCall`.
   - [x] 5.3 `_onCardTap`: same push + same continuation (replaces the bare `context.push`).
-  - [x] 5.4 Widget tests (extend `scenario_list_screen_test.dart`, mock-router harness already exists): first-attempt call tap pushes briefing + NO POST before confirm; confirm → POST + CallScreen; confirm on warned scenario → warning sheet between briefing and POST; decline → no POST; `attempts > 0` → direct chain (no briefing); null/empty briefing → direct chain; session mark → second call tap after a successful initiate skips the briefing despite stale `attempts == 0`; card tap → briefing + confirm continues. → 9 tests green (null + all-empty as two cases).
+  - [x] 5.4 Widget tests (extend `scenario_list_screen_test.dart`, mock-router harness already exists): first-attempt call tap pushes briefing + NO POST before confirm; confirm → POST + CallScreen; confirm on warned scenario → warning sheet between briefing and POST; decline → no POST; `attempts > 0` → direct chain (no briefing); null/empty briefing → direct chain; session mark → second call tap after a successful initiate skips the briefing despite stale `attempts == 0`; card tap → briefing + confirm continues. → 10 tests green (null + all-empty as two cases, + the paywall-edge probe: failed POST does NOT set the session mark, briefing re-shows).
 - [ ] **Task 6 — Gates, deploy, flip**
-  - [x] 6.1 `cd client && flutter analyze` → "No issues found!"; `flutter test` → all pass (489 existing + ~18 new — indicative). → **analyze clean, 521 passed** (+32: 6 model, 17 screen, 9 hub).
+  - [x] 6.1 `cd client && flutter analyze` → "No issues found!"; `flutter test` → all pass (489 existing + ~18 new — indicative). → **analyze clean, 522 passed** (+33: 6 model, 17 screen, 10 hub).
   - [x] 6.2 Server gates (Task 2.3) green. → ruff check + format clean, **pytest 884** (+4).
-  - [ ] 6.3 Deploy server to VPS (normal release flow — no migration, no .env change), `systemctl restart pipecat.service`, fill the Smoke Test Gate boxes below.
+  - [x] 6.3 Deploy server to VPS (normal release flow — no migration, no .env change), `systemctl restart pipecat.service`, fill the Smoke Test Gate boxes below. → CI run 27408638078 deployed `eb0e917`, service restarted by the release flow, all 6 gate boxes filled (4 verified + 2 N/A).
   - [x] 6.4 Flip story + `sprint-status.yaml` → `review`; commit (one commit for the dev stage, list format, no Co-Authored-By).
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
 > Server slice = list-payload field only: no migration, no writes, no .env change. DB boxes are N/A with rationale.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_
-- [ ] **Happy-path endpoint round-trip.** Every list item carries the 3-key briefing object.
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ 2026-06-12 — `Active: active (running) since Fri 2026-06-12 10:01:20 UTC`; `/health` → `{"status":"ok","db":"ok","git_sha":"eb0e9174a32e88eab68ae977a0a22acf012725ea"}` = the dev commit `eb0e917`. CI run 27408638078 green (Test 2m29s + Deploy 30s).
+- [x] **Happy-path endpoint round-trip.** Every list item carries the 3-key briefing object.
   - _Command:_ `ssh root@167.235.63.129 'set -a; . /opt/survive-the-talk/.env; set +a; cd /opt/survive-the-talk/current/server && JWT=$(.venv/bin/python -c "from auth.jwt_service import issue_token; print(issue_token(1))") && curl -sS -H "Authorization: Bearer $JWT" http://localhost:8000/scenarios | .venv/bin/python -m json.tool | grep -A4 briefing | head -30'`
   - _Expected:_ 200; each `data[]` item has `"briefing": {"vocabulary": "...", "context": "...", "expect": "..."}`
-  - _Actual:_
-- [ ] **Error / unauth path produces the `{error}` envelope.**
+  - _Actual:_ 200; count=6; all 6 items (`waiter_easy_01`, `girlfriend_medium_01`, `mugger_medium_01`, `cop_hard_01`, `cop_interrogation_01`, `landlord_hard_01`) carry exactly the keys `{vocabulary, context, expect}` with authored content (programmatic key-set check: `keys-ok: True` ×6).
+- [x] **Error / unauth path produces the `{error}` envelope.**
   - _Command:_ `curl -sS http://167.235.63.129/scenarios`
   - _Expected:_ 401 + `{"error": {"code": "AUTH_UNAUTHORIZED", ...}}`
-  - _Actual:_
-- [ ] **DB side-effect verified.** N/A — read-only payload change; no rows written, no schema change.
-- [ ] **DB backup taken BEFORE deploy.** N/A — no migration (the standard pre-deploy auto-backup in `deploy-server.yml` still runs).
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR / Traceback for the requests above.
-  - _Proof:_
+  - _Actual:_ HTTP 401 + `{"error":{"code":"AUTH_UNAUTHORIZED","message":"Missing or invalid token."}}`
+- [x] **DB side-effect verified.** N/A — read-only payload change; no rows written, no schema change.
+- [x] **DB backup taken BEFORE deploy.** N/A — no migration (the standard pre-deploy auto-backup in `deploy-server.yml` still runs).
+- [x] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` — no ERROR / Traceback for the requests above.
+  - _Proof:_ 2026-06-12 10:05 UTC — grep for `error|traceback` over the last 50 lines / 5 min returned nothing (requests above included).
 
 ## Pixel 9 Smoke Gate (on-device validation — owed before review → done)
 
@@ -113,6 +113,11 @@ so that I know what to expect and can prepare key vocabulary.
    `ssh root@167.235.63.129` → `/opt/survive-the-talk/current/server/.venv/bin/python -c "import sqlite3; c=sqlite3.connect('/opt/survive-the-talk/data/db.sqlite'); rows=list(c.execute(\"SELECT * FROM user_progress WHERE user_id=1 AND scenario_id IN ('waiter_easy_01','mugger_medium_01')\")); print(rows); c.execute(\"DELETE FROM user_progress WHERE user_id=1 AND scenario_id IN ('waiter_easy_01','mugger_medium_01')\"); c.commit()"`
    (paste the printed backup rows into the gate record so they can be restored on request; verify the exact scenario ids against the DB first)
 3. If the daily call quota is exhausted, apply the standard quota reset (backup → flip today's rows to `failed`).
+
+> **Agent prep — DONE 2026-06-12 (post-deploy `eb0e917`):**
+> - **user_progress reset applied.** Backup of the deleted rows (for restore on request): `[{'user_id': 1, 'scenario_id': 'waiter_easy_01', 'best_score': 100, 'attempts': 24, 'created_at': '2026-06-09T08:14:07Z', 'updated_at': '2026-06-11T16:33:57Z'}]` — `mugger_medium_01` had NO row (already never-attempted). Both ids verified against the DB; both now read `attempts == 0` for user 1 (waiter card shows no stats line — expected).
+> - **Quota:** 0/3 quota-counting `call_sessions` today for user 1 — no reset needed, full allowance available.
+> - **APK:** release build from `eb0e917` at `client/build/app/outputs/flutter-apk/app-release.apk` — install this one (the old build ignores `briefing` harmlessly but never shows the screen).
 
 **Ready-to-play script (responses approximate — live LLM; the briefing screen itself is deterministic):**
 
@@ -264,7 +269,7 @@ claude-fable-5 (Claude Code)
 
 - Red-green honored on every code task: list-payload tests (4), model tests (6), and the seeder test failed first for the expected reasons (KeyError `briefing`, 200-not-500 on corruption, seeder accepting malformed blocks; compile error on the missing model field), then went green on implementation.
 - Server suite: 884 passed (880 baseline + 4) — `ruff check` + `ruff format --check` clean. In-sandbox, warmed (`import aiohttp` first per the Defender cold-scan note).
-- Client suite: 521 passed (489 baseline + 32) — `flutter analyze` "No issues found!" (one unused-import warning in the new test file fixed during the run).
+- Client suite: 522 passed (489 baseline + 33) — `flutter analyze` "No issues found!" (one unused-import warning in the new test file fixed during the run). The 33rd test (paywall edge: failed POST → no session mark → briefing re-shows) was added after the dev commit, with the deploy-proof follow-up.
 - Hairline visibility: `ScrollMetricsNotification` fires on first layout AND on metrics changes (verified by the two hairline tests passing without an initState fallback) — no extra plumbing needed.
 
 ### Completion Notes List
@@ -307,3 +312,4 @@ claude-fable-5 (Claude Code)
 | 2026-06-12 | Story 7.4 spec created (create-story) — exhaustive context pass: briefing column/YAMLs already shipped (5.1), placeholder route already wired, gate design resolved (Decisions A-D as defaults). Status `backlog` → `ready-for-dev`. |
 | 2026-06-12 | Design pass (Decision E) — Walid requested deep research on best-in-class briefing design; 13-agent workflow (6 researchers → rulebook → 3 concepts → 3-judge panel) produced "The Handler's Brief", Walid validated. AC-C2/C8, Tasks 4.x, Layout spec, Copy deck, guardrails 11-13, and the Pixel 9 script amended. Status stays `ready-for-dev`. |
 | 2026-06-12 | dev-story complete — server briefing on the list payload + seeder shape validation; client model parse + BriefingScreen ("The Handler's Brief") + dual-entry hub gate with session mark; placeholder deleted; `AppColors.hairline` token added with full gate cost. Gates: ruff clean + pytest 884, flutter analyze clean + 521 tests. 5 declared deviations (see Dev Agent Record). Status `in-progress` → `review`; VPS deploy + Smoke Test Gate boxes + Pixel 9 gate remain (Task 6.3). |
+| 2026-06-12 | Deploy + gate proof (same day) — CI 27408638078 deployed `eb0e917`; all 6 Smoke Test Gate boxes filled (service on-SHA, 6/6 list items carry the 3-key briefing on prod, 401 envelope, logs clean, 2 N/A). Pixel 9 agent prep done: user_progress reset (waiter+mugger, backup in the gate record), quota 0/3, release APK built. +1 paywall-edge hub test (failed POST → no session mark) → client 522. Story stays `review` — waiting on the Pixel 9 smoke gate + `/bmad-code-review`. |
