@@ -28,6 +28,7 @@ from typing import Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     UserStartedSpeakingFrame,
@@ -82,8 +83,16 @@ class HesitationObserver(FrameProcessor):
         # paired stop).
         self._bot_stopped_at: float | None = None
         self._preceding_line: str = ""
-        # (duration_sec, preceding_character_line) for every gap > threshold.
-        self._gaps: list[tuple[float, str]] = []
+        # Every gap > threshold, as a dict:
+        #   {"id": "h<n>", "duration": float, "line": str, "resolved": bool}
+        # `resolved` is False for a freeze so long the CHARACTER had to speak
+        # again before the user did (Story 7.5 C2 — the v1 invisible-freeze
+        # class: that gap used to be silently OVERWRITTEN by the re-speak's
+        # BotStoppedSpeakingFrame and never recorded). `id` lets the debrief pair
+        # the measured duration to the LLM's situational context BY ID rather
+        # than by index (Story 7.5 C3).
+        self._gaps: list[dict] = []
+        self._gap_counter: int = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -94,6 +103,23 @@ class HesitationObserver(FrameProcessor):
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_stopped_at = self._now()
             self._preceding_line = self._last_character_line()
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            # The character STARTED speaking while a gap was still pending — i.e.
+            # the user froze long enough that the patience ladder made the
+            # character speak AGAIN before the user replied. Close that gap as
+            # UNRESOLVED here (Story 7.5 C2). Without this branch the new turn's
+            # BotStoppedSpeakingFrame would overwrite `_bot_stopped_at` and the
+            # most dramatic freeze — the exact thing this feature exists to
+            # surface — would be lost. Direction is NOT gated (server/CLAUDE.md
+            # §1): we react to the frame TYPE wherever it passes, like the
+            # BotStoppedSpeakingFrame branch above.
+            if self._bot_stopped_at is None:
+                # First character turn, or the gap was already closed by a user
+                # start — no pending freeze to record.
+                return
+            gap = self._now() - self._bot_stopped_at
+            self._bot_stopped_at = None
+            self._record_gap(gap, self._preceding_line, resolved=False)
         elif isinstance(frame, UserStartedSpeakingFrame):
             if self._bot_stopped_at is None:
                 # User spoke without a pending bot-stop (interruption / the very
@@ -101,8 +127,23 @@ class HesitationObserver(FrameProcessor):
                 return
             gap = self._now() - self._bot_stopped_at
             self._bot_stopped_at = None
-            if gap > self._threshold:
-                self._gaps.append((gap, self._preceding_line))
+            self._record_gap(gap, self._preceding_line, resolved=True)
+
+    def _record_gap(self, duration: float, line: str, *, resolved: bool) -> None:
+        """Append a gap that EXCEEDS the threshold, with a stable id + the
+        resolved flag. Sub-threshold gaps are dropped (a ~1.5 s pause is a
+        natural conversational gap, not a hesitation)."""
+        if duration <= self._threshold:
+            return
+        self._gap_counter += 1
+        self._gaps.append(
+            {
+                "id": f"h{self._gap_counter}",
+                "duration": duration,
+                "line": line,
+                "resolved": resolved,
+            }
+        )
 
     def _last_character_line(self) -> str:
         """The most-recent character turn text from the collector, or ''."""
@@ -114,15 +155,27 @@ class HesitationObserver(FrameProcessor):
     def top_hesitations(self) -> list[dict]:
         """The longest `top_n` gaps, longest first — the debrief input shape.
 
-        Each entry is `{"duration_sec": float, "preceding_character_line": str}`,
-        ready to pass to `generate_debrief` (which renders the
-        `=== HESITATION DATA ===` block) and to `assemble_debrief` (which merges
-        the duration with the LLM context by index).
+        Each entry is
+        `{"id": str, "duration_sec": float, "preceding_character_line": str,
+        "resolved": bool}`, ready to pass to `generate_debrief` (which renders
+        the `=== HESITATION DATA ===` block, feeding the `id` so the LLM echoes
+        it back) and to `assemble_debrief` (which pairs the measured duration to
+        the LLM context BY ID — Story 7.5 C3). `resolved` is False for a freeze
+        the character had to break by re-speaking (C2). `id` / `resolved` are
+        additive: a v1 consumer that reads only `duration_sec` /
+        `preceding_character_line` is unaffected.
         """
-        ranked = sorted(self._gaps, key=lambda g: g[0], reverse=True)[: self._top_n]
+        ranked = sorted(self._gaps, key=lambda g: g["duration"], reverse=True)[
+            : self._top_n
+        ]
         result = [
-            {"duration_sec": round(duration, 2), "preceding_character_line": line}
-            for duration, line in ranked
+            {
+                "id": g["id"],
+                "duration_sec": round(g["duration"], 2),
+                "preceding_character_line": g["line"],
+                "resolved": g["resolved"],
+            }
+            for g in ranked
         ]
         if result:
             logger.info("hesitation_observer captured {} gaps >3s", len(result))

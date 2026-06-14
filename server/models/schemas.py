@@ -223,20 +223,37 @@ class ScenariosListOut(BaseModel):
 
 class DebriefError(BaseModel):
     """One deduplicated language error (LLM-produced). `count` >= 1; the UI
-    shows an "x[N]" badge only when count >= 2 (debrief-content-strategy Q8)."""
+    shows an "x[N]" badge only when count >= 2 (debrief-content-strategy Q8).
+
+    Story 7.5 v2 adds tap-sheet depth (B1), both ADDITIVE + defaulted so a
+    stored v1 row still validates: `explanation` (the underlying rule, one
+    sentence) and `examples` (1-2 extra correct sentences). The on-screen card
+    stays brief — `context` per Q3 — and the depth surfaces only in the detail
+    sheet."""
 
     user_said: str
     correction: str
     context: str
     count: int
+    explanation: str | None = None
+    examples: list[str] = Field(default_factory=list)
 
 
 class DebriefHesitation(BaseModel):
-    """A >3 s hesitation: backend-measured `duration_sec` merged (by index)
-    with the LLM's situational `context` (FR12)."""
+    """A >3 s hesitation: backend-measured `duration_sec` merged with the LLM's
+    situational `context` (FR12).
+
+    Story 7.5 v2 adds (all defaulted for v1 back-compat): `id` (pairs
+    duration<->context by id, never by index — retires the C3 residual),
+    `resolved` (False = a freeze so long the character re-spoke, the v1
+    invisible-freeze class C2), and `source` ("device" = measured on the phone
+    per D3-c, "server" = the v1 observer fallback)."""
 
     duration_sec: float
     context: str
+    id: str | None = None
+    resolved: bool = True
+    source: str = "server"
 
 
 class DebriefIdiom(BaseModel):
@@ -245,6 +262,41 @@ class DebriefIdiom(BaseModel):
     expression: str
     meaning: str
     context: str
+
+
+class DebriefBetterPhrasing(BaseModel):
+    """Story 7.5 v2 (B2) — a correct-but-clumsy utterance the user could phrase
+    more naturally. Backend-capped at 2; emitted only when clearly more natural
+    (the weak prod model must not nitpick correct speech)."""
+
+    original: str
+    suggestion: str
+    reason: str
+
+
+class DebriefCheckpoint(BaseModel):
+    """Story 7.5 v2 (B7) — one scenario beat with its met/missed state: the
+    FACTUAL decomposition of the survival % the user already saw on the HUD
+    (answers "why 67%?", NOT praise). Threaded from the bot's goals at teardown,
+    NOT LLM-generated."""
+
+    id: str
+    hint: str
+    met: bool
+
+
+class DebriefArea(BaseModel):
+    """Story 7.5 v2 (D-a/B5/D-c) — one prioritised, evidence-linked, actionable
+    area. `evidence` cites >=1 in-call error/hesitation; `practice_prompt` is the
+    self-contained block the copy button puts on the clipboard (coach role + this
+    single focus + the user's real utterances) for pasting into any LLM;
+    `is_focus` marks the #1 "focus first" area. Rides ALONGSIDE the retained
+    `areas_to_work_on: list[str]` (old clients read the titles; v2 reads this)."""
+
+    title: str
+    evidence: str
+    practice_prompt: str
+    is_focus: bool = False
 
 
 class EncouragingFraming(BaseModel):
@@ -266,6 +318,12 @@ class DebriefOut(BaseModel):
     below 41% (the client keys on field presence). The route therefore serves
     the stored, already-omission-correct dict rather than a model re-dump —
     this model documents + validates that contract.
+
+    Story 7.5 v2 is ADDITIVE-ONLY for back-compat (AC2): `debrief_version` (old
+    rows omit it -> defaults to 1), `checkpoints`, `better_phrasings`, and the
+    rich `areas` all default empty, and the per-error / per-hesitation v2 fields
+    default — so every stored v1 row STILL validates through this model and the
+    7.3 client's `tryParse` (which ignores unknown keys) stays unbroken.
     """
 
     survival_pct: int
@@ -279,3 +337,8 @@ class DebriefOut(BaseModel):
     areas_to_work_on: list[str]
     inappropriate_behavior: str | None = None
     encouraging_framing: EncouragingFraming | None = None
+    # --- Story 7.5 v2 (additive, defaulted for v1 back-compat) ---
+    debrief_version: int = 1
+    checkpoints: list[DebriefCheckpoint] = Field(default_factory=list)
+    better_phrasings: list[DebriefBetterPhrasing] = Field(default_factory=list)
+    areas: list[DebriefArea] = Field(default_factory=list)

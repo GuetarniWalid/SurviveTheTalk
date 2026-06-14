@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     UserStartedSpeakingFrame,
@@ -64,7 +65,12 @@ def test_records_gap_above_threshold():
 
     _run(_drive())
     assert obs.top_hesitations() == [
-        {"duration_sec": 5.0, "preceding_character_line": "Talk properly."}
+        {
+            "id": "h1",
+            "duration_sec": 5.0,
+            "preceding_character_line": "Talk properly.",
+            "resolved": True,
+        }
     ]
 
 
@@ -186,5 +192,142 @@ def test_captures_hesitation_through_a_real_pipeline_setup():
     _run(_drive())
 
     assert obs.top_hesitations() == [
-        {"duration_sec": 5.0, "preceding_character_line": "Talk properly."}
+        {
+            "id": "h1",
+            "duration_sec": 5.0,
+            "preceding_character_line": "Talk properly.",
+            "resolved": True,
+        }
     ], "hesitation not captured through a real pipeline — _clock clobber regression?"
+
+
+def test_records_unresolved_gap_on_character_respeak():
+    """Story 7.5 C2 — a freeze so long the character re-speaks before the user
+    replies is captured at the re-speak's BotStartedSpeakingFrame, tagged
+    resolved=False. In v1 this gap was OVERWRITTEN by the re-speak's
+    BotStoppedSpeakingFrame and lost entirely."""
+    obs = _observer(
+        transcript=[{"role": "character", "text": "Answer me.", "timestamp_ms": 0}],
+        clock_values=[
+            0.0,
+            6.0,
+        ],  # BSF@0, character re-speaks (BotStarted)@6 → 6 s freeze
+    )
+
+    async def _drive():
+        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    _run(_drive())
+    assert obs.top_hesitations() == [
+        {
+            "id": "h1",
+            "duration_sec": 6.0,
+            "preceding_character_line": "Answer me.",
+            "resolved": False,
+        }
+    ]
+
+
+def test_respeak_then_user_start_records_two_distinct_gaps():
+    """The freeze (closed at re-speak, unresolved) and the post-re-speak gap
+    (closed at the user start, resolved) are TWO separate measurements over
+    disjoint intervals — never double-counted."""
+    obs = _observer(
+        transcript=[{"role": "character", "text": "Talk properly.", "timestamp_ms": 0}],
+        # BSF@0 -> BotStarted@5 (freeze 5, unresolved) -> BSF@8 -> UserStart@12 (gap 4, resolved)
+        clock_values=[0.0, 5.0, 8.0, 12.0],
+    )
+
+    async def _drive():
+        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    _run(_drive())
+    assert obs.top_hesitations() == [
+        {
+            "id": "h1",
+            "duration_sec": 5.0,
+            "preceding_character_line": "Talk properly.",
+            "resolved": False,
+        },
+        {
+            "id": "h2",
+            "duration_sec": 4.0,
+            "preceding_character_line": "Talk properly.",
+            "resolved": True,
+        },
+    ]
+
+
+def test_respeak_below_threshold_ignored():
+    """A short re-speak gap (the character barely pauses then continues) is NOT
+    a hesitation — the same >3 s threshold applies on the re-speak path."""
+    obs = _observer(
+        transcript=[{"role": "character", "text": "x", "timestamp_ms": 0}],
+        clock_values=[0.0, 2.0],  # 2 s < 3 s
+    )
+
+    async def _drive():
+        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    _run(_drive())
+    assert obs.top_hesitations() == []
+
+
+def test_bot_start_without_pending_stop_is_ignored():
+    """The very FIRST character turn fires BotStartedSpeakingFrame with no gap
+    pending — it must be a no-op (not a spurious zero-gap)."""
+    obs = _observer(transcript=[], clock_values=[1.0])
+
+    async def _drive():
+        await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    _run(_drive())
+    assert obs.top_hesitations() == []
+
+
+def test_captures_respeak_freeze_through_a_real_pipeline_setup():
+    """server/CLAUDE.md §1 net for the NEW BotStartedSpeakingFrame branch — drive
+    it through a real PipelineTask so pipecat runs setup(); proves the re-speak
+    capture fires on the setup() path the direct-call unit tests never reach."""
+    from pipecat.frames.frames import EndFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineTask
+
+    values = [0.0, 6.0]
+    state = {"i": 0}
+
+    def _clk() -> float:
+        v = values[min(state["i"], len(values) - 1)]
+        state["i"] += 1
+        return v
+
+    obs = HesitationObserver(
+        collector=_FakeCollector(
+            [{"role": "character", "text": "Answer me.", "timestamp_ms": 0}]
+        ),
+        clock=_clk,
+    )
+    task = PipelineTask(Pipeline([obs]))
+
+    async def _drive() -> None:
+        await task.queue_frames(
+            [BotStoppedSpeakingFrame(), BotStartedSpeakingFrame(), EndFrame()]
+        )
+        await PipelineRunner().run(task)
+
+    _run(_drive())
+
+    assert obs.top_hesitations() == [
+        {
+            "id": "h1",
+            "duration_sec": 6.0,
+            "preceding_character_line": "Answer me.",
+            "resolved": False,
+        }
+    ], "re-speak freeze not captured through a real pipeline"
