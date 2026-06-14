@@ -40,6 +40,28 @@ from pipeline.prompts import DEBRIEF_PROMPT_VERSION
 # When the call ended without the PatienceTracker driving it (the user pressed
 # hang-up, or the network dropped), there is no tracker-emitted reason.
 DEFAULT_END_REASON = "user_hangup"
+# Story 7.5 F2 — a fully-completed call (every checkpoint met) that the user
+# ended themselves used to be mislabeled `user_hangup`; this distinct reason
+# stops the debrief framing/tone keying on a "they hung up on you" signal.
+COMPLETED_END_REASON = "completed"
+
+
+def resolve_end_reason(
+    tracker_reason: str | None, *, met_count: int, total_checkpoints: int
+) -> str:
+    """Story 7.5 F2 — the call-end reason the debrief should record.
+
+    The PatienceTracker's reason wins when set (`survived`,
+    `character_hung_up`, `inappropriate_content`, `noisy_environment`). When it
+    is None (user hang-up / network drop), a call that nevertheless met EVERY
+    checkpoint is `completed` — NOT the misleading `user_hangup` default the v1
+    teardown stamped on a successful run.
+    """
+    if tracker_reason:
+        return tracker_reason
+    if total_checkpoints > 0 and met_count >= total_checkpoints:
+        return COMPLETED_END_REASON
+    return DEFAULT_END_REASON
 
 _NO_THINK_PREFIX = "/no_think"
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -76,6 +98,7 @@ async def persist_debrief(
     scenario_id: str,
     brief_personality_description: str,
     hesitations: list[dict],
+    checkpoints: list[dict] | None = None,
 ) -> None:
     """Generate + persist the debrief for a finished call (Option A).
 
@@ -177,6 +200,7 @@ async def persist_debrief(
             attempt_number=attempt_number,
             previous_best=previous_best,
             hesitations=hesitations,
+            checkpoints=checkpoints,
         )
         # Validate at WRITE time against the same contract the GET route enforces.
         # On the non-strict fallback parse path a structurally-wrong item could

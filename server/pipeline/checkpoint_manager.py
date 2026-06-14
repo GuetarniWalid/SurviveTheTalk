@@ -639,6 +639,22 @@ class CheckpointManager(FrameProcessor):
         observability + the terminal-turn predicate)."""
         return sum(1 for state in self._goals.values() if state == "met")
 
+    @property
+    def checkpoint_breakdown(self) -> list[dict]:
+        """Story 7.5 B7 — the met/missed state of every beat in author order,
+        for the debrief's factual decomposition of the survival % (`{id, hint,
+        met}`). The bot reads this at teardown and threads it into the stored
+        debrief; it is DATA (not LLM-generated, not praise) — it answers
+        "why 67%?" with the exact beats the user missed."""
+        return [
+            {
+                "id": cp["id"],
+                "hint": str(cp.get("hint_text", "")),
+                "met": self._goals.get(cp["id"]) == "met",
+            }
+            for cp in self._checkpoints
+        ]
+
     def schedule_initial_emit(self) -> None:
         """Story 6.7 Phase 2 retouche #5 — flag the initial-state
         envelope for emission as soon as this processor's first frame has

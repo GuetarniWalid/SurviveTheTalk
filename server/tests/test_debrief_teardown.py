@@ -17,7 +17,13 @@ from config import Settings
 from db.database import get_connection, run_migrations
 from db.queries import get_debrief_by_call_id, insert_call_session
 from db.seed_scenarios import seed_scenarios
-from pipeline.debrief_teardown import brief_personality, persist_debrief
+from pipeline.debrief_teardown import (
+    COMPLETED_END_REASON,
+    DEFAULT_END_REASON,
+    brief_personality,
+    persist_debrief,
+    resolve_end_reason,
+)
 
 _NOW = "2026-06-08T12:00:00Z"
 _SCENARIO_ID = "mugger_medium_01"
@@ -306,6 +312,54 @@ def test_persist_skips_storage_when_assembled_blob_fails_contract(seeded, monkey
     assert debrief is None
     # ...but progression still landed (the attempt happened).
     assert progress["attempts"] == 1
+
+
+def test_persist_threads_checkpoint_breakdown(seeded, monkeypatch):
+    """Story 7.5 B7 / Task 3.2 — the bot's met/missed checkpoint breakdown is
+    stored verbatim in the debrief (the factual decomposition of the %)."""
+    _user_id, call_id = seeded
+    monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_core)
+    breakdown = [
+        {"id": "greet", "hint": "Greet the mugger", "met": True},
+        {"id": "refuse", "hint": "Refuse to comply", "met": False},
+    ]
+
+    async def _go():
+        await persist_debrief(**_kwargs(call_id, checkpoints=breakdown))
+        async with get_connection() as db:
+            return await get_debrief_by_call_id(db, call_id)
+
+    debrief = asyncio.run(_go())
+    stored = json.loads(debrief["debrief_json"])
+    assert stored["checkpoints"] == breakdown
+
+
+def test_resolve_end_reason_prefers_tracker_reason():
+    assert (
+        resolve_end_reason("survived", met_count=3, total_checkpoints=3) == "survived"
+    )
+    assert (
+        resolve_end_reason("inappropriate_content", met_count=0, total_checkpoints=3)
+        == "inappropriate_content"
+    )
+
+
+def test_resolve_end_reason_completed_when_all_met_without_tracker_reason():
+    # Story 7.5 F2 — a fully-completed call the USER ended is `completed`, not
+    # the misleading `user_hangup` default.
+    assert (
+        resolve_end_reason(None, met_count=3, total_checkpoints=3)
+        == COMPLETED_END_REASON
+    )
+
+
+def test_resolve_end_reason_user_hangup_when_incomplete_or_no_checkpoints():
+    assert (
+        resolve_end_reason(None, met_count=2, total_checkpoints=3) == DEFAULT_END_REASON
+    )
+    assert (
+        resolve_end_reason(None, met_count=0, total_checkpoints=0) == DEFAULT_END_REASON
+    )
 
 
 def test_brief_personality_strips_no_think_and_takes_two_sentences():

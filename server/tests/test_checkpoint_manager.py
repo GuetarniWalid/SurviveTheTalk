@@ -3188,3 +3188,16 @@ def test_manager_recompose_carries_mood_directive_every_time() -> None:
     final_si = stub_llm._settings.system_instruction
     assert final_si.count("<mood:VALUE>") == 1
     assert "Wrap up the conversation naturally." in final_si
+
+
+def test_checkpoint_breakdown_reports_met_missed_in_author_order() -> None:
+    """Story 7.5 B7 — the teardown breakdown lists every beat in author order
+    with its hint + met state (the factual decomposition of the survival %)."""
+    manager, *_ = _make_manager(checkpoints=_make_checkpoints(3))
+    manager._goals["cp0"] = "met"
+    manager._goals["cp2"] = "met"
+    assert manager.checkpoint_breakdown == [
+        {"id": "cp0", "hint": "hint 0", "met": True},
+        {"id": "cp1", "hint": "hint 1", "met": False},
+        {"id": "cp2", "hint": "hint 2", "met": True},
+    ]

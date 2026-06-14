@@ -43,9 +43,9 @@ from pipeline.checkpoint_manager import (
     format_suggested_focus_block,
 )
 from pipeline.debrief_teardown import (
-    DEFAULT_END_REASON,
     brief_personality,
     persist_debrief,
+    resolve_end_reason,
 )
 from pipeline.dtln_audio_filter import DTLNAudioFilter
 from pipeline.endpoint_watchdog import EndpointWatchdog
@@ -885,7 +885,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     settings=settings,
                     call_id=int(call_id_env),
                     transcript=list(collector.transcript),
-                    reason=patience_tracker.call_end_reason or DEFAULT_END_REASON,
+                    reason=resolve_end_reason(
+                        patience_tracker.call_end_reason,
+                        met_count=checkpoint_manager.met_count,
+                        total_checkpoints=len(scenario_checkpoints),
+                    ),
                     checkpoints_passed=checkpoint_manager.met_count,
                     total_checkpoints=len(scenario_checkpoints),
                     character_name=scenario_metadata.get("title", scenario_id),
@@ -898,6 +902,7 @@ async def run_bot(url: str, room: str, token: str) -> None:
                         scenario_base_prompt
                     ),
                     hesitations=hesitation_observer.top_hesitations(),
+                    checkpoints=checkpoint_manager.checkpoint_breakdown,
                 )
             except Exception:
                 logger.exception(
