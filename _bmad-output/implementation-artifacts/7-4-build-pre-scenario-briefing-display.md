@@ -1,6 +1,6 @@
 # Story 7.4: Build Pre-Scenario Briefing Display
 
-Status: review
+Status: done
 
 ## ⚠️ Source-Document Drift — READ FIRST
 
@@ -148,7 +148,9 @@ Dismissed as noise / by-design: 11 — hairline predicate is the spec's literal 
    💰 **MONEY MOMENT #4:** briefing first → tap **Pick up** → THEN the "HEADS UP / Buckle up" sheet slides up (two "Pick up" buttons in a row is intentional — same fiction) → tap **Not now** → hub, no call burned.
 7. Kill the app completely, reopen → tap the **phone icon** on The Waiter: no briefing (server now reports attempts ≥ 1 — the restart path trusts the server). Hang up if it connects.
 
-Gate boxes: ☐ #1 briefing-before-first-call ☐ #2 session skip ☐ #3 card-tap browse ☐ #4 briefing→warning order ☐ #7 server-truth after restart ☐ no crash / no layout overflow on the briefing screen.
+Gate boxes: ☑ #1 briefing-before-first-call ☑ #2 session skip ☑ #3 card-tap browse ☑ #4 briefing→warning order ☑ #7 server-truth after restart ☑ no crash / no layout overflow on the briefing screen.
+
+> **Pixel 9 Smoke Gate — SIGNED by Walid 2026-06-13** ("ok pour moi tu peux mettre en done"). On-device validation passed; this was the second of the two `review → done` gates (the formal 3-layer code review cleared 2026-06-12, commit `dff5c12`). Both gates now clear → reviewer flips `review → done`.
 
 ## Dev Notes
 
@@ -329,3 +331,4 @@ claude-fable-5 (Claude Code)
 | 2026-06-12 | dev-story complete — server briefing on the list payload + seeder shape validation; client model parse + BriefingScreen ("The Handler's Brief") + dual-entry hub gate with session mark; placeholder deleted; `AppColors.hairline` token added with full gate cost. Gates: ruff clean + pytest 884, flutter analyze clean + 521 tests. 5 declared deviations (see Dev Agent Record). Status `in-progress` → `review`; VPS deploy + Smoke Test Gate boxes + Pixel 9 gate remain (Task 6.3). |
 | 2026-06-12 | Deploy + gate proof (same day) — CI 27408638078 deployed `eb0e917`; all 6 Smoke Test Gate boxes filled (service on-SHA, 6/6 list items carry the 3-key briefing on prod, 401 envelope, logs clean, 2 N/A). Pixel 9 agent prep done: user_progress reset (waiter+mugger, backup in the gate record), quota 0/3, release APK built. +1 paywall-edge hub test (failed POST → no session mark) → client 522. Story stays `review` — waiting on the Pixel 9 smoke gate + `/bmad-code-review`. |
 | 2026-06-12 | Code review COMPLETE (3 adversarial layers, 21 raw → 20 unique findings) — 8 patches applied: canonical-keys `hasBriefingContent` + stale-capture hairline fix + dead `ScrollController` removed (deviation #6) + getter doc fix + 6 new tests (null-briefing render, icon+card double-tap, hairline metrics toggle, 360×800 viewport contract PROVEN under real Inter fonts loaded in `setUpAll`). 1 deferred pre-existing (malformed-2xx initiate envelope → deferred-work.md), 11 dismissed. Gates post-patch: analyze clean, client 528 (+6); server untouched (884 stands). Status STAYS `review` — waiting ONLY on the Pixel 9 smoke gate. |
+| 2026-06-13 | Pixel 9 smoke gate SIGNED by Walid ("ok pour moi tu peux mettre en done") — all 6 on-device gate boxes ticked. Both `review → done` gates now clear (code review 2026-06-12 + this smoke gate); reviewer flips `review → done` in BOTH places (story Status + `sprint-status.yaml`). **Epic 7 next open work: 7-5-overhaul-debrief-report (ready-for-dev).** |
