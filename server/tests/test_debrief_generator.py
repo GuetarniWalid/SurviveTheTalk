@@ -64,9 +64,13 @@ _VALID_CORE = {
             "correction": "I agree",
             "context": "Responding to the demand",
             "count": 3,
+            "explanation": "'agree' is not used with 'be'; it stands alone.",
+            "examples": ["I agree with you."],
         }
     ],
-    "hesitation_contexts": [{"context": "After the threat escalated"}],
+    "hesitation_contexts": [
+        {"hesitation_id": "h1", "context": "After the threat escalated"}
+    ],
     "idioms": [
         {
             "expression": "Pull the other one",
@@ -74,7 +78,19 @@ _VALID_CORE = {
             "context": "When you claimed to have no wallet",
         }
     ],
-    "areas_to_work_on": ["Negative structure", "Articles"],
+    "better_phrasings": [],
+    "areas": [
+        {
+            "title": "Negative sentence structure",
+            "evidence": 'You said "I am not want"',
+            "practice_prompt": "You are an English coach. Drill negative sentences.",
+        },
+        {
+            "title": "Articles",
+            "evidence": 'You dropped "a" before "wallet"',
+            "practice_prompt": "You are an English coach. Drill articles.",
+        },
+    ],
     "inappropriate_behavior": None,
 }
 
@@ -131,7 +147,7 @@ def test_system_prompt_matches_authoritative_doc():
     m = re.search(r"```\s*\n(.*?)\n```", doc[i:], re.DOTALL)
     block = m.group(1).replace("\r\n", "\n").replace("\r", "\n")
     assert DEBRIEF_SYSTEM_PROMPT.strip() == block.strip()
-    assert DEBRIEF_PROMPT_VERSION == "1.0"
+    assert DEBRIEF_PROMPT_VERSION == "2.0"
 
 
 # ---------- schema builder (AC3) ------------------------------------------
@@ -145,7 +161,8 @@ def test_schema_top_level_shape():
         "errors",
         "hesitation_contexts",
         "idioms",
-        "areas_to_work_on",
+        "better_phrasings",
+        "areas",
         "inappropriate_behavior",
     }
 
@@ -153,8 +170,29 @@ def test_schema_top_level_shape():
 def test_schema_error_item_all_required_no_extra():
     item = _build_debrief_schema()["properties"]["errors"]["items"]
     assert item["additionalProperties"] is False
-    assert set(item["required"]) == {"user_said", "correction", "context", "count"}
+    # v2 adds the tap-sheet depth fields; strict mode requires ALL listed.
+    assert set(item["required"]) == {
+        "user_said",
+        "correction",
+        "context",
+        "count",
+        "explanation",
+        "examples",
+    }
     assert item["properties"]["count"]["type"] == "integer"
+
+
+def test_schema_areas_item_is_evidence_linked():
+    item = _build_debrief_schema()["properties"]["areas"]["items"]
+    assert item["additionalProperties"] is False
+    # is_focus is NOT in the LLM schema — the backend pins it.
+    assert set(item["required"]) == {"title", "evidence", "practice_prompt"}
+    assert "is_focus" not in item["properties"]
+
+
+def test_schema_hesitation_context_echoes_id():
+    item = _build_debrief_schema()["properties"]["hesitation_contexts"]["items"]
+    assert set(item["required"]) == {"hesitation_id", "context"}
 
 
 def test_schema_inappropriate_behavior_is_nullable():
@@ -163,12 +201,17 @@ def test_schema_inappropriate_behavior_is_nullable():
 
 
 def test_schema_omits_array_length_constraints_for_groq_strict():
-    # minItems/maxItems are rejected by Groq strict mode — the 2-3 guarantee
-    # comes from the prompt + the backend clamp, not the schema.
-    areas = _build_debrief_schema()["properties"]["areas_to_work_on"]
-    assert "minItems" not in areas
-    assert "maxItems" not in areas
-    assert areas["items"]["type"] == "string"
+    # minItems/maxItems are rejected by Groq strict mode — the cap guarantees
+    # come from the prompt + the backend clamps, not the schema.
+    schema = _build_debrief_schema()
+    for key in ("errors", "areas", "better_phrasings"):
+        node = schema["properties"][key]
+        assert "minItems" not in node and "maxItems" not in node
+        assert node["items"]["type"] == "object"
+    assert (
+        schema["properties"]["errors"]["items"]["properties"]["examples"]["type"]
+        == "array"
+    )
 
 
 # ---------- user message + helpers ----------------------------------------
@@ -185,9 +228,33 @@ def test_format_transcript_alternates_labels():
 
 def test_format_hesitations_renders_silences():
     out = _format_hesitations(
-        [{"duration_sec": 4.23, "preceding_character_line": "Talk properly."}]
+        [
+            {
+                "id": "h1",
+                "duration_sec": 4.23,
+                "preceding_character_line": "Talk properly.",
+                "resolved": True,
+            }
+        ]
     )
-    assert out == 'Silence #1: 4.2s — after CHARACTER said: "Talk properly."'
+    assert out == (
+        'hesitation_id "h1": 4.2s pause — after CHARACTER said: "Talk properly."'
+    )
+
+
+def test_format_hesitations_flags_unresolved_freeze():
+    out = _format_hesitations(
+        [
+            {
+                "id": "h2",
+                "duration_sec": 7.0,
+                "preceding_character_line": "Answer me.",
+                "resolved": False,
+            }
+        ]
+    )
+    assert "the character had to speak again" in out
+    assert 'hesitation_id "h2"' in out
 
 
 def test_format_hesitations_empty_sentinel():
@@ -209,11 +276,26 @@ def test_user_message_contains_header_and_fences():
     assert "=== HESITATION DATA ===" in msg
 
 
-def test_clamp_areas_keeps_one_truncates_four():
-    assert _clamp_areas(["only one"]) == ["only one"]
-    assert _clamp_areas(["a", "b", "c", "d"]) == ["a", "b", "c"]
-    assert _clamp_areas(["a", "  ", "b"]) == ["a", "b"]  # blanks dropped
+def _area(title, *, evidence="In-call evidence.", practice="Coach prompt."):
+    return {"title": title, "evidence": evidence, "practice_prompt": practice}
+
+
+def test_clamp_areas_keeps_first_three_and_drops_evidence_free():
+    four = [_area("a"), _area("b"), _area("c"), _area("d")]
+    assert _clamp_areas(four) == [_area("a"), _area("b"), _area("c")]
+    # evidence is mandatory — an area with blank evidence is generic filler.
+    assert _clamp_areas([_area("x", evidence="")]) == []
+    # missing practice_prompt → dropped; non-list → empty.
+    assert _clamp_areas([{"title": "y", "evidence": "e"}]) == []
     assert _clamp_areas("not a list") == []
+
+
+def test_clamp_areas_truncates_practice_prompt_and_collapses_whitespace():
+    long_prompt = "word " * 400  # ~2000 chars with newlines collapsed
+    out = _clamp_areas([_area("a", practice="line1\n\nline2 " + long_prompt)])
+    assert len(out) == 1
+    assert len(out[0]["practice_prompt"]) <= 900
+    assert "\n" not in out[0]["practice_prompt"]
 
 
 def test_parse_strips_markdown_fence():
@@ -267,10 +349,10 @@ def test_generate_returns_core_and_sends_strict_schema(monkeypatch):
 
 def test_generate_clamps_areas_to_three(monkeypatch):
     core = dict(_VALID_CORE)
-    core["areas_to_work_on"] = ["a", "b", "c", "d", "e"]
+    core["areas"] = [_area(t) for t in ("a", "b", "c", "d", "e")]
     _mock_http(monkeypatch, handler=_resp(json.dumps(core)))
     out = _run(generate_debrief(**_kwargs()))
-    assert out["areas_to_work_on"] == ["a", "b", "c"]
+    assert [a["title"] for a in out["areas"]] == ["a", "b", "c"]
 
 
 # ---------- generate_debrief: None / failure paths ------------------------

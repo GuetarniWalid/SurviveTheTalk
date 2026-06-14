@@ -29,11 +29,27 @@ _CORE = {
             "correction": "I agree",
             "context": "Responding to the demand",
             "count": 3,
+            "explanation": "'agree' stands alone; no 'be'.",
+            "examples": ["I agree with you."],
         }
     ],
-    "hesitation_contexts": [{"context": "After the threat escalated"}],
+    "hesitation_contexts": [
+        {"hesitation_id": "h1", "context": "After the threat escalated"}
+    ],
     "idioms": [],
-    "areas_to_work_on": ["Negative structure", "Articles"],
+    "better_phrasings": [],
+    "areas": [
+        {
+            "title": "Negative structure",
+            "evidence": 'You said "I am not want"',
+            "practice_prompt": "Coach: drill negatives.",
+        },
+        {
+            "title": "Articles",
+            "evidence": 'You dropped "a"',
+            "practice_prompt": "Coach: drill articles.",
+        },
+    ],
     "inappropriate_behavior": None,
 }
 
@@ -72,7 +88,12 @@ def _kwargs(call_id: int, **overrides):
         scenario_id=_SCENARIO_ID,
         brief_personality_description="A mugger.",
         hesitations=[
-            {"duration_sec": 4.2, "preceding_character_line": "Talk properly."}
+            {
+                "id": "h1",
+                "duration_sec": 4.2,
+                "preceding_character_line": "Talk properly.",
+                "resolved": True,
+            }
         ],
     )
     base.update(overrides)
@@ -114,14 +135,24 @@ def test_persist_writes_debrief_counts_and_progress(seeded, monkeypatch):
     # survival = floor(2/3*100) = 66
     assert debrief["survival_pct"] == 66
     stored = json.loads(debrief["debrief_json"])
+    assert stored["debrief_version"] == 2
     assert stored["character_name"] == "The Mugger"
     assert stored["scenario_title"] == "Give me your wallet"
     assert stored["attempt_number"] == 1
     assert stored["previous_best"] is None
-    # hesitation duration (backend) merged with LLM context by index.
+    # hesitation duration (backend) merged with the LLM context BY ID (v2).
     assert stored["hesitations"] == [
-        {"duration_sec": 4.2, "context": "After the threat escalated"}
+        {
+            "id": "h1",
+            "duration_sec": 4.2,
+            "context": "After the threat escalated",
+            "resolved": True,
+            "source": "server",
+        }
     ]
+    # v2 fields land: rich areas + the back-compat title list derived from them.
+    assert stored["areas_to_work_on"] == ["Negative structure", "Articles"]
+    assert stored["areas"][0]["is_focus"] is True
     # encouraging_framing present (66 > 40).
     assert "encouraging_framing" in stored
 

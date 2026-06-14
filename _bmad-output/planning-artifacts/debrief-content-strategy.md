@@ -329,3 +329,50 @@ Layout, typography, spacing, colors — all remain identical. These decisions ch
 - Architecture: `debriefs` table, `GET /debriefs/{call_id}`
 - Design Spec: `debrief-screen-design.md`
 - Story: `2-4-design-debrief-screen.md`
+
+## v2 Amendment — Story 7.5 Content Decisions (Q11-Q16)
+
+**Author:** Dev (Story 7.5, depth + actionability design pass) + Walid
+**Date:** 2026-06-14
+**Status:** Approved (decision pass D1-D6, 2026-06-11; design direction locked 2026-06-14)
+**Consumed by:** Story 7.5 (Debrief v2 server generation + client screen)
+
+This amendment EXTENDS the Q1-Q10 decisions above; where it touches an earlier decision it says so explicitly. The clinical no-praise charter (Q1 no strengths, Q2 no summary, Q9 clinical tone) is PRESERVED and now also binds the new depth fields. Governing philosophy (Walid 2026-06-14): **"riche au clic, sobre au premier regard"** — the surface is calm and scannable, the depth is revealed on tap. Back-compat law (AC2): every v2 field is ADDITIVE + nullable/defaulted, and NO field changes type, so every stored v1 row STILL validates through `DebriefOut` and through the 7.3 client's `tryParse`.
+
+### Q11: Per-error depth — `explanation` + `examples[]` ADDED (B1; RECONCILES Q3)
+
+Q3 removed a per-error grammar rule and replaced it with `context`, because on the FLAT v1 card a rule plus a situational note was redundant clutter. v2 introduces a surface/depth split (progressive disclosure) and reconciles Q3 rather than contradicting it: the CARD still shows ONLY `context` (Q3 honored verbatim — the surface is unchanged), and the rule moves one tap deeper, where it is additive detail, not card clutter. Two new DEPTH fields, surfaced only in the tap-detail sheet:
+- `explanation`: one factual sentence naming the underlying RULE behind the correction (the WHY), max ~160 chars. It names the principle; it does NOT restate the correction; no praise.
+- `examples[]`: 1-2 short correct model sentences applying the same rule in a fresh context, each <= ~80 chars, never a verbatim copy of `correction`. Empty array allowed when no clean example exists.
+`context` = WHEN (surface), `explanation` = WHY (depth). Grammar themes still ALSO aggregate up into `areas` (Q4); the per-error `explanation` is the local, anchored version, the area is the synthesized version.
+
+### Q12: `better_phrasings[]` ADDED — correct-but-clumsy, capped 2, default empty (B2)
+
+A new high-precision, OPTIONAL section for utterances that were grammatically CORRECT but unnatural (distinct from `errors`, which are wrong). Each item: `{original, suggestion, reason}`. The default is an EMPTY array — and the prompt tells the weak prod model (Scout) that empty is the common, expected result, so it does not nitpick acceptable speech. Hard backend cap of 2 (the strict schema cannot enforce it). `reason` is factual (register, idiom, concision), never praise. Fixed-precision rationale: nitpicking correct speech on a weak model is noise; the strong "default empty" bias + the cap keep this to genuine enrichment.
+
+### Q13: Evidence-linked, prioritized rich `areas[]` ADDED (D-a/D-c) — rides ALONGSIDE Q4's `areas_to_work_on`
+
+Q4's `areas_to_work_on: list[str]` is RETAINED verbatim (old clients and old stored rows read the flat titles). A NEW rich `areas: list[{title, evidence, practice_prompt, is_focus}]` rides alongside it; the backend DERIVES `areas_to_work_on` from `areas[].title` so a single source stays authoritative and the flat and rich lists can never disagree.
+- `title`: Q4's theme, but the parenthetical example is DROPPED from the title (calmer surface) and replaced by the required `evidence` quote. Bare 2-6-word diagnostic noun phrase.
+- `evidence`: one factual sentence citing AT LEAST ONE concrete in-call error (quoted) or hesitation. This OPERATIONALIZES Q4's "must be supported by evidence in the transcript" as a required, quoted field — generic filler ("practice grammar") is structurally impossible because the model must quote real data.
+- `is_focus`: exactly one area (the first, highest-priority) is the focus. **The LLM does NOT author `is_focus`** — Groq STRICT mode cannot enforce "exactly one boolean true", and a weak model would set several or none. The LLM owns ORDER (priority-first, prompt-instructed); the BACKEND sets `is_focus=true` on index 0 (mirroring how `survival_pct`/`inappropriate_behavior` are backend-pinned, and matching the locked `DebriefArea.is_focus=False` default in `schemas.py`).
+Count is AT MOST 3; Q4's "exactly 2 or 3" RELAXES to "1 to 3" — a single dominant, well-evidenced pattern beats two padded ones ("one thing at a time", Walid), while 0 and 4+ stay forbidden. Fixed area taxonomy was rejected (D-b KILL): free text + mandatory evidence gives quality without procrustean labels from a weak model.
+
+### Q14: Per-area `practice_prompt` ADDED — the flagship copy-to-coach payload (B5/E1)
+
+Each area carries a self-contained `practice_prompt`: an instruction block (<= ~900 chars) the user copies and pastes into any external AI (voice or text) to drill that ONE area. It is addressed to a COACH (the external AI), NEVER to the user. It sets the coach role (intermediate-learner conversation coach, voice-friendly short turns, ask-then-wait), states the single focus and forbids topic drift, embeds the user's REAL quoted failing utterances + corrections from this call, instructs the flow (one-sentence diagnosis -> 5-8 drill exchanges -> 3-line progress verdict), and instructs on-the-spot correction with no praise inflation. It is FACTUAL/INSTRUCTIONAL — the no-praise charter (Q9) binds it: instructions to a coach are not praise to the user. It must be self-contained, with no reference to "the debrief/report/app". Server-generated (D2, content-is-server-side law) so the copy evolves without an app release and bakes in the user's actual utterances.
+
+### Q15: Checkpoint breakdown `checkpoints[]` ADDED (B7) — DATA, not praise; NOT LLM-generated
+
+The met/missed beat list `{id, hint, met}` is threaded from the bot's goal state at teardown — NOT produced by the LLM and NOT in the LLM schema. It is the factual decomposition of the survival % the user already saw on the HUD: it answers "why 67%?" with "these 2 beats were missed". It is explicitly DATA and stays that way (no praise, no narrative), so it does not violate Q1/Q2 — it adds no opinion, only the breakdown of an existing honest number.
+
+### Q16: Hesitation pairing by id + escalation capture + source (C2/C3/D3-c) — SUPERSEDES Q6's by-index merge
+
+Q6's backend/LLM hesitation split is kept, but the MERGE changes. The LLM now echoes a `hesitation_id` per context (`hesitation_contexts[].hesitation_id`, copied unchanged from the input), and the backend pairs duration to context BY ID, never by index — retiring the documented by-index mis-pair residual (C3). The wire `DebriefHesitation` additionally carries `resolved` (false = a freeze so long the character re-spoke — the v1 invisible-freeze class, now captured, C2) and `source` ("device" = measured on the phone per D3-c client-authoritative measurement, "server" = the v1 observer fallback). The >3s threshold (Q6) stands; durations render as approximate ("~5s") on the client. The LLM's ONLY new responsibility is the `hesitation_id` echo; `duration_sec`/`resolved`/`source` are backend/device fields.
+
+### Tone & schema invariants (unchanged, restated for the depth fields)
+
+- The depth fields obey the Q9 clinical register: `explanation` and `examples` are factual; `practice_prompt` is instructional to a coach; `evidence` quotes real data; `better_phrasings.reason` is factual. No praise, no hedging, no exclamation, no second-person opinion anywhere.
+- Groq STRICT json_schema law (server/CLAUDE.md §4): every object lists ALL properties in `required` + `additionalProperties: false`; STRICT mode REJECTS minItems/maxItems/number bounds, so ALL length/count rules (errors <= 5, areas 1-3, better_phrasings <= 2, examples 1-2, char caps) live in the PROMPT TEXT + backend clamps, NOT the schema.
+- Bias toward empty on the weak prod model: no errors -> empty; no idioms -> empty; better_phrasings default empty; no hesitations -> empty. `areas` is the one section that always carries 1-3 items.
+- `DEBRIEF_PROMPT_VERSION` bumps "1.0" -> "2.0"; `debrief_version: 2` rides on `DebriefOut` (old rows omit it -> default 1). The `debrief-generation-prompt.md` §System Prompt block and its verbatim drift guard (`test_debrief_generator.py`) move in lockstep with this amendment. This file stays the schema authority.

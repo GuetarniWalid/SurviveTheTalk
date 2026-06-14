@@ -90,11 +90,13 @@ def _core(**overrides):
                 "correction": "I agree",
                 "context": "Responding to the demand",
                 "count": 3,
+                "explanation": "'agree' stands alone; no 'be'.",
+                "examples": ["I agree with you."],
             }
         ],
         "hesitation_contexts": [
-            {"context": "After the threat escalated"},
-            {"context": "When asked to empty pockets"},
+            {"hesitation_id": "h1", "context": "After the threat escalated"},
+            {"hesitation_id": "h2", "context": "When asked to empty pockets"},
         ],
         "idioms": [
             {
@@ -103,7 +105,19 @@ def _core(**overrides):
                 "context": "When you claimed to have no wallet",
             }
         ],
-        "areas_to_work_on": ["Negative structure", "Articles"],
+        "better_phrasings": [],
+        "areas": [
+            {
+                "title": "Negative structure",
+                "evidence": 'You said "I am not want"',
+                "practice_prompt": "Coach: drill negatives.",
+            },
+            {
+                "title": "Articles",
+                "evidence": 'You dropped "a"',
+                "practice_prompt": "Coach: drill articles.",
+            },
+        ],
         "inappropriate_behavior": None,
     }
     base.update(overrides)
@@ -119,10 +133,11 @@ def test_assemble_merges_core_and_backend_fields():
         attempt_number=3,
         previous_best=67,
         hesitations=[
-            {"duration_sec": 4.23, "preceding_character_line": "Talk properly"},
-            {"duration_sec": 3.51, "preceding_character_line": "Empty your pockets"},
+            {"id": "h1", "duration_sec": 4.23, "preceding_character_line": "x"},
+            {"id": "h2", "duration_sec": 3.51, "preceding_character_line": "y"},
         ],
     )
+    assert out["debrief_version"] == 2
     assert out["survival_pct"] == 73
     assert out["character_name"] == "The Mugger"
     assert out["scenario_title"] == "Give me your wallet"
@@ -130,11 +145,20 @@ def test_assemble_merges_core_and_backend_fields():
     assert out["previous_best"] == 67
     assert out["errors"] == _core()["errors"]
     assert out["idioms"] == _core()["idioms"]
+    assert out["better_phrasings"] == []
+    assert out["checkpoints"] == []
+    # rich areas with the BACKEND-pinned focus marker on #0.
+    assert out["areas"][0]["is_focus"] is True
+    assert out["areas"][1]["is_focus"] is False
+    assert out["areas"][0]["title"] == "Negative structure"
+    # back-compat flat list DERIVED from the area titles.
     assert out["areas_to_work_on"] == ["Negative structure", "Articles"]
     assert out["inappropriate_behavior"] is None
 
 
-def test_assemble_merges_hesitation_duration_and_context_by_index():
+def test_assemble_merges_hesitation_duration_and_context_by_id():
+    # Gaps arrive OUT OF ORDER vs the contexts; id-pairing must still align them
+    # (the v1 by-index merge would mis-pair here).
     out = assemble_debrief(
         core=_core(),
         survival_pct=73,
@@ -143,38 +167,100 @@ def test_assemble_merges_hesitation_duration_and_context_by_index():
         attempt_number=1,
         previous_best=None,
         hesitations=[
-            {"duration_sec": 4.23, "preceding_character_line": "Talk properly"},
-            {"duration_sec": 3.51, "preceding_character_line": "Empty your pockets"},
+            {
+                "id": "h2",
+                "duration_sec": 3.51,
+                "preceding_character_line": "Empty your pockets",
+                "resolved": True,
+            },
+            {
+                "id": "h1",
+                "duration_sec": 4.23,
+                "preceding_character_line": "Talk properly",
+                "resolved": False,
+            },
         ],
     )
-    # Backend duration (rounded) + LLM context, paired by index; key renamed
-    # hesitation_contexts → hesitations.
     assert out["hesitations"] == [
-        {"duration_sec": 4.2, "context": "After the threat escalated"},
-        {"duration_sec": 3.5, "context": "When asked to empty pockets"},
+        {
+            "id": "h2",
+            "duration_sec": 3.5,
+            "context": "When asked to empty pockets",
+            "resolved": True,
+            "source": "server",
+        },
+        {
+            "id": "h1",
+            "duration_sec": 4.2,
+            "context": "After the threat escalated",
+            "resolved": False,
+            "source": "server",
+        },
     ]
     assert "hesitation_contexts" not in out
 
 
 def test_assemble_hesitation_merge_tolerates_missing_contexts():
-    # 2 measured gaps but the LLM returned only 1 context → the 2nd gap keeps
-    # its duration with an empty context (never dropped).
+    # 2 measured gaps but the LLM returned only 1 context → the unmatched gap
+    # keeps its duration with an empty context (never dropped).
     out = assemble_debrief(
-        core=_core(hesitation_contexts=[{"context": "Only one"}]),
+        core=_core(
+            hesitation_contexts=[{"hesitation_id": "h1", "context": "Only one"}]
+        ),
         survival_pct=50,
         character_name="The Waiter",
         scenario_title="Order your dinner",
         attempt_number=1,
         previous_best=None,
         hesitations=[
-            {"duration_sec": 5.0, "preceding_character_line": "a"},
-            {"duration_sec": 4.0, "preceding_character_line": "b"},
+            {"id": "h1", "duration_sec": 5.0, "preceding_character_line": "a"},
+            {"id": "h2", "duration_sec": 4.0, "preceding_character_line": "b"},
         ],
     )
     assert out["hesitations"] == [
-        {"duration_sec": 5.0, "context": "Only one"},
-        {"duration_sec": 4.0, "context": ""},
+        {
+            "id": "h1",
+            "duration_sec": 5.0,
+            "context": "Only one",
+            "resolved": True,
+            "source": "server",
+        },
+        {
+            "id": "h2",
+            "duration_sec": 4.0,
+            "context": "",
+            "resolved": True,
+            "source": "server",
+        },
     ]
+
+
+def test_assemble_threads_checkpoints_and_device_source():
+    out = assemble_debrief(
+        core=_core(hesitation_contexts=[{"hesitation_id": "h1", "context": "c"}]),
+        survival_pct=66,
+        character_name="The Mugger",
+        scenario_title="Give me your wallet",
+        attempt_number=1,
+        previous_best=None,
+        hesitations=[
+            {
+                "id": "h1",
+                "duration_sec": 6.0,
+                "preceding_character_line": "a",
+                "resolved": True,
+                "source": "device",
+            }
+        ],
+        checkpoints=[
+            {"id": "greet", "hint": "Greet the mugger", "met": True},
+            {"id": "refuse", "hint": "Refuse", "met": False},
+        ],
+    )
+    assert out["checkpoints"][0]["met"] is True
+    assert out["checkpoints"][1]["met"] is False
+    # a device-measured gap keeps its source tag through the merge.
+    assert out["hesitations"][0]["source"] == "device"
 
 
 def test_assemble_includes_framing_above_40():

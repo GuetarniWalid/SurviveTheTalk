@@ -75,30 +75,45 @@ def compute_encouraging_framing(
 
 
 def _merge_hesitations(hesitations: list[dict], hesitation_contexts: Any) -> list[dict]:
-    """Merge backend-measured durations with the LLM's contexts BY INDEX.
+    """Pair each backend-measured gap to the LLM's situational context BY ID.
 
-    The bot passes the top-3 gaps (longest first) to the LLM, which returns
-    `hesitation_contexts` in the SAME order; element i pairs with backend gap
-    i. The client field is renamed `hesitations` (from the LLM's
-    `hesitation_contexts`) and carries `{duration_sec, context}`. A missing /
-    short contexts list degrades to an empty context rather than dropping the
-    measured gap.
+    Story 7.5 C3 — the bot feeds each gap's `id` to the LLM, which echoes it
+    back as `hesitation_id`; we pair on that id, NEVER on list position (the v1
+    by-index pairing mis-paired on a reordered/short contexts list). A gap with
+    no matching context degrades to an empty context (the measured duration
+    still shows); a context whose id matches no gap is dropped. Carries the
+    client shape `{id, duration_sec, context, resolved, source}` — `source`
+    defaults to "server" (the observer path; a device-measured gap arrives
+    pre-tagged "device" per D3-c).
     """
-    contexts = hesitation_contexts if isinstance(hesitation_contexts, list) else []
+    contexts_by_id: dict[str, str] = {}
+    if isinstance(hesitation_contexts, list):
+        for c in hesitation_contexts:
+            if isinstance(c, dict):
+                hid = c.get("hesitation_id")
+                if isinstance(hid, str) and hid:
+                    # `or ""` (not a .get default) so an explicit null context
+                    # degrades to "" instead of the string "None".
+                    contexts_by_id[hid] = str(c.get("context") or "").strip()
     merged: list[dict] = []
-    for i, gap in enumerate(hesitations):
-        context = ""
-        if i < len(contexts) and isinstance(contexts[i], dict):
-            # `or ""` (not a .get default) so an explicit null `context` on the
-            # non-strict fallback path degrades to "" instead of the string "None".
-            context = str(contexts[i].get("context") or "").strip()
+    for gap in hesitations:
+        gid = gap.get("id")
         merged.append(
             {
+                "id": gid if isinstance(gid, str) else None,
                 "duration_sec": round(float(gap.get("duration_sec", 0.0)), 1),
-                "context": context,
+                "context": contexts_by_id.get(gid, "") if isinstance(gid, str) else "",
+                "resolved": bool(gap.get("resolved", True)),
+                "source": str(gap.get("source") or "server"),
             }
         )
     return merged
+
+
+def _pin_focus(areas: list[dict]) -> list[dict]:
+    """Story 7.5 D-c/B5 — the BACKEND marks area #0 as the focus-first area
+    (`is_focus`), never the weak model. Priority order is the LLM's order."""
+    return [{**area, "is_focus": index == 0} for index, area in enumerate(areas)]
 
 
 def assemble_debrief(
@@ -110,17 +125,28 @@ def assemble_debrief(
     attempt_number: int,
     previous_best: int | None,
     hesitations: list[dict],
+    checkpoints: list[dict] | None = None,
 ) -> dict:
-    """Merge the LLM core + backend fields into the client-facing debrief (AC5).
+    """Merge the LLM core + backend fields into the client-facing debrief (v2).
 
-    `core` is the validated `generate_debrief` output. `hesitations` is the
-    backend-measured gap list `[{duration_sec, preceding_character_line}]`
-    (top 3, longest first) — its durations merge by index onto
-    `core["hesitation_contexts"]`. Shape mirrors
-    `debrief-content-strategy.md` §"Complete Client-Facing Response":
-    `encouraging_framing` is present only when `survival_pct > 40`.
+    `core` is the validated `generate_debrief` output (v2 shape: errors with
+    `explanation`/`examples`, `better_phrasings`, rich `areas`,
+    `hesitation_contexts` keyed by `hesitation_id`). `hesitations` is the
+    backend-measured gap list `[{id, duration_sec, preceding_character_line,
+    resolved, source?}]` — paired to the LLM contexts BY ID. `checkpoints` is
+    the bot's teardown goals state `[{id, hint, met}]` (Story 7.5 B7 — the
+    factual decomposition of the survival %, NOT LLM-generated); defaults to
+    `[]` until the teardown threads it (Task 3.2).
+
+    Story 7.5 v2 is additive: `debrief_version: 2`, `checkpoints`,
+    `better_phrasings`, and the rich `areas` (with backend-pinned `is_focus`)
+    ride alongside the retained `areas_to_work_on` (DERIVED from the area
+    titles so old clients keep a flat list). `encouraging_framing` stays present
+    only when `survival_pct > 40` (key omitted otherwise).
     """
+    areas = _pin_focus(core.get("areas") or [])
     debrief: dict[str, Any] = {
+        "debrief_version": 2,
         "survival_pct": survival_pct,
         "character_name": character_name,
         "scenario_title": scenario_title,
@@ -129,7 +155,11 @@ def assemble_debrief(
         "errors": core.get("errors") or [],
         "hesitations": _merge_hesitations(hesitations, core.get("hesitation_contexts")),
         "idioms": core.get("idioms") or [],
-        "areas_to_work_on": core.get("areas_to_work_on") or [],
+        "better_phrasings": core.get("better_phrasings") or [],
+        "areas": areas,
+        # Back-compat: old clients + old-row readers key on the flat title list.
+        "areas_to_work_on": [area["title"] for area in areas],
+        "checkpoints": list(checkpoints or []),
         "inappropriate_behavior": core.get("inappropriate_behavior"),
     }
     framing = compute_encouraging_framing(survival_pct, previous_best, character_name)

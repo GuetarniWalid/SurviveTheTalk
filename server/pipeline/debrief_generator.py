@@ -55,17 +55,25 @@ _HTTP_TIMEOUT_SECONDS = 7.5
 # if the document is truncated mid-generation (the Story 6.16 classifier
 # overflow class), so the budget is sized with generous headroom (~4× the
 # ~525-token worst case). Cost is a fraction of a cent per call (one per call).
-_MAX_TOKENS = 2048
+_MAX_TOKENS = 3072
 
 # Low temperature: the debrief is a diagnostic instrument (clinical, factual),
 # not creative prose. A touch above the classifier's 0.1 so the correction /
 # context fields read as natural English without drifting off-transcript.
 _TEMPERATURE = 0.2
 
-# AC3 — exactly 2-3 areas. The model is instructed to obey (system prompt) but
-# the backend clamp is the real guarantee (Groq strict mode does not enforce
-# array length — see `_build_debrief_schema`). 1 is kept as-is; 4+ truncates.
+# Length/cap rules the model is instructed to obey (system prompt) but that the
+# BACKEND enforces as the real guarantee — Groq strict mode rejects min/maxItems
+# (see `_build_debrief_schema`), so these clamps in `_normalize_core` are the
+# contract (Story 7.5 backend-clamp rules + F3 per-item salvage).
 _MAX_AREAS = 3
+_MAX_ERRORS = 5
+_MAX_BETTER_PHRASINGS = 2
+_MAX_EXAMPLES = 2
+# Defensive hard cap on the copy-button practice prompt (clipboard-friendly,
+# fits an LLM voice-mode context). The prompt asks for ~900; strict schema can't
+# bound a string, so the backend truncates.
+_MAX_PRACTICE_PROMPT_CHARS = 900
 
 # The five top-level keys the LLM core MUST carry (strict-schema-enforced on
 # the happy path). Used to reject a wholly-malformed body (a non-strict
@@ -74,7 +82,8 @@ _CORE_KEYS = (
     "errors",
     "hesitation_contexts",
     "idioms",
-    "areas_to_work_on",
+    "better_phrasings",
+    "areas",
     "inappropriate_behavior",
 )
 
@@ -86,147 +95,192 @@ _FENCE_RE = re.compile(
 )
 
 
-def _build_debrief_schema() -> dict:
-    """The STRICT `json_schema` for the debrief LLM core (AC3).
-
-    Matches `debrief-generation-prompt.md` §"JSON Schema": top-level
-    `errors[]` / `hesitation_contexts[]` / `idioms[]` (objects with all fields
-    required + `additionalProperties:false`), `areas_to_work_on` (string
-    array), and a nullable `inappropriate_behavior`. Every object lists ALL
-    its properties in `required` and sets `additionalProperties:false`, as
-    Groq/OpenAI strict mode demands.
-
-    DELIBERATE DEVIATION from the doc: the doc puts `minItems:2`/`maxItems:3`
-    on `areas_to_work_on`. Groq STRICT structured outputs (like OpenAI's)
-    reject array length/number constraints — including them would HTTP 400
-    the whole call. The 2-3 guarantee instead comes from (1) the system
-    prompt's explicit "Exactly 2 or 3 items — never 1, never 4+" and (2) the
-    backend `_clamp_areas` (AC3's own clamp provision). Returned as the bare
-    `schema` object; the `name`/`strict` wrapper is added in `_generate`,
-    mirroring `exchange_classifier._build_verdict_schema`.
-    """
-    return {
+_DEBRIEF_SCHEMA_JSON = """
+{
+  "type": "object",
+  "properties": {
+    "errors": {
+      "type": "array",
+      "description": "Top 0-5 deduplicated language errors, ordered by significance. Empty array if the user made none; never invent an error.",
+      "items": {
         "type": "object",
         "properties": {
-            "errors": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "user_said": {
-                            "type": "string",
-                            "description": (
-                                "Exact quote of what the user said, verbatim "
-                                "from transcript"
-                            ),
-                        },
-                        "correction": {
-                            "type": "string",
-                            "description": (
-                                "The correct English form — what the user "
-                                "should have said"
-                            ),
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": (
-                                "One sentence: when in the conversation this "
-                                "error occurred"
-                            ),
-                        },
-                        "count": {
-                            "type": "integer",
-                            "description": (
-                                "Number of times this error appeared in the "
-                                "transcript (>= 1)"
-                            ),
-                        },
-                    },
-                    "required": ["user_said", "correction", "context", "count"],
-                    "additionalProperties": False,
-                },
-                "description": (
-                    "Top 0-5 language errors, deduplicated, ordered by significance"
-                ),
-            },
-            "hesitation_contexts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "context": {
-                            "type": "string",
-                            "description": (
-                                "One sentence: what was happening when the "
-                                "user hesitated"
-                            ),
-                        },
-                    },
-                    "required": ["context"],
-                    "additionalProperties": False,
-                },
-                "description": (
-                    "Context for each hesitation moment provided in the input "
-                    "(0-3 items)"
-                ),
-            },
-            "idioms": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": (
-                                "The exact idiom or slang expression as the "
-                                "character said it"
-                            ),
-                        },
-                        "meaning": {
-                            "type": "string",
-                            "description": "Plain English meaning of the expression",
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": (
-                                "When the character used this expression in the "
-                                "conversation"
-                            ),
-                        },
-                    },
-                    "required": ["expression", "meaning", "context"],
-                    "additionalProperties": False,
-                },
-                "description": (
-                    "Idioms and slang the character used that the user may not "
-                    "know. Empty array if none."
-                ),
-            },
-            "areas_to_work_on": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "description": (
-                        "Theme with specific example: 'Negative sentence "
-                        "structure (don't/doesn't)'"
-                    ),
-                },
-                "description": (
-                    "2-3 thematic improvement areas synthesized from errors "
-                    "and hesitations"
-                ),
-            },
-            "inappropriate_behavior": {
-                "type": ["string", "null"],
-                "description": (
-                    "Factual explanation if call ended due to inappropriate "
-                    "content. null otherwise."
-                ),
-            },
+          "user_said": {
+            "type": "string",
+            "description": "SURFACE. Exact quote of what the user said, verbatim from the transcript. Max ~100 chars."
+          },
+          "correction": {
+            "type": "string",
+            "description": "SURFACE. The correct English form the user should have said; natural native English. Max ~100 chars."
+          },
+          "context": {
+            "type": "string",
+            "description": "SURFACE (card). One short situational clause: when in the conversation this error occurred. Max ~80 chars."
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many times this error or a functionally identical variant appeared in the transcript (>= 1)."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "DEPTH (tap sheet). One factual sentence naming the underlying RULE that makes the correction right - the principle, never the correction restated, never praise. Max ~160 chars."
+          },
+          "examples": {
+            "type": "array",
+            "description": "DEPTH (tap sheet). 1-2 short correct example sentences applying the same rule in a fresh context; never a verbatim copy of the correction. Return 1 if a second adds nothing; never more than 2.",
+            "items": {
+              "type": "string",
+              "description": "One short, natural, correct example sentence demonstrating the rule. Max ~80 chars."
+            }
+          }
         },
-        "required": list(_CORE_KEYS),
-        "additionalProperties": False,
+        "required": [
+          "user_said",
+          "correction",
+          "context",
+          "count",
+          "explanation",
+          "examples"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "hesitation_contexts": {
+      "type": "array",
+      "description": "One object per backend-provided hesitation moment, in the same order. Empty array if none were provided; never invent a hesitation.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hesitation_id": {
+            "type": "string",
+            "description": "Echo back, UNCHANGED, the exact id the backend gave this hesitation moment, so context pairs to the measured duration by id, never by position. Never invent, renumber, or blank it."
+          },
+          "context": {
+            "type": "string",
+            "description": "SURFACE. One factual situational sentence: what was happening when the user hesitated; the situation, not the user's internal state. Max ~80 chars."
+          }
+        },
+        "required": [
+          "hesitation_id",
+          "context"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "idioms": {
+      "type": "array",
+      "description": "Idioms, phrasal verbs, and slang the CHARACTER used that an intermediate learner may not know. Empty array if none; never manufacture one.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "SURFACE. The exact idiom or slang expression as the character said it. Max ~50 chars."
+          },
+          "meaning": {
+            "type": "string",
+            "description": "SURFACE. Plain English meaning, direct, no hedging. Max ~100 chars."
+          },
+          "context": {
+            "type": "string",
+            "description": "SURFACE. When the character used this expression in the conversation. Max ~80 chars."
+          }
+        },
+        "required": [
+          "expression",
+          "meaning",
+          "context"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "better_phrasings": {
+      "type": "array",
+      "description": "At most 2. Correct-but-clumsy user utterances rephrased more naturally. Default to an EMPTY array - emit only when a native speaker would clearly phrase it more naturally; never put grammar errors here (those are errors).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "original": {
+            "type": "string",
+            "description": "SURFACE. The user's exact correct-but-clumsy words, verbatim from the transcript. Max ~100 chars."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "SURFACE. The more natural native-speaker phrasing of the same thing. Max ~100 chars."
+          },
+          "reason": {
+            "type": "string",
+            "description": "SURFACE. One short factual clause on why the suggestion is more natural (register, idiom, word choice, concision). No praise. Max ~120 chars."
+          }
+        },
+        "required": [
+          "original",
+          "suggestion",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "areas": {
+      "type": "array",
+      "description": "1-3 prioritized, evidence-linked improvement areas, MOST IMPORTANT FIRST. Each MUST cite concrete in-call evidence. Never invent an area not demonstrated by the data; never exceed 3. Order is priority; the backend marks the first as the focus.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "SURFACE. Short diagnostic theme, 2-6 words, no parentheses, no baked-in example. e.g. 'Negative sentence structure'."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "SURFACE. One factual sentence citing at least one concrete thing from THIS call - a quoted flagged error or a named hesitation moment - that grounds the area. No generic filler. Max ~140 chars."
+          },
+          "practice_prompt": {
+            "type": "string",
+            "description": "DEPTH (tap sheet, copy-button payload). A self-contained plain-text coach prompt the user pastes into any external AI (voice or text) to drill THIS ONE area: coach role + this single focus + the user's REAL quoted utterances and corrections from this call + the drill flow + no-drift and no-praise guardrails. Instructions to a COACH, never praise to the user. No markdown, no line breaks, max ~900 chars."
+          }
+        },
+        "required": [
+          "title",
+          "evidence",
+          "practice_prompt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "inappropriate_behavior": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Factual, non-judgmental explanation IF the call ended due to inappropriate content; null otherwise. The backend re-pins this against the authoritative call-end reason. Max ~200 chars."
     }
+  },
+  "required": [
+    "errors",
+    "hesitation_contexts",
+    "idioms",
+    "better_phrasings",
+    "areas",
+    "inappropriate_behavior"
+  ],
+  "additionalProperties": false
+}
+"""
+
+
+def _build_debrief_schema() -> dict:
+    """The STRICT Groq `json_schema` for the v2 debrief LLM core (Story 7.5).
+
+    Loaded verbatim from the authoritative v2 schema (kept as a JSON constant so
+    it stays byte-aligned with `debrief-generation-prompt.md` and never drifts in
+    hand-transcription). Groq STRICT demands every object list ALL properties in
+    `required` + `additionalProperties:false` and REJECTS min/maxItems - the area
+    / better_phrasings / examples / errors length rules live in the system prompt
+    + the backend clamps in `_normalize_core`. Returned as the bare schema;
+    `_generate` adds the `name`/`strict` wrapper.
+    """
+    return json.loads(_DEBRIEF_SCHEMA_JSON)
 
 
 def _speaker_label(role: Any) -> str:
@@ -256,19 +310,25 @@ def _format_transcript(transcript: list[dict]) -> str:
 def _format_hesitations(hesitations: list[dict]) -> str:
     """Render the backend-measured hesitation block for the user message.
 
-    Each entry is `{"duration_sec": float, "preceding_character_line": str}`
-    (top 3 gaps > 3 s, longest first — measured by the bot's hesitation
-    observer). When the list is empty, emit the sentinel the prompt expects so
-    the model returns an empty `hesitation_contexts`.
+    Each entry is `{"id": str, "duration_sec": float, "preceding_character_line":
+    str, "resolved": bool}` (top gaps > 3 s, longest first — measured by the
+    bot's hesitation observer). Every line carries its `hesitation_id` so the
+    model echoes it back EXACTLY (Story 7.5 C3 id-based pairing, never index).
+    A `resolved: false` gap was a freeze the character had to break by speaking
+    again (C2). When the list is empty, emit the sentinel so the model returns
+    an empty `hesitation_contexts`.
     """
     if not hesitations:
         return "No significant hesitations detected."
     lines: list[str] = []
-    for idx, h in enumerate(hesitations, start=1):
+    for h in hesitations:
+        hid = str(h.get("id", "")).strip()
         duration = float(h.get("duration_sec", 0.0))
         preceding = str(h.get("preceding_character_line", "")).strip()
+        note = "" if h.get("resolved", True) else " (the character had to speak again)"
         lines.append(
-            f'Silence #{idx}: {duration:.1f}s — after CHARACTER said: "{preceding}"'
+            f'hesitation_id "{hid}": {duration:.1f}s pause{note} — '
+            f'after CHARACTER said: "{preceding}"'
         )
     return "\n".join(lines)
 
@@ -305,35 +365,156 @@ def _build_user_message(
     )
 
 
-def _clamp_areas(areas: Any) -> list[str]:
-    """Clamp `areas_to_work_on` to AC3's 2-3 contract (the real guarantee).
+def _clean_str(value: Any) -> str:
+    """A trimmed string, or '' for anything non-string/blank."""
+    return value.strip() if isinstance(value, str) else ""
 
-    Drops non-string / blank entries, then truncates to the first 3. A model
-    that returned 1 keeps 1 (display-as-is per AC3); 4+ becomes the first 3.
-    """
-    if not isinstance(areas, list):
+
+def _clamp_examples(raw: Any, correction: str) -> list[str]:
+    """≤2 model example sentences; drop blanks/non-str and any entry equal
+    (case-insensitive) to the correction (an example must generalise, not echo
+    the fix)."""
+    if not isinstance(raw, list):
         return []
-    cleaned = [a.strip() for a in areas if isinstance(a, str) and a.strip()]
-    return cleaned[:_MAX_AREAS]
+    out: list[str] = []
+    corr = correction.casefold()
+    for item in raw:
+        s = _clean_str(item)
+        if not s or s.casefold() == corr:
+            continue
+        out.append(s)
+        if len(out) >= _MAX_EXAMPLES:
+            break
+    return out
+
+
+def _clamp_errors(raw: Any) -> list[dict]:
+    """Top-5 errors with per-item salvage (Story 7.5 F3): drop an item missing
+    user_said/correction/context; default the v2 depth fields. A single
+    malformed item is dropped, never the whole debrief."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        user_said = _clean_str(item.get("user_said"))
+        correction = _clean_str(item.get("correction"))
+        context = _clean_str(item.get("context"))
+        if not user_said or not correction or not context:
+            continue
+        count = item.get("count")
+        count = count if isinstance(count, int) and count >= 1 else 1
+        out.append(
+            {
+                "user_said": user_said,
+                "correction": correction,
+                "context": context,
+                "count": count,
+                "explanation": _clean_str(item.get("explanation")) or None,
+                "examples": _clamp_examples(item.get("examples"), correction),
+            }
+        )
+        if len(out) >= _MAX_ERRORS:
+            break
+    return out
+
+
+def _clamp_idioms(raw: Any) -> list[dict]:
+    """Per-item salvage for idioms (F3) — every item must satisfy the
+    `DebriefIdiom` contract or it is dropped (not the whole debrief)."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        expression = _clean_str(item.get("expression"))
+        meaning = _clean_str(item.get("meaning"))
+        context = _clean_str(item.get("context"))
+        if not expression or not meaning or not context:
+            continue
+        out.append({"expression": expression, "meaning": meaning, "context": context})
+    return out
+
+
+def _clamp_better_phrasings(raw: Any) -> list[dict]:
+    """≤2 better-phrasing suggestions (Story 7.5 B2); each needs a non-blank
+    original + suggestion + reason or it is dropped."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        original = _clean_str(item.get("original"))
+        suggestion = _clean_str(item.get("suggestion"))
+        reason = _clean_str(item.get("reason"))
+        if not original or not suggestion or not reason:
+            continue
+        out.append({"original": original, "suggestion": suggestion, "reason": reason})
+        if len(out) >= _MAX_BETTER_PHRASINGS:
+            break
+    return out
+
+
+def _clamp_areas(raw: Any) -> list[dict]:
+    """Top-3 rich, evidence-linked areas (Story 7.5 D-a/B5). Drop an area
+    missing title/evidence/practice_prompt — evidence is MANDATORY (an area
+    with no in-call evidence is the generic filler this rewrite kills).
+    `practice_prompt` is hard-truncated to 900 chars with whitespace collapsed
+    (strict schema can't bound a string). `is_focus` is pinned by the assembler,
+    never authored here."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_str(item.get("title"))
+        evidence = _clean_str(item.get("evidence"))
+        practice = _clean_str(item.get("practice_prompt"))
+        if not title or not evidence or not practice:
+            continue
+        practice = " ".join(practice.split())[:_MAX_PRACTICE_PROMPT_CHARS]
+        out.append({"title": title, "evidence": evidence, "practice_prompt": practice})
+        if len(out) >= _MAX_AREAS:
+            break
+    return out
+
+
+def _clamp_hesitation_contexts(raw: Any) -> list[dict]:
+    """Keep `{hesitation_id, context}` items; the assembler pairs them to the
+    measured gaps BY ID (Story 7.5 C3). An item without an id is unpairable and
+    dropped."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        hid = _clean_str(item.get("hesitation_id"))
+        if not hid:
+            continue
+        out.append({"hesitation_id": hid, "context": _clean_str(item.get("context"))})
+    return out
 
 
 def _normalize_core(data: dict) -> dict:
-    """Coerce a parsed body into the canonical LLM-core shape.
-
-    Fills each of the five keys with a type-safe default if absent, and clamps
-    `areas_to_work_on`. The caller has already confirmed `data` is a dict that
-    carries at least one expected key, so this never invents a debrief from a
-    wholly-unrelated body.
+    """Coerce a parsed body into the canonical v2 LLM-core shape, applying the
+    backend clamps strict json_schema cannot enforce + per-item salvage (Story
+    7.5 F3). The caller has confirmed `data` is a dict carrying at least one
+    expected key, so this never invents a debrief from a wholly-unrelated body.
     """
-    errors = data.get("errors")
-    hes = data.get("hesitation_contexts")
-    idioms = data.get("idioms")
     inappropriate = data.get("inappropriate_behavior")
     return {
-        "errors": errors if isinstance(errors, list) else [],
-        "hesitation_contexts": hes if isinstance(hes, list) else [],
-        "idioms": idioms if isinstance(idioms, list) else [],
-        "areas_to_work_on": _clamp_areas(data.get("areas_to_work_on")),
+        "errors": _clamp_errors(data.get("errors")),
+        "hesitation_contexts": _clamp_hesitation_contexts(
+            data.get("hesitation_contexts")
+        ),
+        "idioms": _clamp_idioms(data.get("idioms")),
+        "better_phrasings": _clamp_better_phrasings(data.get("better_phrasings")),
+        "areas": _clamp_areas(data.get("areas")),
         "inappropriate_behavior": (
             inappropriate
             if isinstance(inappropriate, str) and inappropriate.strip()
