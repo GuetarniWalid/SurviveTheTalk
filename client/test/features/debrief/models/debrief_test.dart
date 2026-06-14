@@ -241,4 +241,135 @@ void main() {
       expect(hesitations.first.context, 'longest');
     });
   });
+
+  group('Debrief.tryParse — Story 7.5 v2 additive fields', () {
+    Map<String, dynamic> v2Payload() {
+      return fullPayload()
+        ..['debrief_version'] = 2
+        ..['errors'] = [
+          {
+            'user_said': 'I am agree',
+            'correction': 'I agree',
+            'context': 'Responding to the demand',
+            'count': 3,
+            'explanation': "'agree' takes no 'be': subject + agree.",
+            'examples': ['I agree with you.', 'She agrees it is late.'],
+          },
+        ]
+        ..['hesitations'] = [
+          {
+            'duration_sec': 6.0,
+            'context': 'After the threat escalated',
+            'id': 'h1',
+            'resolved': false,
+            'source': 'device',
+          },
+        ]
+        ..['better_phrasings'] = [
+          {
+            'original': 'I will not give you the wallet',
+            'suggestion': "You're not getting my wallet",
+            'reason': 'More natural under pressure',
+          },
+        ]
+        ..['checkpoints'] = [
+          {'id': 'greet', 'hint': 'Greet the mugger', 'met': true},
+          {'id': 'refuse', 'hint': 'Refuse to comply', 'met': false},
+        ]
+        ..['areas'] = [
+          {
+            'title': 'Negative sentence structure',
+            'evidence': 'You said "I am not want"',
+            'practice_prompt': 'You are an English coach...',
+            'is_focus': true,
+          },
+          {
+            'title': 'Articles',
+            'evidence': 'You dropped "a" before "wallet"',
+            'practice_prompt': 'Drill articles...',
+          },
+        ];
+    }
+
+    test('parses every v2 field', () {
+      final d = Debrief.tryParse(v2Payload())!;
+      expect(d.debriefVersion, 2);
+      expect(
+        d.errors.first.explanation,
+        "'agree' takes no 'be': subject + agree.",
+      );
+      expect(d.errors.first.examples, [
+        'I agree with you.',
+        'She agrees it is late.',
+      ]);
+      expect(d.hesitations.first.id, 'h1');
+      expect(d.hesitations.first.resolved, isFalse);
+      expect(d.hesitations.first.source, 'device');
+      expect(d.betterPhrasings, hasLength(1));
+      expect(d.betterPhrasings.first.original, 'I will not give you the wallet');
+      expect(d.betterPhrasings.first.suggestion, "You're not getting my wallet");
+      expect(d.checkpoints, hasLength(2));
+      expect(d.checkpoints.first.id, 'greet');
+      expect(d.checkpoints.first.met, isTrue);
+      expect(d.checkpoints[1].met, isFalse);
+      expect(d.areas, hasLength(2));
+      expect(d.areas.first.title, 'Negative sentence structure');
+      expect(d.areas.first.evidence, 'You said "I am not want"');
+      expect(d.areas.first.isFocus, isTrue);
+      expect(d.areas[1].isFocus, isFalse);
+      expect(d.areas[1].practicePrompt, 'Drill articles...');
+    });
+
+    test('a v1 payload defaults every v2 field (back-compat AC2)', () {
+      final d = Debrief.tryParse(fullPayload())!;
+      expect(d.debriefVersion, 1);
+      expect(d.checkpoints, isEmpty);
+      expect(d.betterPhrasings, isEmpty);
+      expect(d.areas, isEmpty);
+      expect(d.errors.first.explanation, isNull);
+      expect(d.errors.first.examples, isEmpty);
+      expect(d.hesitations.first.id, isNull);
+      expect(d.hesitations.first.resolved, isTrue);
+      expect(d.hesitations.first.source, 'server');
+    });
+
+    test('malformed v2 items are skipped defensively', () {
+      final payload = v2Payload()
+        ..['checkpoints'] = [
+          {'id': 'greet', 'hint': 'Greet', 'met': true},
+          {'id': 'x', 'hint': 'no met flag'}, // missing met → skipped
+          'garbage',
+        ]
+        ..['better_phrasings'] = [
+          {'original': 'a', 'suggestion': 'b'}, // missing reason → skipped
+          {'original': 'c', 'suggestion': 'd', 'reason': 'e'},
+        ]
+        ..['areas'] = [
+          {'evidence': 'no title'}, // missing title → skipped
+          {'title': 'Kept'},
+        ];
+      final d = Debrief.tryParse(payload)!;
+      expect(d.checkpoints, hasLength(1));
+      expect(d.checkpoints.first.id, 'greet');
+      expect(d.betterPhrasings, hasLength(1));
+      expect(d.betterPhrasings.first.reason, 'e');
+      expect(d.areas, hasLength(1));
+      expect(d.areas.first.title, 'Kept');
+      // an area with only a title keeps the defensive defaults
+      expect(d.areas.first.evidence, '');
+      expect(d.areas.first.practicePrompt, '');
+      expect(d.areas.first.isFocus, isFalse);
+    });
+
+    test('hesitation resolved/source default when absent', () {
+      final payload = fullPayload()
+        ..['hesitations'] = [
+          {'duration_sec': 5.0, 'context': 'x', 'id': 'h9'},
+        ];
+      final h = Debrief.tryParse(payload)!.hesitations.first;
+      expect(h.id, 'h9');
+      expect(h.resolved, isTrue);
+      expect(h.source, 'server');
+    });
+  });
 }

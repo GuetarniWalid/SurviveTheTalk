@@ -2,7 +2,7 @@
 // `DebriefOut`, server/models/schemas.py). Manual fromJson per the house
 // pattern (CallSession / EndCallResult) — no codegen.
 //
-// Parsing contract (story Task 1.2):
+// Parsing contract (story 7.3 Task 1.2, extended for Story 7.5 v2):
 //   - The four hero scalars (`survival_pct`, `character_name`,
 //     `scenario_title`, `attempt_number`) are REQUIRED and strictly
 //     typed — any missing/mistyped one fails the WHOLE parse
@@ -13,20 +13,34 @@
 //   - `previous_best`, `inappropriate_behavior`, `encouraging_framing`
 //     (+ its `improvement`) are nullable — an absent key reads the same
 //     as a null value; dependent UI hides either way.
+//   - Story 7.5 v2 fields are ADDITIVE + defaulted: a stored v1 payload
+//     (which lacks `debrief_version`, `checkpoints`, `better_phrasings`,
+//     `areas`, and the per-error/per-hesitation v2 keys) parses unchanged —
+//     `debriefVersion` defaults to 1, the new lists to empty, the new
+//     scalars to neutral defaults. So this model renders BOTH a v1 and a v2
+//     payload without crashing (Story 7.5 AC2).
 
 /// One deduplicated language error (FR10). `count` >= 1; the UI shows
 /// the "(×N)" badge only when count >= 2.
+///
+/// Story 7.5 v2 adds tap-sheet depth (B1): `explanation` (the underlying
+/// rule, one sentence) and `examples` (extra correct sentences). Both are
+/// optional — a v1 error parses with `explanation == null` + empty `examples`.
 class DebriefError {
   final String userSaid;
   final String correction;
   final String context;
   final int count;
+  final String? explanation;
+  final List<String> examples;
 
   const DebriefError({
     required this.userSaid,
     required this.correction,
     required this.context,
     required this.count,
+    this.explanation,
+    this.examples = const [],
   });
 
   static DebriefError? tryParse(Object? raw) {
@@ -43,16 +57,32 @@ class DebriefError {
       correction: correction,
       context: context,
       count: count < 1 ? 1 : count,
+      explanation: _asString(raw['explanation']),
+      examples: _parseItems(raw['examples'], _asString),
     );
   }
 }
 
 /// A >3 s hesitation (FR12) — backend-measured duration + LLM context.
+///
+/// Story 7.5 v2 adds `id` (pairs to the LLM context by id, not index),
+/// `resolved` (false = a freeze so long the character re-spoke — the
+/// invisible-freeze class C2), and `source` ("device" = measured on the phone
+/// per D3-c, else "server"). All defaulted so a v1 hesitation parses unchanged.
 class DebriefHesitation {
   final double durationSec;
   final String context;
+  final String? id;
+  final bool resolved;
+  final String source;
 
-  const DebriefHesitation({required this.durationSec, required this.context});
+  const DebriefHesitation({
+    required this.durationSec,
+    required this.context,
+    this.id,
+    this.resolved = true,
+    this.source = 'server',
+  });
 
   static DebriefHesitation? tryParse(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
@@ -64,6 +94,9 @@ class DebriefHesitation {
     return DebriefHesitation(
       durationSec: durationSec.toDouble(),
       context: context,
+      id: _asString(raw['id']),
+      resolved: _asBool(raw['resolved']) ?? true,
+      source: _asString(raw['source']) ?? 'server',
     );
   }
 }
@@ -90,6 +123,90 @@ class DebriefIdiom {
       expression: expression,
       meaning: meaning,
       context: context,
+    );
+  }
+}
+
+/// Story 7.5 v2 (B2) — a correct-but-clumsy utterance phrased more naturally.
+/// All three fields required (a partial suggestion is noise) — a malformed
+/// item is skipped.
+class DebriefBetterPhrasing {
+  final String original;
+  final String suggestion;
+  final String reason;
+
+  const DebriefBetterPhrasing({
+    required this.original,
+    required this.suggestion,
+    required this.reason,
+  });
+
+  static DebriefBetterPhrasing? tryParse(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final original = _asString(raw['original']);
+    final suggestion = _asString(raw['suggestion']);
+    final reason = _asString(raw['reason']);
+    if (original == null || suggestion == null || reason == null) return null;
+    return DebriefBetterPhrasing(
+      original: original,
+      suggestion: suggestion,
+      reason: reason,
+    );
+  }
+}
+
+/// Story 7.5 v2 (B7) — one scenario beat with its met/missed state: the
+/// factual decomposition of the survival % the user saw on the HUD. An item
+/// missing its `met` bool is skipped (a checkpoint with an unknown outcome is
+/// meaningless).
+class DebriefCheckpoint {
+  final String id;
+  final String hint;
+  final bool met;
+
+  const DebriefCheckpoint({
+    required this.id,
+    required this.hint,
+    required this.met,
+  });
+
+  static DebriefCheckpoint? tryParse(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final id = _asString(raw['id']);
+    final hint = _asString(raw['hint']);
+    final met = _asBool(raw['met']);
+    if (id == null || hint == null || met == null) return null;
+    return DebriefCheckpoint(id: id, hint: hint, met: met);
+  }
+}
+
+/// Story 7.5 v2 (D-a/B5/D-c) — one prioritised, evidence-linked, actionable
+/// area. `practicePrompt` is the copy-button payload (pasteable into any LLM
+/// to drill this one topic); `isFocus` marks the #1 "focus first" area.
+/// `title` is required (the card needs it); `evidence`/`practicePrompt`
+/// default to '' defensively (an empty `practicePrompt` = no copy action).
+class DebriefArea {
+  final String title;
+  final String evidence;
+  final String practicePrompt;
+  final bool isFocus;
+
+  const DebriefArea({
+    required this.title,
+    this.evidence = '',
+    this.practicePrompt = '',
+    this.isFocus = false,
+  });
+
+  static DebriefArea? tryParse(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final title = _asString(raw['title']);
+    if (title == null) return null;
+    return DebriefArea(
+      title: title,
+      evidence: _asString(raw['evidence']) ?? '',
+      practicePrompt: _asString(raw['practice_prompt']) ?? '',
+      isFocus: _asBool(raw['is_focus']) ?? false,
     );
   }
 }
@@ -131,6 +248,22 @@ class Debrief {
   final String? inappropriateBehavior;
   final EncouragingFraming? encouragingFraming;
 
+  // --- Story 7.5 v2 (additive, defaulted for v1 back-compat) ---
+
+  /// Schema version of the stored payload. A v1 row omits the key → 1.
+  final int debriefVersion;
+
+  /// B7 — the met/missed scenario beats (empty on a v1 payload).
+  final List<DebriefCheckpoint> checkpoints;
+
+  /// B2 — ≤2 better-phrasing suggestions (empty on a v1 payload).
+  final List<DebriefBetterPhrasing> betterPhrasings;
+
+  /// D-a/B5 — the rich, actionable areas (carries the copy-button practice
+  /// prompts). Rides ALONGSIDE the v1 `areasToWorkOn` titles list; a v2 screen
+  /// prefers `areas` and falls back to `areasToWorkOn` when empty.
+  final List<DebriefArea> areas;
+
   const Debrief({
     required this.survivalPct,
     required this.characterName,
@@ -143,6 +276,10 @@ class Debrief {
     required this.areasToWorkOn,
     required this.inappropriateBehavior,
     required this.encouragingFraming,
+    this.debriefVersion = 1,
+    this.checkpoints = const [],
+    this.betterPhrasings = const [],
+    this.areas = const [],
   });
 
   static Debrief? tryParse(Map<String, dynamic>? json) {
@@ -175,6 +312,13 @@ class Debrief {
       encouragingFraming: EncouragingFraming.tryParse(
         json['encouraging_framing'],
       ),
+      debriefVersion: _asInt(json['debrief_version']) ?? 1,
+      checkpoints: _parseItems(json['checkpoints'], DebriefCheckpoint.tryParse),
+      betterPhrasings: _parseItems(
+        json['better_phrasings'],
+        DebriefBetterPhrasing.tryParse,
+      ),
+      areas: _parseItems(json['areas'], DebriefArea.tryParse),
     );
   }
 }
@@ -182,6 +326,8 @@ class Debrief {
 int? _asInt(Object? value) => value is int ? value : null;
 
 String? _asString(Object? value) => value is String ? value : null;
+
+bool? _asBool(Object? value) => value is bool ? value : null;
 
 /// Parses a JSON array defensively: a non-list (absent/malformed) yields
 /// an empty list; items that fail to parse are skipped.
