@@ -60,7 +60,7 @@ def test_records_gap_above_threshold():
     )
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
     _run(_drive())
@@ -81,7 +81,7 @@ def test_ignores_gap_at_or_below_threshold():
     )
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
     _run(_drive())
@@ -108,7 +108,7 @@ def test_keeps_only_top_three_longest():
 
     async def _drive():
         for _ in range(4):
-            await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+            obs.handle_playback_idle()
             await obs.process_frame(
                 UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM
             )
@@ -123,7 +123,7 @@ def test_preceding_line_snapshotted_at_bot_stop():
     obs = _observer(transcript=transcript, clock_values=[0.0, 6.0])
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         # A later character turn must NOT retroactively change the captured line.
         transcript.append({"role": "character", "text": "later", "timestamp_ms": 9})
         await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
@@ -181,12 +181,13 @@ def test_captures_hesitation_through_a_real_pipeline_setup():
         ),
         clock=_clk,
     )
+    # Anchor via the playback_idle path (clock 0) BEFORE the pipeline runs
+    # setup() — which clobbers the base `_clock` but must NOT touch our `_now`.
+    obs.handle_playback_idle()
     task = PipelineTask(Pipeline([obs]))
 
     async def _drive() -> None:
-        await task.queue_frames(
-            [BotStoppedSpeakingFrame(), UserStartedSpeakingFrame(), EndFrame()]
-        )
+        await task.queue_frames([UserStartedSpeakingFrame(), EndFrame()])
         await PipelineRunner().run(task)
 
     _run(_drive())
@@ -215,7 +216,7 @@ def test_records_unresolved_gap_on_character_respeak():
     )
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     _run(_drive())
@@ -240,9 +241,9 @@ def test_respeak_then_user_start_records_two_distinct_gaps():
     )
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
     _run(_drive())
@@ -271,7 +272,7 @@ def test_respeak_below_threshold_ignored():
     )
 
     async def _drive():
-        await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        obs.handle_playback_idle()
         await obs.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     _run(_drive())
@@ -313,12 +314,11 @@ def test_captures_respeak_freeze_through_a_real_pipeline_setup():
         ),
         clock=_clk,
     )
+    obs.handle_playback_idle()
     task = PipelineTask(Pipeline([obs]))
 
     async def _drive() -> None:
-        await task.queue_frames(
-            [BotStoppedSpeakingFrame(), BotStartedSpeakingFrame(), EndFrame()]
-        )
+        await task.queue_frames([BotStartedSpeakingFrame(), EndFrame()])
         await PipelineRunner().run(task)
 
     _run(_drive())

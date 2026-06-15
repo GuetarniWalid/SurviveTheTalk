@@ -29,7 +29,6 @@ from typing import Callable
 from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
-    BotStoppedSpeakingFrame,
     Frame,
     UserStartedSpeakingFrame,
 )
@@ -100,19 +99,13 @@ class HesitationObserver(FrameProcessor):
         # swallow the frame — mirrors PatienceTracker.
         await self.push_frame(frame, direction)
 
-        if isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_stopped_at = self._now()
-            self._preceding_line = self._last_character_line()
-        elif isinstance(frame, BotStartedSpeakingFrame):
+        if isinstance(frame, BotStartedSpeakingFrame):
             # The character STARTED speaking while a gap was still pending — i.e.
             # the user froze long enough that the patience ladder made the
             # character speak AGAIN before the user replied. Close that gap as
-            # UNRESOLVED here (Story 7.5 C2). Without this branch the new turn's
-            # BotStoppedSpeakingFrame would overwrite `_bot_stopped_at` and the
-            # most dramatic freeze — the exact thing this feature exists to
-            # surface — would be lost. Direction is NOT gated (server/CLAUDE.md
-            # §1): we react to the frame TYPE wherever it passes, like the
-            # BotStoppedSpeakingFrame branch above.
+            # UNRESOLVED here (Story 7.5 C2). Direction is NOT gated
+            # (server/CLAUDE.md §1): we react to the frame TYPE wherever it
+            # passes, mirroring PatienceTracker.
             if self._bot_stopped_at is None:
                 # First character turn, or the gap was already closed by a user
                 # start — no pending freeze to record.
@@ -128,6 +121,18 @@ class HesitationObserver(FrameProcessor):
             gap = self._now() - self._bot_stopped_at
             self._bot_stopped_at = None
             self._record_gap(gap, self._preceding_line, resolved=True)
+
+    def handle_playback_idle(self) -> None:
+        """Anchor the gap-start on the PLAYBACK-IDLE signal (Story 7.5 fix,
+        2026-06-15). The client publishes `playback_idle` when ITS speaker-side
+        PCM stream confirms the bot's turn finished playing — i.e. the moment the
+        USER actually heard the bot stop. Anchoring here (instead of the
+        server-side `BotStoppedSpeakingFrame`, which fires ~1 s AHEAD of the
+        user's ear because of WebRTC jitter buffering) removes the playout-delay
+        inflation that made a quick reply read as a ~3 s hesitation. Routed in
+        from `bot.py`'s `on_data_received`, alongside `PatienceTracker`."""
+        self._bot_stopped_at = self._now()
+        self._preceding_line = self._last_character_line()
 
     def _record_gap(self, duration: float, line: str, *, resolved: bool) -> None:
         """Append a gap that EXCEEDS the threshold, with a stable id + the

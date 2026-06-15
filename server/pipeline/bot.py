@@ -52,10 +52,7 @@ from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.exit_line_generator import generate_exit_line
-from pipeline.device_hesitation_collector import (
-    DeviceHesitationCollector,
-    merge_hesitation_sources,
-)
+from pipeline.device_hesitation_collector import DeviceHesitationCollector
 from pipeline.hesitation_observer import HesitationObserver
 from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
@@ -873,6 +870,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
         envelope_type = payload.get("type")
         if envelope_type == "playback_idle":
             patience_tracker.handle_playback_idle()
+            # Story 7.5 fix (2026-06-15) — anchor the hesitation gap-start on the
+            # user-perceived bot-end (this signal), NOT the server's outbound
+            # flush, removing the ~1 s playout-delay inflation.
+            hesitation_observer.handle_playback_idle()
         elif envelope_type == "hesitation_onset":
             # Story 7.5 (D3-c) — a device-measured onset gap. The collector
             # ignores CENSORED envelopes (the device could not measure → the
@@ -931,10 +932,16 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     brief_personality_description=brief_personality(
                         scenario_base_prompt
                     ),
-                    hesitations=merge_hesitation_sources(
-                        device_hesitation_collector.top_hesitations(),
-                        hesitation_observer.top_hesitations(),
-                    ),
+                    # Story 7.5 fix (2026-06-15) — the SERVER observer, now
+                    # anchored on `playback_idle` (the user-perceived bot-end),
+                    # measures the felt gap WITHOUT the playout inflation, so it
+                    # is the reliable source. The device-meter path
+                    # (`merge_hesitation_sources` + `device_hesitation_collector`)
+                    # stays wired but DORMANT — its onset detector under-produces
+                    # on-device (seed-window contamination), and merging an
+                    # unreliable device source dropped accurate server gaps. Revive
+                    # it only after the meter's onset detector is made robust.
+                    hesitations=hesitation_observer.top_hesitations(),
                     checkpoints=checkpoint_manager.checkpoint_breakdown,
                 )
             except Exception:
