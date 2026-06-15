@@ -1071,3 +1071,339 @@ All open questions resolved during content strategy review with UX Designer.
 | 1 | Back arrow — fixed vs scrollable? | **Scroll with content** | Simpler, consistent with reading apps. No overlay z-order complexity. |
 | 2 | 100% survival — show encouraging framing? | **YES — show "You survived [character]"** | It's data, not praise. Acknowledges completion without congratulating. |
 | 3 | Dynamic text overflow — enforce LLM limits? | **YES — enforce in LLM prompt** | `maxLines` + ellipsis is a safety valve. LLM prompt specifies max lengths per field (see `debrief-content-strategy.md` and `debrief-generation-prompt.md`). |
+
+
+---
+
+# v2.0 — Story 7.5 Debrief Overhaul (VALIDATED by Walid 2026-06-15)
+
+> The spec below was produced by a concept->judge-panel->synthesis design workflow
+> for **Direction B "Rapport structuré — riche au clic, sobre au premier regard"**.
+> Walid validated it with 4 decisions; the two that OVERRIDE the synthesized body
+> spec are called out here and are AUTHORITATIVE over any contrary wording below:
+>
+> 1. **Gauge = 3 colors** (KEEP as specced): red <=40%, amber/`statusInProgress` 41-99%, green 100%.
+> 2. **Add `AppColors.gaugeTrack`** (KEEP as specced): the dim track ring; pays the theme_tokens_test cost (14->15). Droppable to `avatarBg` if the Pixel 9 gate finds it unneeded.
+> 3. **Detail sheet = DARK, matched to the report** — OVERRIDES the spec's "reuse the existing LIGHT sheet" wording. Build a dark-themed bottom sheet (report background + two-ink text), NOT the light content-warning/difficulty sheet style. Reuse the `showModalBottomSheet` plumbing + the drag-handle pattern, but theme it dark.
+> 4. **Copy button on AREAS ONLY** — OVERRIDES any "error copy button / client-composed errorPracticeDrill" in the spec. Errors get tap-for-detail (rule + examples) only; the copy-a-practice-prompt action lives ONLY on the `areas` cards (server `practice_prompt`, verbatim). No app-composed practice text anywhere (content-is-server-side law).
+
+
+---
+
+# Story 7.5 — Debrief Report v2 ("The Scorecard") — Screen Design Spec
+
+> **Appends to / supersedes** the v1 hero + section layout of this document. Direction B (locked by Walid): **"rapport structuré / scorecard — riche au clic, sobre au premier regard."** This spec EVOLVES the v1 `DebriefScreen` (Story 7.3): the StatefulWidget host, the 3-phase `_DebriefPhase {content, loading, unavailable}` machine, the BS-7 poll loop (`pollInterval`/`pollBudget` seams, `_attemptFetch`/`_settle`/`_onBudgetExhausted`/`dispose`), the `AnimatedSwitcher` 300 ms phase fade, the `_DebriefMessage` loading/unavailable states, and the `_BackArrow` (root `Navigator.pop`, scrolls with content) are ALL **unchanged**. Only `_DebriefContent` and its child widgets are rebuilt to the layout below. NO bloc (mirror v1). Applies "The Handler's Brief" rulebook (Story 7.4, Decision E, Walid-validated 2026-06-12).
+
+## 0. Philosophy reconciliation (the one sentence)
+
+The scrolling surface is a Handler's-Brief dossier — one left rail, 12-caps eyebrows, flat prose, two-ink, whitespace does the grouping — with exactly **two earned exceptions**: a single screenshot-worthy **gauge HERO** (the AC8 unit), and the v1 **card surface** for discrete record items. Every "richness" the brief would ban is **deferred behind one tap** (a `showModalBottomSheet` detail, or a `Clipboard` copy). At rest it reads calm; depth and action are always exactly one tap away. **"Riche au clic, sobre au premier regard"** is implemented literally as **surface-vs-sheet**.
+
+---
+
+## 1. Screen skeleton (UNCHANGED from v1 — do not touch)
+
+- `Scaffold(backgroundColor: AppColors.background)` → `SafeArea` → `AnimatedSwitcher(300ms, easeOut)` → `_buildPhase()`.
+- `loading` → `_DebriefMessage('Analyzing your conversation...')` (`body`/`textSecondary`, **no spinner**). `unavailable` → `_DebriefMessage('Debrief unavailable for this call.')` (`caption`/`textSecondary`). Both verbatim.
+- `content` → `_DebriefContent(debrief)` = `SingleChildScrollView` → `Column(crossAxisAlignment: start)`: `_BackArrow()` (top-left, 44×44, `Icons.arrow_back_ios_new`, `Navigator.of(context).pop()`, `Semantics(button, 'Back to scenarios')`) then a `Padding(horizontal: AppSpacing.screenHorizontal /*20*/)` content column.
+- **No PopScope, no CTA bar, no bottom navigation.** Back arrow is the **sole exit** (AC7-v2). The only interactive elements ADDED are per-card copy buttons and per-card tap-to-sheet. No retry / share / nav / monetization anywhere.
+
+---
+
+## 2. HERO — the gauge scorecard (AC8, the earned cinema)
+
+The v1 bare 64 px number becomes a **ring/arc gauge sweeping around the survival %**. **The whole hero stays CENTERED** (a single self-contained, screenshot-croppable unit on the dark `background`) — v1's centered block at lines 354-394 is preserved; the left-rail rule begins BELOW the hero. (This fixes the AC8-split risk: a centered ring over a left-flushed identity reads as two mismatched blocks.)
+
+**Layout — centered `Column`, top to bottom:**
+
+1. `_BackArrow` above the hero (scrolls with it; unobtrusive in a screenshot — v1 precedent).
+2. `_kHeroTopGap` (30) → **the gauge** — a square `SizedBox(side: _kGaugeDiameter /*180*/)` containing a `Stack(alignment: center)`:
+   - **`CustomPaint(_ScoreGaugePainter(...))`** filling the box. The arc sweeps **270°** ("speedometer" gap at the bottom): start angle `135°` (lower-left), clockwise to `45°` (lower-right). `strokeWidth: _kGaugeStroke /*12*/`, `StrokeCap.round`. **Two arcs:**
+     - **Track** (full 270°): `AppColors.gaugeTrack` (NEW token — see `new_tokens`; a dim ring darker than `avatarBg` so the unfilled groove reads against the dark `background`).
+     - **Value** (`survivalPct / 100 * 270°` from the start): the **score color** (rule below).
+   - **The value arc is literally the survival fraction**, and **the Checkpoint Breakdown (§3A) directly below it is `met of total` reached — the ring IS the score, the list NAMES the beats** (Concept 2's continuous "why this %?" argument). *(Build note: the gauge value is `survivalPct/100`; the breakdown shows `met/total`. The server already derives `survival_pct` from checkpoint progression, so the two read as one honest decomposition. If a payload ever has checkpoints whose `met` ratio ≠ `survival_pct/100`, the **gauge fills to `survival_pct`** — the number is the truth — and the breakdown remains the factual list; do NOT recompute the % from `met/total` client-side.)*
+   - **Center stack** (inside the ring): `'${survivalPct}%'` in `AppTypography.display` (64/700) `copyWith(color: scoreColor)`, `maxLines: 1`, wrapped in a `FittedBox(fit: scaleDown)` so a 3-digit `100%` at textScaler 1.5 never overflows the ring; `semanticsLabel: '${survivalPct} percent survival rate'`. Directly under it, `'Survival Rate'` in `caption`/`textSecondary`, wrapped in `ExcludeSemantics` (v1 double-announce fix kept).
+   - **No animation** — the gauge paints in its final state (the route's 900 ms fade is the only entry motion; brief bans staggered/decorative motion). A future reduced-motion-safe sweep is explicitly out of scope.
+3. `_kHeroIdentityGap` (16) → **identity** `'${characterName} — ${scenarioTitle}'`, `headline` (18/600) `textPrimary`, **centered**, `maxLines: 2`, ellipsis.
+4. `_kHeroTightGap` (8) → **attempt line** via the existing `debriefAttemptLine(attemptNumber:, previousBest:)` (`'Attempt #N'` [+ `' · Previous best: X%'`]), `caption`/`textSecondary`, **centered**, `maxLines: 1`.
+5. **Encouraging framing** (FR15b — only when `encouragingFraming != null`) — **UNCHANGED from v1**: `_kSectionGap` (24) above, the 40 px-narrower centered text column, `framing.proximity` in `body`/`AppColors.accent`, optional `framing.improvement` in `caption`/`textSecondary`. This accent-as-TEXT is **server-owned, FR15b, and predates the brief** — kept verbatim (see `ac7_v2_compliance` for the full accent-text inventory).
+
+**Score color rule (`scoreColor`) — REVISED to a 3-band gauge (zero extra token):**
+
+```
+survivalPct == 100 → AppColors.statusCompleted   // green (perfect)
+survivalPct >= 41  → AppColors.warning            // amber (survived, mid)
+else               → AppColors.destructive        // red (failed, <=40)
+```
+
+The **value arc and the `%` text share this one color.** Rationale: v1's binary red/green made a 67% survival read as hard "fail" red — which contradicts the encouraging-framing the server gates on >40%. `AppColors.warning` (#F59E0B) is **already a token** (Concept 3's zero-cost insight), so the mid-band costs nothing and makes a survived-but-imperfect score feel honest, not punitive. This is the **only place a status color appears** (the body proper stays two-ink); it is **data-as-color**, not decoration — the v1 hero already carried a status color, this just refines its bands. *(Walid sign-off item — see `open_questions`.)*
+
+**AC8 screenshot region:** gauge + `Survival Rate` + identity + attempt line (+ framing when present) form the self-contained block. Nothing from §3A downward is part of the screenshot.
+
+**Gauge a11y:** `CustomPaint` is decorative → `ExcludeSemantics`; the `%` `Text` node carries the only label (`'N percent survival rate'`); meaning is never carried by the arc alone (the number is the truth — WCAG 1.4.1).
+
+---
+
+## 3. SECTION ORDER (top → bottom)
+
+Each section = a **12-caps eyebrow** (`_SectionHeader`, see §3.0) + an optional one-line **count/summary** (`caption`/`textSecondary`) + the body. Section-to-section gap = `_kSectionGap` (24, kept from v1). The score is **explained first** (checkpoints), then the actionable depth, then supplementary observations.
+
+| # | Section | Eyebrow | Visible when | Surface | Depth (tap) | Copy |
+|---|---|---|---|---|---|---|
+| 0 | Hero scorecard | — | always | gauge + identity | — | — |
+| 1 | Checkpoint breakdown | `CHECKPOINTS` | `checkpoints.isNotEmpty` | flat met/missed list (no card) | — | — |
+| 2 | Language errors | `LANGUAGE ERRORS` | **always** | error cards | **SHEET**: rule + examples + drill | (in sheet) |
+| 3 | Hesitations | `HESITATIONS` | **always** | pause cards (~Ns, freeze flag) | — | — |
+| 4 | Idioms & slang | `IDIOMS & SLANG` | `idioms.isNotEmpty` | idiom cards | — | — |
+| 5 | Said more naturally | `SAID MORE NATURALLY` | `betterPhrasings.isNotEmpty` | phrasing cards | — | — |
+| 6 | About this call (FR37) | `ABOUT THIS CALL` | `inappropriateBehavior != null` | red-stripe card | — | — |
+| 7 | Areas to work on | `AREAS TO WORK ON` | `areas` or `areasToWorkOn` non-empty | area cards (focus-first) | — | **COPY practice prompt** |
+
+> **Section-order note (resolved):** Errors stay ABOVE Areas (v1 framing: "errors are the core educational content; areas are the closing study list"). This rejects Concept 3's areas-above-errors reorder — that reorder was flagged by two panels as a product-visible bet needing sign-off, and the checkpoint breakdown already answers "what to fix first" factually right under the hero, so promoting areas is not needed to surface the #1 action. **The focus area's copy-a-drill is its own discoverability win wherever it sits** (it is the first card in its section, eyebrow-marked).
+
+### 3.0 `_SectionHeader` — the 12-caps eyebrow (REPLACES v1's 18/600 headline)
+
+`AppTypography.label` (12/500) UPPERCASE, `letterSpacing: 1.0`, `AppColors.textSecondary`, `Semantics(header: true)`. This adopts the Handler's-Brief signature eyebrow (Concept 1's discipline; rejects Concept 3's "keep the 18/600 white header" refusal — two panels flagged dropping the eyebrow as the least-brief-faithful move). The 64 px gauge number is the **single size-jump** that spends the cinema budget; every header is quiet.
+
+### 3A. Checkpoint Breakdown (NEW — `_CheckpointBreakdown`)
+
+The factual decomposition of the gauge %. Rendered **flat on the rail — NO card surface** (it is the *ledger*, read top-to-bottom; spacing + eyebrow group it — Concept 2's most brief-faithful structural call; rejects Concept 3's "put it in a card" furniture regression).
+
+- Eyebrow `CHECKPOINTS` → `_kCountLineGap` (4) → summary `'${metCount} of ${total} reached'` (helper `checkpointCountLine(met, total)`).
+- `_kCardGap` (12) → the row list. Each `_CheckpointRow` (top-aligned for multi-line hints), `_kCheckpointRowGap` (12) apart:
+  - **Leading state glyph (18 px)**, `_kCheckpointGlyphGap` (10) → the `hint`.
+  - **Met:** `Icons.check`, glyph color `textSecondary` (**NEUTRAL — never green**); `hint` in `bodyEmphasis` (16/500) `textPrimary`.
+  - **Missed:** `Icons.remove` (a neutral **dash**, not a red ✗ — clinical, no "failure" drama); glyph color `textSecondary`; `hint` in `body` (16/400) `textSecondary`.
+  - **Met vs missed is carried by WEIGHT + the glyph, never by color** (two-ink; colorblind-safe). `MergeSemantics` per row → `'Reached: <hint>'` / `'Not reached: <hint>'` (state in words, not glyph alone — WCAG 1.4.1).
+- Non-interactive (no tap, no copy) — it is the honest "why N%?", the bridge from gauge to remediation.
+
+### 3B. Language Errors (EVOLVED — `_ErrorCard` becomes tappable)
+
+- Eyebrow `LANGUAGE ERRORS` (**always**) → count via `errorCountLine(errors.length)` (verbatim) → cards (`_kCardGap` apart).
+- **Surface (unchanged content from v1, now in a tappable wrapper):** `errorYouSaidLabel(count)` (`'You said:'` / `'You said (×N):'`, `count>=2`) in `sectionTitle`/`textSecondary` → `userSaid` (`body`/`textPrimary`) → `'Correct form:'` (`sectionTitle`/`textSecondary`) → `correction` (`bodyEmphasis`/**`AppColors.accent`** — the v1-sanctioned "green = the learnable answer" ink, KEPT) → `context` (`caption`/`textSecondary` italic).
+- **Tap-for-detail (the honest-affordance contract — Concept 3):** wrap the card in `InkWell(borderRadius: 12)` and show a trailing `Icons.chevron_right` (16 px, `textSecondary`) **ONLY when `explanation != null || examples.isNotEmpty`** — a v1 error with no depth is a plain, non-tappable card with no chevron (no false affordance). Tap → `showErrorDetailSheet` (§4). `Semantics(button: true, hint: 'Show detail')`; merged so the card reads as one node before the hint. **The chevron is the entire affordance — no "tap to expand" copy** (A2/B1: a glyph, not a sentence — Concept 1).
+
+### 3C. Hesitations (EVOLVED — `_HesitationCard`)
+
+- Eyebrow `HESITATIONS` (**always**) → `hesitationCountLine(hesitations.length)` (verbatim) → cards (model sorts longest-first).
+- **Surface:** `'Pause'` label (`sectionTitle`/`textSecondary`) → **approximate duration** `hesitationDurationLabel(durationSec)` → `'~${sec.round()}s'` (§5) in `debriefDuration` (24/700) `textPrimary` → **if `resolved == false`**, a one-line qualifier `'The character had to speak first.'` (`caption`/`textSecondary`, **no red, no drama** — states the C2 invisible-freeze factually) → `'"${context}"'` (`body`/`textSecondary` italic, `maxLines: 3`, ellipsis).
+- **Non-tappable** (the model gives hesitations no `explanation`/`examples` — the surface already shows everything; the honest-affordance contract means **no chevron where no sheet opens**). `source` (device/server) is NOT surfaced (internal provenance).
+
+### 3D. Idioms & Slang (UNCHANGED — `_IdiomCard`)
+
+- Eyebrow `IDIOMS & SLANG`, hidden when empty (absence IS the design — v1). No count line.
+- `'${expression}'` (`bodyEmphasis`/**`accent`** — kept v1 idiom ink) → `_kIdiomMeaningGap` (8) → `meaning` (`body`/`textPrimary`) → `'"${context}"'` (`caption`/`textSecondary` italic). **Non-tappable** (depth is on the surface).
+
+### 3E. Said More Naturally (NEW — `_BetterPhrasingCard`)
+
+- Eyebrow `SAID MORE NATURALLY` (v2 only, hidden when empty; ≤2 items, no count). **NOT a correction** — the English was already correct; framing must avoid any wrong/fix language.
+- `'You said:'` (`sectionTitle`/`textSecondary`) → `original` (`body`/`textPrimary`) → `'More natural:'` (`sectionTitle`/`textSecondary`) → `suggestion` (`bodyEmphasis`/**`textPrimary` — NOT accent**: weight alone differentiates, so it never reads as "you were wrong"; Concept 1's call, the cleaner two-ink choice) → `reason` (`caption`/`textSecondary` italic, `maxLines: 2`). **Non-tappable, NO copy** (the `reason` is the whole explanation; keeping it flat avoids a client-composed copy string — see `open_questions`).
+
+### 3F. About This Call (FR37 — `_AboutThisCallCard`, UNCHANGED)
+
+- `inappropriateBehavior != null` → eyebrow `ABOUT THIS CALL` → the v1 `ClipRRect` + `avatarBg` card with the **4 px `AppColors.destructive` left stripe**, explanation in `body`/`textPrimary`, `maxLines: 5`. The single red element in the report (`destructive` as a **structural stripe**, never text — FR37-justified). No tap, no copy.
+
+### 3G. Areas to Work On (EVOLVED — `_AreasSection`, the copy stars)
+
+- Eyebrow `AREAS TO WORK ON`. **Prefer `areas[]` when non-empty; else fall back to `areasToWorkOn[]`** (v1 titles). Hidden only on a degenerate empty parse (both empty).
+- **v2 path (`areas[]`):** one `_AreaCard` per area, `_kCardGap` apart, **the `is_focus` area rendered FIRST** (hoist to position 1 if not already). The **first** focus area carries a `FOCUS FIRST` micro-eyebrow above its title (`label` 12/500 caps `textSecondary` — **weight + position, NO badge/chip/star**). If multiple `is_focus:true` ever arrive, the eyebrow renders on the **first encountered only**.
+  - **`_AreaCard` (single-purpose: a COPY card, never a sheet — Concept 3's single-purpose rule):**
+    - `title` (`bodyEmphasis` 16/500 `textPrimary` — the name carries weight).
+    - `area.evidence` (`caption`/`textSecondary` italic, `maxLines: 3`, cites the real in-call error/hesitation) when `evidence.isNotEmpty`.
+    - `_kCardBlockGap` (12) → the **copy button** (`_CopyButton`, §4b) when `practicePrompt.isNotEmpty`. Omitted entirely when the prompt is empty (no dead affordance).
+- **v1 fallback (`areasToWorkOn[]`):** the existing single numbered `_AreasCard` (`'1. ...'`, `body`/`textPrimary`, 8 px apart, **no copy button** — no `practice_prompt` exists in v1). Verbatim.
+- `_kBottomPadding` (40) close.
+
+---
+
+## 4. SHEET — depth on tap (reuse the existing modal recipe verbatim)
+
+Reuse the proven recipe from `content_warning_sheet.dart` / `difficulty_sheet.dart`: `showModalBottomSheet<void>(context, backgroundColor: Colors.transparent, isScrollControlled: true, isDismissible: true, enableDrag: true)`, builder returns the sheet widget which supplies its own surface. Top-level `Future<void> showErrorDetailSheet(BuildContext, {required DebriefError error})` (read-only — no bool gate).
+
+**Surface (LIGHT — verbatim with the two shipped sheets):** `DecoratedBox(color: AppColors.textPrimary, borderRadius: BorderRadius.vertical(top: Radius.circular(42)))` → `Padding(EdgeInsets.fromLTRB(36, 24, 36, 36 + bottomInset))` (`bottomInset = MediaQuery.viewPaddingOf(context).bottom`) → `SingleChildScrollView` (mandatory overflow guard at 320×568 @ 1.5×) → `Column(mainAxisSize.min, crossAxisAlignment.start)`. **Text ink flips to the light-surface mapping** the two sheets already use: titles/body = `AppColors.background`; captions/eyebrows = `AppColors.background.withValues(alpha: 0.7)`. **This reuses zero new sheet tokens** and is the literal "reuse the sheet verbatim" instruction (Concept 1's consistency call; the light "torn-out page" reads as the established sheet language). *(A dark sheet variant is an explicit Walid call on the Pixel 9 gate — see `open_questions`.)*
+
+**`showErrorDetailSheet` content:**
+1. `_DragHandle` (copy the existing 40×4 `overlaySubtitle` pill; `ExcludeSemantics`) → 15.
+2. **The correction, big:** `error.correction` in 24/700 `AppColors.background` (the thing to learn).
+3. **`error.explanation`** (the rule, one sentence) in 16/400 `AppColors.background`, `height: 1.5` — **only when non-null**.
+4. **`error.examples[]`** — when non-empty: 24 → eyebrow `EXAMPLES` (12/500 caps, `background` @0.7) → each string as a 16/400 `background` line, `_kSheetExampleGap` (8) apart (prose lines, no bullets/chips).
+5. **Practice drill (composed client-side — Concept 1's idea, since errors have no server `practice_prompt`):** 24 → a 16/400 `background` line + a full-width accent-fill copy button (`'Copy practice prompt'`, reuse the difficulty sheet `_DoneButton` shape: `StadiumBorder`, `AppColors.accent` fill, `AppColors.background` fg, ≥48 h). Tapping copies the **composed drill** `errorPracticeDrill(error)` (§copy deck) → `Clipboard.setData` → `'Copied'` confirmation (§4c). This is the error's pasteable-into-any-LLM payload; the model has no per-error prompt, so the client composes it deterministically from `userSaid`/`correction`/`explanation`, clinical, no praise.
+6. Empty/missing pieces are simply omitted (never a bare eyebrow). Dismissal: drag-down / scrim / system back (the proven implicit-dismiss contract).
+
+**Sheet a11y:** focus-trapping modal (Material default); drag handle decorative; correction → rule → examples → drill read top-to-bottom; the copy button is ≥48 px and labeled.
+
+### 4b. `_CopyButton` (surface copy affordance — area cards)
+
+A reusable `_CopyButton({required String payload, required String semanticsTopic})`:
+- **Form:** a left-aligned `InkWell`-wrapped row, bottom of the card: `Icons.content_copy` (18 px) + label `'Copy practice'` (`label` 12/500). **Both `textSecondary` — ink-on-surface, NEVER accent-filled** (a green button would pull the eye and break the calm; accent-fill is reserved for the sheet's primary pill). Wrapped to ≥44×44 touch (`AppSpacing.minTouchTarget`).
+- **Tap:** `Clipboard.setData(ClipboardData(text: payload))` → `'Copied'` confirmation (§4c). `Semantics(button: true, label: 'Copy practice prompt for $semanticsTopic')`. **It is a sibling of (never nested in) the card** — area cards do NOT also open a sheet, so there is no hit-test ambiguity (single-purpose card rule).
+
+### 4c. "Copied" confirmation — INFORMATIONAL ONLY (never an error)
+
+On a successful clipboard write: `AppToast.show(context, message: 'Copied', type: AppToastType.success)` — the existing informational overlay (mint `accent` `check_circle_outline`, 15 %-alpha accent fill, slides in top-right, auto-dismiss ~10 s). This is the app's sanctioned **non-error** overlay (`feedback_error_ux.md`: toasts are informational hints ONLY, never errors). A clipboard write does not meaningfully fail; if it ever threw, swallow silently — **never a toast-as-error**. Message is A2/B1, no exclamation, no praise.
+
+> *(Build option, NOT specced as primary: an inline glyph-swap `content_copy → check` for ~1.5 s is calmer but needs a `StatefulWidget` `_CopyButton` + `Timer` and trips the `pumpAndSettle`-with-live-timers caveat. Default to the toast — it reuses shipped infra and needs no timer. Revisit only if Walid wants the on-card swap.)*
+
+---
+
+## 5. Approximate-duration display
+
+New `@visibleForTesting String hesitationDurationLabel(double sec) => '~${sec.round()}s'` (e.g. 4.2 → `~4s`, 7.8 → `~8s`). **Replaces** v1's precise `'${durationSec.toStringAsFixed(1)} seconds'`. The `~` is **load-bearing** — durations are STT-estimated, not stopwatch-true (the model doc mandates APPROXIMATE; `source` flags device/server). Style stays `debriefDuration` (24/700)/`textPrimary` (the big-number focal point survives). Semantics: `'about ${sec.round()} seconds'` (TalkBack reads "about N seconds", not "tilde N s"). The word "seconds" is dropped on the surface (the `Pause` label supplies the noun). Threshold is >3 s so a value never reads below `~3s`.
+
+---
+
+## 6. Empty-state handling (per section)
+
+- **v1 whole payload** (`debriefVersion == 1`): gauge + identity + framing render; §3A/§3D/§3E/§3F/§3G-rich hidden (empty lists); §3B/§3C show their count lines (no cards); error cards have no chevron (`explanation`/`examples` empty); §3G falls back to the numbered `areasToWorkOn` card. **No crash — every v2 section is `isEmpty`-gated** (matches the model's v1-back-compat defaults). Satisfies AC2.
+- **Checkpoints / Idioms / Said-more-naturally / About:** section (eyebrow included) **hidden entirely** when empty (no bare eyebrow — v1's idiom rule generalised).
+- **Language errors / Hesitations:** **ALWAYS** visible (eyebrow + count line) — the count line (`No errors flagged` / `No hesitations flagged`) IS the empty state ("positive feedback by absence", no praise — v1 contract).
+- **Areas:** hidden only on a degenerate empty parse (both `areas` and `areasToWorkOn` empty; a healthy payload guarantees 1–3).
+- **Copy button:** suppressed when `practicePrompt` is empty.
+
+---
+
+## 7. Accessibility
+
+- **Gauge:** one `%`-text node `'N percent survival rate'`; `CustomPaint` `ExcludeSemantics`; `'Survival Rate'` `ExcludeSemantics`; the arc never the sole carrier of meaning.
+- **Checkpoint rows:** `MergeSemantics` → `'Reached:'` / `'Not reached:'` (state in words, not glyph/color — WCAG 1.4.1).
+- **Tappable error cards:** `Semantics(button: true, hint: 'Show detail')`, merged. **Copy buttons:** `Semantics(button: true, label: 'Copy practice prompt for <topic>')`.
+- **Eyebrows:** `Semantics(header: true)`. Decorative double-read captions `ExcludeSemantics`.
+- **Touch targets ≥44 px:** back arrow (44×44), each tappable card (full-card, ≥44 naturally), each copy button (wrapped to `minTouchTarget`), each sheet button (≥48).
+- **320×568 @ textScaler 1.5:** the gauge `%` uses `FittedBox(scaleDown)` + `maxLines: 1` inside the ring so `100%` never overflows; all section text wraps freely (single scroll view absorbs vertical growth); the area card's `Row[Expanded(text), button]`-free layout (button is below, not beside) avoids horizontal squeeze; **no RenderFlex overflow**. Test on the 320×568 surface (`setSurfaceSize`).
+- **Contrast on `background`:** `statusCompleted` 8.5:1, `warning` ≈ 4.9:1 (large graphic ≥3:1, pass), `destructive` 5.2:1; the value arc is a large graphic element. `gaugeTrack` is decorative (no ratio req). Sheet uses the pre-validated light-surface contrasts.
+- **No `pumpAndSettle`** in tests (live BS-7 timers) — use explicit `pump(Duration)` (client CLAUDE.md §3).
+
+## 8. (AC8 note)
+
+The hero (gauge + identity + attempt + framing) is a **self-contained, screenshot-worthy unit** on the dark `background`, fully centered, composing cleanly on any social surface. The arc makes it instantly legible as a "scorecard" out of context. This is the AC8 contract, preserved and strengthened from v1.
+
+## 9. Local layout consts (extend v1's `_k…` block)
+
+Reuse all v1 consts. ADD: `_kGaugeDiameter = 180.0`, `_kGaugeStroke = 12.0`, `_kCheckpointRowGap = 12.0`, `_kCheckpointGlyphGap = 10.0`, `_kSheetExampleGap = 8.0`. No `AppSpacing` additions (local-const precedent). No new typography (compose with `.copyWith` + reuse `display`/`headline`/`sectionTitle`/`body`/`bodyEmphasis`/`caption`/`label`/`debriefDuration`).
+
+## v2.0 Copy Deck
+
+```dart
+// COPY LINT (Story 7.5 debrief v2 — clinical charter; inherits the 7.4
+// "Handler's Brief" rulebook, Walid-validated 2026-06-12).
+// BANNED on this screen AND in its sheet, everywhere:
+//   - exclamation marks
+//   - question marks in CHROME (labels, buttons, eyebrows, counts)
+//   - praise / congratulation ("Great", "Well done", "Good job", "Nice")
+//   - emoji
+//   - "tips" framing ("Tip:", "Pro tip", "Try to…")
+//   - urgency / pressure ("now", "hurry", "don't miss")
+// Voice is the APP's, not the character's. Register: clinical-frank, like a
+// medical report — factual, specific, no hedging. A2/B1 parseable for a
+// French learner under mild post-call stress: present tense, second person,
+// no idioms in chrome. Durations are APPROXIMATE and MUST carry the '~'.
+// Server strings (error/correction/context/explanation/examples/idiom/area/
+// evidence/practice_prompt/phrasing/framing/inappropriate_behavior, and the
+// checkpoint hints) render VERBATIM — server-owned, NOT counted here.
+
+// --- Hero (app-owned chrome) ---
+const String kSurvivalRateLabel = 'Survival Rate';          // caption, inside gauge
+// '${survivalPct}%'                                        // display 64/700 (dynamic)
+// '${characterName} — ${scenarioTitle}'                    // headline (dynamic, v1)
+// debriefAttemptLine(...) → 'Attempt #N' [+ ' · Previous best: X%']  // v1 helper, kept
+
+// --- Section eyebrows (_SectionHeader: label 12/500 UPPERCASE, +1.0, textSecondary) ---
+// Flat + clinical (rejects Concept 2's voicey 'WHERE THE ENGLISH BROKE' /
+// 'WHERE YOU STALLED' — two panels flagged those as a sting / A2-B1 risk).
+const String kHdrCheckpoints    = 'CHECKPOINTS';
+const String kHdrErrors         = 'LANGUAGE ERRORS';
+const String kHdrHesitations    = 'HESITATIONS';
+const String kHdrIdioms         = 'IDIOMS & SLANG';
+const String kHdrBetterPhrasing = 'SAID MORE NATURALLY';
+const String kHdrAbout          = 'ABOUT THIS CALL';
+const String kHdrAreas          = 'AREAS TO WORK ON';
+const String kEyebrowFocusFirst = 'FOCUS FIRST';            // micro-eyebrow above focus area
+const String kSheetEyebrowExamples = 'EXAMPLES';            // dark-on-light, error sheet
+
+// --- Count / summary lines (caption / textSecondary) ---
+String checkpointCountLine(int met, int total) => '$met of $total reached';
+String errorCountLine(int count) =>                          // v1 helper, kept verbatim
+    count == 0 ? 'No errors flagged'
+  : count == 1 ? '1 error flagged'
+  :              '$count errors flagged';
+String hesitationCountLine(int count) =>                     // v1 helper, kept verbatim
+    count == 0 ? 'No hesitations flagged'
+  : count == 1 ? '1 moment flagged'
+  :              '$count moments flagged';
+
+// --- Card labels (sectionTitle 14/600 / textSecondary) ---
+String errorYouSaidLabel(int count) =>                       // v1 helper, kept
+    count >= 2 ? 'You said (×$count):' : 'You said:';
+const String kLblCorrectForm = 'Correct form:';             // error card
+const String kLblYouSaid     = 'You said:';                 // better-phrasing card
+const String kLblMoreNatural = 'More natural:';             // better-phrasing card
+const String kLblPause       = 'Pause';                     // hesitation card
+
+// --- Hesitation framing ---
+const String kHesFreezeNote = 'The character had to speak first.';  // resolved == false; flat, no red
+String hesitationDurationLabel(double sec) => '~${sec.round()}s';    // surface
+// semantics: 'about ${sec.round()} seconds'
+
+// --- Checkpoint row semantics (state in words, not glyph/color) ---
+String checkpointSemantics(bool met, String hint) =>
+    met ? 'Reached: $hint' : 'Not reached: $hint';
+
+// --- Copy (button label + INFORMATIONAL confirmation) ---
+const String kCopyButtonLabel   = 'Copy practice';          // surface, label 12/500, Icons.content_copy
+const String kCopySheetLabel    = 'Copy practice prompt';   // sheet, accent-fill pill, 14/700
+const String kCopiedConfirm     = 'Copied';                 // AppToastType.success (auto-dismiss)
+// Copy button semantics: 'Copy practice prompt for <topic>'
+
+// --- Tap-for-detail affordance (errors only) ---
+// trailing Icons.chevron_right; NO visible label.
+const String kDetailHint = 'Show detail';                   // semantics hint only
+
+// --- Composed error drill (client-built; errors have no server practice_prompt) ---
+// The ONE client-authored clipboard payload. Concatenation only — never a
+// rendered Text. Clinical, no praise/exclamation. <explanation> omitted if null.
+String errorPracticeDrill(DebriefError e) =>
+    'Help me practise this English mistake. I said "${e.userSaid}". '
+    'The correct form is "${e.correction}".'
+    '${e.explanation != null ? ' ${e.explanation}' : ''} '
+    'Give me 5 short practice sentences and quiz me one at a time.';
+
+// --- Loading / unavailable / back (v1, verbatim) ---
+const String kLoading     = 'Analyzing your conversation...';
+const String kUnavailable = 'Debrief unavailable for this call.';
+const String kBackSemantics = 'Back to scenarios';
+
+// FORMAT LAWS:
+//  - Durations ALWAYS '~Ns' on the surface; 'about N seconds' in semantics. Never '4.2 seconds'.
+//  - 'Copied' is the bare confirmation. No 'Copied!' (exclamation banned).
+//  - Area practice_prompt copies VERBATIM (server-owned, never transformed).
+//  - The em dash in '<character> — <title>' is v1, server-content adjacent.
+```
+
+## v2.0 Build Notes (Task 5)
+
+WIDGET BREAKDOWN (all private in debrief_screen.dart, mirroring the v1 file — StatefulWidget host UNCHANGED, NO bloc):
+- `_DebriefContent` (StatelessWidget) — rebuild the body Column per §2/§3. Keep the v1 SingleChildScrollView + _BackArrow + 20px-padded inner Column skeleton.
+- `_ScoreGaugePainter extends CustomPainter` — paints track arc (gaugeTrack) + value arc (scoreColor) over a square Rect.deflate(stroke/2), 270° sweep from 135° clockwise, StrokeCap.round. `shouldRepaint` compares (fraction, scoreColor). Place the % Text + 'Survival Rate' in a Stack over it, centered, % in FittedBox(scaleDown)+maxLines:1.
+- `_SectionHeader` — REPLACE the v1 18/600 widget body with the 12-caps eyebrow (label 12/500 UPPERCASE letterSpacing 1.0 textSecondary), keep the class name + Semantics(header:true) so call sites are unchanged.
+- `_CheckpointBreakdown` + `_CheckpointRow` — flat on-rail list, NO _DebriefCard.
+- `_ErrorCard` — wrap v1 body in `_DepthCard` (an InkWell-or-plain switch on `hasDepth = explanation != null || examples.isNotEmpty`); add the trailing chevron only when hasDepth.
+- `_HesitationCard` — add the `~Ns` label + the resolved==false freeze line. Non-tappable.
+- `_BetterPhrasingCard` (new), `_AreaCard` (new), `_CopyButton` (new).
+- `showErrorDetailSheet(...)` — top-level Future<void>, clones the showModalBottomSheet recipe.
+
+REUSE THE EXISTING SHEET PATTERN (name it): clone `difficulty_sheet.dart` / `content_warning_sheet.dart` VERBATIM for the chrome — `showModalBottomSheet<void>(backgroundColor: Colors.transparent, isScrollControlled: true, isDismissible: true, enableDrag: true)`, `DecoratedBox(color: AppColors.textPrimary, BorderRadius.vertical(top: Radius.circular(42)))`, `Padding(36,24,36,36+MediaQuery.viewPaddingOf(context).bottom)`, `SingleChildScrollView` overflow guard, copy the `_DragHandle` (40×4 overlaySubtitle pill) and the accent-fill `StadiumBorder` `_DoneButton` shape for the 'Copy practice prompt' button. Light-surface ink: titles/body = AppColors.background, eyebrows/captions = AppColors.background.withValues(alpha: 0.7) — EXACTLY as both shipped sheets do (so the only divergence is content, zero new sheet tokens).
+
+STATE: StatefulWidget host stays v1; the screen body adds NO new state. The sheet is fire-and-forget (read-only, no return). The copy confirmation is `AppToast.show(context, message: 'Copied', type: AppToastType.success)` — informational; the `_CopyButton` can stay a StatelessWidget (no Timer needed since we use the toast, NOT the inline-swap). This deliberately avoids the StatefulWidget+Timer path so tests don't hit the live-timer caveat.
+
+CLIPBOARD + CONFIRMATION: `Clipboard.setData(ClipboardData(text: payload))` (import 'package:flutter/services.dart'). Area cards copy `area.practicePrompt` VERBATIM; the error sheet copies `errorPracticeDrill(error)` (composed). Both fire the success toast. No error path (clipboard write doesn't meaningfully throw; if it did, swallow — never a toast-as-error).
+
+GAUGE IMPLEMENTATION — use CustomPainter (NOT a package, NOT the existing Rive puppet): a thin 270° two-arc paint is ~15 lines and keeps the hero a pure-Flutter widget (consistent with the HUD-is-Flutter ruling). `canvas.drawArc(rect, startRadians, sweepRadians, false, paint..strokeCap=round..strokeWidth=12)`. startRadians = 135° = 3*pi/4; full sweep = 270° = 3*pi/2; value sweep = fraction * 3*pi/2. Paint track first, value over it. No animation.
+
+TEST SURFACE: 320×568 (`tester.binding.setSurfaceSize(const Size(320, 568))` + addTearDown reset). FlutterSecureStorage.setMockInitialValues({}) in setUp if the widget tree transitively touches storage (it does via CallRepository — keep it). NO pumpAndSettle (BS-7 live timers) — use `pump(Duration)`. Build the debrief tree with a constructor `payload` (happy path, zero network) to avoid the poll loop in render tests.
+
+WIDGET TESTS TO WRITE:
+1. v2 render: a full v2 payload (debrief_version:2, checkpoints, areas with is_focus + practice_prompt, errors with explanation+examples, better_phrasings, a resolved:false hesitation) renders the gauge %, all section eyebrows, the checkpoint 'M of N reached' line, the FOCUS FIRST eyebrow on the focus area, and a `~Ns` duration. No overflow at 320×568.
+2. v1 fallback render: a v1 payload (no debrief_version key, no v2 lists) renders gauge + identity + error/hesitation count lines + the numbered areasToWorkOn fallback card, and DOES NOT render any checkpoint/better-phrasing eyebrow or any chevron — and does not crash (AC2).
+3. Copy assertion: tap the area `_CopyButton` → assert `Clipboard.setData` was invoked with the exact `practicePrompt` (use `tester.binding.defaultBinaryMessenger.setMockMethodCallHandler` on `SystemChannels.platform` to capture `Clipboard.setData`), and assert the success toast text 'Copied' appears (pump 700ms+ to clear the toast's 600ms entry delay). Tap the error-sheet copy → assert the captured arg == `errorPracticeDrill(error)`.
+4. Sheet open/close: tap a depth error card → `showErrorDetailSheet` opens (find the correction-as-24/700 + 'EXAMPLES' eyebrow); a non-depth error card has NO chevron and tapping it does nothing. Drag-down / scrim dismiss closes it.
+5. AC7-v2 negatives: assert NO retry button, NO share/nav/monetization control, exactly one back affordance (semantics 'Back to scenarios'); assert NO praise string and NO '!' anywhere in the rendered chrome (walk the widget tree's Text for '!' and a small banned-word set); assert the hesitation freeze line is 'The character had to speak first.' (no red — its color resolves to textSecondary, not destructive).
+Helper-string unit tests (pure, no pump): `hesitationDurationLabel(4.2)=='~4s'`, `checkpointCountLine(4,6)=='4 of 6 reached'`, `errorPracticeDrill` contains userSaid+correction and NO '!'.

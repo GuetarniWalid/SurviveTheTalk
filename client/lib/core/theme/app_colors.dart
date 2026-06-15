@@ -60,7 +60,16 @@ class AppColors {
   // (non-text), so no contrast-ratio requirement applies.
   static const Color hairline = Color(0x14FFFFFF);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 14.
+  // Debrief v2 hero gauge track (Story 7.5, Walid-validated design pass
+  // 2026-06-15 — UX-DR1 amendment). The dim groove for the UNFILLED arc of the
+  // survival-score ring: darker than `avatarBg` so the score arc reads on the
+  // dark background without the empty ring looking like a floating card sliver.
+  // Decorative (non-text, the % number carries the meaning) — no contrast-ratio
+  // requirement. Droppable back to `avatarBg` (count 15->14) if the Pixel 9
+  // gate finds the existing grey reads fine as the track.
+  static const Color gaugeTrack = Color(0xFF2A2B30);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 15.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -76,5 +85,6 @@ class AppColors {
     headsUpAccent,
     errorBody,
     hairline,
+    gaugeTrack,
   ];
 }
