@@ -229,12 +229,13 @@ void main() {
       expect(find.text('ABOUT THIS CALL'), findsOneWidget);
       expect(find.text(kAboutText), findsOneWidget);
 
-      // Areas — focus-first eyebrow + tap-to-practice (the copy action moved
-      // into the drawer, so NOTHING copy-related shows on the surface).
+      // Areas — focus-first eyebrow + a subtle inline copy row per card (both
+      // areas carry a practice prompt); the how-to explanation stays in the
+      // drawer (closed here).
       expect(find.text('AREAS TO WORK ON'), findsOneWidget);
       expect(find.text('FOCUS FIRST'), findsOneWidget);
       expect(find.text('Negative sentence structure'), findsOneWidget);
-      expect(find.text('Copy the prompt'), findsNothing);
+      expect(find.text('Copy the prompt'), findsNWidgets(2));
       expect(find.text('HOW TO PRACTICE'), findsNothing);
 
       verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
@@ -339,17 +340,63 @@ void main() {
   });
 
   group('area practice drawer (AC5, Walid 2026-06-15)', () {
-    testWidgets('tapping an area opens the dark drawer with the practice loop', (
+    testWidgets('the inline copy row copies directly, WITHOUT opening the drawer', (
+      tester,
+    ) async {
+      final clipboardCalls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') clipboardCalls.add(call);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      await pumpScreen(tester, buildScreen(payload: fullPayload()));
+
+      // The focus area is pinned first; its inline copy row is the first one.
+      // The experienced user copies straight from the card (Walid 2026-06-15).
+      final inlineCopy = find.text('Copy the prompt').first;
+      await tester.ensureVisible(inlineCopy);
+      await tester.pump();
+      await tester.tap(inlineCopy);
+      await tester.pump();
+
+      // The focus prompt is copied VERBATIM...
+      expect(clipboardCalls, hasLength(1));
+      expect((clipboardCalls.single.arguments as Map)['text'], kFocusPrompt);
+
+      // ...and the inline row's opaque tap did NOT bubble up to open the drawer.
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('HOW TO PRACTICE'), findsNothing);
+
+      // The informational "Copied" toast appears (600 ms delay + 400 ms in).
+      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Copied'), findsOneWidget);
+
+      // Flush the toast's 10 s auto-dismiss + 300 ms exit so no pending timer.
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump(const Duration(milliseconds: 350));
+    });
+
+    testWidgets('tapping the card body opens the drawer with the practice loop', (
       tester,
     ) async {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
 
       expect(find.text('HOW TO PRACTICE'), findsNothing);
-      // The non-focus area also carries a practice prompt (so a chevron).
-      final area = find.text('Articles');
-      await tester.ensureVisible(area);
+      // Tap the area TITLE (not the inline copy row) → opens the drawer.
+      final areaTitle = find.text('Articles');
+      await tester.ensureVisible(areaTitle);
       await tester.pump();
-      await tester.tap(area);
+      await tester.tap(areaTitle);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400)); // drawer opens
 
@@ -372,10 +419,12 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Come back here when it feels easy.'), findsOneWidget);
-      expect(find.text('Copy the prompt'), findsOneWidget);
+      // The prominent CTA is present in the drawer too — 2 inline rows on the
+      // cards behind + 1 drawer CTA = 3 "Copy the prompt".
+      expect(find.text('Copy the prompt'), findsNWidgets(3));
     });
 
-    testWidgets('copying from the drawer writes the server prompt + toast', (
+    testWidgets('the prominent drawer CTA copies the prompt + toast', (
       tester,
     ) async {
       final clipboardCalls = <MethodCall>[];
@@ -395,29 +444,25 @@ void main() {
 
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
 
-      // Open the focus area's drawer (areas near the bottom of a long scroll —
-      // bring the card into view, then tap it).
-      final focusArea = find.text('Negative sentence structure');
-      await tester.ensureVisible(focusArea);
+      // Open the focus area's drawer via its TITLE (not its inline copy row).
+      final focusTitle = find.text('Negative sentence structure');
+      await tester.ensureVisible(focusTitle);
       await tester.pump();
-      await tester.tap(focusArea);
+      await tester.tap(focusTitle);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400)); // drawer opens
 
-      // The copy action sits below the how-to steps — on a small test viewport
-      // it can land under the fold of the sheet's scroll view; bring it up.
-      final copyButton = find.text('Copy the prompt');
-      await tester.ensureVisible(copyButton);
+      // The drawer CTA is the LAST "Copy the prompt" (the modal route is pushed
+      // on top of the cards). Bring it up — it sits below the how-to steps.
+      final cta = find.text('Copy the prompt').last;
+      await tester.ensureVisible(cta);
       await tester.pump();
-      await tester.tap(copyButton);
+      await tester.tap(cta);
       await tester.pump();
 
       // The server practice_prompt is copied VERBATIM.
       expect(clipboardCalls, hasLength(1));
-      expect(
-        (clipboardCalls.single.arguments as Map)['text'],
-        kFocusPrompt,
-      );
+      expect((clipboardCalls.single.arguments as Map)['text'], kFocusPrompt);
 
       // The informational "Copied" toast appears (600 ms delay + 400 ms in).
       await tester.pump(const Duration(milliseconds: 700));

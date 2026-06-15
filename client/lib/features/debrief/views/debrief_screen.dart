@@ -117,9 +117,20 @@ const double _kEyebrowGap = 8.0;
 // Tap-for-detail + copy affordances.
 const double _kChevronSize = 22.0;
 const double _kChevronGap = 8.0;
+const double _kCopyRowTopGap = 12.0;
 const double _kCopyIconSize = 16.0;
 const double _kCopyIconGap = 6.0;
-const double _kCopyButtonVPad = 8.0;
+const double _kCopyRowVPad = 8.0;
+
+// The PROMINENT copy CTA inside the practice drawer (Walid 2026-06-15, design
+// panel verdict 3-0): an inverse near-white pill — textPrimary fill + background
+// ink, full pill, the app's exact filled-CTA grammar with green swapped for the
+// only semantically-neutral high-visibility token (green stays reserved for the
+// report's success/correct meaning). Two-ink compliant: uses only the two core
+// report inks, no new hue.
+const double _kCtaMinHeight = 52.0;
+const double _kCtaIconSize = 18.0;
+const double _kCtaIconGap = 10.0;
 
 // Dark detail sheet — matched to the report (Walid 2026-06-15: dark, NOT the
 // light content-warning/difficulty sheet). Reuses the showModalBottomSheet
@@ -1134,11 +1145,13 @@ class _AboutThisCallCard extends StatelessWidget {
 }
 
 /// Rich, actionable area card (D-a/B5/D-c): an optional "FOCUS FIRST" eyebrow on
-/// #0, the title, and the in-call evidence. Depth-on-tap, mirroring the error
-/// card (Walid 2026-06-15): a chevron — present ONLY when a server practice
-/// prompt exists — opens a DARK drawer that explains the practice loop and
-/// carries the copy action. NO bare copy button on the surface anymore (a
-/// first-time user didn't know what the copied text was for).
+/// #0, the title, and the in-call evidence. TWO affordances when a server
+/// practice prompt exists (Walid 2026-06-15): a SUBTLE inline copy row — so an
+/// experienced user copies the prompt directly without opening anything — AND a
+/// chevron whose tap raises a DARK drawer that EXPLAINS the practice loop (for
+/// first-timers who don't yet know what the copied text is for). The inline copy
+/// row absorbs its own taps (opaque), so tapping it copies; tapping anywhere
+/// else on the card opens the drawer.
 class _AreaCard extends StatelessWidget {
   final DebriefArea area;
 
@@ -1184,6 +1197,10 @@ class _AreaCard extends StatelessWidget {
                       fontStyle: FontStyle.italic,
                     ),
                   ),
+                ],
+                if (_hasPractice) ...[
+                  const SizedBox(height: _kCopyRowTopGap),
+                  _CopyInlineRow(payload: area.practicePrompt, topic: area.title),
                 ],
               ],
             ),
@@ -1306,7 +1323,7 @@ class _AreaDetailSheet extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: _kSheetBlockGap),
-              _CopyButton(payload: area.practicePrompt, topic: area.title),
+              _CopyPromptCta(payload: area.practicePrompt, topic: area.title),
             ],
           ),
         ),
@@ -1315,15 +1332,17 @@ class _AreaDetailSheet extends StatelessWidget {
   }
 }
 
-/// Copy-a-practice-prompt button — writes the server prompt VERBATIM to the
-/// clipboard and shows the informational "Copied" toast. textSecondary ink
-/// (never accent: two-ink discipline). Learning action only (AC7-v2). Lives
-/// INSIDE the practice drawer now (Walid 2026-06-15), after the how-to steps.
-class _CopyButton extends StatelessWidget {
+/// SUBTLE inline copy affordance ON the area card — a textSecondary
+/// icon+label row (never accent: two-ink discipline). Writes the server prompt
+/// VERBATIM to the clipboard + the "Copied" toast. Opaque hit behavior so a tap
+/// here copies WITHOUT bubbling up to the card's open-drawer gesture. For the
+/// experienced user who already knows the loop and wants the prompt directly
+/// (Walid 2026-06-15). The drawer carries the PROMINENT version (_CopyPromptCta).
+class _CopyInlineRow extends StatelessWidget {
   final String payload;
   final String topic;
 
-  const _CopyButton({required this.payload, required this.topic});
+  const _CopyInlineRow({required this.payload, required this.topic});
 
   void _onTap(BuildContext context) {
     unawaited(Clipboard.setData(ClipboardData(text: payload)));
@@ -1341,7 +1360,7 @@ class _CopyButton extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: () => _onTap(context),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: _kCopyButtonVPad),
+            padding: const EdgeInsets.symmetric(vertical: _kCopyRowVPad),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1355,6 +1374,62 @@ class _CopyButton extends StatelessWidget {
                   _kCopyPromptLabel,
                   style: AppTypography.label.copyWith(
                     color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The PROMINENT copy CTA — the drawer's closing call-to-action (design panel
+/// verdict, Walid 2026-06-15). An inverse near-white StadiumBorder pill
+/// (textPrimary fill + background ink) — the app's filled-CTA grammar with the
+/// banned green swapped for the only neutral high-visibility token. Material +
+/// InkWell (the app's established pressable-fill pattern, e.g. the call buttons)
+/// for the ripple. Same clipboard-write + "Copied" toast as the inline row.
+class _CopyPromptCta extends StatelessWidget {
+  final String payload;
+  final String topic;
+
+  const _CopyPromptCta({required this.payload, required this.topic});
+
+  void _onTap(BuildContext context) {
+    unawaited(Clipboard.setData(ClipboardData(text: payload)));
+    AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Copy practice prompt for $topic',
+      child: Material(
+        color: AppColors.textPrimary,
+        shape: const StadiumBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _onTap(context),
+          child: SizedBox(
+            height: _kCtaMinHeight,
+            width: double.infinity,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.content_copy,
+                  size: _kCtaIconSize,
+                  color: AppColors.background,
+                ),
+                const SizedBox(width: _kCtaIconGap),
+                Text(
+                  _kCopyPromptLabel,
+                  style: AppTypography.sectionTitle.copyWith(
+                    color: AppColors.background,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ],
