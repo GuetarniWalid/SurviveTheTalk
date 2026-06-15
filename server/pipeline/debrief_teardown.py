@@ -63,6 +63,7 @@ def resolve_end_reason(
         return COMPLETED_END_REASON
     return DEFAULT_END_REASON
 
+
 _NO_THINK_PREFIX = "/no_think"
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _MAX_BRIEF_CHARS = 300
