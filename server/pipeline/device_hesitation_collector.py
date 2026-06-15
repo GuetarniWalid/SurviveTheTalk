@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from loguru import logger
 
-# Mirror HesitationObserver's contract (debrief-content-strategy Q6).
-_THRESHOLD_SECONDS = 3.0
+# Mirror HesitationObserver's contract (debrief-content-strategy Q6). 4.0 since
+# 2026-06-15 (a ~3 s reply beat is natural — count a hesitation from 4 s).
+_THRESHOLD_SECONDS = 4.0
 _TOP_N = 3
 
 

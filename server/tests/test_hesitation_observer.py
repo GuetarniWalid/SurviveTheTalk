@@ -77,7 +77,7 @@ def test_records_gap_above_threshold():
 def test_ignores_gap_at_or_below_threshold():
     obs = _observer(
         transcript=[{"role": "character", "text": "x", "timestamp_ms": 0}],
-        clock_values=[0.0, 2.5],  # 2.5 s < 3 s
+        clock_values=[0.0, 2.5],  # 2.5 s < 4 s
     )
 
     async def _drive():
@@ -236,8 +236,8 @@ def test_respeak_then_user_start_records_two_distinct_gaps():
     disjoint intervals — never double-counted."""
     obs = _observer(
         transcript=[{"role": "character", "text": "Talk properly.", "timestamp_ms": 0}],
-        # BSF@0 -> BotStarted@5 (freeze 5, unresolved) -> BSF@8 -> UserStart@12 (gap 4, resolved)
-        clock_values=[0.0, 5.0, 8.0, 12.0],
+        # idle@0 -> BotStarted@6 (freeze 6, unresolved) -> idle@8 -> UserStart@13 (gap 5, resolved)
+        clock_values=[0.0, 6.0, 8.0, 13.0],
     )
 
     async def _drive():
@@ -250,13 +250,13 @@ def test_respeak_then_user_start_records_two_distinct_gaps():
     assert obs.top_hesitations() == [
         {
             "id": "h1",
-            "duration_sec": 5.0,
+            "duration_sec": 6.0,
             "preceding_character_line": "Talk properly.",
             "resolved": False,
         },
         {
             "id": "h2",
-            "duration_sec": 4.0,
+            "duration_sec": 5.0,
             "preceding_character_line": "Talk properly.",
             "resolved": True,
         },
@@ -265,10 +265,10 @@ def test_respeak_then_user_start_records_two_distinct_gaps():
 
 def test_respeak_below_threshold_ignored():
     """A short re-speak gap (the character barely pauses then continues) is NOT
-    a hesitation — the same >3 s threshold applies on the re-speak path."""
+    a hesitation — the same >4 s threshold applies on the re-speak path."""
     obs = _observer(
         transcript=[{"role": "character", "text": "x", "timestamp_ms": 0}],
-        clock_values=[0.0, 2.0],  # 2 s < 3 s
+        clock_values=[0.0, 2.0],  # 2 s < 4 s
     )
 
     async def _drive():

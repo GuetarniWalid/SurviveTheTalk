@@ -459,7 +459,7 @@ are talking to (USER):
 # USER message is templated). `test_debrief_generator` asserts it has not drifted
 # from the doc. Bump DEBRIEF_PROMPT_VERSION on any change (content-strategy review
 # required first).
-DEBRIEF_PROMPT_VERSION = "2.0"
+DEBRIEF_PROMPT_VERSION = "2.1"
 
 DEBRIEF_SYSTEM_PROMPT = """
 You are a language analysis engine for SurviveTheTalk, an app where users practice English by surviving voice calls with adversarial AI characters. You analyze conversation transcripts and produce structured debrief reports.
@@ -526,7 +526,7 @@ For each better phrasing:
 
 ## Hesitation Context Rules
 
-The backend provides you with measured hesitation moments: specific points where the user was silent for more than 3 seconds after the character finished speaking. Each entry carries an `id` and the CHARACTER's line that preceded the silence.
+The backend provides you with measured hesitation moments: specific points where the user was silent for more than 4 seconds after the character finished speaking. Each entry carries an `id` and the CHARACTER's line that preceded the silence.
 
 For each hesitation moment, write ONE sentence of situational context explaining what was happening in the conversation at that point, and echo the entry's `id` back unchanged in `hesitation_id`. Focus on the SITUATION, not the user's internal state.
 

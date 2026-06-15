@@ -35,9 +35,10 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # FR12 / debrief-content-strategy Q6 — only silences strictly longer than this
-# are reported (a ~1.5 s pause is a natural conversational gap, not a
-# revealing hesitation).
-_THRESHOLD_SECONDS = 3.0
+# are reported. Raised 3.0 -> 4.0 (Walid 2026-06-15): a ~3 s pause is a natural
+# beat people take to compose a reply, so counting from 4 s avoids flagging
+# normal thinking time as a hesitation.
+_THRESHOLD_SECONDS = 4.0
 # Top-N longest gaps fed to the debrief LLM (debrief-content-strategy Q6).
 _TOP_N = 3
 

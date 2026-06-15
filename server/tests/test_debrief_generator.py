@@ -147,7 +147,7 @@ def test_system_prompt_matches_authoritative_doc():
     m = re.search(r"```\s*\n(.*?)\n```", doc[i:], re.DOTALL)
     block = m.group(1).replace("\r\n", "\n").replace("\r", "\n")
     assert DEBRIEF_SYSTEM_PROMPT.strip() == block.strip()
-    assert DEBRIEF_PROMPT_VERSION == "2.0"
+    assert DEBRIEF_PROMPT_VERSION == "2.1"
 
 
 # ---------- schema builder (AC3) ------------------------------------------
