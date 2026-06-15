@@ -888,11 +888,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
                 censored=payload.get("censored"),
             )
         elif envelope_type == "onset_rms_alive":
-            # TEMP DIAGNOSTIC (smoke-gate iteration) — confirms the native
-            # record-side mic tap is actually delivering RMS frames on device.
+            # TEMP DIAGNOSTIC (smoke-gate iteration) — periodic peak mic RMS +
+            # meter armed-state, to see if the samples carry real voice.
             logger.info(
-                "DIAG onset_rms_alive — native mic tap delivering, sample_rms={}",
-                payload.get("sample_rms"),
+                "DIAG onset_rms peak_max_rms={} armed={}",
+                payload.get("max_rms"),
+                payload.get("armed"),
             )
         # Unknown types: silently ignore so future client-side
         # additions can land before the matching server handler ships.

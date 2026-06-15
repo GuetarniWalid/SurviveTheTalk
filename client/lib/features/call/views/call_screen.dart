@@ -257,12 +257,12 @@ class _CallScreenState extends State<CallScreen> {
   StreamSubscription<dynamic>? _micRmsSub;
   Stopwatch? _micStopwatch;
 
-  /// TEMP DIAGNOSTIC (Story 7.5 smoke-gate iteration 2026-06-15) — publish a
-  /// one-time `onset_rms_alive` envelope on the first mic RMS frame so the
-  /// server log can confirm whether the native record-side tap is actually
-  /// delivering (the device meter produced zero gaps on the first smoke gate).
-  /// Remove once the device path is confirmed.
-  bool _onsetRmsReported = false;
+  /// TEMP DIAGNOSTIC (Story 7.5 smoke-gate iteration 2026-06-15) — the native
+  /// tap delivers, but the meter never fired; report the PEAK mic RMS over each
+  /// ~1.5 s window + the meter's armed state so the server log shows whether the
+  /// samples actually carry the user's voice (real magnitude) or are dead-zero.
+  int _onsetRmsFrames = 0;
+  double _onsetRmsWindowMax = 0;
 
   /// Story 6.14 AC1 — dev-only diagnostic. Logs the inbound (remote)
   /// audio receiver stats (jitter, jitterBufferDelay, concealedSamples)
@@ -507,9 +507,11 @@ class _CallScreenState extends State<CallScreen> {
             (event) {
               if (event is num) {
                 final rms = event.toDouble();
-                if (!_onsetRmsReported) {
-                  _onsetRmsReported = true;
-                  _publishOnsetDiag(room, rms);
+                _onsetRmsFrames++;
+                if (rms > _onsetRmsWindowMax) _onsetRmsWindowMax = rms;
+                if (_onsetRmsFrames % 150 == 0) {
+                  _publishOnsetDiag(room, _onsetRmsWindowMax, meter.isArmed);
+                  _onsetRmsWindowMax = 0;
                 }
                 meter.onMicFrame(rms);
               }
@@ -531,13 +533,17 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
-  /// TEMP DIAGNOSTIC — one-time "the native mic tap is alive" ping with a
-  /// sample RMS magnitude, logged server-side to confirm the device path.
-  void _publishOnsetDiag(Room room, double sampleRms) {
+  /// TEMP DIAGNOSTIC — periodic peak-RMS + armed-state ping, logged server-side
+  /// to localize why the device meter never fires.
+  void _publishOnsetDiag(Room room, double maxRms, bool armed) {
     final participant = room.localParticipant;
     if (participant == null) return;
     final bytes = utf8.encode(
-      jsonEncode({'type': 'onset_rms_alive', 'sample_rms': sampleRms}),
+      jsonEncode({
+        'type': 'onset_rms_alive',
+        'max_rms': maxRms,
+        'armed': armed,
+      }),
     );
     try {
       unawaited(participant.publishData(bytes, reliable: true).catchError((_) {}));
