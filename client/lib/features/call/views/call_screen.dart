@@ -257,6 +257,13 @@ class _CallScreenState extends State<CallScreen> {
   StreamSubscription<dynamic>? _micRmsSub;
   Stopwatch? _micStopwatch;
 
+  /// TEMP DIAGNOSTIC (Story 7.5 smoke-gate iteration 2026-06-15) — publish a
+  /// one-time `onset_rms_alive` envelope on the first mic RMS frame so the
+  /// server log can confirm whether the native record-side tap is actually
+  /// delivering (the device meter produced zero gaps on the first smoke gate).
+  /// Remove once the device path is confirmed.
+  bool _onsetRmsReported = false;
+
   /// Story 6.14 AC1 — dev-only diagnostic. Logs the inbound (remote)
   /// audio receiver stats (jitter, jitterBufferDelay, concealedSamples)
   /// so the receiver-side time-stretch ("voix rallongée") can be measured
@@ -498,7 +505,14 @@ class _CallScreenState extends State<CallScreen> {
           .receiveBroadcastStream()
           .listen(
             (event) {
-              if (event is num) meter.onMicFrame(event.toDouble());
+              if (event is num) {
+                final rms = event.toDouble();
+                if (!_onsetRmsReported) {
+                  _onsetRmsReported = true;
+                  _publishOnsetDiag(room, rms);
+                }
+                meter.onMicFrame(rms);
+              }
             },
             onError: (Object e, StackTrace _) {
               dev.log(
@@ -514,6 +528,21 @@ class _CallScreenState extends State<CallScreen> {
         name: 'call.onset',
         level: 700,
       );
+    }
+  }
+
+  /// TEMP DIAGNOSTIC — one-time "the native mic tap is alive" ping with a
+  /// sample RMS magnitude, logged server-side to confirm the device path.
+  void _publishOnsetDiag(Room room, double sampleRms) {
+    final participant = room.localParticipant;
+    if (participant == null) return;
+    final bytes = utf8.encode(
+      jsonEncode({'type': 'onset_rms_alive', 'sample_rms': sampleRms}),
+    );
+    try {
+      unawaited(participant.publishData(bytes, reliable: true).catchError((_) {}));
+    } catch (_) {
+      // diagnostic only — never disturb the call.
     }
   }
 

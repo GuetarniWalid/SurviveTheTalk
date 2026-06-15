@@ -85,8 +85,13 @@ const double _kFramingExtraHorizontalPadding = 20.0;
 
 // Gauge (hero) — a self-contained, screenshot-worthy unit (AC8).
 const double _kGaugeSize = 180.0;
-const double _kGaugeInnerWidth = 120.0;
+// Narrower than the ring's clear bore so the % scales DOWN a touch (Walid
+// 2026-06-15: the number was a hair too big / too close to the arc).
+const double _kGaugeInnerWidth = 100.0;
 const double _kGaugeStroke = 12.0;
+// The %→label gap inside the ring. The % itself carries height:1.0 so its line
+// box has no extra leading — without that the label drifted too far below.
+const double _kGaugeLabelGap = 4.0;
 
 // Checkpoint breakdown — flat on-rail list, no card.
 const double _kCheckpointRowGap = 12.0;
@@ -588,10 +593,16 @@ class _ScoreGauge extends StatelessWidget {
                         child: Text(
                           '$survivalPct%',
                           maxLines: 1,
-                          style: AppTypography.display.copyWith(color: color),
+                          // height:1.0 — collapse the font's default leading so
+                          // the label sits snug under the number, and the
+                          // number+label pair centres in the ring.
+                          style: AppTypography.display.copyWith(
+                            color: color,
+                            height: 1.0,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: _kHeroTightGap),
+                      const SizedBox(height: _kGaugeLabelGap),
                       Text(
                         _kSurvivalRateLabel,
                         textAlign: TextAlign.center,

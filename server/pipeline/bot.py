@@ -878,9 +878,21 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # ignores CENSORED envelopes (the device could not measure → the
             # server observer covers that turn) and snapshots the preceding
             # character line itself.
+            logger.info(
+                "DIAG hesitation_onset gap_ms={} censored={}",
+                payload.get("gap_ms"),
+                payload.get("censored"),
+            )
             device_hesitation_collector.record(
                 gap_ms=payload.get("gap_ms"),
                 censored=payload.get("censored"),
+            )
+        elif envelope_type == "onset_rms_alive":
+            # TEMP DIAGNOSTIC (smoke-gate iteration) — confirms the native
+            # record-side mic tap is actually delivering RMS frames on device.
+            logger.info(
+                "DIAG onset_rms_alive — native mic tap delivering, sample_rms={}",
+                payload.get("sample_rms"),
             )
         # Unknown types: silently ignore so future client-side
         # additions can land before the matching server handler ships.
