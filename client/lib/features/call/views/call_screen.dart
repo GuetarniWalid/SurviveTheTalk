@@ -257,10 +257,16 @@ class _CallScreenState extends State<CallScreen> {
   StreamSubscription<dynamic>? _micRmsSub;
   Stopwatch? _micStopwatch;
 
-  /// TEMP DIAGNOSTIC (Story 7.5 smoke-gate iteration 2026-06-15) — the native
-  /// tap delivers, but the meter never fired; report the PEAK mic RMS over each
-  /// ~1.5 s window + the meter's armed state so the server log shows whether the
-  /// samples actually carry the user's voice (real magnitude) or are dead-zero.
+  /// Story 7.5: the device-hesitation diagnostic gate (`onset_rms_alive`). OFF in
+  /// prod — the device path is dormant/deferred; the device follow-up story
+  /// re-arms it for its smoke gate via `--dart-define=HESITATION_DIAG=true`
+  /// (mirrors the server `HESITATION_DIAG` env). Keeps the reliable data channel
+  /// + server logs clean meanwhile.
+  static const bool _kHesitationDiag = bool.fromEnvironment('HESITATION_DIAG');
+
+  /// Diagnostic accumulators (gated by [_kHesitationDiag]) — the native tap
+  /// delivers, but the meter under-produced; report the PEAK mic RMS over each
+  /// ~1.5 s window + the meter's armed state to localize why on-device.
   int _onsetRmsFrames = 0;
   double _onsetRmsWindowMax = 0;
 
@@ -507,11 +513,13 @@ class _CallScreenState extends State<CallScreen> {
             (event) {
               if (event is num) {
                 final rms = event.toDouble();
-                _onsetRmsFrames++;
-                if (rms > _onsetRmsWindowMax) _onsetRmsWindowMax = rms;
-                if (_onsetRmsFrames % 150 == 0) {
-                  _publishOnsetDiag(room, _onsetRmsWindowMax, meter.isArmed);
-                  _onsetRmsWindowMax = 0;
+                if (_kHesitationDiag) {
+                  _onsetRmsFrames++;
+                  if (rms > _onsetRmsWindowMax) _onsetRmsWindowMax = rms;
+                  if (_onsetRmsFrames % 150 == 0) {
+                    _publishOnsetDiag(room, _onsetRmsWindowMax, meter.isArmed);
+                    _onsetRmsWindowMax = 0;
+                  }
                 }
                 meter.onMicFrame(rms);
               }

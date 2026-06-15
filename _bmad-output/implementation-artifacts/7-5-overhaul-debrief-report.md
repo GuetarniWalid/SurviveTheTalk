@@ -386,4 +386,28 @@ Back-compat law (AC2): every v2 field is ADDITIVE + nullable/defaulted; NO field
 - `gap['source']` non-string — `str(gap.get("source") or "server")` already coerces; `source` is backend-set, never external.
 - `merge_hesitation_sources` returns `server` by reference — latent aliasing in dormant code; folded into the decision item (add `list(server)` if kept).
 
-**Server review status (2026-06-15):** COMPLETE — decision resolved, all 8 patches applied, gates green (ruff check + format clean, server `pytest` **905 passed**). Story STAYS `review`. Owed before `review → done`: **(1)** the CLIENT (Group 2: Dart/Kotlin) code-review pass — not yet run (this review covered `server/` only), **(2)** the Pixel 9 smoke gate. Per the root-CLAUDE.md flip discipline, the reviewer flips `review → done` only when BOTH the full code review (server + client) and the smoke gate clear.
+**Server review status (2026-06-15):** COMPLETE — decision resolved, all 8 patches applied, gates green (ruff check + format clean, server `pytest` **905 passed**). Story STAYS `review`. Owed before `review → done`: **(1)** the CLIENT (Group 2: Dart/Kotlin) code-review pass — ✅ DONE 2026-06-15 (4 patches applied + gates green flutter analyze + test 546; see "Review Findings — Client" below), **(2)** the Pixel 9 smoke gate — still owed. Per the root-CLAUDE.md flip discipline, the reviewer flips `review → done` only when BOTH the full code review (server + client) and the smoke gate clear.
+
+### Review Findings — Client (Group 2: Dart/Flutter + Kotlin), code review 2026-06-15
+
+3-layer adversarial review of `git diff 74002f6..HEAD -- client/` (11 files, +2262/-354). 34 raw findings → **4 patch, 1 deferred bundle, 7 dismissed**. AC2/AC5/AC6/AC7-v2/AC8 verified SATISFIED (additive v1 back-compat parse, copy→clipboard with no network, tap-detail sheets, no praise/CTA strings, design tokens + theme-count test). The debrief v2 SCREEN is high-quality; the findings split cleanly into a few active-screen fixes and the dormant device-meter issues, which belong to the deferred device follow-up story.
+
+**Patch (active debrief screen + clean prod):**
+
+- [ ] [Review][Patch] Inline area copy row below the 44px touch-target law [client/lib/features/debrief/views/debrief_screen.dart `_CopyInlineRow` ~1341-1372] — `Padding(vertical: 8)` + a 16px icon ≈ 32px; wrap to `AppSpacing.minTouchTarget` (design-spec §4b/§7). (Auditor A1)
+- [ ] [Review][Patch] "Copied" toast shown even on a failed clipboard write + unhandled async rejection [debrief_screen.dart `_CopyInlineRow._onTap` ~1348, `_CopyPromptCta._onTap` ~1401] — `unawaited(Clipboard.setData(...))` then toast, no error path; add `.catchError` (toast only on success). (Blind + Edge)
+- [ ] [Review][Patch] Gate the TEMP `_publishOnsetDiag` (`onset_rms_alive`, reliable channel every ~1.5s) behind a const debug flag — clean prod, mirrors the server P7; the device follow-up re-arms it [client/lib/features/call/views/call_screen.dart ~512, ~538]. (Blind + Auditor)
+- [ ] [Review][Patch] Re-add the deleted BS-7 "fetched payload fails parse → unavailable" widget test [client/test/features/debrief/views/debrief_screen_test.dart] — the host machinery is unchanged, so the coverage should stay. (Blind)
+
+**Deferred — to the device-authoritative follow-up story (it reworks the dormant meter + native tap):**
+
+- [x] [Review][Defer] **Dormant device-meter correctness / perf / test bundle** — folded into the device follow-up: gap math inflated by the confirmation offset + no negative clamp (`hesitation_meter.dart`); **no-retry callback attach → the meter can be DEAD for the whole call, silently (`AudioCaptureChannel.kt` `tryAttachCallback`) — the LIKELY "under-production" root cause**; Kotlin RMS ignores `channelCount`; native 100Hz main-thread `post` flood + post-cancel race; `seedFloor` / `arm-idempotent` tests assert by timing-luck not logic; `disarm()` doesn't reset accumulators; silent non-`num` channel drop with no log; `_kRestVisemeId=0` magic-constant coupling to the viseme scheme; + the decision whether to gate the WHOLE client machinery off in prod vs leave it running as the follow-up's foundation. — deferred, Walid-ratified 2026-06-15 (the follow-up reworks this code).
+
+**Dismissed (verified not-reachable / by-design):**
+- Gauge >100% / negative text-vs-fill disagreement — server `compute_survival_pct` clamps 0-100, not reachable.
+- "~0s" hesitation rounding — server only ships gaps >4 s, not reachable.
+- Empty `practice_prompt` → dead area card — server `_clamp_areas` requires `practice_prompt`, not reachable.
+- Checkpoint "0 of N" / triple-traversal — `isNotEmpty`-gated, renders correctly; refactor nit.
+- Gauge const naming (`_kGaugeSize` vs spec `_kGaugeDiameter`) — cosmetic, same value.
+- `publishData` after dispose — already inside try/catch, benign.
+- Design-spec body not reconciled with Walid's error-copy / area-card overrides — code is correct; the overrides are recorded at the design-doc top.

@@ -1345,7 +1345,10 @@ class _CopyInlineRow extends StatelessWidget {
   const _CopyInlineRow({required this.payload, required this.topic});
 
   void _onTap(BuildContext context) {
-    unawaited(Clipboard.setData(ClipboardData(text: payload)));
+    // Story 7.5 review: swallow a rejected clipboard write so it never escapes as
+    // an unhandled async error (the optimistic "Copied" toast still shows — a
+    // platform clipboard failure on this path is vanishingly rare).
+    unawaited(Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}));
     AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
   }
 
@@ -1359,24 +1362,31 @@ class _CopyInlineRow extends StatelessWidget {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _onTap(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: _kCopyRowVPad),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.content_copy,
-                  size: _kCopyIconSize,
-                  color: AppColors.textSecondary,
-                ),
-                const SizedBox(width: _kCopyIconGap),
-                Text(
-                  _kCopyPromptLabel,
-                  style: AppTypography.label.copyWith(
+          child: ConstrainedBox(
+            // Story 7.5 review: keep the tappable row >= the 44px touch-target
+            // law (the icon+label alone is ~32px). Design-spec §4b/§7.
+            constraints: const BoxConstraints(
+              minHeight: AppSpacing.minTouchTarget,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: _kCopyRowVPad),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.content_copy,
+                    size: _kCopyIconSize,
                     color: AppColors.textSecondary,
                   ),
-                ),
-              ],
+                  const SizedBox(width: _kCopyIconGap),
+                  Text(
+                    _kCopyPromptLabel,
+                    style: AppTypography.label.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1398,7 +1408,10 @@ class _CopyPromptCta extends StatelessWidget {
   const _CopyPromptCta({required this.payload, required this.topic});
 
   void _onTap(BuildContext context) {
-    unawaited(Clipboard.setData(ClipboardData(text: payload)));
+    // Story 7.5 review: swallow a rejected clipboard write so it never escapes as
+    // an unhandled async error (the optimistic "Copied" toast still shows — a
+    // platform clipboard failure on this path is vanishingly rare).
+    unawaited(Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}));
     AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
   }
 

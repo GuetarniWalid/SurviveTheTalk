@@ -642,6 +642,21 @@ void main() {
       expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
       verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
     });
+
+    testWidgets('fetched payload failing structural parse → unavailable', (
+      tester,
+    ) async {
+      when(
+        () => repository.fetchDebrief(callId: 7),
+      ).thenAnswer((_) async => <String, dynamic>{'garbage': true});
+
+      await pumpScreen(tester, buildScreen(payload: null));
+      await tester.pump();
+      expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
+      // Drain any pending budget timer; the terminal state must not crash.
+      await tester.pump(const Duration(milliseconds: 450));
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('back navigation (AC7)', () {
