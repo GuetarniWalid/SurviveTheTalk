@@ -158,7 +158,9 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 
 ## Pixel 9 Smoke Gate (owed before review → done) — READY-TO-PLAY (finalized 2026-06-15)
 
-**Prereqs:** install the release APK built from `b1c7d56` (path in the dev-final recap). You have 3 calls available today (UTC). Responses below are APPROXIMATE (live LLM) — replay the lines, watch the HUD/debrief, no need to predict exactly.
+**Prereqs:** install the release APK **rebuilt from `e84a24e`** (the post-code-review HEAD — the old b1c7d56 APK predates the client review patches). You have 3 calls available today (UTC). Responses below are APPROXIMATE (live LLM) — replay the lines, watch the HUD/debrief, no need to predict exactly.
+
+> **Scope update (code-review 2026-06-15):** device-authoritative hesitation is DEFERRED to a follow-up story; the SHIPPED hesitation is the SERVER hybrid (gap-start anchored on the client `playback_idle` signal, gap-end via the server VAD). So CALL 2 still validates the freeze + anti-inflation (now via the server observer), and the old CALL 3 "noise money-test" — which tested the DEVICE onset detector's noise robustness — moves to the device follow-up story and is NOT a 7.5 gate.
 
 **CALL 1 — the new report + checkpoint breakdown + tap-detail + copy (no freezing).** Scenario: **"Order your dinner"** (The Waiter).
 - "Hello, I am want to order food."  → waiter takes it (error seeded: *I am want* → *I want*)
@@ -170,16 +172,14 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 - **Tap "Copy practice"** under the first "AREAS TO WORK ON" card → a small **"Copied"** appears → paste into ChatGPT (or any LLM): it should be a complete coaching prompt built from YOUR real phrases. ← money moment (copy→paste).
 - Back arrow → scenario list. Confirm: **no** "retry"/"replay"/"share"/upsell buttons anywhere.
 
-**CALL 2 — the on-device hesitation (the freeze that v1 missed/inflated).** "Order your dinner" again.
+**CALL 2 — the hesitation freeze (server-hybrid measurement; the freeze v1 missed/inflated).** "Order your dinner" again.
 - "Hi, I would like to order."  → waiter asks what you'd like
 - **FREEZE — say nothing for ~6 s (use a stopwatch)** until the waiter speaks again ("Sir? Ready to order?"), then: "Sorry. The soup, please." → hang up.
-- **WATCH the debrief HESITATIONS:** your freeze must appear as **"~6s"** (within ±0.5 s of your stopwatch). ← money moment (in v1 this was invisible and durations were network-inflated).
+- **WATCH the debrief HESITATIONS:** your freeze must appear as **"~6s"** (expect within ~±1 s — the hybrid measures gap-end at the server VAD, so a small over-read is normal). ← money moment (in v1 this freeze was invisible and durations were network-inflated; the playback_idle anchor fixes the inflation).
 
-**CALL 3 — THE NOISE TEST (the failure you raised).** Put a **TV or fan on (steady background noise)**, then "Order your dinner".
-- "Hi."  → waiter speaks → **FREEZE ~5 s WITH THE NOISE PLAYING**, then: "The pasta, please." → hang up.
-- **WATCH:** the debrief must STILL show your freeze as **"~5s"** — **NOT 0s**. ← THE money moment: steady background noise must NOT erase the blank.
+**CALL 3 — DEFERRED to the device follow-up story (NOT a 7.5 gate).** The old "noise money-test" validated the DEVICE onset detector's noise robustness; the device path is now deferred (it under-produces — see Review Findings — Client). The shipped hybrid uses the mature server-side VAD, so the noise case is re-tested when the device follow-up ships. For 7.5 you only need CALL 1 (the v2 report) + CALL 2 (the freeze). A 3rd call is optional — e.g. repeat CALL 1 on a different scenario to spot-check the report renders.
 
-**If anything's off** — a hesitation duration off by >0.5 s, or the noise test reads 0s, or a checkpoint tick mismatches — tell me the exact numbers and I tune the onset constants / re-check. Otherwise: report verdict → I flip the story to review-complete and run the formal /bmad-code-review.
+**If anything's off** — the v2 report looks wrong (gauge / checkpoints / copy / tap-sheet), a checkpoint tick mismatches, or a freeze is wildly off (>~2 s) — tell me the exact numbers and I dig in. Otherwise: report verdict → the formal code review is already DONE, so your sign-off is the LAST gate and I flip `review → done`.
 
 ## Dev Notes
 
