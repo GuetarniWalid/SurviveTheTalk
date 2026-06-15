@@ -52,6 +52,10 @@ from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.exit_line_generator import generate_exit_line
+from pipeline.device_hesitation_collector import (
+    DeviceHesitationCollector,
+    merge_hesitation_sources,
+)
 from pipeline.hesitation_observer import HesitationObserver
 from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
@@ -695,6 +699,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # (UPSTREAM) + UserStartedSpeakingFrame (DOWNSTREAM), so the gaps measure
     # correctly. Read via `top_hesitations()` at teardown.
     hesitation_observer = HesitationObserver(collector=collector)
+    # Story 7.5 (D3-c) — collects DEVICE-measured onset gaps published by the
+    # client meter over the data channel (see `on_data_received`). Teardown
+    # PREFERS these (accurate, no network term) over the server observer.
+    device_hesitation_collector = DeviceHesitationCollector(collector=collector)
 
     pipeline = Pipeline(
         [
@@ -865,6 +873,15 @@ async def run_bot(url: str, room: str, token: str) -> None:
         envelope_type = payload.get("type")
         if envelope_type == "playback_idle":
             patience_tracker.handle_playback_idle()
+        elif envelope_type == "hesitation_onset":
+            # Story 7.5 (D3-c) — a device-measured onset gap. The collector
+            # ignores CENSORED envelopes (the device could not measure → the
+            # server observer covers that turn) and snapshots the preceding
+            # character line itself.
+            device_hesitation_collector.record(
+                gap_ms=payload.get("gap_ms"),
+                censored=payload.get("censored"),
+            )
         # Unknown types: silently ignore so future client-side
         # additions can land before the matching server handler ships.
 
@@ -901,7 +918,10 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     brief_personality_description=brief_personality(
                         scenario_base_prompt
                     ),
-                    hesitations=hesitation_observer.top_hesitations(),
+                    hesitations=merge_hesitation_sources(
+                        device_hesitation_collector.top_hesitations(),
+                        hesitation_observer.top_hesitations(),
+                    ),
                     checkpoints=checkpoint_manager.checkpoint_breakdown,
                 )
             except Exception:
