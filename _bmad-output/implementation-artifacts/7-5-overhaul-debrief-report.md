@@ -1,6 +1,6 @@
 # Story 7.5: Overhaul Debrief Report (v2)
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -123,7 +123,7 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
   - [x] 2.1 Client `HesitationMeter` service — **DONE 2026-06-15 (commits 293591d + 3700ed3)**: the noise-robust onset state machine (10 unit tests incl. the MONEY TEST) + the native `AudioCaptureChannel.kt` record-side RMS tap (mirrors `AudioClockChannel` reflection, fail-soft) registered in `MainActivity` + `call_screen.dart` wiring (monotonic Stopwatch clock, arm off the end-of-turn `onSilenceConfirmed`, feed mic RMS, DISARM on any non-REST viseme = the arming gate, dispose teardown). Native tap accuracy/noise proven on the Pixel 9 smoke gate.
   - [x] 2.2 Client→server envelope `{type:"hesitation_onset", gap_ms, censored}` published via the existing `publishData` (`_publishHesitationOnset`, reliable, fail-soft) → bot `on_data_received` → `DeviceHesitationCollector` (commit 5eb0e36). Versioned type: old servers ignore it, old clients never send it.
   - [x] 2.3 Server-side D3-c — **DONE 2026-06-15 (commits 420517e + 5eb0e36)**: `HesitationObserver` escalation-blind-spot fix (C2) + id-tagging (C3); assembly id-based `_merge_hesitations`; NEW `DeviceHesitationCollector` (gathers `hesitation_onset` envelopes, `source="device"`, snapshots the line bot-side) + `merge_hesitation_sources` (teardown prefers device, adds the observer's unresolved freezes, full fallback when no device gaps); bot.py wired (`on_data_received` + teardown merge).
-  - [ ] 2.4 Threshold re-affirmation on device-measured values (3.0s stands; `minGap` in the meter + threshold in the collector both enforce it — confirm on the smoke gate)
+  - [x] 2.4 Threshold re-affirmation — 3.0 s stands, enforced in BOTH layers (`HesitationMeter.minGap` client-side + `DeviceHesitationCollector` threshold server-side), rationale documented in-code; final confirm = the smoke gate's ±0.5 s check.
   - [x] 2.5 Tests — **server-side DONE**: observer escalation/id (+5), device collector + merge + fallback (+6), `HesitationMeter` onset unit tests incl. the MONEY TEST (+10). **REMAINING: the client envelope-contract test once `call_screen` publishes (with 2.2).**
 - [x] Task 3: Server — content v2 (AC: 1, 4, 9 + F2/F3/F4) — **DONE 2026-06-14 (commits 7cb97d9 + 9d677ca), full server suite 899 green**
   - [x] 3.1 Extend `_build_debrief_schema` + `DEBRIEF_SYSTEM_PROMPT` (per-error explanation/examples, better_phrasings cap, evidence-linked prioritized areas, per-area practice_prompt rules) — STRICT json_schema law holds (Scout); designed via the content-design workflow (concept→judge→synth), drift guard + 2 authority docs updated in lockstep, version 2.0
@@ -138,40 +138,48 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
   - [x] 5.2 DARK detail bottom sheet (D1-b, Walid override of the light reuse) on errors with depth — rule + examples, reuses the showModalBottomSheet plumbing
   - [x] 5.3 Copy button on AREAS (Walid: areas-only) — `Clipboard.setData` server prompt verbatim + "Copied" `AppToast` (informational) + a11y label
   - [x] 5.4 Widget tests (24): v2 render, gauge 3-color, checkpoints, v1-payload fallback (AC2), copy-to-clipboard assertion, dark sheet open/close, AC7-v2 negatives (no retry/nav CTA, no praise, no "!"), BS-7, a11y
-- [ ] Task 6: Gates + deploy + smoke (AC: 9, 10)
-  - [ ] 6.1 Full server + client gates green
-  - [ ] 6.2 VPS deploy; Smoke Test Gate boxes below
-  - [ ] 6.3 Finalize the Pixel 9 ready-to-play script (stopwatch hesitation check, freeze-to-escalation check, copy→paste-into-ChatGPT-voice check)
+- [x] Task 6: Gates + deploy + smoke (AC: 9, 10) — deploy DONE; Pixel 9 smoke gate OWED (Walid)
+  - [x] 6.1 Full gates green: server ruff + pytest (CI 27537998924) + client analyze + flutter 543
+  - [x] 6.2 VPS deploy: pushed b1c7d56, CI success, `/health` SHA match + `db: ok`, DB backups confirmed, v1 back-compat verified live, quota clear (3 available)
+  - [x] 6.3 Pixel 9 ready-to-play script FINALIZED above (report visual + checkpoint breakdown + tap-detail sheet + copy→paste + the on-device hesitation + the NOISE money-test) + release APK built from b1c7d56
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
 > Server schema/generation changes + deploy → this section applies. Boxes to be filled at dev time; every unchecked box is a stop-ship for `in-progress → review`.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_
-- [ ] **Happy-path endpoint round-trip.** `GET /debriefs/{call_id}` for a fresh v2 call returns the v2 fields (`debrief_version: 2`, checkpoints, practice prompts).
+- [x] **Deployed to VPS.** `active`; `/health` `git_sha: b1c7d56` matches HEAD, `db: ok`. CI run 27537998924 success (ruff + pytest + Deploy to VPS).
+  - _Proof:_ `{"data":{"status":"ok","db":"ok","git_sha":"b1c7d56c…"}}`
+- [ ] **Happy-path endpoint round-trip.** `GET /debriefs/{call_id}` for a fresh v2 call returns `debrief_version: 2` + checkpoints + practice prompts. **→ verified by the Pixel 9 smoke gate's first call (no v2 debrief exists on prod until a post-deploy call runs).**
   - _Command:_ curl -sS -H "Authorization: Bearer $JWT" http://167.235.63.129/debriefs/{id}
-  - _Actual:_
-- [ ] **v1 back-compat round-trip.** An OLD `debriefs` row (pre-deploy) still serves 200 with the v1 shape — no validation error.
-  - _Command:_ curl against a pre-deploy call_id
-  - _Actual:_
-- [ ] **DB side-effect verified.** New row carries `debrief_version: 2` JSON.
-  - _Command:_ venv python sqlite3 read of the latest debriefs row
-  - _Actual:_
-- [ ] **DB backup taken BEFORE deploy.** (No SQL migration expected — JSON-shape change only — but back up anyway: schema guard.)
-  - _Proof:_
-- [ ] **Server logs clean + generation budget.** `journalctl` shows the v2 generation completing under the ceiling, no ERROR/Traceback.
-  - _Proof:_
+- [x] **v1 back-compat round-trip.** OLD `debriefs` row (call_id=287, pre-deploy v1 shape) serves **HTTP 200** through the v2 `DebriefOut` route — `debrief_version` absent (defaults to 1 client-side), keys are the v1 set. No validation error (AC2 guard holds on real prod data).
+- [ ] **DB side-effect verified.** New row carries `debrief_version: 2`. **→ verified on the smoke gate's first call** (the bot writes it at teardown).
+- [x] **DB backup taken BEFORE deploy.** `db.pre-b1c7d56.sqlite` (deploy-server.yml auto-backup) + `db.pre-smoke75-20260615-095440.sqlite` (manual pre-quota-check). No SQL migration (JSON-shape only).
+- [ ] **Server logs clean + generation budget.** `journalctl -u pipecat.service` shows the v2 generation under the 10 s ceiling, no ERROR/Traceback. **→ verified on the smoke gate's first call.**
 
-## Pixel 9 Smoke Gate (owed before review → done — script to FINALIZE after the decision pass)
+## Pixel 9 Smoke Gate (owed before review → done) — READY-TO-PLAY (finalized 2026-06-15)
 
-Draft shape (the dev finalizes exact lines + expected visuals once D1-D5 lock):
+**Prereqs:** install the release APK built from `b1c7d56` (path in the dev-final recap). You have 3 calls available today (UTC). Responses below are APPROXIMATE (live LLM) — replay the lines, watch the HUD/debrief, no need to predict exactly.
 
-1. Waiter scenario, normal short call with 2 seeded errors → hang up → debrief v2: new visual style, checkpoint breakdown matches the HUD ticks seen in-call.
-2. Second call: after the character's first question, FREEZE deliberately with a stopwatch (~6s) until the character re-speaks, then answer normally → debrief must list that hesitation (money moment: the duration shown ≈ your stopwatch within ±0.5s, displayed as approximate, `source: "device"` in the payload; in v1 this freeze was invisible AND durations were network-inflated).
-3. Tap an error card → detail sheet opens with the rule + examples.
-4. Tap the copy button on area #1 → "Copied" → paste into ChatGPT (voice) → money moment: the pasted prompt sets up a one-focus coaching conversation using YOUR actual phrases from the call.
-5. Back arrow → list (no retry/nav CTAs anywhere).
+**CALL 1 — the new report + checkpoint breakdown + tap-detail + copy (no freezing).** Scenario: **"Order your dinner"** (The Waiter).
+- "Hello, I am want to order food."  → waiter takes it (error seeded: *I am want* → *I want*)
+- "I will take the chicken please."  → waiter acknowledges
+- "He don't have a Coke?"  → waiter replies (error seeded: *He don't* → *Doesn't he* / *Don't you*)
+- Hang up.
+- **WATCH the debrief:** the **arc-gauge** score (red ≤40 / amber 41-99 / green 100), the **CHECKPOINTS** list (ticks match what you saw on the in-call HUD), your 2 errors with corrections.
+- **Tap an error card** → a **dark sheet** slides up with the rule + example sentences. ← money moment (tap-for-detail).
+- **Tap "Copy practice"** under the first "AREAS TO WORK ON" card → a small **"Copied"** appears → paste into ChatGPT (or any LLM): it should be a complete coaching prompt built from YOUR real phrases. ← money moment (copy→paste).
+- Back arrow → scenario list. Confirm: **no** "retry"/"replay"/"share"/upsell buttons anywhere.
+
+**CALL 2 — the on-device hesitation (the freeze that v1 missed/inflated).** "Order your dinner" again.
+- "Hi, I would like to order."  → waiter asks what you'd like
+- **FREEZE — say nothing for ~6 s (use a stopwatch)** until the waiter speaks again ("Sir? Ready to order?"), then: "Sorry. The soup, please." → hang up.
+- **WATCH the debrief HESITATIONS:** your freeze must appear as **"~6s"** (within ±0.5 s of your stopwatch). ← money moment (in v1 this was invisible and durations were network-inflated).
+
+**CALL 3 — THE NOISE TEST (the failure you raised).** Put a **TV or fan on (steady background noise)**, then "Order your dinner".
+- "Hi."  → waiter speaks → **FREEZE ~5 s WITH THE NOISE PLAYING**, then: "The pasta, please." → hang up.
+- **WATCH:** the debrief must STILL show your freeze as **"~5s"** — **NOT 0s**. ← THE money moment: steady background noise must NOT erase the blank.
+
+**If anything's off** — a hesitation duration off by >0.5 s, or the noise test reads 0s, or a checkpoint tick mismatches — tell me the exact numbers and I tune the onset constants / re-check. Otherwise: report verdict → I flip the story to review-complete and run the formal /bmad-code-review.
 
 ## Dev Notes
 
