@@ -133,11 +133,11 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
   - [x] 3.5 Server tests: schema round-trip, v1-row back-compat through the route, clamps/salvage, teardown threading
 - [x] Task 4: Client — model v2 (AC: 2) — **DONE 2026-06-14 (commit ec99b91), client suite 532 green**
   - [x] 4.1 Extend `Debrief` tryParse with the additive fields (same strict-hero/defensive-array philosophy); v1 payloads parse unchanged
-- [ ] Task 5: Client — screen v2 (AC: 5, 6, 7, 8)
-  - [ ] 5.1 Restyle per design v2; checkpoint-breakdown section; approximate durations; focus-first area marker
-  - [ ] 5.2 Detail bottom sheets (D1-b) reusing the established sheet pattern
-  - [ ] 5.3 Copy button per area: `Clipboard.setData`, "Copied" confirmation, a11y labels
-  - [ ] 5.4 Widget tests: v2 render, v1-payload fallback render, copy-to-clipboard assertion, sheet open/close, AC7-v2 negatives (no retry/nav CTA, no praise)
+- [x] Task 5: Client — screen v2 (AC: 5, 6, 7, 8) — **DONE 2026-06-15 (commit 12aa987), full client suite 533 green**
+  - [x] 5.1 Restyle per design v2: arc-gauge scorecard hero (3-color CustomPainter, AC8), checkpoint-breakdown section (B7), approximate `~Ns` durations + freeze note, FOCUS-FIRST area marker; 12-caps eyebrows + two-ink discipline
+  - [x] 5.2 DARK detail bottom sheet (D1-b, Walid override of the light reuse) on errors with depth — rule + examples, reuses the showModalBottomSheet plumbing
+  - [x] 5.3 Copy button on AREAS (Walid: areas-only) — `Clipboard.setData` server prompt verbatim + "Copied" `AppToast` (informational) + a11y label
+  - [x] 5.4 Widget tests (24): v2 render, gauge 3-color, checkpoints, v1-payload fallback (AC2), copy-to-clipboard assertion, dark sheet open/close, AC7-v2 negatives (no retry/nav CTA, no praise, no "!"), BS-7, a11y
 - [ ] Task 6: Gates + deploy + smoke (AC: 9, 10)
   - [ ] 6.1 Full server + client gates green
   - [ ] 6.2 VPS deploy; Smoke Test Gate boxes below
