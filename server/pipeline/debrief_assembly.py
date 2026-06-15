@@ -5,8 +5,8 @@ The LLM produces only the analysis core (errors / hesitation_contexts / idioms
 backend owns everything deterministic and computable: the survival %, the
 hero fields (character + scenario title, attempt number, previous best), the
 hesitation DURATIONS (measured from frame timing, merged onto the LLM's
-contexts by index), and the encouraging framing (FR15b). These functions are
-PURE (no I/O) so they unit-test directly.
+contexts by id, Story 7.5 C3), and the encouraging framing (FR15b). These
+functions are PURE (no I/O) so they unit-test directly.
 
 Assembly happens once, in the bot's call-end teardown — the fully-assembled
 debrief is stored in `debriefs.debrief_json` and `GET /debriefs/{call_id}`

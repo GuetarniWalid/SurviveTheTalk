@@ -88,11 +88,11 @@ The debrief screen design (Story 2.4) produced visual containers without validat
 
 **PRD alignment:** FR12 says "longest hesitation **moments** and their **context**" — plural. The previous design showed only one moment. This corrects the discrepancy.
 
-**Threshold:** Only silences > 3 seconds are reported. A 1.5s pause is a natural conversational gap, not a revealing hesitation.
+**Threshold:** Only silences > 4 seconds are reported (Story 7.5 smoke 2026-06-15 — raised from 3 s; a ~3 s pause is a natural beat people take to compose a reply). A 1.5s pause is a natural conversational gap, not a revealing hesitation.
 
 **Backend/LLM split:**
 - The backend measures durations from STT timestamps (end of character speech → start of user speech).
-- The backend identifies the top 3 gaps > 3s and passes them to the LLM in the debrief prompt.
+- The backend identifies the top 3 gaps > 4s and passes them to the LLM in the debrief prompt.
 - The LLM adds narrative `context` for each gap.
 
 ---
@@ -231,13 +231,13 @@ This is exactly what the LLM produces via `json_schema` strict mode:
 | `scenario_title` | Scenario config (DB) | e.g., "Give me your wallet" |
 | `attempt_number` | `user_progress` table | Integer >= 1 |
 | `previous_best` | `user_progress` table | Integer 0-100 or null (first attempt) |
-| `hesitations[].duration_sec` | Backend (STT timestamps) | Float, measured by Soniox. Gaps > 3s only |
+| `hesitations[].duration_sec` | Backend (frame timing) | Float, measured by the HesitationObserver. Gaps > 4s only |
 | `encouraging_framing.proximity` | Backend calculation | e.g., "5% away from surviving the mugger" |
 | `encouraging_framing.improvement` | Backend calculation | e.g., "+6% since last attempt" |
 
 **Assembly:** The backend merges LLM output + its own calculations to produce the complete debrief JSON sent to the client. The client receives the debrief ready to display.
 
-**Hesitation merge logic:** The backend passes the top 3 gaps (>3s) to the LLM sorted by duration (longest first). The LLM returns `hesitation_contexts` in the same order. The backend merges by index: `hesitation_contexts[i].context` + backend-measured `duration_sec` → `hesitations[i]` in the client response. The field is renamed from `hesitation_contexts` (LLM) to `hesitations` (client) during assembly.
+**Hesitation merge logic:** The backend passes the top 3 gaps (>4s) to the LLM, each carrying a stable `id` (Story 7.5 C3). The LLM echoes that `id` back on each `hesitation_contexts` entry. The backend merges BY ID, never by position: the measured `duration_sec` / `resolved` / `source` pair to the LLM `context` via the matching `hesitation_id`; an unmatched gap keeps its duration with an empty context, an unmatched context is dropped. The field is renamed from `hesitation_contexts` (LLM) to `hesitations` (client) during assembly.
 
 **Encouraging framing contract:** When `survival_pct ≤ 40`, the backend omits the `encouraging_framing` field entirely (per architecture convention: null fields omitted from JSON). The client checks for field presence to determine visibility. When `inappropriate_behavior` is non-null and survival > 40%, both sections coexist — they serve independent purposes (proximity data vs. call termination explanation).
 
@@ -375,4 +375,4 @@ Q6's backend/LLM hesitation split is kept, but the MERGE changes. The LLM now ec
 - The depth fields obey the Q9 clinical register: `explanation` and `examples` are factual; `practice_prompt` is instructional to a coach; `evidence` quotes real data; `better_phrasings.reason` is factual. No praise, no hedging, no exclamation, no second-person opinion anywhere.
 - Groq STRICT json_schema law (server/CLAUDE.md §4): every object lists ALL properties in `required` + `additionalProperties: false`; STRICT mode REJECTS minItems/maxItems/number bounds, so ALL length/count rules (errors <= 5, areas 1-3, better_phrasings <= 2, examples 1-2, char caps) live in the PROMPT TEXT + backend clamps, NOT the schema.
 - Bias toward empty on the weak prod model: no errors -> empty; no idioms -> empty; better_phrasings default empty; no hesitations -> empty. `areas` is the one section that always carries 1-3 items.
-- `DEBRIEF_PROMPT_VERSION` bumps "1.0" -> "2.0"; `debrief_version: 2` rides on `DebriefOut` (old rows omit it -> default 1). The `debrief-generation-prompt.md` §System Prompt block and its verbatim drift guard (`test_debrief_generator.py`) move in lockstep with this amendment. This file stays the schema authority.
+- `DEBRIEF_PROMPT_VERSION` bumps "1.0" -> "2.1" (the .1 reflects the Story 7.5 smoke-gate prompt iteration — e.g. the 4 s threshold); `debrief_version: 2` rides on `DebriefOut` (old rows omit it -> default 1). The `debrief-generation-prompt.md` §System Prompt block and its verbatim drift guard (`test_debrief_generator.py`) move in lockstep with this amendment. This file stays the schema authority.

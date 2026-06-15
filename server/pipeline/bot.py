@@ -878,24 +878,30 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # Story 7.5 (D3-c) — a device-measured onset gap. The collector
             # ignores CENSORED envelopes (the device could not measure → the
             # server observer covers that turn) and snapshots the preceding
-            # character line itself.
-            logger.info(
-                "DIAG hesitation_onset gap_ms={} censored={}",
-                payload.get("gap_ms"),
-                payload.get("censored"),
-            )
+            # character line itself. The device source is DORMANT until the
+            # follow-up story revives it (the client onset detector
+            # under-produces); the diagnostic is gated OFF in prod and re-armed
+            # with HESITATION_DIAG=1 for that story's smoke gate.
+            if os.environ.get("HESITATION_DIAG") == "1":
+                logger.info(
+                    "DIAG hesitation_onset gap_ms={} censored={}",
+                    payload.get("gap_ms"),
+                    payload.get("censored"),
+                )
             device_hesitation_collector.record(
                 gap_ms=payload.get("gap_ms"),
                 censored=payload.get("censored"),
             )
         elif envelope_type == "onset_rms_alive":
-            # TEMP DIAGNOSTIC (smoke-gate iteration) — periodic peak mic RMS +
-            # meter armed-state, to see if the samples carry real voice.
-            logger.info(
-                "DIAG onset_rms peak_max_rms={} armed={}",
-                payload.get("max_rms"),
-                payload.get("armed"),
-            )
+            # Smoke-gate diagnostic (periodic peak mic RMS + meter armed-state) —
+            # gated OFF in prod, re-armed with HESITATION_DIAG=1 for the device
+            # follow-up story's smoke gate.
+            if os.environ.get("HESITATION_DIAG") == "1":
+                logger.info(
+                    "DIAG onset_rms peak_max_rms={} armed={}",
+                    payload.get("max_rms"),
+                    payload.get("armed"),
+                )
         # Unknown types: silently ignore so future client-side
         # additions can land before the matching server handler ships.
 

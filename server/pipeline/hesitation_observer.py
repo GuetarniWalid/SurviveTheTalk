@@ -1,16 +1,18 @@
 """Story 7.1 (Decision 2 / AC11 / FR12) — hesitation gap observer.
 
-A "hesitation" is a >3 s gap between the CHARACTER finishing speaking
-(`BotStoppedSpeakingFrame`) and the USER starting to speak
-(`UserStartedSpeakingFrame`). The `TranscriptCollector` timestamps are
-frame-OBSERVATION times (the character stamp is when the LLM *text* was
-produced, BEFORE TTS plays), so they can't be diffed directly for an accurate
-gap — hence this dedicated observer pairs the two speech-boundary frames.
+A "hesitation" is a >4 s gap (Story 7.5, raised from 3 s) between the CHARACTER
+finishing speaking and the USER starting to speak (`UserStartedSpeakingFrame`).
+Story 7.5 re-anchors the gap-START on the client's `playback_idle` signal (the
+user-perceived bot-end, routed via `handle_playback_idle()`), NOT the server's
+`BotStoppedSpeakingFrame` outbound flush — that fires ~1 s ahead of the user's
+ear (WebRTC jitter buffer) and inflated the measured gap. A freeze so long the
+character must re-speak is closed as UNRESOLVED on `BotStartedSpeakingFrame`
+(Story 7.5 C2).
 
 At teardown the bot reads `top_hesitations()` (the longest 3 gaps, each with
 the character line that preceded it) and feeds them to `generate_debrief`; the
 backend then merges the measured `duration_sec` with the LLM's situational
-`context` by index (`debrief_assembly._merge_hesitations`).
+`context` BY ID (`debrief_assembly._merge_hesitations`, Story 7.5 C3).
 
 Frame-direction trap (server/CLAUDE.md §1): this observer is placed
 IMMEDIATELY adjacent to `PatienceTracker` in the pipeline, which already
@@ -52,7 +54,7 @@ class HesitationObserver(FrameProcessor):
             CHARACTER said: …"). At BSF time the character turn is already in
             `collector.transcript` (logged when the text was produced, before
             TTS played it).
-        threshold_seconds: gaps must EXCEED this to count (default 3 s).
+        threshold_seconds: gaps must EXCEED this to count (default 4 s).
         top_n: how many longest gaps `top_hesitations()` returns (default 3).
         clock: monotonic time source, injectable for tests.
     """
@@ -184,5 +186,9 @@ class HesitationObserver(FrameProcessor):
             for g in ranked
         ]
         if result:
-            logger.info("hesitation_observer captured {} gaps >3s", len(result))
+            logger.info(
+                "hesitation_observer captured {} gaps over {}s",
+                len(result),
+                self._threshold,
+            )
         return result

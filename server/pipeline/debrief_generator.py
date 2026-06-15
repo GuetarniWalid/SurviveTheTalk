@@ -49,12 +49,15 @@ from pipeline.prompts import DEBRIEF_SYSTEM_PROMPT
 _GENERATION_TIMEOUT_SECONDS = 8.0
 _HTTP_TIMEOUT_SECONDS = 7.5
 
-# The debrief JSON is far larger than a checkpoint verdict — up to 5 errors
-# (4 fields each), 3 hesitations, 3 idioms, 2-3 areas, an inappropriate-
-# behavior sentence. Groq STRICT mode returns HTTP 400 `json_validate_failed`
-# if the document is truncated mid-generation (the Story 6.16 classifier
-# overflow class), so the budget is sized with generous headroom (~4× the
-# ~525-token worst case). Cost is a fraction of a cent per call (one per call).
+# The v2 debrief JSON is large: up to 5 errors (each with `explanation` + up to
+# 2 `examples`), up to 3 areas (each a ~900-char `practice_prompt`), <=2
+# better_phrasings, 3 idioms, 3 hesitation contexts, an inappropriate-behavior
+# sentence. Groq STRICT mode returns HTTP 400 `json_validate_failed` if the
+# document is truncated mid-generation (the Story 6.16 classifier overflow
+# class); a maxed-out v2 debrief is on the order of ~2.5-3k tokens, so this
+# budget sits CLOSE to the worst case (no longer the old ~4x headroom). If real
+# calls hit `finish_reason=="length"` (logged below), raise it — see the AC9
+# generation-budget measurement follow-up. Cost is a fraction of a cent per call.
 _MAX_TOKENS = 3072
 
 # Low temperature: the debrief is a diagnostic instrument (clinical, factual),
@@ -311,7 +314,7 @@ def _format_hesitations(hesitations: list[dict]) -> str:
     """Render the backend-measured hesitation block for the user message.
 
     Each entry is `{"id": str, "duration_sec": float, "preceding_character_line":
-    str, "resolved": bool}` (top gaps > 3 s, longest first — measured by the
+    str, "resolved": bool}` (top gaps > 4 s, longest first — measured by the
     bot's hesitation observer). Every line carries its `hesitation_id` so the
     model echoes it back EXACTLY (Story 7.5 C3 id-based pairing, never index).
     A `resolved: false` gap was a freeze the character had to break by speaking
@@ -404,7 +407,13 @@ def _clamp_errors(raw: Any) -> list[dict]:
         if not user_said or not correction or not context:
             continue
         count = item.get("count")
-        count = count if isinstance(count, int) and count >= 1 else 1
+        count = (
+            count
+            if isinstance(count, int)
+            and not isinstance(count, bool)
+            and 1 <= count <= 99
+            else 1
+        )
         out.append(
             {
                 "user_said": user_said,

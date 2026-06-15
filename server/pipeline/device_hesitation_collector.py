@@ -18,6 +18,8 @@ build, or a data-channel failure) it falls back entirely to the server observer.
 
 from __future__ import annotations
 
+import math
+
 from loguru import logger
 
 # Mirror HesitationObserver's contract (debrief-content-strategy Q6). 4.0 since
@@ -33,7 +35,7 @@ class DeviceHesitationCollector:
     Args:
         collector: the shared `TranscriptCollector` — snapshots the character
             line that preceded each device-measured gap.
-        threshold_seconds: gaps must EXCEED this to count (default 3 s — matches
+        threshold_seconds: gaps must EXCEED this to count (default 4 s — matches
             the client meter's own `minGap`, belt-and-suspenders).
         top_n: how many longest gaps `top_hesitations()` returns (default 3).
     """
@@ -60,6 +62,8 @@ class DeviceHesitationCollector:
         if censored:
             return
         if not isinstance(gap_ms, (int, float)) or isinstance(gap_ms, bool):
+            return
+        if not math.isfinite(gap_ms):
             return
         duration = float(gap_ms) / 1000.0
         if duration <= self._threshold:
