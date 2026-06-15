@@ -57,7 +57,20 @@ const String _kLblYouSaid = 'You said:';
 const String _kLblMoreNatural = 'More natural:';
 const String _kLblPause = 'Pause';
 const String _kHesFreezeNote = 'The character had to speak first.';
-const String _kCopyButtonLabel = 'Copy practice';
+// AREAS drawer (Walid 2026-06-15): the bare copy button confused first-time
+// users — they didn't know what the copied text was FOR. The area now opens a
+// dark drawer (chevron, like the error cards) that EXPLAINS the practice loop in
+// A2/B1 steps before the copy action. Copy is still areas-only. Strings here are
+// app-owned chrome → bound by the COPY LINT above (no praise/exclaim/emoji/tips).
+const String _kHdrHowToPractice = 'HOW TO PRACTICE';
+const String _kPracticeLead = 'Keep practicing this skill on your own, for free.';
+const List<String> _kPracticeSteps = <String>[
+  'Copy the prompt below.',
+  'Paste it into any AI chat (ChatGPT, Gemini, or Claude).',
+  'Turn on voice mode and practice out loud.',
+];
+const String _kPracticeComeBack = 'Come back here when it feels easy.';
+const String _kCopyPromptLabel = 'Copy the prompt';
 const String _kCopiedConfirm = 'Copied';
 const String _kDetailHint = 'Show detail';
 const String _kBackSemantics = 'Back to scenarios';
@@ -104,7 +117,6 @@ const double _kEyebrowGap = 8.0;
 // Tap-for-detail + copy affordances.
 const double _kChevronSize = 22.0;
 const double _kChevronGap = 8.0;
-const double _kCopyButtonTopGap = 12.0;
 const double _kCopyIconSize = 16.0;
 const double _kCopyIconGap = 6.0;
 const double _kCopyButtonVPad = 8.0;
@@ -119,6 +131,7 @@ const double _kSheetBottomPad = 36.0;
 const double _kSheetHandleGap = 24.0;
 const double _kSheetBlockGap = 16.0;
 const double _kSheetExampleGap = 8.0;
+const double _kSheetStepGap = 8.0;
 const double _kDragHandleWidth = 40.0;
 const double _kDragHandleHeight = 4.0;
 
@@ -1121,53 +1134,182 @@ class _AboutThisCallCard extends StatelessWidget {
 }
 
 /// Rich, actionable area card (D-a/B5/D-c): an optional "FOCUS FIRST" eyebrow on
-/// #0, the title, the in-call evidence, and a COPY button for the server-authored
-/// practice prompt.
+/// #0, the title, and the in-call evidence. Depth-on-tap, mirroring the error
+/// card (Walid 2026-06-15): a chevron — present ONLY when a server practice
+/// prompt exists — opens a DARK drawer that explains the practice loop and
+/// carries the copy action. NO bare copy button on the surface anymore (a
+/// first-time user didn't know what the copied text was for).
 class _AreaCard extends StatelessWidget {
   final DebriefArea area;
 
   const _AreaCard({required this.area});
 
+  bool get _hasPractice => area.practicePrompt.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
-    return _DebriefCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final card = _DebriefCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          if (area.isFocus) ...[
-            Semantics(
-              header: true,
-              child: Text(
-                _kEyebrowFocusFirst,
-                style: AppTypography.label.copyWith(
-                  color: AppColors.textSecondary,
-                  letterSpacing: _kEyebrowLetterSpacing,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (area.isFocus) ...[
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      _kEyebrowFocusFirst,
+                      style: AppTypography.label.copyWith(
+                        color: AppColors.textSecondary,
+                        letterSpacing: _kEyebrowLetterSpacing,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: _kEyebrowGap),
+                ],
+                Text(
+                  area.title,
+                  style: AppTypography.bodyEmphasis.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: _kEyebrowGap),
-          ],
-          Text(
-            area.title,
-            style: AppTypography.bodyEmphasis.copyWith(
-              color: AppColors.textPrimary,
+                if (area.evidence.isNotEmpty) ...[
+                  const SizedBox(height: _kCardLabelGap),
+                  Text(
+                    area.evidence,
+                    style: AppTypography.caption.copyWith(
+                      color: AppColors.textSecondary,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
-          if (area.evidence.isNotEmpty) ...[
-            const SizedBox(height: _kCardLabelGap),
-            Text(
-              area.evidence,
-              style: AppTypography.caption.copyWith(
-                color: AppColors.textSecondary,
-                fontStyle: FontStyle.italic,
-              ),
+          if (_hasPractice) ...[
+            const SizedBox(width: _kChevronGap),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.textSecondary,
+              size: _kChevronSize,
             ),
           ],
-          if (area.practicePrompt.isNotEmpty) ...[
-            const SizedBox(height: _kCopyButtonTopGap),
-            _CopyButton(payload: area.practicePrompt, topic: area.title),
-          ],
         ],
+      ),
+    );
+    if (!_hasPractice) return card;
+    return Semantics(
+      button: true,
+      hint: _kDetailHint,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => showAreaDetailSheet(context, area),
+        child: card,
+      ),
+    );
+  }
+}
+
+/// Opens the DARK area-practice drawer — the practice loop explained in A2/B1
+/// steps + the copy action. Read-only, fire-and-forget; reuses the
+/// showModalBottomSheet plumbing, themed dark (matches the error sheet).
+Future<void> showAreaDetailSheet(BuildContext context, DebriefArea area) {
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: true,
+    builder: (_) => _AreaDetailSheet(area: area),
+  );
+}
+
+/// The practice drawer. Explains what the copy-paste is FOR (paste into any AI
+/// chat, turn on its voice mode, keep practicing free) before offering the copy
+/// action — so a first-time user understands the loop, not just a bare button.
+class _AreaDetailSheet extends StatelessWidget {
+  final DebriefArea area;
+
+  const _AreaDetailSheet({required this.area});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppColors.avatarBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          _kSheetHPad,
+          _kSheetTopPad,
+          _kSheetHPad,
+          _kSheetBottomPad + MediaQuery.viewPaddingOf(context).bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(child: _DragHandle()),
+              const SizedBox(height: _kSheetHandleGap),
+              Text(
+                area.title,
+                style: AppTypography.headline.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              if (area.evidence.isNotEmpty) ...[
+                const SizedBox(height: _kCardLabelGap),
+                Text(
+                  area.evidence,
+                  style: AppTypography.caption.copyWith(
+                    color: AppColors.textSecondary,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+              const SizedBox(height: _kSheetBlockGap),
+              Semantics(
+                header: true,
+                child: Text(
+                  _kHdrHowToPractice,
+                  style: AppTypography.label.copyWith(
+                    color: AppColors.textSecondary,
+                    letterSpacing: _kEyebrowLetterSpacing,
+                  ),
+                ),
+              ),
+              const SizedBox(height: _kSheetExampleGap),
+              Text(
+                _kPracticeLead,
+                style: AppTypography.body.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              for (var i = 0; i < _kPracticeSteps.length; i++) ...[
+                const SizedBox(height: _kSheetStepGap),
+                Text(
+                  '${i + 1}. ${_kPracticeSteps[i]}',
+                  style: AppTypography.body.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+              const SizedBox(height: _kSheetStepGap),
+              Text(
+                _kPracticeComeBack,
+                style: AppTypography.body.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: _kSheetBlockGap),
+              _CopyButton(payload: area.practicePrompt, topic: area.title),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1175,7 +1317,8 @@ class _AreaCard extends StatelessWidget {
 
 /// Copy-a-practice-prompt button — writes the server prompt VERBATIM to the
 /// clipboard and shows the informational "Copied" toast. textSecondary ink
-/// (never accent: two-ink discipline). Learning action only (AC7-v2).
+/// (never accent: two-ink discipline). Learning action only (AC7-v2). Lives
+/// INSIDE the practice drawer now (Walid 2026-06-15), after the how-to steps.
 class _CopyButton extends StatelessWidget {
   final String payload;
   final String topic;
@@ -1209,7 +1352,7 @@ class _CopyButton extends StatelessWidget {
                 ),
                 const SizedBox(width: _kCopyIconGap),
                 Text(
-                  _kCopyButtonLabel,
+                  _kCopyPromptLabel,
                   style: AppTypography.label.copyWith(
                     color: AppColors.textSecondary,
                   ),

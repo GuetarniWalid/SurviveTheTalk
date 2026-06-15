@@ -229,11 +229,13 @@ void main() {
       expect(find.text('ABOUT THIS CALL'), findsOneWidget);
       expect(find.text(kAboutText), findsOneWidget);
 
-      // Areas — focus-first eyebrow + the copy buttons.
+      // Areas — focus-first eyebrow + tap-to-practice (the copy action moved
+      // into the drawer, so NOTHING copy-related shows on the surface).
       expect(find.text('AREAS TO WORK ON'), findsOneWidget);
       expect(find.text('FOCUS FIRST'), findsOneWidget);
       expect(find.text('Negative sentence structure'), findsOneWidget);
-      expect(find.text('Copy practice'), findsNWidgets(2));
+      expect(find.text('Copy the prompt'), findsNothing);
+      expect(find.text('HOW TO PRACTICE'), findsNothing);
 
       verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
       expect(tester.takeException(), isNull);
@@ -284,10 +286,11 @@ void main() {
       );
     });
 
-    testWidgets('only the error WITH depth shows a chevron', (tester) async {
+    testWidgets('chevrons mark only depth-bearing cards', (tester) async {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
-      // Two errors, but only the first carries explanation/examples.
-      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      // 1 error with depth + 2 areas with a practice prompt = 3 chevrons. The
+      // depthless second error stays chevron-less (honest affordance).
+      expect(find.byIcon(Icons.chevron_right), findsNWidgets(3));
     });
 
     testWidgets('FR37 card keeps the 4px destructive left border', (
@@ -329,14 +332,50 @@ void main() {
       expect(find.text('CHECKPOINTS'), findsNothing);
       expect(find.text('SAID MORE NATURALLY'), findsNothing);
       expect(find.text('FOCUS FIRST'), findsNothing);
-      expect(find.text('Copy practice'), findsNothing);
+      expect(find.text('Copy the prompt'), findsNothing);
       expect(find.byIcon(Icons.chevron_right), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
 
-  group('copy a practice prompt (AC5)', () {
-    testWidgets('tapping an area copy button writes the server prompt + toast', (
+  group('area practice drawer (AC5, Walid 2026-06-15)', () {
+    testWidgets('tapping an area opens the dark drawer with the practice loop', (
+      tester,
+    ) async {
+      await pumpScreen(tester, buildScreen(payload: fullPayload()));
+
+      expect(find.text('HOW TO PRACTICE'), findsNothing);
+      // The non-focus area also carries a practice prompt (so a chevron).
+      final area = find.text('Articles');
+      await tester.ensureVisible(area);
+      await tester.pump();
+      await tester.tap(area);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400)); // drawer opens
+
+      // The loop is explained in A2/B1 steps BEFORE the copy action — so a
+      // first-time user understands what the copied prompt is for.
+      expect(find.text('HOW TO PRACTICE'), findsOneWidget);
+      expect(
+        find.text('Keep practicing this skill on your own, for free.'),
+        findsOneWidget,
+      );
+      expect(find.text('1. Copy the prompt below.'), findsOneWidget);
+      expect(
+        find.text(
+          '2. Paste it into any AI chat (ChatGPT, Gemini, or Claude).',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('3. Turn on voice mode and practice out loud.'),
+        findsOneWidget,
+      );
+      expect(find.text('Come back here when it feels easy.'), findsOneWidget);
+      expect(find.text('Copy the prompt'), findsOneWidget);
+    });
+
+    testWidgets('copying from the drawer writes the server prompt + toast', (
       tester,
     ) async {
       final clipboardCalls = <MethodCall>[];
@@ -356,9 +395,18 @@ void main() {
 
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
 
-      // The focus area's copy button is the first one (areas near the bottom
-      // of a long scroll — bring it into view before tapping).
-      final copyButton = find.text('Copy practice').first;
+      // Open the focus area's drawer (areas near the bottom of a long scroll —
+      // bring the card into view, then tap it).
+      final focusArea = find.text('Negative sentence structure');
+      await tester.ensureVisible(focusArea);
+      await tester.pump();
+      await tester.tap(focusArea);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400)); // drawer opens
+
+      // The copy action sits below the how-to steps — on a small test viewport
+      // it can land under the fold of the sheet's scroll view; bring it up.
+      final copyButton = find.text('Copy the prompt');
       await tester.ensureVisible(copyButton);
       await tester.pump();
       await tester.tap(copyButton);
