@@ -4,6 +4,7 @@ import 'dart:developer' as dev;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:livekit_client/livekit_client.dart';
 
@@ -24,6 +25,7 @@ import '../repositories/call_repository.dart';
 import '../services/checkpoint_advanced_payload.dart';
 import '../services/data_channel_handler.dart';
 import '../services/env_warning_payload.dart';
+import '../services/hesitation_meter.dart';
 import '../services/inbound_audio_stats_logger.dart';
 import '../services/viseme_scheduler.dart';
 import 'call_ended_notice_screen.dart';
@@ -35,6 +37,14 @@ import 'widgets/checkpoint_snapshot.dart';
 import 'widgets/checkpoint_step_hud.dart';
 import 'widgets/noisy_environment_banner.dart';
 import 'widgets/rive_character_canvas.dart';
+
+/// Story 7.5 (D3-c) — native record-side mic RMS EventChannel
+/// (`AudioCaptureChannel.kt`) feeding the `HesitationMeter`'s onset detector.
+const String _kOnsetRmsChannel = 'com.surviveTheTalk.client/onset_rms';
+
+/// The Rive REST viseme id (mouth closed / silent). Any OTHER viseme means the
+/// character is speaking → disarm the onset meter (the arming gate).
+const int _kRestVisemeId = 0;
 
 /// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
 /// `DataChannelHandler.new`; tests inject a counting / mock-returning
@@ -234,6 +244,18 @@ class _CallScreenState extends State<CallScreen> {
   /// platform-generated viseme onto the Rive canvas. Same lifecycle as
   /// the handler.
   VisemeScheduler? _visemeScheduler;
+
+  /// Story 7.5 (D3-c) — device-local hesitation onset meter. Armed at the
+  /// character's audio end (the same `onSilenceConfirmed` that publishes
+  /// playback_idle), fed mic RMS frames from the native record-side tap
+  /// (`AudioCaptureChannel.kt`, channel `_kOnsetRmsChannel`), DISARMED whenever
+  /// the character speaks (any non-REST viseme — the arming gate that rejects
+  /// the character's audio bleeding into the mic). Each measured onset is
+  /// published up the data channel; fail-soft — if the native tap never
+  /// delivers, the server observer covers hesitations.
+  HesitationMeter? _hesitationMeter;
+  StreamSubscription<dynamic>? _micRmsSub;
+  Stopwatch? _micStopwatch;
 
   /// Story 6.14 AC1 — dev-only diagnostic. Logs the inbound (remote)
   /// audio receiver stats (jitter, jitterBufferDelay, concealedSamples)
@@ -457,6 +479,77 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
+  /// Story 7.5 (D3-c) — create the onset meter (monotonic Stopwatch clock) and
+  /// subscribe to the native record-side mic RMS stream. Fail-soft: a missing /
+  /// erroring native tap (e.g. a future flutter_webrtc field rename) just means
+  /// the meter never fires and the SERVER observer covers hesitations — never a
+  /// crash, never a wrong gap.
+  void _startHesitationMeter(Room room) {
+    if (_hesitationMeter != null) return;
+    final stopwatch = Stopwatch()..start();
+    _micStopwatch = stopwatch;
+    final meter = HesitationMeter(
+      onHesitation: (onset) => _publishHesitationOnset(room, onset),
+      clockMs: () => stopwatch.elapsedMicroseconds / 1000.0,
+    );
+    _hesitationMeter = meter;
+    try {
+      _micRmsSub = const EventChannel(_kOnsetRmsChannel)
+          .receiveBroadcastStream()
+          .listen(
+            (event) {
+              if (event is num) meter.onMicFrame(event.toDouble());
+            },
+            onError: (Object e, StackTrace _) {
+              dev.log(
+                'CallScreen: onset_rms stream error: $e',
+                name: 'call.onset',
+                level: 700,
+              );
+            },
+          );
+    } catch (e) {
+      dev.log(
+        'CallScreen: onset_rms subscribe threw: $e',
+        name: 'call.onset',
+        level: 700,
+      );
+    }
+  }
+
+  /// Fire-and-forget `{"type":"hesitation_onset","gap_ms":…,"censored":…}`
+  /// upstream — `bot.py`'s `on_data_received` routes it to the
+  /// `DeviceHesitationCollector`, which teardown prefers over the server
+  /// observer. Mirrors `_publishPlaybackIdle`'s reliable + fail-soft contract.
+  void _publishHesitationOnset(Room room, HesitationOnset onset) {
+    final participant = room.localParticipant;
+    if (participant == null) return;
+    final bytes = utf8.encode(
+      jsonEncode({
+        'type': 'hesitation_onset',
+        'gap_ms': onset.gapMs,
+        'censored': onset.censored,
+      }),
+    );
+    try {
+      unawaited(
+        participant.publishData(bytes, reliable: true).catchError((Object e) {
+          dev.log(
+            'CallScreen: publishData(hesitation_onset) failed: $e',
+            name: 'call.uplink',
+            level: 700,
+          );
+        }),
+      );
+    } catch (e) {
+      dev.log(
+        'CallScreen: publishData(hesitation_onset) threw sync: $e',
+        name: 'call.uplink',
+        level: 700,
+      );
+    }
+  }
+
   @override
   void dispose() {
     // Story 6.3 — fire-and-forget the data-channel cancel. `?.dispose()`
@@ -473,6 +566,13 @@ class _CallScreenState extends State<CallScreen> {
     if (scheduler != null) {
       unawaited(scheduler.dispose());
     }
+    // Story 7.5 (D3-c) — tear down the onset meter + its native RMS stream.
+    unawaited(_micRmsSub?.cancel());
+    _micRmsSub = null;
+    _hesitationMeter?.disarm();
+    _hesitationMeter = null;
+    _micStopwatch?.stop();
+    _micStopwatch = null;
     // Story 6.14 — tear down the inbound-audio diagnostic.
     final statsLogger = _inboundAudioStatsLogger;
     _inboundAudioStatsLogger = null;
@@ -546,8 +646,16 @@ class _CallScreenState extends State<CallScreen> {
             // fires on EVERY silence window; the bloc gates on its
             // own `_remoteEndPending` flag (mid-call gaps are ignored
             // there).
+            _startHesitationMeter(room);
             _visemeScheduler = VisemeScheduler(
-              applyViseme: (id) => _canvasKey.currentState?.setVisemeId(id),
+              applyViseme: (id) {
+                _canvasKey.currentState?.setVisemeId(id);
+                // Story 7.5 (D3-c) arming gate: any non-REST viseme means the
+                // character is speaking → DISARM the onset meter so the
+                // character's audio bleeding into the mic can never be
+                // mistaken for the user's onset.
+                if (id != _kRestVisemeId) _hesitationMeter?.disarm();
+              },
               onSilenceConfirmed: () {
                 if (!context.mounted) return;
                 // The silence-confirmed callback fires on EVERY 600 ms
@@ -575,6 +683,9 @@ class _CallScreenState extends State<CallScreen> {
                 if (!_awaitingPlaybackIdle) return;
                 _awaitingPlaybackIdle = false;
                 _publishPlaybackIdle(room);
+                // Story 7.5 (D3-c) — this confirmed end-of-turn silence is the
+                // gap START; arm the onset meter to measure the user's pause.
+                _hesitationMeter?.arm();
                 context.read<CallBloc>().add(const PlaybackDrained());
               },
             );
