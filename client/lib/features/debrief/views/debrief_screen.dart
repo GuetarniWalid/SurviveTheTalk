@@ -1,38 +1,70 @@
-// Story 7.3 — Debrief screen (debrief-screen-design.md).
+// Story 7.5 — Debrief screen v2 (debrief-screen-design.md §v2.0, Walid-validated
+// 2026-06-15). Direction B "Rapport structuré — riche au clic, sobre au premier
+// regard": an arc-gauge scorecard hero, a checkpoint breakdown that explains the
+// %, and cards that reveal depth on tap (a DARK detail sheet for errors) or copy
+// a server-authored practice prompt (areas only).
 //
-// Renders the debrief payload pre-fetched by the Call Ended overlay
-// (Story 7.2) — the happy path makes ZERO network calls: the payload
-// arrives through the constructor and the route's 900 ms fade owns the
-// entry animation (this screen adds none).
+// The StatefulWidget host + BS-7 fallback machinery is UNCHANGED from v1 (Story
+// 7.3): the payload is pre-fetched by the Call Ended overlay (zero network on the
+// happy path); a null payload + non-null callId enters the text-only
+// "Analyzing your conversation..." resume-poll (1 s cadence, 30 s budget), then a
+// quiet "Debrief unavailable" terminal state. Never a crash, never error chrome,
+// never a retry button (AC7/AC10 — polling IS the retry).
 //
-// The only network code is the BS-7 fallback (call-ended-screen-design.md
-// lines 515-527): entered with a null payload + non-null callId, the
-// screen shows the text-only "Analyzing your conversation..." state and
-// resumes polling `GET /debriefs/{call_id}` every ~1 s, bounded by a 30 s
-// budget (7.1 reality: a permanently-failed generation returns
-// DEBRIEF_NOT_READY forever). Budget exhausted / null callId / structural
-// parse failure / terminal ApiException → quiet "Debrief unavailable"
-// state. Never a crash, never error chrome (AC10), never a retry button
-// (AC7 — polling IS the retry).
+// A v1 payload (debrief_version 1, no v2 lists) renders without crashing — every
+// v2 section is empty-gated and areas fall back to areasToWorkOn (AC2).
 //
-// No bloc (declared deviation from the design doc's file table): the
-// state here is screen-local and tiny (3 phases, two timers) and the
-// reviewed sibling `CallEndedScreen` established the exact pattern —
-// StatefulWidget + injected `CallRepository` + constructor timing seams.
+// No bloc (declared deviation from the design doc's file table) — screen-local
+// state is tiny (3 phases, two timers), mirroring the reviewed CallEndedScreen.
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/api/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/app_toast.dart';
 import '../../call/repositories/call_repository.dart';
 import '../models/debrief.dart';
 
-// Layout constants (debrief-screen-design.md) — local consts per the
-// Story 7.2 precedent; no AppSpacing additions required.
+// COPY LINT (Story 7.5 debrief v2 — clinical charter; inherits the 7.4
+// "Handler's Brief" rulebook, Walid-validated). BANNED on this screen AND its
+// sheet, everywhere: exclamation marks; question marks in CHROME; praise /
+// congratulation ("Great", "Well done", "Nice"); emoji; "tips" framing; urgency.
+// Voice is the APP's, clinical-frank. A2/B1 parseable under mild post-call
+// stress: present tense, second person, no idioms in chrome. Durations are
+// APPROXIMATE and carry the '~'. Server strings (error/correction/context/
+// explanation/examples/idiom/area/evidence/practice_prompt/phrasing/framing/
+// inappropriate_behavior + checkpoint hints) render VERBATIM and are not counted.
+
+// --- App-owned chrome strings ---
+const String _kSurvivalRateLabel = 'Survival Rate';
+const String _kHdrCheckpoints = 'CHECKPOINTS';
+const String _kHdrErrors = 'LANGUAGE ERRORS';
+const String _kHdrHesitations = 'HESITATIONS';
+const String _kHdrIdioms = 'IDIOMS & SLANG';
+const String _kHdrBetterPhrasing = 'SAID MORE NATURALLY';
+const String _kHdrAbout = 'ABOUT THIS CALL';
+const String _kHdrAreas = 'AREAS TO WORK ON';
+const String _kEyebrowFocusFirst = 'FOCUS FIRST';
+const String _kSheetEyebrowExamples = 'EXAMPLES';
+const String _kLblCorrectForm = 'Correct form:';
+const String _kLblYouSaid = 'You said:';
+const String _kLblMoreNatural = 'More natural:';
+const String _kLblPause = 'Pause';
+const String _kHesFreezeNote = 'The character had to speak first.';
+const String _kCopyButtonLabel = 'Copy practice';
+const String _kCopiedConfirm = 'Copied';
+const String _kDetailHint = 'Show detail';
+const String _kBackSemantics = 'Back to scenarios';
+const String _kLoading = 'Analyzing your conversation...';
+const String _kUnavailable = 'Debrief unavailable for this call.';
+
+// Layout constants (local consts per the Story 7.2/7.3 precedent).
 const double _kArrowInset = 8.0;
 const double _kArrowIconSize = 24.0;
 const double _kHeroTopGap = 30.0;
@@ -46,18 +78,58 @@ const double _kCardRadius = 12.0;
 const double _kCardLabelGap = 4.0;
 const double _kCardBlockGap = 12.0;
 const double _kIdiomMeaningGap = 8.0;
-const double _kAreaItemGap = 8.0;
 const double _kImprovementGap = 4.0;
 const double _kBottomPadding = 40.0;
 const double _kAboutBorderWidth = 4.0;
-
-// Encouraging framing sits in a 40px-padded text column (narrower for
-// readability) — 20px comes from the screen padding, this adds the rest.
 const double _kFramingExtraHorizontalPadding = 20.0;
 
-/// "Attempt #N" with the "· Previous best: X%" segment only when a
-/// previous best exists (design: no "Previous best: 0%" clutter on the
-/// first attempt).
+// Gauge (hero) — a self-contained, screenshot-worthy unit (AC8).
+const double _kGaugeSize = 180.0;
+const double _kGaugeInnerWidth = 120.0;
+const double _kGaugeStroke = 12.0;
+
+// Checkpoint breakdown — flat on-rail list, no card.
+const double _kCheckpointRowGap = 12.0;
+const double _kCheckpointMarkerSize = 18.0;
+const double _kCheckpointMarkerGap = 8.0;
+const double _kCheckpointMarkerBorder = 1.5;
+const double _kCheckpointGlyphSize = 12.0;
+const double _kEyebrowGap = 8.0;
+
+// Tap-for-detail + copy affordances.
+const double _kChevronSize = 22.0;
+const double _kChevronGap = 8.0;
+const double _kCopyButtonTopGap = 12.0;
+const double _kCopyIconSize = 16.0;
+const double _kCopyIconGap = 6.0;
+const double _kCopyButtonVPad = 8.0;
+
+// Dark detail sheet — matched to the report (Walid 2026-06-15: dark, NOT the
+// light content-warning/difficulty sheet). Reuses the showModalBottomSheet
+// plumbing + drag-handle, themed onto the elevated card surface.
+const double _kSheetRadius = 42.0;
+const double _kSheetHPad = 36.0;
+const double _kSheetTopPad = 24.0;
+const double _kSheetBottomPad = 36.0;
+const double _kSheetHandleGap = 24.0;
+const double _kSheetBlockGap = 16.0;
+const double _kSheetExampleGap = 8.0;
+const double _kDragHandleWidth = 40.0;
+const double _kDragHandleHeight = 4.0;
+
+const double _kEyebrowLetterSpacing = 1.0;
+
+/// Hero gauge color (Walid 2026-06-15): red at/below 40% (below the survival
+/// threshold), amber 41-99% (survived, not perfect), green at 100%.
+@visibleForTesting
+Color scoreColor(int survivalPct) {
+  if (survivalPct >= 100) return AppColors.statusCompleted;
+  if (survivalPct > 40) return AppColors.warning;
+  return AppColors.destructive;
+}
+
+/// "Attempt #N" with the "· Previous best: X%" segment only when a previous
+/// best exists (no "Previous best: 0%" clutter on the first attempt).
 @visibleForTesting
 String debriefAttemptLine({
   required int attemptNumber,
@@ -68,7 +140,7 @@ String debriefAttemptLine({
   return '$base · Previous best: $previousBest%';
 }
 
-/// Count line under the "Language Errors" header.
+/// Count line under "Language Errors".
 @visibleForTesting
 String errorCountLine(int count) {
   if (count == 0) return 'No errors flagged';
@@ -76,7 +148,7 @@ String errorCountLine(int count) {
   return '$count errors flagged';
 }
 
-/// Count line under the "Hesitation Analysis" header.
+/// Count line under "Hesitations".
 @visibleForTesting
 String hesitationCountLine(int count) {
   if (count == 0) return 'No hesitations flagged';
@@ -84,18 +156,32 @@ String hesitationCountLine(int count) {
   return '$count moments flagged';
 }
 
+/// Summary line under "Checkpoints" — the factual decomposition of the %.
+@visibleForTesting
+String checkpointCountLine(int met, int total) => '$met of $total reached';
+
 /// "You said:" card label, with the dedup badge once an error repeats
 /// (content-strategy Q8: "(×N)" only when count >= 2).
 @visibleForTesting
 String errorYouSaidLabel(int count) =>
     count >= 2 ? 'You said (×$count):' : 'You said:';
 
-/// Screen state machine (story Task 3.1).
+/// Surface duration label — ALWAYS approximate ("~Ns"); the measurement is an
+/// estimate, never a stopwatch (Story 7.5 C5).
+@visibleForTesting
+String hesitationDurationLabel(double sec) => '~${sec.round()}s';
+
+/// Per-checkpoint a11y phrase (state in words, not glyph/color).
+@visibleForTesting
+String checkpointSemantics(bool met, String hint) =>
+    met ? 'Reached: $hint' : 'Not reached: $hint';
+
+/// Screen state machine (Story 7.3 Task 3.1) — unchanged.
 enum _DebriefPhase { content, loading, unavailable }
 
 class DebriefScreen extends StatefulWidget {
-  /// Canonical BS-7 polling cadence/budget — tests shrink these through
-  /// the constructor seams so the loop runs inside a pumped window.
+  /// Canonical BS-7 polling cadence/budget — tests shrink these through the
+  /// constructor seams so the loop runs inside a pumped window.
   static const Duration kPollInterval = Duration(seconds: 1);
   static const Duration kPollBudget = Duration(seconds: 30);
 
@@ -104,8 +190,7 @@ class DebriefScreen extends StatefulWidget {
   /// failed terminally — the BS-7 fallback then takes over.
   final Map<String, dynamic>? payload;
 
-  /// Call-session id for the resume-poll. Null disables polling entirely
-  /// (nothing to fetch with → "unavailable").
+  /// Call-session id for the resume-poll. Null disables polling.
   final int? callId;
 
   final CallRepository callRepository;
@@ -136,15 +221,12 @@ class _DebriefScreenState extends State<DebriefScreen> {
   void initState() {
     super.initState();
     if (widget.payload != null) {
-      // Happy path — zero network. A provided-but-broken payload is
-      // terminal (re-fetching would return the same bytes).
       final parsed = Debrief.tryParse(widget.payload);
       _debrief = parsed;
       _phase = parsed != null
           ? _DebriefPhase.content
           : _DebriefPhase.unavailable;
     } else if (widget.callId != null) {
-      // BS-7 — the overlay handed off before the debrief settled.
       _phase = _DebriefPhase.loading;
       _budgetTimer = Timer(widget.pollBudget, _onBudgetExhausted);
       unawaited(_attemptFetch());
@@ -155,22 +237,15 @@ class _DebriefScreenState extends State<DebriefScreen> {
 
   Future<void> _attemptFetch() async {
     final callId = widget.callId;
-    if (callId == null) return; // loading is only entered with an id
+    if (callId == null) return;
     try {
       final payload = await widget.callRepository.fetchDebrief(callId: callId);
-      // A response already in flight when the 30 s budget fires is still
-      // honored (review P1): "unavailable" means a debrief we could not
-      // get, not one we discard. Failures past `loading` stay terminal.
       if (!mounted || _phase == _DebriefPhase.content) return;
       _settle(Debrief.tryParse(payload));
-      // Broad catch mirrors CallEndedScreen._attemptFetch: a post-call
-      // fetch failure must never crash or surface error chrome — anything
-      // that isn't "still generating" lands on the quiet terminal state.
       // ignore: avoid_catches_without_on_clauses
     } catch (e) {
       if (!mounted || _phase != _DebriefPhase.loading) return;
       if (e is ApiException && e.code == 'DEBRIEF_NOT_READY') {
-        // Still generating — re-arm; the 30 s budget bounds the loop.
         _pollTimer = Timer(widget.pollInterval, () {
           unawaited(_attemptFetch());
         });
@@ -180,8 +255,6 @@ class _DebriefScreenState extends State<DebriefScreen> {
     }
   }
 
-  /// Terminal transition out of `loading` — content when the payload
-  /// parses, unavailable otherwise.
   void _settle(Debrief? parsed) {
     _budgetTimer?.cancel();
     _budgetTimer = null;
@@ -211,15 +284,9 @@ class _DebriefScreenState extends State<DebriefScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // No PopScope — system back must work (CallEndedScreen's P-4 rule
-    // does NOT apply here); the stack is [scenario list shell, debrief].
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        // BS-7 — a late-arriving payload fades the content in over the
-        // loading text (300 ms, easeOut). The initial child renders
-        // without animation, so the constructor-payload path adds no
-        // entry effect on top of the route's fade.
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
           switchInCurve: Curves.easeOut,
@@ -237,24 +304,22 @@ class _DebriefScreenState extends State<DebriefScreen> {
           debrief: _debrief!,
         );
       case _DebriefPhase.loading:
-        // Text only — explicitly NOT a spinner (BS-7).
         return _DebriefMessage(
           key: const ValueKey('debrief-loading'),
-          message: 'Analyzing your conversation...',
+          message: _kLoading,
           style: AppTypography.body.copyWith(color: AppColors.textSecondary),
         );
       case _DebriefPhase.unavailable:
         return _DebriefMessage(
           key: const ValueKey('debrief-unavailable'),
-          message: 'Debrief unavailable for this call.',
+          message: _kUnavailable,
           style: AppTypography.caption.copyWith(color: AppColors.textSecondary),
         );
     }
   }
 }
 
-/// Back arrow — sole exit (AC7). Lives inside the scroll view on the
-/// content state (resolved design Q1: it scrolls with content).
+/// Back arrow — sole exit (AC7). Scrolls with content on the content state.
 class _BackArrow extends StatelessWidget {
   const _BackArrow();
 
@@ -266,7 +331,7 @@ class _BackArrow extends StatelessWidget {
         alignment: Alignment.topLeft,
         child: Semantics(
           button: true,
-          label: 'Back to scenarios',
+          label: _kBackSemantics,
           child: SizedBox(
             width: AppSpacing.minTouchTarget,
             height: AppSpacing.minTouchTarget,
@@ -275,9 +340,6 @@ class _BackArrow extends StatelessWidget {
               iconSize: _kArrowIconSize,
               color: AppColors.textPrimary,
               icon: const Icon(Icons.arrow_back_ios_new),
-              // Root-navigator imperative route (pushed by the overlay's
-              // pushReplacement) — Navigator.pop, NOT go_router's
-              // context.pop().
               onPressed: () => Navigator.of(context).pop(),
             ),
           ),
@@ -287,8 +349,8 @@ class _BackArrow extends StatelessWidget {
   }
 }
 
-/// Loading / unavailable layout — back arrow at top, centered message
-/// where content would appear. No spinner, no retry, no snackbars.
+/// Loading / unavailable layout — back arrow + centered message. No spinner,
+/// no retry, no snackbars.
 class _DebriefMessage extends StatelessWidget {
   final String message;
   final TextStyle style;
@@ -320,7 +382,7 @@ class _DebriefMessage extends StatelessWidget {
   }
 }
 
-/// Full debrief layout — single scroll, sections 24px apart.
+/// Full v2 debrief layout — single scroll, sections 24px apart on one left rail.
 class _DebriefContent extends StatelessWidget {
   final Debrief debrief;
 
@@ -329,14 +391,12 @@ class _DebriefContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final d = debrief;
-    final heroColor = d.survivalPct == 100
-        ? AppColors.statusCompleted
-        : AppColors.destructive;
     final mutedCaption = AppTypography.caption.copyWith(
       color: AppColors.textSecondary,
     );
     final framing = d.encouragingFraming;
     final about = d.inappropriateBehavior;
+    final metCount = d.checkpoints.where((c) => c.met).length;
 
     return SingleChildScrollView(
       child: Column(
@@ -350,27 +410,9 @@ class _DebriefContent extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // HERO — the self-contained scorecard (AC8). Centered as a unit.
                 const SizedBox(height: _kHeroTopGap),
-                // Hero — the self-contained screenshot block (AC8).
-                Text(
-                  '${d.survivalPct}%',
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  semanticsLabel: '${d.survivalPct} percent survival rate',
-                  style: AppTypography.display.copyWith(color: heroColor),
-                ),
-                const SizedBox(height: _kHeroTightGap),
-                // Excluded from semantics: the hero label above already
-                // announces "… percent survival rate" — without this,
-                // TalkBack reads "survival rate" twice back-to-back.
-                ExcludeSemantics(
-                  child: Text(
-                    'Survival Rate',
-                    textAlign: TextAlign.center,
-                    style: mutedCaption,
-                  ),
-                ),
+                _ScoreGauge(survivalPct: d.survivalPct),
                 const SizedBox(height: _kHeroIdentityGap),
                 Text(
                   '${d.characterName} — ${d.scenarioTitle}',
@@ -392,9 +434,6 @@ class _DebriefContent extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: mutedCaption,
                 ),
-                // Encouraging framing (FR15b) — keyed on field presence,
-                // never on survival_pct; server strings render VERBATIM
-                // (copy is server-owned).
                 if (framing != null) ...[
                   const SizedBox(height: _kSectionGap),
                   Padding(
@@ -424,18 +463,32 @@ class _DebriefContent extends StatelessWidget {
                     ),
                   ),
                 ],
-                // Language Errors (FR10) — always visible.
+                // CHECKPOINTS (B7) — the "why this score?" factual layer leads.
+                if (d.checkpoints.isNotEmpty) ...[
+                  const SizedBox(height: _kSectionGap),
+                  const _SectionHeader(_kHdrCheckpoints),
+                  const SizedBox(height: _kCountLineGap),
+                  Text(
+                    checkpointCountLine(metCount, d.checkpoints.length),
+                    style: mutedCaption,
+                  ),
+                  for (final cp in d.checkpoints) ...[
+                    const SizedBox(height: _kCheckpointRowGap),
+                    _CheckpointRow(checkpoint: cp),
+                  ],
+                ],
+                // LANGUAGE ERRORS — always visible (count line).
                 const SizedBox(height: _kSectionGap),
-                const _SectionHeader('Language Errors'),
+                const _SectionHeader(_kHdrErrors),
                 const SizedBox(height: _kCountLineGap),
                 Text(errorCountLine(d.errors.length), style: mutedCaption),
                 for (final error in d.errors) ...[
                   const SizedBox(height: _kCardGap),
                   _ErrorCard(error: error),
                 ],
-                // Hesitation Analysis (FR12) — always visible.
+                // HESITATIONS — always visible (count line).
                 const SizedBox(height: _kSectionGap),
-                const _SectionHeader('Hesitation Analysis'),
+                const _SectionHeader(_kHdrHesitations),
                 const SizedBox(height: _kCountLineGap),
                 Text(
                   hesitationCountLine(d.hesitations.length),
@@ -445,31 +498,45 @@ class _DebriefContent extends StatelessWidget {
                   const SizedBox(height: _kCardGap),
                   _HesitationCard(hesitation: hesitation),
                 ],
-                // Idioms & Slang (FR13) — absence of the section IS the
-                // design: no header, no "No idioms encountered".
+                // IDIOMS & SLANG — absence IS the design (no empty state).
                 if (d.idioms.isNotEmpty) ...[
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader('Idioms & Slang'),
+                  const _SectionHeader(_kHdrIdioms),
                   for (final idiom in d.idioms) ...[
                     const SizedBox(height: _kCardGap),
                     _IdiomCard(idiom: idiom),
                   ],
                 ],
-                // About This Call (FR37 / AC9) — hidden when null.
+                // SAID MORE NATURALLY (B2) — hidden when empty (often is).
+                if (d.betterPhrasings.isNotEmpty) ...[
+                  const SizedBox(height: _kSectionGap),
+                  const _SectionHeader(_kHdrBetterPhrasing),
+                  for (final phrasing in d.betterPhrasings) ...[
+                    const SizedBox(height: _kCardGap),
+                    _BetterPhrasingCard(phrasing: phrasing),
+                  ],
+                ],
+                // ABOUT THIS CALL (FR37) — hidden when null.
                 if (about != null) ...[
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader('About This Call'),
+                  const _SectionHeader(_kHdrAbout),
                   const SizedBox(height: _kCardGap),
                   _AboutThisCallCard(explanation: about),
                 ],
-                // Areas to Work On — always on a healthy payload (server
-                // clamps to 1-3); hidden like idioms on a degenerate empty
-                // parse so no bare card renders under the header.
-                if (d.areasToWorkOn.isNotEmpty) ...[
+                // AREAS TO WORK ON — rich v2 cards when present; v1 fallback to
+                // the flat title list otherwise (AC2).
+                if (d.areas.isNotEmpty) ...[
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader('Areas to Work On'),
+                  const _SectionHeader(_kHdrAreas),
+                  for (final area in d.areas) ...[
+                    const SizedBox(height: _kCardGap),
+                    _AreaCard(area: area),
+                  ],
+                ] else if (d.areasToWorkOn.isNotEmpty) ...[
+                  const SizedBox(height: _kSectionGap),
+                  const _SectionHeader(_kHdrAreas),
                   const SizedBox(height: _kCardGap),
-                  _AreasCard(areas: d.areasToWorkOn),
+                  _AreasFallbackCard(areas: d.areasToWorkOn),
                 ],
                 const SizedBox(height: _kBottomPadding),
               ],
@@ -481,6 +548,108 @@ class _DebriefContent extends StatelessWidget {
   }
 }
 
+/// The arc-gauge scorecard hero — a 270° two-arc ring with the % centered
+/// inside. Pure-Flutter CustomPainter (HUD-is-Flutter ruling), no animation
+/// (the route's 900 ms fade owns entry).
+class _ScoreGauge extends StatelessWidget {
+  final int survivalPct;
+
+  const _ScoreGauge({required this.survivalPct});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = scoreColor(survivalPct);
+    return Center(
+      child: Semantics(
+        label: '$survivalPct percent survival rate',
+        child: SizedBox(
+          width: _kGaugeSize,
+          height: _kGaugeSize,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              ExcludeSemantics(
+                child: CustomPaint(
+                  size: const Size.square(_kGaugeSize),
+                  painter: _ScoreGaugePainter(
+                    fraction: survivalPct / 100.0,
+                    color: color,
+                  ),
+                ),
+              ),
+              ExcludeSemantics(
+                child: SizedBox(
+                  width: _kGaugeInnerWidth,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          '$survivalPct%',
+                          maxLines: 1,
+                          style: AppTypography.display.copyWith(color: color),
+                        ),
+                      ),
+                      const SizedBox(height: _kHeroTightGap),
+                      Text(
+                        _kSurvivalRateLabel,
+                        textAlign: TextAlign.center,
+                        style: AppTypography.caption.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ScoreGaugePainter extends CustomPainter {
+  final double fraction;
+  final Color color;
+
+  const _ScoreGaugePainter({required this.fraction, required this.color});
+
+  // A "speedometer" sweep: a 270° arc opening at the bottom, starting at 135°
+  // (lower-left) clockwise.
+  static const double _start = 3 * math.pi / 4;
+  static const double _full = 3 * math.pi / 2;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = (Offset.zero & size).deflate(_kGaugeStroke / 2);
+    final track = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _kGaugeStroke
+      ..strokeCap = StrokeCap.round
+      ..color = AppColors.gaugeTrack;
+    canvas.drawArc(rect, _start, _full, false, track);
+    final f = fraction.clamp(0.0, 1.0);
+    if (f > 0) {
+      final value = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _kGaugeStroke
+        ..strokeCap = StrokeCap.round
+        ..color = color;
+      canvas.drawArc(rect, _start, _full * f, false, value);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ScoreGaugePainter oldDelegate) =>
+      oldDelegate.fraction != fraction || oldDelegate.color != color;
+}
+
+/// Section eyebrow — 12/500 UPPERCASE, +1.0 tracking, textSecondary (Handler's
+/// Brief). Keeps the class name + Semantics(header:true) so call sites are
+/// unchanged from v1.
 class _SectionHeader extends StatelessWidget {
   final String title;
 
@@ -492,7 +661,74 @@ class _SectionHeader extends StatelessWidget {
       header: true,
       child: Text(
         title,
-        style: AppTypography.headline.copyWith(color: AppColors.textPrimary),
+        style: AppTypography.label.copyWith(
+          color: AppColors.textSecondary,
+          letterSpacing: _kEyebrowLetterSpacing,
+        ),
+      ),
+    );
+  }
+}
+
+/// One met/missed beat row — flat on the rail (no card). The state marker is the
+/// ONLY place accent is earned in the body, and only as a FILL (two-ink rule).
+class _CheckpointRow extends StatelessWidget {
+  final DebriefCheckpoint checkpoint;
+
+  const _CheckpointRow({required this.checkpoint});
+
+  @override
+  Widget build(BuildContext context) {
+    final met = checkpoint.met;
+    return Semantics(
+      label: checkpointSemantics(met, checkpoint.hint),
+      excludeSemantics: true,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _CheckpointMarker(met: met),
+          const SizedBox(width: _kCheckpointMarkerGap),
+          Expanded(
+            child: Text(
+              checkpoint.hint,
+              style: AppTypography.body.copyWith(
+                color: met ? AppColors.textPrimary : AppColors.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CheckpointMarker extends StatelessWidget {
+  final bool met;
+
+  const _CheckpointMarker({required this.met});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: _kCheckpointMarkerSize,
+      height: _kCheckpointMarkerSize,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: met ? AppColors.accent : Colors.transparent,
+        border: met
+            ? null
+            : Border.all(
+                color: AppColors.avatarBg,
+                width: _kCheckpointMarkerBorder,
+              ),
+      ),
+      child: Icon(
+        met ? Icons.check : Icons.remove,
+        size: _kCheckpointGlyphSize,
+        // Accent is a FILL; the glyph sits in the background ink (met) — never
+        // accent-as-icon-color floating on the dark surface.
+        color: met ? AppColors.background : AppColors.textSecondary,
       ),
     );
   }
@@ -518,43 +754,191 @@ class _DebriefCard extends StatelessWidget {
   }
 }
 
+/// Error card — brief on the surface (context), depth on tap (rule + examples)
+/// in a DARK sheet. A chevron appears ONLY when there IS depth (honest
+/// affordance). NO copy button (Walid 2026-06-15: copy is areas-only).
 class _ErrorCard extends StatelessWidget {
   final DebriefError error;
 
   const _ErrorCard({required this.error});
+
+  bool get _hasDepth =>
+      (error.explanation != null && error.explanation!.isNotEmpty) ||
+      error.examples.isNotEmpty;
 
   @override
   Widget build(BuildContext context) {
     final labelStyle = AppTypography.sectionTitle.copyWith(
       color: AppColors.textSecondary,
     );
-    return _DebriefCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final card = _DebriefCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(errorYouSaidLabel(error.count), style: labelStyle),
-          const SizedBox(height: _kCardLabelGap),
-          Text(
-            error.userSaid,
-            style: AppTypography.body.copyWith(color: AppColors.textPrimary),
-          ),
-          const SizedBox(height: _kCardBlockGap),
-          Text('Correct form:', style: labelStyle),
-          const SizedBox(height: _kCardLabelGap),
-          // Accent marks the learnable content (AC2).
-          Text(
-            error.correction,
-            style: AppTypography.bodyEmphasis.copyWith(color: AppColors.accent),
-          ),
-          const SizedBox(height: _kCardBlockGap),
-          Text(
-            error.context,
-            style: AppTypography.caption.copyWith(
-              color: AppColors.textSecondary,
-              fontStyle: FontStyle.italic,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(errorYouSaidLabel(error.count), style: labelStyle),
+                const SizedBox(height: _kCardLabelGap),
+                Text(
+                  error.userSaid,
+                  style: AppTypography.body.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: _kCardBlockGap),
+                Text(_kLblCorrectForm, style: labelStyle),
+                const SizedBox(height: _kCardLabelGap),
+                Text(
+                  error.correction,
+                  style: AppTypography.bodyEmphasis.copyWith(
+                    color: AppColors.accent,
+                  ),
+                ),
+                const SizedBox(height: _kCardBlockGap),
+                Text(
+                  error.context,
+                  style: AppTypography.caption.copyWith(
+                    color: AppColors.textSecondary,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
             ),
           ),
+          if (_hasDepth) ...[
+            const SizedBox(width: _kChevronGap),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.textSecondary,
+              size: _kChevronSize,
+            ),
+          ],
         ],
+      ),
+    );
+    if (!_hasDepth) return card;
+    return Semantics(
+      button: true,
+      hint: _kDetailHint,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => showErrorDetailSheet(context, error),
+        child: card,
+      ),
+    );
+  }
+}
+
+/// Opens the DARK error-detail sheet (rule + examples). Read-only,
+/// fire-and-forget. Reuses the showModalBottomSheet plumbing; themed dark.
+Future<void> showErrorDetailSheet(BuildContext context, DebriefError error) {
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: true,
+    builder: (_) => _ErrorDetailSheet(error: error),
+  );
+}
+
+class _ErrorDetailSheet extends StatelessWidget {
+  final DebriefError error;
+
+  const _ErrorDetailSheet({required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = AppTypography.sectionTitle.copyWith(
+      color: AppColors.textSecondary,
+    );
+    final explanation = error.explanation;
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppColors.avatarBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          _kSheetHPad,
+          _kSheetTopPad,
+          _kSheetHPad,
+          _kSheetBottomPad + MediaQuery.viewPaddingOf(context).bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(child: _DragHandle()),
+              const SizedBox(height: _kSheetHandleGap),
+              Text(_kLblYouSaid, style: labelStyle),
+              const SizedBox(height: _kCardLabelGap),
+              Text(
+                error.userSaid,
+                style: AppTypography.body.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: _kSheetBlockGap),
+              Text(_kLblCorrectForm, style: labelStyle),
+              const SizedBox(height: _kCardLabelGap),
+              Text(
+                error.correction,
+                style: AppTypography.headline.copyWith(color: AppColors.accent),
+              ),
+              if (explanation != null && explanation.isNotEmpty) ...[
+                const SizedBox(height: _kSheetBlockGap),
+                Text(
+                  explanation,
+                  style: AppTypography.body.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+              if (error.examples.isNotEmpty) ...[
+                const SizedBox(height: _kSheetBlockGap),
+                Semantics(
+                  header: true,
+                  child: Text(
+                    _kSheetEyebrowExamples,
+                    style: AppTypography.label.copyWith(
+                      color: AppColors.textSecondary,
+                      letterSpacing: _kEyebrowLetterSpacing,
+                    ),
+                  ),
+                ),
+                for (final example in error.examples) ...[
+                  const SizedBox(height: _kSheetExampleGap),
+                  Text(
+                    '· $example',
+                    style: AppTypography.body.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DragHandle extends StatelessWidget {
+  const _DragHandle();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: _kDragHandleWidth,
+      height: _kDragHandleHeight,
+      decoration: BoxDecoration(
+        color: AppColors.textSecondary,
+        borderRadius: BorderRadius.circular(_kDragHandleHeight),
       ),
     );
   }
@@ -572,28 +956,40 @@ class _HesitationCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Pause',
+            _kLblPause,
             style: AppTypography.sectionTitle.copyWith(
               color: AppColors.textSecondary,
             ),
           ),
           const SizedBox(height: _kCardLabelGap),
           Text(
-            '${hesitation.durationSec.toStringAsFixed(1)} seconds',
+            hesitationDurationLabel(hesitation.durationSec),
+            semanticsLabel: 'about ${hesitation.durationSec.round()} seconds',
             style: AppTypography.debriefDuration.copyWith(
               color: AppColors.textPrimary,
             ),
           ),
-          const SizedBox(height: _kCardBlockGap),
-          Text(
-            '"${hesitation.context}"',
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: AppTypography.body.copyWith(
-              color: AppColors.textSecondary,
-              fontStyle: FontStyle.italic,
+          if (!hesitation.resolved) ...[
+            const SizedBox(height: _kCardLabelGap),
+            Text(
+              _kHesFreezeNote,
+              style: AppTypography.caption.copyWith(
+                color: AppColors.textSecondary,
+              ),
             ),
-          ),
+          ],
+          if (hesitation.context.isNotEmpty) ...[
+            const SizedBox(height: _kCardBlockGap),
+            Text(
+              '"${hesitation.context}"',
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: AppTypography.body.copyWith(
+                color: AppColors.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -634,9 +1030,53 @@ class _IdiomCard extends StatelessWidget {
   }
 }
 
+/// "Said more naturally" (B2) — a correct-but-clumsy line phrased better. The
+/// suggestion uses bodyEmphasis WEIGHT, never accent (two-ink discipline: this
+/// is not a correction).
+class _BetterPhrasingCard extends StatelessWidget {
+  final DebriefBetterPhrasing phrasing;
+
+  const _BetterPhrasingCard({required this.phrasing});
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = AppTypography.sectionTitle.copyWith(
+      color: AppColors.textSecondary,
+    );
+    return _DebriefCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_kLblYouSaid, style: labelStyle),
+          const SizedBox(height: _kCardLabelGap),
+          Text(
+            phrasing.original,
+            style: AppTypography.body.copyWith(color: AppColors.textPrimary),
+          ),
+          const SizedBox(height: _kCardBlockGap),
+          Text(_kLblMoreNatural, style: labelStyle),
+          const SizedBox(height: _kCardLabelGap),
+          Text(
+            phrasing.suggestion,
+            style: AppTypography.bodyEmphasis.copyWith(
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: _kCardBlockGap),
+          Text(
+            phrasing.reason,
+            style: AppTypography.caption.copyWith(
+              color: AppColors.textSecondary,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// FR37 card — avatar-bg with the 4px destructive left stripe.
-/// BoxDecoration can't combine a non-uniform border with a borderRadius,
-/// so the rounded corners come from a ClipRRect around the striped box.
 class _AboutThisCallCard extends StatelessWidget {
   final String explanation;
 
@@ -669,12 +1109,116 @@ class _AboutThisCallCard extends StatelessWidget {
   }
 }
 
-/// Single card, numbered study list (numbers imply priority — no accent
-/// colors, no bullets).
-class _AreasCard extends StatelessWidget {
+/// Rich, actionable area card (D-a/B5/D-c): an optional "FOCUS FIRST" eyebrow on
+/// #0, the title, the in-call evidence, and a COPY button for the server-authored
+/// practice prompt.
+class _AreaCard extends StatelessWidget {
+  final DebriefArea area;
+
+  const _AreaCard({required this.area});
+
+  @override
+  Widget build(BuildContext context) {
+    return _DebriefCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (area.isFocus) ...[
+            Semantics(
+              header: true,
+              child: Text(
+                _kEyebrowFocusFirst,
+                style: AppTypography.label.copyWith(
+                  color: AppColors.textSecondary,
+                  letterSpacing: _kEyebrowLetterSpacing,
+                ),
+              ),
+            ),
+            const SizedBox(height: _kEyebrowGap),
+          ],
+          Text(
+            area.title,
+            style: AppTypography.bodyEmphasis.copyWith(
+              color: AppColors.textPrimary,
+            ),
+          ),
+          if (area.evidence.isNotEmpty) ...[
+            const SizedBox(height: _kCardLabelGap),
+            Text(
+              area.evidence,
+              style: AppTypography.caption.copyWith(
+                color: AppColors.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+          if (area.practicePrompt.isNotEmpty) ...[
+            const SizedBox(height: _kCopyButtonTopGap),
+            _CopyButton(payload: area.practicePrompt, topic: area.title),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Copy-a-practice-prompt button — writes the server prompt VERBATIM to the
+/// clipboard and shows the informational "Copied" toast. textSecondary ink
+/// (never accent: two-ink discipline). Learning action only (AC7-v2).
+class _CopyButton extends StatelessWidget {
+  final String payload;
+  final String topic;
+
+  const _CopyButton({required this.payload, required this.topic});
+
+  void _onTap(BuildContext context) {
+    unawaited(Clipboard.setData(ClipboardData(text: payload)));
+    AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Semantics(
+        button: true,
+        label: 'Copy practice prompt for $topic',
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _onTap(context),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: _kCopyButtonVPad),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.content_copy,
+                  size: _kCopyIconSize,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: _kCopyIconGap),
+                Text(
+                  _kCopyButtonLabel,
+                  style: AppTypography.label.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v1 back-compat — a single card, numbered study list (numbers imply priority;
+/// no accent, no copy). Rendered only when a v1 payload supplies the flat
+/// areasToWorkOn list and the rich areas list is empty.
+class _AreasFallbackCard extends StatelessWidget {
   final List<String> areas;
 
-  const _AreasCard({required this.areas});
+  const _AreasFallbackCard({required this.areas});
 
   @override
   Widget build(BuildContext context) {
@@ -683,7 +1227,7 @@ class _AreasCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           for (var i = 0; i < areas.length; i++) ...[
-            if (i > 0) const SizedBox(height: _kAreaItemGap),
+            if (i > 0) const SizedBox(height: _kEyebrowGap),
             Text(
               '${i + 1}. ${areas[i]}',
               style: AppTypography.body.copyWith(color: AppColors.textPrimary),
