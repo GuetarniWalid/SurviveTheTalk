@@ -52,7 +52,10 @@ from pipeline.endpoint_watchdog import EndpointWatchdog
 from pipeline.environment_monitor import EnvironmentMonitor
 from pipeline.exchange_classifier import ExchangeClassifier
 from pipeline.exit_line_generator import generate_exit_line
-from pipeline.device_hesitation_collector import DeviceHesitationCollector
+from pipeline.device_hesitation_collector import (
+    DeviceHesitationCollector,
+    merge_hesitation_sources,
+)
 from pipeline.hesitation_observer import HesitationObserver
 from pipeline.input_gate import InputGate
 from pipeline.latency_probe import LatencyProbe
@@ -875,13 +878,14 @@ async def run_bot(url: str, room: str, token: str) -> None:
             # flush, removing the ~1 s playout-delay inflation.
             hesitation_observer.handle_playback_idle()
         elif envelope_type == "hesitation_onset":
-            # Story 7.5 (D3-c) — a device-measured onset gap. The collector
-            # ignores CENSORED envelopes (the device could not measure → the
-            # server observer covers that turn) and snapshots the preceding
-            # character line itself. The device source is DORMANT until the
-            # follow-up story revives it (the client onset detector
-            # under-produces); the diagnostic is gated OFF in prod and re-armed
-            # with HESITATION_DIAG=1 for that story's smoke gate.
+            # Story 7.5 (D3-c) / Story 7.6 — a device-measured onset gap. The
+            # collector ignores CENSORED envelopes (the device could not measure
+            # → the server observer covers that turn) and snapshots the preceding
+            # character line itself. Story 7.6 made the on-device detector
+            # reliable and wired the teardown merge (below), so the device source
+            # is now AUTHORITATIVE (the server observer is the fallback). The
+            # diagnostic stays gated OFF in prod and is re-armed with
+            # HESITATION_DIAG=1 only for the smoke gate.
             if os.environ.get("HESITATION_DIAG") == "1":
                 logger.info(
                     "DIAG hesitation_onset gap_ms={} censored={}",
@@ -938,16 +942,21 @@ async def run_bot(url: str, room: str, token: str) -> None:
                     brief_personality_description=brief_personality(
                         scenario_base_prompt
                     ),
-                    # Story 7.5 fix (2026-06-15) — the SERVER observer, now
-                    # anchored on `playback_idle` (the user-perceived bot-end),
-                    # measures the felt gap WITHOUT the playout inflation, so it
-                    # is the reliable source. The device-meter path
-                    # (`merge_hesitation_sources` + `device_hesitation_collector`)
-                    # stays wired but DORMANT — its onset detector under-produces
-                    # on-device (seed-window contamination), and merging an
-                    # unreliable device source dropped accurate server gaps. Revive
-                    # it only after the meter's onset detector is made robust.
-                    hesitations=hesitation_observer.top_hesitations(),
+                    # Story 7.6 (AC6) — device-AUTHORITATIVE hesitations. The
+                    # on-device meter measures the felt gap with NO network term
+                    # (character-audio-end → user onset, both timed on the phone),
+                    # so its gaps are preferred. `merge_hesitation_sources` keeps
+                    # the device gaps AND adds the SERVER observer's UNRESOLVED
+                    # re-speak freezes (the C2 gaps the device can't see — it
+                    # disarms when the character speaks again). With no device
+                    # gaps (old client / a failed native tap) it falls back to
+                    # the server observer (anchored on `playback_idle`). A merge
+                    # failure is swallowed by the surrounding try/except — a bad
+                    # hesitation number must never crash teardown.
+                    hesitations=merge_hesitation_sources(
+                        device_hesitation_collector.top_hesitations(),
+                        hesitation_observer.top_hesitations(),
+                    ),
                     checkpoints=checkpoint_manager.checkpoint_breakdown,
                 )
             except Exception:

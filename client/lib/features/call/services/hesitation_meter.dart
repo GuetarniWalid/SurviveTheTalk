@@ -34,6 +34,8 @@
 // Pure Dart + an injected monotonic clock → fully unit-testable on canned RMS
 // sequences (no live call, no native).
 
+import 'dart:math' as math;
+
 /// A closed hesitation measurement, published up the data channel to the bot.
 class HesitationOnset {
   /// Felt gap, ms — onset time minus the (offset-compensated) character-silence
@@ -66,12 +68,21 @@ class HesitationMeter {
     double floorCeiling = 4000.0, // quiet-speaker protection (no AGC here)
     Duration seedWindow = const Duration(milliseconds: 250),
     Duration debounce = const Duration(milliseconds: 200),
-    Duration minGap = const Duration(seconds: 3),
+    // Story 7.6 — aligned to 4 s to match the bot-side `DeviceHesitationCollector`
+    // / `HesitationObserver` threshold (4.0 s). A 3-4 s gap emitted under the old
+    // 3 s floor was recorded then DROPPED server-side; emitting at 4 s removes
+    // that wasted uplink and the silent server drop. (The collector drops
+    // duration <= 4.0 while this emits gap >= 4.0 — the exact-4000 ms boundary is
+    // a sub-ms non-issue at real freeze durations.)
+    Duration minGap = const Duration(seconds: 4),
     Duration maxGap = const Duration(seconds: 10),
     // The viseme stack confirms silence ~600 ms AFTER the audio actually ended
-    // (the REST-viseme confirmation window). Subtract it from the gap start so
-    // the measured gap reflects the FELT pause, not the confirmation lag. The
-    // exact value is tuned on the Pixel 9.
+    // (the REST-viseme confirmation window — the SAME window that drives
+    // `playback_idle`). Subtract it from the gap start so the measured gap
+    // reflects the FELT pause (from when the user's EAR heard silence), not the
+    // confirmation lag. Story 7.6: the value is COUPLED to that window; the
+    // gap-≥-0 clamp below makes any future offset arithmetic safe, and the exact
+    // value is reconciled against the ±0.5 s accuracy target on the Pixel 9.
     Duration confirmationOffset = const Duration(milliseconds: 600),
     double Function()? clockMs,
   }) : _snrThreshold = snrThreshold,
@@ -106,6 +117,13 @@ class HesitationMeter {
   /// Visible for tests / debugging: the current state name.
   bool get isArmed => _state != _MeterState.idle;
 
+  /// Visible for tests: the current adaptive noise floor — 0 while idle or
+  /// immediately after `arm()`/`disarm()` reset it, the seeded ambient value
+  /// while listening. Lets a unit test assert the floor is seeded only from
+  /// ambient (and frozen, and cleared on disarm) without reaching into private
+  /// state. Story 7.6 (AC7/AC9).
+  double get debugFloor => _floor;
+
   /// Arm at the character's audio end (`onSilenceConfirmed`). Idempotent: a
   /// second arm without an intervening disarm is ignored (one anchor at a time).
   void arm() {
@@ -124,6 +142,15 @@ class HesitationMeter {
   /// measurement is emitted.
   void disarm() {
     _state = _MeterState.idle;
+    // Story 7.6 (AC7) — clear the seed/floor accumulators on disarm so a later
+    // `arm()` can NEVER inherit a stale floor (a high floor left over from a
+    // prior loud window would suppress the next onset — an under-production
+    // cause). `arm()` resets these too; resetting here keeps the invariant
+    // local to disarm and defends a future arm() that forgets to.
+    _seedSum = 0;
+    _seedCount = 0;
+    _floor = 0;
+    _aboveSince = null;
   }
 
   /// Feed one short-window mic RMS frame (from the native record-side tap).
@@ -135,8 +162,14 @@ class HesitationMeter {
     if (_state == _MeterState.seeding) {
       _seedSum += rms;
       _seedCount++;
-      // Echo-tail guard: NO onset detection during the seed window — a residual
-      // TTS reverb tail decaying here is folded into the floor.
+      // Story 7.6 (AC7) — the floor is seeded ONLY from genuine post-character
+      // ambient: `arm()` fires at `onSilenceConfirmed`, AFTER the viseme stack
+      // already confirmed the character's audio ended (the same window that
+      // gates `playback_idle`), so no TTS tail is live in the seed window; and
+      // an idle meter no-ops frames (above), so no PRE-arm frame can enter
+      // `_seedSum`. Echo-tail guard: NO onset detection during the seed window —
+      // any residual TTS reverb decaying here is folded into the floor, not read
+      // as the user's onset.
       if (now - _armRealTime >= _seedWindowMs) {
         final seeded = _seedCount > 0 ? _seedSum / _seedCount : _minFloor;
         _floor = seeded.clamp(_minFloor, _floorCeiling);
@@ -150,8 +183,13 @@ class HesitationMeter {
     if (now - _armRealTime >= _maxGapMs) {
       // Quiet-speaker miss / the user never spoke — emit a CENSORED sentinel so
       // the server falls back to its observer for this turn (never 0/infinity).
+      // Story 7.6 (AC7) — clamp ≥ 0 so the confirmation-offset arithmetic can
+      // never yield a negative gap.
       onHesitation(
-        HesitationOnset(gapMs: (now - _gapStartTime).round(), censored: true),
+        HesitationOnset(
+          gapMs: math.max(0.0, now - _gapStartTime).round(),
+          censored: true,
+        ),
       );
       disarm();
       return;
@@ -164,7 +202,11 @@ class HesitationMeter {
       if (now - _aboveSince! >= _debounceMs) {
         final gap = _aboveSince! - _gapStartTime;
         if (gap >= _minGapMs) {
-          onHesitation(HesitationOnset(gapMs: gap.round(), censored: false));
+          // Story 7.6 (AC7) — clamp ≥ 0; a defensive guard so no future offset
+          // arithmetic can publish a negative gap.
+          onHesitation(
+            HesitationOnset(gapMs: math.max(0.0, gap).round(), censored: false),
+          );
         }
         // A sub-threshold gap (normal quick reply) is NOT a hesitation — close
         // the anchor silently.

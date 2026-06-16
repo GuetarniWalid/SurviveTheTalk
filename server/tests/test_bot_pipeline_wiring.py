@@ -807,6 +807,42 @@ def test_bot_wires_dynamic_exit_line_generator_into_patience_tracker() -> None:
     )
 
 
+def test_bot_teardown_merges_device_and_server_hesitations() -> None:
+    """Story 7.6 (AC6) — the teardown must feed `persist_debrief` the MERGED
+    hesitations (device-authoritative), NOT the bare server observer. This is
+    the source-text wiring guard for the 7.5 "merge never called" finding: a
+    revert to `hesitations=hesitation_observer.top_hesitations()` (the dormant
+    pre-7.6 wiring) fails here loudly.
+
+    Pairs with `test_persist_stores_device_sourced_hesitation_from_merge`
+    (test_debrief_teardown.py), which proves the merged device gap actually
+    reaches the persisted row. Source-text matching is fragile (renames break
+    it) — re-verify on a bot.py refactor.
+    """
+    source = _BOT_PATH.read_text(encoding="utf-8")
+    assert "merge_hesitation_sources" in source, (
+        "bot.py must import merge_hesitation_sources from "
+        "pipeline.device_hesitation_collector"
+    )
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    # The merge result — not the bare observer — is what feeds persist_debrief.
+    assert "hesitations=merge_hesitation_sources(" in code, (
+        "bot.py teardown must pass hesitations=merge_hesitation_sources(...) to "
+        "persist_debrief — a bare hesitation_observer.top_hesitations() is the "
+        "dormant pre-7.6 wiring (device source never used)"
+    )
+    assert "device_hesitation_collector.top_hesitations()" in code, (
+        "the merge must take the device collector's gaps as the authoritative "
+        "(first) source"
+    )
+    assert "hesitation_observer.top_hesitations()" in code, (
+        "the merge must take the server observer's gaps as the fallback "
+        "(second) source — its UNRESOLVED re-speak freezes are still added"
+    )
+
+
 def test_bot_sources_user_speech_timeout_from_settings() -> None:
     """Story 6.18 smoke gate (call_id=215) — the turn-endpoint timeout must be
     sourced from Settings (USER_SPEECH_TIMEOUT), not hardcoded, so it's tunable

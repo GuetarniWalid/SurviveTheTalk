@@ -314,6 +314,77 @@ def test_persist_skips_storage_when_assembled_blob_fails_contract(seeded, monkey
     assert progress["attempts"] == 1
 
 
+def test_persist_stores_device_sourced_hesitation_from_merge(seeded, monkeypatch):
+    """Story 7.6 (AC6/AC9) — the teardown-merge integration test.
+
+    A DEVICE-measured gap, merged with the server observer via the EXACT call
+    shape `bot.py` teardown uses (`merge_hesitation_sources(device, server)`),
+    flows into `persist_debrief` and lands in the stored debrief tagged
+    `source="device"` — and WINS the same-turn resolved server gap. This is the
+    permanent assertion closing the 7.5 "merge never called / device source
+    dormant" finding: a device gap now survives end-to-end into the persisted
+    row.
+    """
+    from pipeline.device_hesitation_collector import (
+        DeviceHesitationCollector,
+        merge_hesitation_sources,
+    )
+
+    class _FakeTranscript:
+        def __init__(self, transcript):
+            self.transcript = transcript
+
+    _user_id, call_id = seeded
+
+    # The LLM core echoes a context for the device gap's id (paired by id).
+    async def _core_with_device_context(**_kwargs):
+        core = dict(_CORE)
+        core["hesitation_contexts"] = [
+            {"hesitation_id": "d1", "context": "After the demand escalated"}
+        ]
+        return core
+
+    monkeypatch.setattr(
+        "pipeline.debrief_teardown.generate_debrief", _core_with_device_context
+    )
+
+    collector = DeviceHesitationCollector(
+        collector=_FakeTranscript(
+            [{"role": "character", "text": "Give me your wallet."}]
+        )
+    )
+    collector.record(gap_ms=6200, censored=False)  # a real device-measured freeze
+    # The server observer ALSO produced a (resolved) gap for the same turn — the
+    # device measure must WIN it, proving the merge prefers the device source.
+    server = [
+        {
+            "id": "h1",
+            "duration_sec": 6.0,
+            "preceding_character_line": "Give me your wallet.",
+            "resolved": True,
+            "source": "server",
+        }
+    ]
+    merged = merge_hesitation_sources(collector.top_hesitations(), server)
+
+    async def _go():
+        await persist_debrief(**_kwargs(call_id, hesitations=merged))
+        async with get_connection() as db:
+            return await get_debrief_by_call_id(db, call_id)
+
+    debrief = asyncio.run(_go())
+    stored = json.loads(debrief["debrief_json"])
+    assert stored["hesitations"] == [
+        {
+            "id": "d1",
+            "duration_sec": 6.2,
+            "context": "After the demand escalated",
+            "resolved": True,
+            "source": "device",
+        }
+    ]
+
+
 def test_persist_threads_checkpoint_breakdown(seeded, monkeypatch):
     """Story 7.5 B7 / Task 3.2 — the bot's met/missed checkpoint breakdown is
     stored verbatim in the debrief (the factual decomposition of the %)."""

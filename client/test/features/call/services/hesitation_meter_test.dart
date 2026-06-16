@@ -18,7 +18,7 @@ void main() {
     double snrThreshold = 2.5,
     int seedMs = 200,
     int debounceMs = 100,
-    int minGapMs = 3000,
+    int minGapMs = 4000, // Story 7.6 — aligned to the bot-side 4 s threshold
     int maxGapMs = 10000,
     int confirmationOffsetMs = 0,
     double floorCeiling = 4000.0,
@@ -44,12 +44,17 @@ void main() {
     }
   }
 
-  /// Seed the floor over EXACTLY the seed window (the 21st frame lands at
-  /// 200 ms and completes seeding), leaving no ambient frame in the listening
-  /// state that could falsely set the onset anchor.
-  void seedFloor(HesitationMeter meter, {double ambient = 10}) {
+  /// Seed the floor by driving the clock STRICTLY past the seed window, so
+  /// seeding completes by elapsed TIME — NOT by a frame index that happens to
+  /// land on the window edge (Story 7.6 re-pin to logic). Leaves the meter in
+  /// the listening state with the floor frozen at `ambient`.
+  void seedFloor(HesitationMeter meter, {double ambient = 10, int seedMs = 200}) {
     meter.arm();
-    feed(meter, ambient, 21); // frames at 0,10,…,200 ms → completes on the last
+    final armAt = now;
+    while (now <= armAt + seedMs) {
+      meter.onMicFrame(ambient);
+      now += 10;
+    }
   }
 
   setUp(() {
@@ -107,7 +112,7 @@ void main() {
     expect(emitted.single.gapMs, 5000);
   });
 
-  test('a sub-threshold gap (quick reply < 3 s) is NOT a hesitation', () {
+  test('a sub-threshold gap (quick reply < 4 s) is NOT a hesitation', () {
     final meter = makeMeter();
     seedFloor(meter, ambient: 10);
     now = 1500; // user replies after 1.5 s
@@ -127,16 +132,20 @@ void main() {
 
   test('arm is idempotent — a second arm without disarm is ignored', () {
     final meter = makeMeter();
-    meter.arm();
-    final armed = meter.isArmed;
+    meter.arm(); // anchor at t=0
+    expect(meter.isArmed, isTrue);
     now = 50;
-    meter.arm(); // ignored — no re-seed
-    expect(armed, isTrue);
-    // Seed then measure a normal gap to prove the FIRST arm's anchor is intact.
-    feed(meter, 10, 25);
+    meter.arm(); // state != idle → ignored, the anchor must NOT move to t=50
+    // Complete seeding by TIME (not a frame count), then measure a real freeze.
+    while (now <= 200) {
+      meter.onMicFrame(10);
+      now += 10;
+    }
     now = 4000;
     feed(meter, 100, 15);
-    expect(emitted.single.gapMs, 4000); // measured from the first arm (t=0)
+    // gap measured from the FIRST arm (t=0); a took-effect second arm would
+    // anchor at t=50 and yield 3950.
+    expect(emitted.single.gapMs, 4000);
   });
 
   test('idle frames are ignored (only listens after arm)', () {
@@ -166,5 +175,56 @@ void main() {
     feed(meter, 600, 15); // snr vs ceiling = 600/200 = 3 (> 2.5) → onset
     expect(emitted, hasLength(1));
     expect(emitted.single.censored, isFalse);
+  });
+
+  test('Story 7.6: the emitted gap is clamped to >= 0', () {
+    // The measured-gap clamp is purely defensive: a negative raw gap is
+    // normally rejected by the `gap >= minGap` gate (minGap >= 0). To OBSERVE
+    // the clamp we open that gate with a negative minGap, then drive a negative
+    // raw gap via a pathological negative confirmation offset (gapStart pushed
+    // AFTER the arm). Without the clamp this would publish gapMs = −1500.
+    final meter = makeMeter(confirmationOffsetMs: -2000, minGapMs: -2000);
+    seedFloor(meter); // arm at t=0 → gapStart = 0 − (−2000) = +2000
+    now = 500; // onset BEFORE gapStart → raw gap = 500 − 2000 = −1500
+    feed(meter, 100, 15);
+    expect(emitted, hasLength(1));
+    expect(emitted.single.gapMs, 0); // clamped, NOT −1500
+    expect(emitted.single.gapMs, greaterThanOrEqualTo(0));
+  });
+
+  test('Story 7.6: the censored sentinel gap is also clamped to >= 0', () {
+    // An offset larger than the whole max-gap budget would make the censored
+    // elapsed-budget gap negative without the clamp.
+    final meter = makeMeter(confirmationOffsetMs: -15000, maxGapMs: 10000);
+    seedFloor(meter); // arm at t=0 → gapStart = +15000
+    // Never speak; ride out the 10 s max-gap budget → censored sentinel.
+    feed(meter, 10, 1100); // 1100 × 10 ms = 11 s, crosses maxGap
+    expect(emitted, hasLength(1));
+    expect(emitted.single.censored, isTrue);
+    expect(emitted.single.gapMs, greaterThanOrEqualTo(0)); // clamped, not negative
+  });
+
+  test('Story 7.6: disarm() clears the seeded floor (no stale floor on re-arm)',
+      () {
+    final meter = makeMeter();
+    seedFloor(meter, ambient: 100); // floor seeded to ~100
+    expect(meter.debugFloor, greaterThan(0));
+    meter.disarm();
+    expect(meter.debugFloor, 0); // reset on disarm, not left stale for re-arm
+  });
+
+  test('Story 7.6: the floor is seeded only from ambient, then frozen', () {
+    final meter = makeMeter();
+    seedFloor(meter, ambient: 10);
+    expect(meter.debugFloor, closeTo(10, 0.0001)); // seeded from ambient frames
+    now = 4000;
+    // Two loud frames WITHIN the debounce window — onset is detected-but-not-yet
+    // -confirmed, so it does NOT disarm (which would reset the floor). Proves the
+    // floor stays frozen at the ambient seed while listening (a creeping floor
+    // would suppress later onsets — an under-production cause).
+    meter.onMicFrame(100);
+    meter.onMicFrame(100); // same `now` → < debounce → no onset confirmed
+    expect(meter.isArmed, isTrue);
+    expect(meter.debugFloor, closeTo(10, 0.0001));
   });
 }

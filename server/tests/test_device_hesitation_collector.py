@@ -34,7 +34,7 @@ def test_record_accepts_a_gap_and_shapes_the_output():
 def test_record_ignores_censored_subthreshold_and_non_numeric():
     coll = DeviceHesitationCollector(collector=_FakeCollector([]))
     coll.record(gap_ms=6000, censored=True)  # censored → the server covers it
-    coll.record(gap_ms=2000, censored=False)  # 2 s < 3 s threshold
+    coll.record(gap_ms=2000, censored=False)  # 2 s < 4 s threshold
     coll.record(gap_ms=None, censored=False)  # non-numeric
     coll.record(gap_ms=True, censored=False)  # bool is not a gap
     assert coll.top_hesitations() == []
@@ -61,6 +61,19 @@ def test_merge_falls_back_to_server_when_no_device_gaps():
         }
     ]
     assert merge_hesitation_sources([], server) == server
+
+
+def test_merge_no_device_branch_returns_a_fresh_list_not_the_input():
+    """Story 7.6 (AC5) — the no-device fallback returns `list(server)`, a NEW
+    list with the same contents, NOT the caller's reference. Mutating the merge
+    result must never reach back into the observer's internal list (the latent
+    aliasing the 7.5 review flagged)."""
+    server = [{"id": "h1", "duration_sec": 5.0, "resolved": True, "source": "server"}]
+    merged = merge_hesitation_sources([], server)
+    assert merged == server  # same contents…
+    assert merged is not server  # …but a distinct list object
+    merged.append({"id": "x"})  # mutating the result…
+    assert len(server) == 1  # …leaves the observer's list untouched
 
 
 def test_merge_prefers_device_and_adds_server_unresolved_freezes():

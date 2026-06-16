@@ -44,7 +44,24 @@ const String _kOnsetRmsChannel = 'com.surviveTheTalk.client/onset_rms';
 
 /// The Rive REST viseme id (mouth closed / silent). Any OTHER viseme means the
 /// character is speaking → disarm the onset meter (the arming gate).
+///
+/// ⚠️ Story 7.6 (AC8) — the literal `0` is COUPLED to the Rive viseme id scheme
+/// (REST == 0 in the current puppet). A future Rive re-id that moves REST off 0
+/// would SILENTLY break the arming gate: the meter would disarm on the new REST
+/// id and stay ARMED while the character speaks, so the character's audio
+/// bleeding into the mic could be read as the user's onset (corrupt hesitation
+/// data, not a visual glitch). If the viseme id scheme changes, this constant
+/// MUST move with it.
 const int _kRestVisemeId = 0;
+
+/// Visible for tests: parse a raw `onset_rms` `EventChannel` payload to a
+/// double, or null when the native side sent a non-`num` (a contract break the
+/// listener logs rather than silently dropping — Story 7.6 AC8). Top-level +
+/// pure so a unit test can exercise the non-`num` path without a live native
+/// channel or a `CallScreen` instance.
+@visibleForTesting
+double? onsetRmsFromEvent(Object? event) =>
+    event is num ? event.toDouble() : null;
 
 /// Story 6.3 — typed builder for `DataChannelHandler`. Production wires
 /// `DataChannelHandler.new`; tests inject a counting / mock-returning
@@ -511,18 +528,29 @@ class _CallScreenState extends State<CallScreen> {
           .receiveBroadcastStream()
           .listen(
             (event) {
-              if (event is num) {
-                final rms = event.toDouble();
-                if (_kHesitationDiag) {
-                  _onsetRmsFrames++;
-                  if (rms > _onsetRmsWindowMax) _onsetRmsWindowMax = rms;
-                  if (_onsetRmsFrames % 150 == 0) {
-                    _publishOnsetDiag(room, _onsetRmsWindowMax, meter.isArmed);
-                    _onsetRmsWindowMax = 0;
-                  }
-                }
-                meter.onMicFrame(rms);
+              final rms = onsetRmsFromEvent(event);
+              if (rms == null) {
+                // Story 7.6 (AC8) — a non-num event means the native onset_rms
+                // contract changed (a future flutter_webrtc / AudioCaptureChannel
+                // rename). Surface it instead of silently dropping: a silent drop
+                // here corrupts DATA (the hesitation number), not just visuals.
+                dev.log(
+                  'CallScreen: onset_rms unexpected non-num event: '
+                  '${event.runtimeType}',
+                  name: 'call.onset',
+                  level: 900,
+                );
+                return;
               }
+              if (_kHesitationDiag) {
+                _onsetRmsFrames++;
+                if (rms > _onsetRmsWindowMax) _onsetRmsWindowMax = rms;
+                if (_onsetRmsFrames % 150 == 0) {
+                  _publishOnsetDiag(room, _onsetRmsWindowMax, meter.isArmed);
+                  _onsetRmsWindowMax = 0;
+                }
+              }
+              meter.onMicFrame(rms);
             },
             onError: (Object e, StackTrace _) {
               dev.log(

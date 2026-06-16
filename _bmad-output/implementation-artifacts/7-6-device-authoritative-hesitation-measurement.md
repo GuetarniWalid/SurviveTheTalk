@@ -1,6 +1,6 @@
 # Story 7.6: Device-Authoritative Hesitation Measurement
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -116,40 +116,51 @@ fixed, not replaced**:
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Re-arm diagnostics + confirm the root cause on-device (AC1).** Do this FIRST; the fix follows the evidence.
-  - [ ] Build the client with `--dart-define=HESITATION_DIAG=true` (flips `_kHesitationDiag`, enabling the `onset_rms_alive` periodic publish in `call_screen.dart`).
-  - [ ] Set server env `HESITATION_DIAG=1` on the VPS (`/opt/survive-the-talk/.env`) and `systemctl restart pipecat.service` (re-arms the `DIAG hesitation_onset` + `DIAG onset_rms` logs in `bot.py`).
-  - [ ] Run ONE diagnostic Pixel 9 call with a deliberate ~6 s freeze; `journalctl -u pipecat.service` and classify: tap-dead (no `onset_rms_alive` / `peak_max_rms == 0`) vs meter-silent (`peak_max_rms > 0`, `armed` toggling, but no `hesitation_onset`). Record the verdict in the Debug Log. (This is an agent-run call ONLY if the agent can place it; otherwise it folds into the Pixel 9 smoke gate as the first call — see the smoke script.)
+> **Dev status (2026-06-16).** All CODE tasks (2–6) are complete and every
+> automated gate is green (client `flutter analyze` clean + `flutter test` 553;
+> server `ruff` clean + `pytest` 908). The code targets BOTH under-production
+> hypotheses (dead tap → Task 2 retry; contaminated/stale floor → Task 3
+> disarm-reset + seed-from-ambient + clamp), because the on-device diagnostic
+> (Task 1) that picks the primary cause can only run on the Pixel 9. **Task 1
+> (the diagnostic call) and Task 7 (on-device tuning + the NOISE money-test) ARE
+> the Pixel 9 smoke gate — Walid's gate.** The agent does the deploy + env flip +
+> diagnostic APK build as prep (see the smoke-gate prep block below); the calls
+> are Walid's. The story moves to `review` with that gate owed.
 
-- [ ] **Task 2 — Fix the native record-side tap (AC2, AC8).** `AudioCaptureChannel.kt`.
-  - [ ] In `tryAttachCallback`, replace the one-shot soft-fail with a **bounded retry**: when `sharedSingleton` / `methodCallHandler` / `recordSamplesReadyCallbackAdapter` is still null, re-post the attach on `mainHandler` with a short backoff (e.g. ~100–250 ms) up to a capped number of attempts; stop on first success. Keep the existing `attachedCallback != null` idempotency guard. Log a successful LATE attach at INFO and exhaustion at WARN/ERROR ("onset tap UNAVAILABLE — server fallback covers hesitations").
-  - [ ] `rmsOf` honors `channelCount`: don't treat interleaved stereo as mono (de-interleave or average channels) so the RMS — and thus the SNR the Dart meter computes — isn't skewed.
-  - [ ] Bound the per-frame `mainHandler.post` so a 100 Hz flood can't starve the main thread, and guard against a `post` landing after `onCancel`/`stopListening` (the `eventSink` null-check exists; ensure no posted runnable references a stale sink). Throttle only the DELIVERY cadence — never coalesce in a way that hides onset energy.
+- [ ] **Task 1 — Re-arm diagnostics + confirm the root cause on-device (AC1). _(Pixel 9 gate — Walid; agent does the prep.)_** Do this FIRST on-device; the fix already covers both causes.
+  - [x] The `HESITATION_DIAG` plumbing already exists on BOTH ends (client `onset_rms_alive` publish behind `_kHesitationDiag`; server `DIAG hesitation_onset` / `DIAG onset_rms` logs behind `HESITATION_DIAG=1`) — re-armed via the prep block, no code change needed.
+  - [ ] _(agent prep)_ Build the client with `--dart-define=HESITATION_DIAG=true`; set server env `HESITATION_DIAG=1` + `systemctl restart pipecat.service`.
+  - [ ] _(Walid, in the smoke gate)_ Run ONE diagnostic Pixel 9 call with a deliberate ~6 s freeze; `journalctl -u pipecat.service` and classify tap-dead (no `onset_rms_alive` / `peak_max_rms == 0`) vs meter-silent (`peak_max_rms > 0`, `armed` toggling, but no `hesitation_onset`). Record the verdict in the Debug Log. (Folds into the smoke script as CALL 1.)
 
-- [ ] **Task 3 — Fix the Dart onset detector (AC1, AC4-noise, AC7).** `hesitation_meter.dart`.
-  - [ ] Clamp the emitted gap to ≥ 0 (`max(0, gap)`) on BOTH the measured (`onHesitation(... gapMs: gap …)`) and censored (`now - _gapStartTime`) paths — defensive against any future offset arithmetic.
-  - [ ] `disarm()` resets `_seedSum`, `_seedCount`, `_floor`, `_aboveSince` (today it only sets `_state = idle`, leaving stale accumulators for the next `arm()`).
-  - [ ] Eliminate seed-window contamination: ensure the floor is seeded ONLY from genuine post-character ambient frames (the echo-tail/seed guard already blocks onset during seeding — verify no pre-arm or TTS-tail frame can enter `_seedSum`, and that the seed window length vs the real REST-confirmation timing doesn't ingest the character's decaying audio). If the diagnostics (Task 1) prove contamination is the cause, this is THE fix.
-  - [ ] Reconcile the 600 ms `confirmationOffset`: keep it only to the extent the Pixel 9 tuning (Task 7) shows it makes the gap reflect the FELT pause; the fixed estimate is the prime suspect for the ±0.5 s accuracy AC. Document the final value + why.
-  - [ ] Reconcile the threshold/minGap semantics: the client emits at `minGap = 3 s` but the server `DeviceHesitationCollector` threshold is 4.0 s (and `HesitationObserver` is 4.0 s). A 3–4 s device gap is emitted then dropped server-side. Either align the client `minGap` to 4 s or document the intentional margin (and fix the stale "matches `minGap`" docstring in `device_hesitation_collector.py` and the "2 s < 3 s threshold" test comment).
+- [x] **Task 2 — Fix the native record-side tap (AC2, AC8).** `AudioCaptureChannel.kt`. _(native — validated on the Pixel 9 gate; not exercised by `flutter test`.)_
+  - [x] `tryAttachCallback` now does a **bounded retry** (≤25 × 150 ms ≈ 3.75 s) on a not-warm record path (`sharedSingleton`/`methodCallHandler`/`recordSamplesReadyCallbackAdapter` null → `NOT_READY` → re-post on `mainHandler`); a reflection error (SDK rename) → `FAILED`, not retried. Keeps the `attachedCallback != null` idempotency guard. Logs a LATE attach at INFO and either terminal at WARN ("onset tap UNAVAILABLE — server fallback covers hesitations").
+  - [x] `rmsOf(data, channelCount)` averages interleaved channels to mono per frame (stereo no longer skews the RMS / SNR); identical to before for mono.
+  - [x] The per-frame delivery is bounded by an `AtomicBoolean` — at most ONE main-thread message is queued at a time (no backlog → no starvation); under backpressure frames fold into the PEAK RMS (cadence throttled, onset energy never hidden). The delivery runnable re-reads the `@Volatile eventSink` so a post landing after `onCancel` is a no-op; `deliverScheduled` is reset on cancel/stop.
 
-- [ ] **Task 4 — Harden the client wiring (AC8).** `call_screen.dart`.
-  - [ ] The `onset_rms` `EventChannel` listener currently silently ignores a non-`num` event (`if (event is num)`); add an `else` that `dev.log`s the unexpected type (gated like the other `call.onset` diagnostics) so a future native contract change surfaces.
-  - [ ] `_kRestVisemeId = 0` already has a doc comment ("REST = mouth closed → any other id = character speaking → disarm"); ADD the explicit coupling warning — the literal `0` is bound to the Rive viseme id scheme, so a future Rive re-id silently breaks the arming gate. (Optional: reference the single source of the REST id rather than re-hardcoding it.)
+- [x] **Task 3 — Fix the Dart onset detector (AC1, AC4-noise, AC7).** `hesitation_meter.dart`.
+  - [x] The emitted gap is clamped to ≥ 0 (`math.max(0.0, …)`) on BOTH the measured and censored paths — defensive against any future offset arithmetic.
+  - [x] `disarm()` now resets `_seedSum`, `_seedCount`, `_floor`, `_aboveSince` (was leaving stale accumulators) so a re-arm can never inherit a stale floor.
+  - [x] Seed-window contamination documented + verified clean: `arm()` fires at `onSilenceConfirmed` (AFTER the character's audio ended), so the seed window is genuine ambient — no TTS tail; an idle meter no-ops frames, so no pre-arm frame enters `_seedSum`. (The diagnostic confirms which cause dominated on-device; the code defends both.)
+  - [x] `confirmationOffset` (600 ms) kept + documented as COUPLED to the viseme REST-confirmation window (the same window driving `playback_idle`); the gap-≥-0 clamp makes the arithmetic safe; the exact value is reconciled against the ±0.5 s target on the Pixel 9 (Task 7).
+  - [x] `minGap` aligned to **4 s** (was 3 s) to match the bot-side `DeviceHesitationCollector` / `HesitationObserver` 4.0 s threshold (a 3–4 s gap was emitted then silently dropped server-side); fixed the stale "2 s < 3 s threshold" test comment; the collector docstring ("matches the client meter's own `minGap`") is now accurate.
 
-- [ ] **Task 5 — Wire the teardown merge (AC5, AC6).** `bot.py` + `device_hesitation_collector.py`.
-  - [ ] In `device_hesitation_collector.py::merge_hesitation_sources`, change the no-device branch `return server` → `return list(server)` (de-alias — the caller must not mutate the observer's internal list).
-  - [ ] In `bot.py` teardown (the `persist_debrief(... hesitations=hesitation_observer.top_hesitations() …)` call at ≈L950), replace the argument with `merge_hesitation_sources(device_hesitation_collector.top_hesitations(), hesitation_observer.top_hesitations())`. Update the now-stale "stays wired but DORMANT" comment block (≈L941-949) to describe the LIVE device-authoritative behavior. Keep the whole thing inside the existing `try/except` (a hesitation-merge failure must never crash teardown).
+- [x] **Task 4 — Harden the client wiring (AC8).** `call_screen.dart`.
+  - [x] The `onset_rms` listener now routes through a pure `onsetRmsFromEvent` seam; a non-`num` event returns null and is `dev.log`'d (`call.onset`, level 900) instead of silently dropped — a future native contract change surfaces.
+  - [x] `_kRestVisemeId = 0` gained an explicit ⚠️ coupling warning: the literal `0` is bound to the Rive viseme id scheme; a future re-id that moves REST off 0 would silently break the arming gate (and corrupt hesitation DATA, not just visuals).
 
-- [ ] **Task 6 — Tests (AC9).**
-  - [ ] `hesitation_meter_test.dart`: re-pin `seedFloor` and `arm-idempotent` to assert by logic; add gap-≥-0-clamp, `disarm()`-resets-accumulators, and floor-seeded-only-from-ambient tests; keep the MONEY TEST green.
-  - [ ] `call_screen` (or a focused service test): the non-`num` `onset_rms` event logs rather than silently drops.
-  - [ ] Server: extend `test_device_hesitation_collector.py` (de-alias regression — mutating the merge result must not mutate the input `server` list) AND add a teardown-merge integration test that drives a device `hesitation_onset` + a server gap through to `persist_debrief` and asserts a `source: "device"` entry is what gets persisted (mock `persist_debrief`/DB; this closes the "merge never called" review finding with a permanent assertion).
+- [x] **Task 5 — Wire the teardown merge (AC5, AC6).** `bot.py` + `device_hesitation_collector.py`.
+  - [x] `merge_hesitation_sources` no-device branch returns `list(server)` (de-aliased).
+  - [x] `bot.py` teardown now passes `hesitations=merge_hesitation_sources(device_hesitation_collector.top_hesitations(), hesitation_observer.top_hesitations())` (device-authoritative); the stale "stays wired but DORMANT" comment block + the `on_data_received` comment are refreshed to the LIVE behavior; still inside the existing `try/except` (a merge failure can't crash teardown).
 
-- [ ] **Task 7 — On-device tuning + smoke (AC3, AC4, AC10).**
-  - [ ] On the Pixel 9 with `HESITATION_DIAG` armed, tune `confirmationOffset` / `snrThreshold` / `seedWindow` / `debounce` against stopwatch-timed freezes until the debrief reads within ±0.5 s on a good connection.
-  - [ ] Run the Pixel 9 smoke gate (script below), INCLUDING the noise money-test (steady TV/fan → a real freeze still reported).
-  - [ ] After sign-off: turn `HESITATION_DIAG` back OFF on the VPS (and ship the prod client WITHOUT the dart-define) so prod logs stay clean — the diagnostics are a smoke-gate tool, not a prod feature.
+- [x] **Task 6 — Tests (AC9).**
+  - [x] `hesitation_meter_test.dart`: `seedFloor` + `arm-idempotent` re-pinned to assert by TIME/logic (not a frame index landing on the window edge); added gap-≥-0-clamp (measured + censored), `disarm()`-resets-the-floor (via a new `debugFloor` test getter), and floor-seeded-only-from-ambient-then-frozen tests; the MONEY TEST stays green.
+  - [x] `call_screen_onset_rms_test.dart`: the `onsetRmsFromEvent` seam — num → double, non-`num` → null (the logged contract-break path).
+  - [x] Server: `test_device_hesitation_collector.py` de-alias regression (mutating the merge result must not touch the input `server` list) + `test_debrief_teardown.py` teardown-merge integration (a device `hesitation_onset` + a server gap merged via the exact bot.py call shape → `persist_debrief` → persisted `source: "device"` row, winning the same-turn server gap) + `test_bot_pipeline_wiring.py` source-text wiring guard that the teardown feeds `merge_hesitation_sources(...)`, not the bare observer.
+
+- [ ] **Task 7 — On-device tuning + smoke (AC3, AC4, AC10). _(Pixel 9 gate — Walid + agent post-sign-off cleanup.)_**
+  - [ ] _(Walid)_ On the Pixel 9 with `HESITATION_DIAG` armed, tune `confirmationOffset` / `snrThreshold` / `seedWindow` / `debounce` against stopwatch-timed freezes until the debrief reads within ±0.5 s on a good connection.
+  - [ ] _(Walid)_ Run the Pixel 9 smoke gate (script below), INCLUDING the noise money-test (steady TV/fan → a real freeze still reported).
+  - [ ] _(agent, after sign-off)_ Turn `HESITATION_DIAG` back OFF on the VPS (and ship the prod client WITHOUT the dart-define) so prod logs stay clean — the diagnostics are a smoke-gate tool, not a prod feature.
 
 ## Smoke Test Gate (Server / Deploy Story)
 
@@ -266,12 +277,46 @@ fixed, not replaced**:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-8 (1M context) — dev-story 2026-06-16.
 
 ### Debug Log References
 
-<!-- Task 1: record the diagnostic verdict — tap-dead vs meter-silent — with the journalctl evidence. -->
+- Diagnostic verdict (tap-dead vs meter-silent): _PENDING the Pixel 9 gate_ — Task 1's call runs as CALL 1 of the smoke script with `HESITATION_DIAG` armed. The code defends BOTH causes, so the verdict informs Task 7 tuning, not a code branch.
+- Gate output this session: client `flutter analyze` → "No issues found!"; client `flutter test` → 553 passed (+6 new); server `ruff check .` + `ruff format --check .` → clean; server `pytest` → 908 passed (+3 new).
 
 ### Completion Notes List
 
+**Scope shipped (code, all gates green):** Tasks 2–6. The on-device diagnostic (Task 1) + tuning/smoke (Task 7) are the Pixel 9 gate — Walid's; the agent does the deploy + `HESITATION_DIAG` flip + diagnostic-APK build as prep.
+
+- **Task 2 (native, `AudioCaptureChannel.kt`)** — bounded retry (`NOT_READY`/`FAILED`/`ATTACHED` result; ≤25 × 150 ms; reflection error not retried; LATE attach INFO, exhaustion WARN); `rmsOf(data, channelCount)` averages interleaved channels to mono (mono unchanged); delivery bounded by an `AtomicBoolean` (≤1 queued main-thread message; backpressure → PEAK-coalesce, onset energy preserved; post-after-cancel is a no-op). Not exercised by `flutter test` — validated on the Pixel 9 gate.
+- **Task 3 (`hesitation_meter.dart`)** — gap clamped ≥ 0 on both paths (`math.max`); `disarm()` resets `_seedSum/_seedCount/_floor/_aboveSince`; seed-from-ambient documented + verified (arm fires post-audio-end, idle no-ops pre-arm frames); `confirmationOffset` 600 ms documented as coupled to the REST-confirmation window (final value reconciled on-device); `minGap` aligned to 4 s to match the bot threshold.
+- **Task 4 (`call_screen.dart`)** — `onsetRmsFromEvent` testable seam; non-`num` event logged (`call.onset`, level 900), not dropped; `_kRestVisemeId` coupling ⚠️ comment.
+- **Task 5 (`bot.py` + `device_hesitation_collector.py`)** — teardown is now `hesitations=merge_hesitation_sources(device…, observer…)` (device-authoritative, server-unresolved freezes still added, fallback when no device gaps); no-device branch de-aliased to `list(server)`; stale DORMANT comments refreshed; merge stays inside the teardown `try/except`.
+- **Task 6 (tests)** — meter tests re-pinned to time/logic; new clamp / disarm-reset / ambient-floor / onset-rms-seam tests; server de-alias regression + teardown-merge integration (device gap → persisted `source:"device"` row) + bot-wiring source-text guard.
+- **No migration** (per spec) — `debriefs.hesitations` already stores the JSON; `test_migrations` untouched/green.
+
+**Owed for `review → done`:** the formal `/bmad-code-review` AND the Pixel 9 smoke gate (incl. the NOISE money-test). Whichever clears last triggers the flip (reviewer).
+
 ### File List
+
+**Client**
+- `client/android/app/src/main/kotlin/com/surviveTheTalk/client/AudioCaptureChannel.kt` (modified — bounded retry, channelCount-aware RMS, bounded delivery)
+- `client/lib/features/call/services/hesitation_meter.dart` (modified — gap clamp, disarm reset, minGap 4 s, debugFloor getter, docs)
+- `client/lib/features/call/views/call_screen.dart` (modified — `onsetRmsFromEvent` seam + non-num log, `_kRestVisemeId` coupling comment)
+- `client/test/features/call/services/hesitation_meter_test.dart` (modified — re-pinned helpers + 4 new tests)
+- `client/test/features/call/views/call_screen_onset_rms_test.dart` (new — onset-rms parse seam)
+
+**Server**
+- `server/pipeline/device_hesitation_collector.py` (modified — `merge_hesitation_sources` no-device de-alias)
+- `server/pipeline/bot.py` (modified — import + teardown merge wiring + refreshed comments)
+- `server/tests/test_device_hesitation_collector.py` (modified — de-alias regression + stale comment fix)
+- `server/tests/test_debrief_teardown.py` (modified — teardown-merge integration test)
+- `server/tests/test_bot_pipeline_wiring.py` (modified — teardown-merge source-text wiring guard)
+
+**Docs / tracking**
+- `_bmad-output/implementation-artifacts/7-6-device-authoritative-hesitation-measurement.md` (this story)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (`ready-for-dev` → `in-progress` → `review`)
+
+### Change Log
+
+- 2026-06-16 — dev-story: implemented Tasks 2–6 (device-authoritative hesitation: native tap retry + channelCount RMS + bounded delivery; Dart meter clamp/disarm-reset/minGap-4s/seed-from-ambient; call_screen non-num log seam; bot.py teardown merge wired + de-alias). +9 tests (6 client, 3 server). Gates green (analyze clean / flutter 553 / ruff clean / pytest 908). Status `in-progress` → `review`. Owed: `/bmad-code-review` + Pixel 9 smoke gate (incl. NOISE money-test).

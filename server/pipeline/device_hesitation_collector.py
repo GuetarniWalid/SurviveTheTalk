@@ -121,9 +121,14 @@ def merge_hesitation_sources(
       observer's UNRESOLVED freezes (the re-speak gaps the device cannot see, C2
       — the meter disarms when the character speaks again). Re-rank by duration,
       cap at `top_n`.
+
+    Story 7.6 (AC5) — the no-device branch returns a FRESH list (`list(server)`),
+    never the caller's `server` reference: the teardown merge result must be
+    independent of the observer's internal list so a later mutation of either
+    can't alias the other.
     """
     if not device:
-        return server
+        return list(server)
     server_unresolved = [h for h in server if not h.get("resolved", True)]
     merged = sorted(
         [*device, *server_unresolved],
