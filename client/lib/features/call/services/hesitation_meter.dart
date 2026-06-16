@@ -76,14 +76,16 @@ class HesitationMeter {
     // a sub-ms non-issue at real freeze durations.)
     Duration minGap = const Duration(seconds: 4),
     Duration maxGap = const Duration(seconds: 10),
-    // The viseme stack confirms silence ~600 ms AFTER the audio actually ended
-    // (the REST-viseme confirmation window — the SAME window that drives
-    // `playback_idle`). Subtract it from the gap start so the measured gap
-    // reflects the FELT pause (from when the user's EAR heard silence), not the
-    // confirmation lag. Story 7.6: the value is COUPLED to that window; the
-    // gap-≥-0 clamp below makes any future offset arithmetic safe, and the exact
-    // value is reconciled against the ±0.5 s accuracy target on the Pixel 9.
-    Duration confirmationOffset = const Duration(milliseconds: 600),
+    // The meter ARMS at `onSilenceConfirmed`, which fires only AFTER the
+    // character's audio has finished playing out of the phone's jitter buffer
+    // AND the REST-viseme silence window has elapsed — a lag the gap must NOT
+    // count. Subtract it from the gap start so the measured gap reflects the
+    // FELT pause (from when the user's EAR heard silence), not that confirmation
+    // lag. Story 7.6 Pixel 9 calibration: a stopwatch-timed 6.0 s freeze read
+    // 4.9 s at 600 ms (a 1.1 s deficit), corroborated by a measured ~1.7 s
+    // TTS-stop → playback_idle lag, so the offset is 1700 ms. The gap-≥-0 clamp
+    // below keeps the arithmetic safe at any value.
+    Duration confirmationOffset = const Duration(milliseconds: 1700),
     double Function()? clockMs,
   }) : _snrThreshold = snrThreshold,
        _minFloor = minFloor,

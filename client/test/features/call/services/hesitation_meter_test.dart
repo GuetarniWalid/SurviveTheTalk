@@ -155,14 +155,16 @@ void main() {
     expect(meter.isArmed, isFalse);
   });
 
-  test('confirmation offset compensates the ~600 ms viseme lag', () {
-    final meter = makeMeter(confirmationOffsetMs: 600);
-    seedFloor(meter, ambient: 10); // arm at t=0, gapStart = -600
-    now = 4000;
-    feed(meter, 100, 15); // onset at 4000
-    // gap = onset(4000) − gapStart(−600) = 4600 (the felt pause, not the
-    // confirmation-lagged 4000).
-    expect(emitted.single.gapMs, 4600);
+  test('confirmation offset adds the calibrated playout/confirmation lag', () {
+    // Story 7.6 — the production default (1700 ms, Pixel 9-calibrated)
+    // compensates the playout + REST-confirmation lag so the gap reflects the
+    // FELT pause, not the confirmation-lagged onset.
+    final meter = makeMeter(confirmationOffsetMs: 1700);
+    seedFloor(meter, ambient: 10); // arm at t=0, gapStart = -1700
+    now = 5000;
+    feed(meter, 100, 15); // onset at 5000
+    // gap = onset(5000) − gapStart(−1700) = 6700 (the felt pause, not 5000).
+    expect(emitted.single.gapMs, 6700);
   });
 
   test('the floor ceiling protects a quiet speaker in a moderately loud room',
