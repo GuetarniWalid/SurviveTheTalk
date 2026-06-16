@@ -243,7 +243,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('tapping the checkpoint summary opens the sheet, missed first', (
+    testWidgets('tapping the checkpoint summary opens the sheet, done first', (
       tester,
     ) async {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
@@ -255,11 +255,11 @@ void main() {
       await tester.tap(find.text('1 of 2 reached'));
       await tester.pumpAndSettle();
 
-      // Both beats now render in the sheet, the MISSED one ('Refuse to comply')
-      // listed before the met one ('Greet the mugger').
-      final missed = tester.getTopLeft(find.text('Refuse to comply')).dy;
+      // Both beats now render in the sheet, the DONE one ('Greet the mugger')
+      // listed before the not-done one ('Refuse to comply').
       final met = tester.getTopLeft(find.text('Greet the mugger')).dy;
-      expect(missed, lessThan(met));
+      final missed = tester.getTopLeft(find.text('Refuse to comply')).dy;
+      expect(met, lessThan(missed));
       expect(tester.takeException(), isNull);
     });
 

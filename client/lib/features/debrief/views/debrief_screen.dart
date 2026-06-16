@@ -805,20 +805,26 @@ class _CheckpointMarker extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: met ? AppColors.accent : Colors.transparent,
+        // Not-done = an EMPTY ring ("to do"). The border must CONTRAST with the
+        // dark sheet surface (avatarBg), so textSecondary — not avatarBg, which
+        // rendered the ring invisible and left only a stray dash (Walid 2026-06-16).
         border: met
             ? null
             : Border.all(
-                color: AppColors.avatarBg,
+                color: AppColors.textSecondary,
                 width: _kCheckpointMarkerBorder,
               ),
       ),
-      child: Icon(
-        met ? Icons.check : Icons.remove,
-        size: _kCheckpointGlyphSize,
-        // Accent is a FILL; the glyph sits in the background ink (met) — never
-        // accent-as-icon-color floating on the dark surface.
-        color: met ? AppColors.background : AppColors.textSecondary,
-      ),
+      // Done = a check inside the filled circle; not-done = an empty ring, no glyph.
+      child: met
+          ? const Icon(
+              Icons.check,
+              size: _kCheckpointGlyphSize,
+              // Accent is a FILL; the check sits in the background ink — never
+              // accent-as-icon-color floating on the dark surface.
+              color: AppColors.background,
+            )
+          : null,
     );
   }
 }
@@ -1042,10 +1048,11 @@ class _CheckpointsSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final metCount = checkpoints.where((c) => c.met).length;
-    // Missed first (the actionable beats), then met.
+    // Done first (they happened first, in author order), then the not-done at
+    // the bottom — Walid 2026-06-16.
     final ordered = <DebriefCheckpoint>[
-      ...checkpoints.where((c) => !c.met),
       ...checkpoints.where((c) => c.met),
+      ...checkpoints.where((c) => !c.met),
     ];
     return DecoratedBox(
       decoration: const BoxDecoration(
