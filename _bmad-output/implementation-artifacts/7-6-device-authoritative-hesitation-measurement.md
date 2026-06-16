@@ -1,6 +1,6 @@
 # Story 7.6: Device-Authoritative Hesitation Measurement
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
