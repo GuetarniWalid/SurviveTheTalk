@@ -106,6 +106,43 @@ class Settings(BaseSettings):
     resend_from_email: str = "noreply@survivethetalk.com"
     resend_from_name: str = "surviveTheTalk"
 
+    # Story 8.1 — In-app-purchase / subscription validation (StoreKit 2 +
+    # Google Play Billing). All optional (empty / None defaults) so a deploy
+    # without store credentials still BOOTS — the validators raise a clean,
+    # shaped 503 at request time when their platform's config is absent
+    # (fail-loud per-request, never an optimistic tier grant on a misconfig).
+    # Secrets live in `/opt/survive-the-talk/.env`, applied via
+    # `systemctl restart pipecat.service`. The store products must be created
+    # in App Store Connect + Google Play Console (Walid-owned, blocks the
+    # on-device smoke gate — D4).
+    #
+    # Apple: offline StoreKit 2 JWS verification needs only `apple_bundle_id`
+    # (+ Apple's root certs, bundled in `billing/apple_roots.py`).
+    # `apple_app_apple_id` is the numeric App Store app id, REQUIRED only when
+    # verifying a PRODUCTION transaction (Sandbox does not need it); iOS
+    # production validation is itself gated until Story 10-4 (no iOS pipeline).
+    # The App Store Server API key fields (issuer/key/p8) are reserved for the
+    # future online revocation / renewal path (Story 8.3) — unused by 8.1's
+    # offline verification.
+    apple_bundle_id: str = ""  # APPLE_BUNDLE_ID
+    apple_app_apple_id: int | None = None  # APPLE_APP_APPLE_ID (prod only)
+    apple_issuer_id: str = ""  # APPLE_ISSUER_ID (App Store Server API, 8.3)
+    apple_key_id: str = ""  # APPLE_KEY_ID (App Store Server API, 8.3)
+    apple_private_key_p8: str = ""  # APPLE_PRIVATE_KEY_P8 (App Store Server API, 8.3)
+
+    # Google: the androidpublisher subscriptionsv2 endpoint is authenticated
+    # with a service account. `google_play_package_name` must equal the Android
+    # `applicationId`. `google_service_account_json` is the FULL service-account
+    # JSON, base64-encoded (a one-line env value; the field_validator below
+    # decodes + parses it to fail loud at boot on a malformed value).
+    google_play_package_name: str = ""  # GOOGLE_PLAY_PACKAGE_NAME
+    google_service_account_json: str = ""  # GOOGLE_SERVICE_ACCOUNT_JSON (base64)
+
+    # The expected store product id, shared verbatim with the client constant
+    # `kIapWeeklyProductId` (D4). A purchase whose productId differs is judged
+    # invalid (never flips tier). Lowercase + store-portable.
+    iap_product_id: str = "stt_weekly_199"  # IAP_PRODUCT_ID
+
     # Database
     database_path: str = "/opt/survive-the-talk/data/db.sqlite"
 
@@ -398,6 +435,34 @@ class Settings(BaseSettings):
                 "import stack in RAM; a larger pool would OOM the VPS and the "
                 f"cold-spawn fallback already handles overflow, got {value}"
             )
+        return value
+
+    @field_validator("google_service_account_json")
+    @classmethod
+    def _validate_google_service_account_json(cls, value: str) -> str:
+        """Fail loud at boot on a malformed base64 / JSON service-account blob.
+
+        Only validates when non-empty (empty = no Google credentials yet, a
+        valid pre-D4 deploy state). A typo'd or truncated `GOOGLE_SERVICE_
+        ACCOUNT_JSON` is far better caught at process start than mid-purchase,
+        where it would surface as a 503 to a paying user. We decode the base64
+        then `json.loads`; the value itself is kept as-is (the validator only
+        decodes + parses for the consumer in `billing/google_validator.py`).
+        """
+        if not value:
+            return value
+        import base64
+        import binascii
+        import json
+
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            json.loads(decoded)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON must be a base64-encoded JSON "
+                f"service-account key ({type(exc).__name__})"
+            ) from exc
         return value
 
     @field_validator("resend_from_name", "resend_from_email")

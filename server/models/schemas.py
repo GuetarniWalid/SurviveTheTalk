@@ -342,3 +342,37 @@ class DebriefOut(BaseModel):
     checkpoints: list[DebriefCheckpoint] = Field(default_factory=list)
     better_phrasings: list[DebriefBetterPhrasing] = Field(default_factory=list)
     areas: list[DebriefArea] = Field(default_factory=list)
+
+
+# --- Story 8.1: subscription verification ----------------------------------
+
+
+class SubscriptionVerifyIn(BaseModel):
+    """Request body for `POST /subscription/verify`.
+
+    `verification_data` is the unified store artifact the client reads from
+    `purchaseDetails.verificationData.serverVerificationData` — on iOS (SK2)
+    the signed-transaction JWS, on Android the `purchaseToken`. Bounded length
+    guards against log-amplification on a pathological client. `product_id` is
+    cross-checked server-side against `settings.iap_product_id`.
+    """
+
+    platform: Literal["ios", "android"]
+    product_id: str = Field(min_length=1, max_length=128)
+    verification_data: str = Field(min_length=1, max_length=8192)
+
+
+class SubscriptionVerifyOut(BaseModel):
+    """Response body for `POST /subscription/verify`.
+
+    `tier` is the user's tier AFTER this verify (`'paid'` on a valid receipt or
+    the D2 optimistic-fallback grant; `'free'` is never returned on success —
+    an invalid receipt raises a 402 instead). `status` mirrors the purchase's
+    `validation_status` (`'valid'` | `'pending'`) so the client can tell a
+    confirmed grant from an optimistic one.
+    """
+
+    tier: Literal["free", "paid"]
+    product_id: str
+    expires_at: str | None = None
+    status: str

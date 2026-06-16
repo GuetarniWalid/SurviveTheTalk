@@ -431,3 +431,69 @@ def test_settings_bot_pool_size_rejects_out_of_range() -> None:
         with patch.dict(os.environ, {**base, "BOT_POOL_SIZE": bad}, clear=True):
             with pytest.raises(ValidationError, match="BOT_POOL_SIZE"):
                 Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+# ---------- Story 8.1 — IAP / subscription validation config ----------------
+
+
+def test_settings_iap_fields_default_unconfigured() -> None:
+    """Story 8.1 — a deploy WITHOUT store credentials still boots: all the
+    Apple/Google fields default empty/None and the product id defaults to the
+    shared `stt_weekly_199` constant (D4). The validators raise a shaped 503 at
+    request time, not at boot."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.apple_bundle_id == ""
+        assert s.apple_app_apple_id is None
+        assert s.google_play_package_name == ""
+        assert s.google_service_account_json == ""
+        assert s.iap_product_id == "stt_weekly_199"
+
+
+def test_settings_iap_fields_load_from_env() -> None:
+    import base64
+
+    sa_json = base64.b64encode(
+        b'{"client_email":"x@y.iam.gserviceaccount.com","private_key":"-----BEGIN"}'
+    ).decode()
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "APPLE_BUNDLE_ID": "com.surviveTheTalk.client",
+        "APPLE_APP_APPLE_ID": "123456789",
+        "GOOGLE_PLAY_PACKAGE_NAME": "com.surviveTheTalk.client",
+        "GOOGLE_SERVICE_ACCOUNT_JSON": sa_json,
+        "IAP_PRODUCT_ID": "stt_weekly_199",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.apple_bundle_id == "com.surviveTheTalk.client"
+        assert s.apple_app_apple_id == 123456789
+        assert s.google_play_package_name == "com.surviveTheTalk.client"
+        assert s.google_service_account_json == sa_json
+
+
+def test_settings_rejects_malformed_google_service_account_json() -> None:
+    """Fail-loud at boot on a base64/JSON-malformed GOOGLE_SERVICE_ACCOUNT_JSON
+    — far better caught at process start than mid-purchase (a 503 to a buyer)."""
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    # Not base64.
+    with patch.dict(
+        os.environ,
+        {**base, "GOOGLE_SERVICE_ACCOUNT_JSON": "not-base64-!!!"},
+        clear=True,
+    ):
+        with pytest.raises(ValidationError, match="GOOGLE_SERVICE_ACCOUNT_JSON"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+    # Valid base64 but not JSON.
+    import base64
+
+    not_json = base64.b64encode(b"this is not json").decode()
+    with patch.dict(
+        os.environ,
+        {**base, "GOOGLE_SERVICE_ACCOUNT_JSON": not_json},
+        clear=True,
+    ):
+        with pytest.raises(ValidationError, match="GOOGLE_SERVICE_ACCOUNT_JSON"):
+            Settings(_env_file=None)  # type: ignore[call-arg]

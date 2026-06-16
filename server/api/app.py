@@ -25,6 +25,8 @@ from api.routes_calls import router as calls_router
 from api.routes_debriefs import router as debriefs_router
 from api.routes_health import router as health_router
 from api.routes_scenarios import router as scenarios_router
+from api.routes_subscription import router as subscription_router
+from billing.revalidation import revalidate_pending_purchases
 from config import Settings
 from db.database import get_connection, run_migrations
 from db.janitor import sweep_abandoned_call_sessions
@@ -49,6 +51,14 @@ JANITOR_BACKOFF_SECONDS = 60 * 60
 # unwind through the existing `except Exception` (which logs but does
 # not re-raise into the lifespan finally).
 JANITOR_SHUTDOWN_TIMEOUT_SECONDS = 30
+
+# Story 8.1 (D2) — re-validate purchases left `'pending'` by the optimistic
+# grant path (store was unreachable at verify-time). 5 min cadence: pending
+# rows only exist during a store OUTAGE, so they're rare; reconciling within
+# minutes is ample for AC3 ("reverted on the next API call"). Same fail-soft
+# backoff structure as the janitor.
+SUBSCRIPTION_REVALIDATION_INTERVAL_SECONDS = 5 * 60
+SUBSCRIPTION_REVALIDATION_SHUTDOWN_TIMEOUT_SECONDS = 30
 
 
 async def _janitor_loop(stop_event: asyncio.Event) -> None:
@@ -97,6 +107,45 @@ async def _janitor_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _subscription_revalidation_loop(stop_event: asyncio.Event) -> None:
+    """Periodic re-validation of `'pending'` purchases (Story 8.1, D2 fallback).
+
+    Mirrors `_janitor_loop`: one initial sweep on startup, then waits up to
+    `SUBSCRIPTION_REVALIDATION_INTERVAL_SECONDS` between cycles, fail-soft (a
+    sweep failure is logged but the loop keeps running), with the same
+    `JANITOR_BACKOFF_SECONDS` streak-backoff so a permanently-broken DB / store
+    config does not spam logs. Cancellation via the shared `stop_event`.
+
+    A pending purchase only exists when the optimistic-grant path fired (store
+    unreachable at verify-time), so on a healthy deploy this sweep is a cheap
+    no-op every 5 min.
+    """
+    settings = Settings()
+    consecutive_failures = 0
+    while not stop_event.is_set():
+        try:
+            async with get_connection() as db:
+                resolved = await revalidate_pending_purchases(db, settings=settings)
+                if resolved > 0:
+                    logger.info(f"subscription_revalidation_resolved count={resolved}")
+            consecutive_failures = 0
+        except Exception:
+            consecutive_failures += 1
+            logger.exception(
+                "subscription revalidation sweep failed "
+                f"(consecutive_failures={consecutive_failures}); will retry"
+            )
+        wait = (
+            JANITOR_BACKOFF_SECONDS
+            if consecutive_failures >= JANITOR_FAILURE_THRESHOLD
+            else SUBSCRIPTION_REVALIDATION_INTERVAL_SECONDS
+        )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=wait)
+        except asyncio.TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run DB migrations + seed scenarios at startup; clean shutdown is a no-op.
@@ -128,6 +177,11 @@ async def lifespan(app: FastAPI):
         logger.exception("bot_pool failed to start; calls will cold-spawn")
     stop_event = asyncio.Event()
     janitor = asyncio.create_task(_janitor_loop(stop_event))
+    # Story 8.1 — second background task on the SAME stop_event so both unwind
+    # together on shutdown. Re-validates D2 optimistic-grant 'pending' purchases.
+    subscription_revalidator = asyncio.create_task(
+        _subscription_revalidation_loop(stop_event)
+    )
     try:
         yield
     finally:
@@ -137,20 +191,25 @@ async def lifespan(app: FastAPI):
         # the loop body finish its current sweep cleanly; if that
         # sweep itself is wedged past the timeout we cancel and let
         # the cancellation unwind.
-        try:
-            await asyncio.wait_for(janitor, timeout=JANITOR_SHUTDOWN_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "janitor did not exit within "
-                f"{JANITOR_SHUTDOWN_TIMEOUT_SECONDS}s; cancelling"
-            )
-            janitor.cancel()
+        for task, name, timeout in (
+            (janitor, "janitor", JANITOR_SHUTDOWN_TIMEOUT_SECONDS),
+            (
+                subscription_revalidator,
+                "subscription_revalidation",
+                SUBSCRIPTION_REVALIDATION_SHUTDOWN_TIMEOUT_SECONDS,
+            ),
+        ):
             try:
-                await janitor
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(f"{name} did not exit within {timeout}s; cancelling")
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except asyncio.CancelledError:
                 pass
-        except asyncio.CancelledError:
-            pass
         # Story 6.26 — terminate idle parked bots so they don't outlive the
         # server (a no-op when size=0). Bounded inside the pool's own teardown.
         await app.state.bot_pool.stop()
@@ -172,6 +231,7 @@ app.include_router(calls_router)
 app.include_router(debriefs_router)
 app.include_router(health_router)
 app.include_router(scenarios_router)
+app.include_router(subscription_router)
 
 
 _GENERIC_HTTP_MESSAGES = {

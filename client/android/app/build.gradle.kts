@@ -24,7 +24,11 @@ android {
         applicationId = "com.surviveTheTalk.client"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // Story 8.1 — the `in_app_purchase` 3.x plugin (Google Play Billing)
+        // requires Android SDK 24+. Flutter's default already resolves to 24,
+        // but we encode the floor explicitly so a future Flutter that lowered
+        // the default can't silently break the billing integration.
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

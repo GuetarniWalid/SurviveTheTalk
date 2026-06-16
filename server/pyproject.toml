@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "pyyaml>=6.0,<7.0.0",
     "uvicorn>=0.42.0",
+    "app-store-server-library>=1.0.0",
 ]
 
 [tool.pytest.ini_options]

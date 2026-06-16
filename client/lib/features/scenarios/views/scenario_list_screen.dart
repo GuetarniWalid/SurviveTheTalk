@@ -139,9 +139,15 @@ class _OverlayHost extends StatelessWidget {
           // BlocBuilder rebuilds (unmounting this BOC) between gesture
           // recognition and the tap firing. Without the guard, the closure
           // would call `showModalBottomSheet` with a deactivated context.
-          onPaywallTap: () {
+          onPaywallTap: () async {
             if (!context.mounted) return;
-            PaywallSheet.show(context);
+            // Story 8.1 (G2) — on a completed purchase, reload the list so the
+            // fresh `paid` CallUsage re-flows from `/scenarios` meta and the
+            // BOC updates (paid + calls remaining → card hidden, UX-DR5).
+            final purchased = await PaywallSheet.show(context);
+            if (purchased && context.mounted) {
+              context.read<ScenariosBloc>().add(const LoadScenariosEvent());
+            }
           },
         );
       },
@@ -336,7 +342,12 @@ class _ListState extends State<_List> {
             ),
           );
         case 'CALL_LIMIT_REACHED':
-          await PaywallSheet.show(context);
+          // Story 8.1 (G2) — reload on a completed purchase so the freed cap
+          // re-flows; the user can then re-tap to start the call.
+          final purchased = await PaywallSheet.show(context);
+          if (purchased && context.mounted) {
+            context.read<ScenariosBloc>().add(const LoadScenariosEvent());
+          }
         default:
           // Generic 5xx (LIVEKIT_TOKEN_FAILED, BOT_SPAWN_FAILED,
           // SCENARIO_LOAD_FAILED, UNKNOWN_ERROR, etc.). Stay on the list

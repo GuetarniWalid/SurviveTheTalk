@@ -526,3 +526,120 @@ async def get_debrief_by_call_id(
         "SELECT * FROM debriefs WHERE call_session_id = ?", (call_id,)
     ) as cursor:
         return await cursor.fetchone()
+
+
+# --- Story 8.1: subscription / purchase persistence ------------------------
+
+
+async def update_user_tier(
+    db: aiosqlite.Connection,
+    user_id: int,
+    tier: str,
+    *,
+    tier_changed_at: str,
+) -> None:
+    """Flip the user's tier and STAMP `tier_changed_at` (Story 8.1, D3).
+
+    Mutate-and-commit template — same shape as `update_user_jwt_hash`. The
+    `tier_changed_at` stamp is mandatory on EVERY flip (free->paid and the
+    revert paid->free): Story 8.3 owns the free-tier lifetime call-count
+    rework that reads this column (deferred-work.md:401-403), but the column
+    must already carry an accurate timestamp by the time 8.3 ships, so we
+    stamp it from the first flip in 8.1.
+    """
+    await db.execute(
+        "UPDATE users SET tier = ?, tier_changed_at = ? WHERE id = ?",
+        (tier, tier_changed_at, user_id),
+    )
+    await db.commit()
+
+
+async def insert_purchase(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    platform: str,
+    product_id: str,
+    verification_token: str,
+    created_at: str,
+) -> int:
+    """Insert a `'pending'` purchases audit row and return its id.
+
+    `verification_token` is a STORE VERIFICATION ARTIFACT (iOS JWS / Android
+    purchaseToken), never payment data (NFR11). `validation_status` defaults
+    to `'pending'` via the column DEFAULT — the route flips it to
+    `'valid'`/`'invalid'` once Apple/Google answer (`update_purchase_validation`).
+
+    Asserts `lastrowid` like `insert_user`/`insert_call_session`: a single
+    `INSERT ... VALUES` on an integer-PK table always yields a rowid, so a
+    `None` here means something is badly wrong — fail fast.
+    """
+    cursor = await db.execute(
+        "INSERT INTO purchases"
+        "(user_id, platform, product_id, verification_token, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (user_id, platform, product_id, verification_token, created_at),
+    )
+    await db.commit()
+    purchase_id = cursor.lastrowid
+    if purchase_id is None:
+        raise RuntimeError("insert_purchase: sqlite returned no lastrowid")
+    return purchase_id
+
+
+async def update_purchase_validation(
+    db: aiosqlite.Connection,
+    purchase_id: int,
+    *,
+    validation_status: str,
+    transaction_id: str | None,
+    expires_at: str | None,
+    validated_at: str,
+) -> None:
+    """Record the outcome of validating a purchase against Apple/Google.
+
+    `validation_status` is `'valid'` or `'invalid'` (a `'pending'` row that
+    the D2 optimistic-fallback path left un-flipped stays `'pending'` until
+    the background re-check resolves it — see `routes_subscription`).
+    """
+    await db.execute(
+        "UPDATE purchases SET validation_status = ?, transaction_id = ?, "
+        "expires_at = ?, validated_at = ? WHERE id = ?",
+        (validation_status, transaction_id, expires_at, validated_at, purchase_id),
+    )
+    await db.commit()
+
+
+async def get_latest_purchase_by_token(
+    db: aiosqlite.Connection, verification_token: str
+) -> aiosqlite.Row | None:
+    """Return the most-recent purchases row for `verification_token`, or None.
+
+    Idempotency guard for `POST /subscription/verify`: a client retry that
+    re-POSTs the same store artifact must not double-insert or double-flip.
+    The route reads this first and short-circuits when the artifact is
+    already recorded `'valid'`.
+    """
+    async with db.execute(
+        "SELECT * FROM purchases WHERE verification_token = ? ORDER BY id DESC LIMIT 1",
+        (verification_token,),
+    ) as cursor:
+        return await cursor.fetchone()
+
+
+async def get_pending_purchases(
+    db: aiosqlite.Connection, limit: int = 100
+) -> list[aiosqlite.Row]:
+    """Return purchases still in `'pending'` validation state (D2 fallback sweep).
+
+    The background re-validation loop (`routes_subscription` / app lifespan)
+    reads these and re-checks each against Apple/Google — flipping the user
+    back to `'free'` on a definitive `'invalid'` (AC3). Bounded by `limit` so
+    a pathological backlog can't load an unbounded result set into memory.
+    """
+    async with db.execute(
+        "SELECT * FROM purchases WHERE validation_status = 'pending' "
+        "ORDER BY id ASC LIMIT ?",
+        (limit,),
+    ) as cursor:
+        return list(await cursor.fetchall())

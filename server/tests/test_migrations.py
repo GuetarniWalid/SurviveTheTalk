@@ -315,3 +315,66 @@ def test_migration_012_scenarios_end_phrases(test_db_path):
         assert cols["end_phrases"][3] == 0, "end_phrases must be nullable"
     finally:
         conn.close()
+
+
+def test_migration_014_subscriptions(test_db_path):
+    """Story 8.1 AC2/AC3/AC4 — migration 014 adds the nullable
+    `users.tier_changed_at` column (D3) and creates the `purchases` audit
+    table (with the platform/validation_status CHECK constraints + the
+    `idx_purchases_user` index). Asserted against a freshly-migrated empty
+    DB so a regression in 014's DDL fails fast; the prod-snapshot replay
+    above covers the populated-DB case.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        # users.tier_changed_at — nullable TEXT.
+        user_cols = {
+            r[1]: r for r in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        assert "tier_changed_at" in user_cols, (
+            f"users missing tier_changed_at: {set(user_cols)}"
+        )
+        assert user_cols["tier_changed_at"][2] == "TEXT"
+        assert user_cols["tier_changed_at"][3] == 0, "tier_changed_at must be nullable"
+
+        # purchases — the audit table with every expected column.
+        purchase_cols = {r[1] for r in conn.execute("PRAGMA table_info(purchases)")}
+        assert {
+            "id",
+            "user_id",
+            "platform",
+            "product_id",
+            "verification_token",
+            "transaction_id",
+            "validation_status",
+            "expires_at",
+            "created_at",
+            "validated_at",
+        } <= purchase_cols, f"purchases missing columns: {purchase_cols}"
+
+        # The CHECK constraints reject out-of-domain values.
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users(email, tier, created_at) VALUES (?, 'free', ?)",
+            ("buyer@example.invalid", "2026-06-16T00:00:00Z"),
+        )
+        try:
+            conn.execute(
+                "INSERT INTO purchases(user_id, platform, product_id, "
+                "verification_token, created_at) VALUES (1, 'windows', 'x', 't', 'now')"
+            )
+            raise AssertionError("platform CHECK did not reject 'windows'")
+        except sqlite3.IntegrityError:
+            pass
+
+        # The idx_purchases_user index exists.
+        index_names = {
+            r[1] for r in conn.execute("PRAGMA index_list(purchases)").fetchall()
+        }
+        assert "idx_purchases_user" in index_names, (
+            f"purchases missing idx_purchases_user: {index_names}"
+        )
+    finally:
+        conn.close()

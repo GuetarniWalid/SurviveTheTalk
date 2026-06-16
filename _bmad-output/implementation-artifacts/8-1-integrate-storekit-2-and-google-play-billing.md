@@ -1,6 +1,6 @@
 # Story 8.1: Integrate StoreKit 2 and Google Play Billing
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -52,10 +52,10 @@ This story carried genuine design forks. **Walid confirmed "prends tes recos par
 
 ### A. Server — schema & query layer
 
-- [ ] **Task A1 — Migration `014_subscriptions.sql` (AC2, AC3, AC4; D3).**
-  - [ ] Create `server/db/migrations/014_subscriptions.sql` (next free number — confirmed 013 is the latest).
-  - [ ] `ALTER TABLE users ADD COLUMN tier_changed_at TEXT;` — nullable, ISO-8601 UTC, stamped on every tier flip (D3). **No table rebuild / no PRAGMA dance needed** — `ADD COLUMN` is safe (contrast migration 003 which rebuilt for a CHECK change).
-  - [ ] Create the audit table:
+- [x] **Task A1 — Migration `014_subscriptions.sql` (AC2, AC3, AC4; D3).**
+  - [x] Create `server/db/migrations/014_subscriptions.sql` (next free number — confirmed 013 is the latest).
+  - [x] `ALTER TABLE users ADD COLUMN tier_changed_at TEXT;` — nullable, ISO-8601 UTC, stamped on every tier flip (D3). **No table rebuild / no PRAGMA dance needed** — `ADD COLUMN` is safe (contrast migration 003 which rebuilt for a CHECK change).
+  - [x] Create the audit table:
         ```sql
         CREATE TABLE IF NOT EXISTS purchases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,38 +72,38 @@ This story carried genuine design forks. **Walid confirmed "prends tes recos par
         );
         CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id);
         ```
-  - [ ] Keep it idempotent (`IF NOT EXISTS`) — the runner replays by lexical filename order and records applied versions in `schema_migrations` (`db/database.py:run_migrations`).
-  - [ ] **NFR11 note in the migration header comment:** `verification_token` stores a store verification artifact (JWS / purchaseToken), never a card number or payment token.
-  - [ ] After writing: `cd server && python -m pytest tests/test_migrations.py` MUST stay green (replays migrations against `tests/fixtures/prod_snapshot.sqlite`). Because this adds a **new table**, run `python scripts/refresh_prod_snapshot.py` and commit the refreshed snapshot alongside the migration (project-root CLAUDE.md §Database Migrations).
+  - [x] Keep it idempotent (`IF NOT EXISTS`) — the runner replays by lexical filename order and records applied versions in `schema_migrations` (`db/database.py:run_migrations`).
+  - [x] **NFR11 note in the migration header comment:** `verification_token` stores a store verification artifact (JWS / purchaseToken), never a card number or payment token.
+  - [x] After writing: `tests/test_migrations.py` stays green — added `test_migration_014_subscriptions` (column nullability + CHECK + index) and the prod-snapshot replay passes (7/7). **Snapshot refresh DEFERRED to post-deploy** (declared deviation #6): migration 014 replays on TOP of the pre-014 snapshot exactly as it will on prod, so the test gate validates against the real prod shape now; the snapshot only gains 014 after it ships + the fixture is re-pulled — the same post-deploy pattern as 011/012/013 (documented in `test_migrations.py`).
 
-- [ ] **Task A2 — Query functions in `server/db/queries.py` (AC2, AC3; D3).** Follow the existing `update_user_jwt_hash` pattern exactly (queries.py:50–59 — async, takes an open `aiosqlite.Connection`, commits before returning, Architecture Boundary 4: NO raw SQL in routes).
-  - [ ] `async def update_user_tier(db, user_id: int, tier: str, *, tier_changed_at: str) -> None` → `UPDATE users SET tier = ?, tier_changed_at = ? WHERE id = ?`. (Stamps D3's column on every flip.)
-  - [ ] `async def insert_purchase(db, *, user_id, platform, product_id, verification_token, created_at) -> int` (returns id; assert `lastrowid is not None` like `insert_user`).
-  - [ ] `async def update_purchase_validation(db, purchase_id: int, *, validation_status, transaction_id, expires_at, validated_at) -> None`.
-  - [ ] `async def get_latest_purchase_by_token(db, verification_token: str) -> aiosqlite.Row | None` — idempotency guard so re-POSTing the same artifact doesn't double-insert.
+- [x] **Task A2 — Query functions in `server/db/queries.py` (AC2, AC3; D3).** Follow the existing `update_user_jwt_hash` pattern exactly (queries.py:50–59 — async, takes an open `aiosqlite.Connection`, commits before returning, Architecture Boundary 4: NO raw SQL in routes).
+  - [x] `async def update_user_tier(db, user_id: int, tier: str, *, tier_changed_at: str) -> None` → `UPDATE users SET tier = ?, tier_changed_at = ? WHERE id = ?`. (Stamps D3's column on every flip.)
+  - [x] `async def insert_purchase(db, *, user_id, platform, product_id, verification_token, created_at) -> int` (returns id; assert `lastrowid is not None` like `insert_user`).
+  - [x] `async def update_purchase_validation(db, purchase_id: int, *, validation_status, transaction_id, expires_at, validated_at) -> None`.
+  - [x] `async def get_latest_purchase_by_token(db, verification_token: str) -> aiosqlite.Row | None` — idempotency guard so re-POSTing the same artifact doesn't double-insert. (Also added `get_pending_purchases` for the C2 sweep.)
 
 ### B. Server — validation module
 
-- [ ] **Task B1 — New `server/billing/` package (mirrors the `auth/` package layout).** Keep the public interface library-agnostic so the internal validator lib is swappable.
-  - [ ] `billing/models.py` — a `ValidationResult` dataclass: `valid: bool`, `status: Literal['valid','invalid','unreachable']`, `transaction_id: str | None`, `expires_at: str | None`, `reason: str | None`. The `'unreachable'` status is what triggers D2's optimistic fallback.
-  - [ ] `billing/apple_validator.py` — `async def validate_apple(jws: str, *, bundle_id: str, expected_product_id: str) -> ValidationResult`. **`verifyReceipt` is DEPRECATED — do NOT use it.** Validate the StoreKit 2 signed-transaction **JWS**: verify the x5c certificate chain to Apple's root, then assert payload `bundleId == bundle_id`, `productId == expected_product_id`, and not expired/revoked. **Recommended lib:** Apple's official `app-store-server-library` (Python) which does signature verification + the App Store Server API client; add to `server/requirements*.txt`. Handle sandbox vs production environments (the JWS carries the environment). Network/5xx/timeout → return `status='unreachable'` (do not raise).
-  - [ ] `billing/google_validator.py` — `async def validate_google(purchase_token: str, *, package_name: str, product_id: str, service_account_json: str) -> ValidationResult`. Call `GET https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{package_name}/purchases/subscriptionsv2/tokens/{purchase_token}` (the **subscriptionsv2** endpoint), OAuth scope `https://www.googleapis.com/auth/androidpublisher`, mint the token from the service account (recommended: `google-auth` to sign + `httpx` to call — mirror the `httpx.AsyncClient` pattern in `auth/email_service.py:44–80`). Treat `subscriptionState ∈ {ACTIVE, IN_GRACE_PERIOD}` as valid; read the line item's `expiryTime`. Network/5xx/timeout → `status='unreachable'`.
-  - [ ] `billing/__init__.py` — export the two validators + `ValidationResult`.
-  - [ ] Add any new Python deps (`app-store-server-library`, `google-auth`) to the server requirements file; verify they install in the venv and don't break `pytest` import (warm the sandbox per `feedback_sandbox_livekit_import_hang.md` if a cold import stalls).
+- [x] **Task B1 — New `server/billing/` package (mirrors the `auth/` package layout).** Keep the public interface library-agnostic so the internal validator lib is swappable.
+  - [x] `billing/models.py` — a `ValidationResult` dataclass: `valid: bool`, `status: Literal['valid','invalid','unreachable']`, `transaction_id: str | None`, `expires_at: str | None`, `reason: str | None`. The `'unreachable'` status is what triggers D2's optimistic fallback. (Also added `BillingConfigError` → 503 on missing config.)
+  - [x] `billing/apple_validator.py` — `validate_apple(...)` via Apple's `app-store-server-library` `SignedDataVerifier` (offline JWS x5c verification, online checks OFF). Apple Root CA-G3 pinned + fingerprint-checked in `billing/apple_roots.py` (the lib does NOT bundle roots — declared deviation vs the spec note). Sandbox/Production resolved from the unverified payload's `environment`; product/expiry/revocation asserted. Added `app_apple_id` kwarg (lib requires it for PRODUCTION).
+  - [x] `billing/google_validator.py` — `validate_google(...)` against the **subscriptionsv2** endpoint. **Declared deviation #1: uses `pyjwt` (RS256 service-account assertion) + `httpx`, NOT `google-auth`** — google-auth's default transport is the sync `requests` lib (not installed) and forces a thread hop; pyjwt+httpx keep the path fully async and add zero deps. `ACTIVE`/`IN_GRACE_PERIOD` → valid; transport/5xx → `unreachable`; token-exchange 4xx / 401-403 → `BillingConfigError`.
+  - [x] `billing/__init__.py` — exports the two validators + `ValidationResult` + `BillingConfigError`.
+  - [x] Added ONLY `app-store-server-library` via `uv add` (pyproject + uv.lock updated, installs clean; `import billing` verified, full pytest green). google-auth intentionally NOT added (deviation #1).
 
-- [ ] **Task B2 — Config fields in `server/config.py` (AC2, AC4).** Follow the optional-field pattern (empty-string default so a missing secret degrades cleanly rather than failing boot — like `cartesia_api_key`):
-  - [ ] `apple_bundle_id: str = ""` (`APPLE_BUNDLE_ID`) — must match the iOS bundle identifier.
-  - [ ] App Store Connect API-key fields for the App Store Server API: `apple_issuer_id`, `apple_key_id`, `apple_private_key_p8` (all `str = ""`). _(Only needed if calling the App Store Server API for revocation; offline JWS verification needs only the bundle id + Apple root certs bundled by the lib.)_
-  - [ ] `google_play_package_name: str = ""` (`GOOGLE_PLAY_PACKAGE_NAME`) — must equal the Android `applicationId` (`com.surviveTheTalk.client`).
-  - [ ] `google_service_account_json: str = ""` (`GOOGLE_SERVICE_ACCOUNT_JSON`, base64-encoded) — add a `field_validator` that base64-decodes + `json.loads` to fail loud on a malformed value (only when non-empty).
-  - [ ] `iap_product_id: str = "stt_weekly_199"` (`IAP_PRODUCT_ID`) — the expected product id, shared with the client constant (D4).
+- [x] **Task B2 — Config fields in `server/config.py` (AC2, AC4).** Follow the optional-field pattern (empty-string default so a missing secret degrades cleanly rather than failing boot — like `cartesia_api_key`):
+  - [x] `apple_bundle_id: str = ""` (`APPLE_BUNDLE_ID`) — must match the iOS bundle identifier.
+  - [x] App Store Connect API-key fields: `apple_issuer_id`, `apple_key_id`, `apple_private_key_p8` (all `str = ""`, reserved for the 8.3 online-revocation path). Also added `apple_app_apple_id: int | None` — the lib requires the numeric app id to verify a PRODUCTION transaction (declared deviation #3; sandbox doesn't need it).
+  - [x] `google_play_package_name: str = ""` (`GOOGLE_PLAY_PACKAGE_NAME`) — must equal the Android `applicationId` (`com.surviveTheTalk.client`).
+  - [x] `google_service_account_json: str = ""` (`GOOGLE_SERVICE_ACCOUNT_JSON`, base64-encoded) — `field_validator` base64-decodes + `json.loads` to fail loud on a malformed value (only when non-empty).
+  - [x] `iap_product_id: str = "stt_weekly_199"` (`IAP_PRODUCT_ID`) — the expected product id, shared with the client constant (D4).
 
 ### C. Server — endpoint
 
-- [ ] **Task C1 — `POST /subscription/verify` in new `server/api/routes_subscription.py` (AC2, AC3, AC4; D2).**
-  - [ ] `router = APIRouter(prefix="/subscription", tags=["subscription"], dependencies=[AUTH_DEPENDENCY])` — reuse the auth dependency from `api/middleware.py:103` (resolves `request.state.user_id`; 401 `AUTH_UNAUTHORIZED` on a bad/absent JWT, identical to every other protected route).
-  - [ ] Request model `SubscriptionVerifyIn` (put in `models/schemas.py` next to the other Pydantic models): `platform: Literal['ios','android']`, `product_id: str`, `verification_data: str`.
-  - [ ] Handler flow (recommended D2 — synchronous-validate-then-flip with unreachable fallback):
+- [x] **Task C1 — `POST /subscription/verify` in new `server/api/routes_subscription.py` (AC2, AC3, AC4; D2).**
+  - [x] `router = APIRouter(prefix="/subscription", tags=["subscription"], dependencies=[AUTH_DEPENDENCY])` — reuse the auth dependency from `api/middleware.py:103` (resolves `request.state.user_id`; 401 `AUTH_UNAUTHORIZED` on a bad/absent JWT, identical to every other protected route).
+  - [x] Request model `SubscriptionVerifyIn` (put in `models/schemas.py` next to the other Pydantic models): `platform: Literal['ios','android']`, `product_id: str`, `verification_data: str`.
+  - [x] Handler flow (recommended D2 — synchronous-validate-then-flip with unreachable fallback): + a 503 `SUBSCRIPTION_UNAVAILABLE` branch on `BillingConfigError` (missing store config ≠ outage ≠ fraud → never an optimistic grant).
         1. `user_id = request.state.user_id`.
         2. Idempotency: if `get_latest_purchase_by_token` already exists and is `'valid'`, return the current tier without re-validating.
         3. `insert_purchase(..., created_at=now_iso())` with `validation_status='pending'`.
@@ -111,53 +111,48 @@ This story carried genuine design forks. **Walid confirmed "prends tes recos par
         5. If `valid` → `update_user_tier(db, user_id, 'paid', tier_changed_at=now_iso())` + `update_purchase_validation(... 'valid' ...)`.
         6. If `invalid` → leave tier untouched (do NOT flip), mark purchase `'invalid'`, return HTTP 402/400 with `{"code": "PURCHASE_INVALID", "message": ...}` (use the `HTTPException(detail={"code","message"})` convention — `api/app.py:202` turns it into the `{error}` envelope).
         7. If `unreachable` (D2 fallback) → optimistic: `update_user_tier(... 'paid' ...)`, keep purchase `'pending'`, and schedule a background re-check (see Task C2). Return success.
-  - [ ] Response model `SubscriptionVerifyOut`: `tier: Literal['free','paid']`, `product_id: str`, `expires_at: str | None`, `status: str`. Wrap with `ok(...)` from `api/responses.py:23`.
-  - [ ] Register the router in `api/app.py` after line 174: `app.include_router(subscription_router)`.
+  - [x] Response model `SubscriptionVerifyOut`: `tier: Literal['free','paid']`, `product_id: str`, `expires_at: str | None`, `status: str`. Wrap with `ok(...)` from `api/responses.py:23`.
+  - [x] Register the router in `api/app.py`: `app.include_router(subscription_router)`.
 
-- [ ] **Task C2 — Background re-validation for `'pending'` purchases (D2 fallback only).** Reuse the existing janitor-loop pattern in `api/app.py:54–97` (lifespan `asyncio.create_task` + `asyncio.Event` stop, fail-soft with backoff). Add a periodic sweep that re-validates `purchases` rows still `'pending'`; on a definitive `invalid`, flip the user back to `'free'` (stamp `tier_changed_at`) and mark the row `'invalid'` — this is the concrete mechanism behind AC3 "reverted on the next API call." Keep it small; if D2 is overridden to literal-NFR26 this loop becomes the primary validator instead of a fallback.
+- [x] **Task C2 — Background re-validation for `'pending'` purchases (D2 fallback only).** Implemented `billing/revalidation.py::revalidate_pending_purchases` (mirrors `db/janitor.py`) + a second lifespan task `_subscription_revalidation_loop` on the SHARED `stop_event` (5-min cadence, same fail-soft backoff). On a definitive `invalid` it flips the user back to `'free'` (stamps `tier_changed_at`) + marks the row `'invalid'`; `unreachable`/config-absent rows stay `'pending'` for the next sweep.
 
 ### D. Server — tests
 
-- [ ] **Task D1 — `server/tests/test_subscription.py` (AC2, AC3, AC4, AC5).** Use `conftest.py` fixtures (`client`, `test_db_path`, the `register_user` / `issue_token` helpers). Mock the outbound Apple/Google HTTP (patch the validator functions or the `httpx` call — never hit real stores in pytest). Cover:
-  - [ ] No JWT → 401 `AUTH_UNAUTHORIZED`.
-  - [ ] Valid iOS JWS → 200, `users.tier == 'paid'`, `tier_changed_at` set, a `purchases` row `'valid'`.
-  - [ ] Valid Android token → 200, tier flipped.
-  - [ ] Invalid artifact → tier stays `'free'`, purchase `'invalid'`, `{error: {code: PURCHASE_INVALID}}` envelope.
-  - [ ] Validator `unreachable` → tier optimistically `'paid'`, purchase `'pending'` (D2 fallback).
-  - [ ] Idempotent re-POST of the same valid token → no double flip, no duplicate `'valid'` row.
-  - [ ] (If D2 = optimistic-then-revert) background re-check on a `'pending'`-then-`invalid` row reverts tier to `'free'`.
-  - [ ] `test_migrations.py` stays green (Task A1).
+- [x] **Task D1 — `server/tests/test_subscription.py` (AC2, AC3, AC4, AC5).** Use `conftest.py` fixtures (`client`, `test_db_path`, the `register_user` / `issue_token` helpers). Validators mocked (patched at `api.routes_subscription.*` / `billing.revalidation.*` — never hit real stores). Also added `tests/test_billing.py` (validator guards + Google HTTP branching with a fake httpx client) + config tests. Cover:
+  - [x] No JWT → 401 `AUTH_UNAUTHORIZED`.
+  - [x] Valid iOS JWS → 200, `users.tier == 'paid'`, `tier_changed_at` set, a `purchases` row `'valid'`.
+  - [x] Valid Android token → 200, tier flipped.
+  - [x] Invalid artifact → tier stays `'free'`, purchase `'invalid'`, `{error: {code: PURCHASE_INVALID}}` envelope.
+  - [x] Validator `unreachable` → tier optimistically `'paid'`, purchase `'pending'` (D2 fallback). + `BillingConfigError` → 503.
+  - [x] Idempotent re-POST of the same valid token → no double flip, no duplicate `'valid'` row.
+  - [x] Background re-check on a `'pending'`-then-`invalid` row reverts tier to `'free'`; still-`unreachable` stays `'pending'`.
+  - [x] `test_migrations.py` stays green (Task A1).
 
 ### E. Client — dependency & platform config
 
-- [ ] **Task E1 — Add the plugin (AC1).** `client/pubspec.yaml`: add `in_app_purchase: ^3.3.0` (current latest; iOS uses StoreKit 2 by default, Android wraps Google Play Billing). `flutter pub get`.
-- [ ] **Task E2 — Android config (AC1).** In `client/android/app/build.gradle.kts`, ensure **`minSdk >= 24`** (the `in_app_purchase` 3.x Android requirement; the project currently uses `flutter.minSdkVersion`). If Flutter's default resolves below 24, pin `minSdk = 24` explicitly. Google Play Billing needs no manifest permission (the SDK declares it; `INTERNET` is already present). Confirm `applicationId = "com.surviveTheTalk.client"` equals `GOOGLE_PLAY_PACKAGE_NAME` (Task B2).
-- [ ] **Task E3 — iOS config (AC1).** Ensure the iOS deployment target is **>= 13.0** (`ios/Podfile` platform + Xcode project). The in-app-purchase capability is implicit for the plugin. Add a local `Configuration.storekit` StoreKit-test file for simulator/dev testing (optional but recommended). Resolve the literal bundle identifier (currently `$(PRODUCT_BUNDLE_IDENTIFIER)` in Info.plist) and feed it to `APPLE_BUNDLE_ID` (Task B2).
+- [x] **Task E1 — Add the plugin (AC1).** `client/pubspec.yaml`: added `in_app_purchase: ^3.3.0` (resolved 3.3.0; iOS uses StoreKit 2 by default, Android wraps Google Play Billing). `flutter pub get` clean.
+- [x] **Task E2 — Android config (AC1).** Flutter's default `flutter.minSdkVersion` already resolves to 24; pinned explicitly as `minSdk = maxOf(flutter.minSdkVersion, 24)` so the in_app_purchase 3.x floor is encoded at the call site (defensive against future Flutter drift). `applicationId = "com.surviveTheTalk.client"` confirmed (= `GOOGLE_PLAY_PACKAGE_NAME`).
+- [x] **Task E3 — iOS config (AC1).** iOS deployment target is already **13.0** in `Runner.xcodeproj` (3 build configs) — satisfies the plugin's >=13.0 requirement, no change needed. **Declared deviation #4: skipped the optional `Configuration.storekit` test file** (only useful on a local Xcode/simulator dev loop, which isn't set up — iOS is gated until Story 10-4) and left the bundle id as `$(PRODUCT_BUNDLE_IDENTIFIER)` (its literal value feeds `APPLE_BUNDLE_ID`, Walid-owned at D4 store setup).
 
 ### F. Client — feature implementation (`lib/features/subscription/`)
 
-- [ ] **Task F1 — `services/in_app_purchase_service.dart` (AC1).** A thin, **mockable** wrapper over the `in_app_purchase` plugin (same wrapper-for-testability convention as `PermissionService` / `connectivity_service.dart`):
-  - [ ] `Future<ProductDetails?> loadProduct(String productId)` (via `InAppPurchase.instance.queryProductDetails({productId})`).
-  - [ ] `Future<void> buy(ProductDetails product)` → `buyNonConsumable(...)` (subscriptions go through the non-consumable buy API).
-  - [ ] Expose `Stream<List<PurchaseDetails>> get purchaseStream` (forwards `InAppPurchase.instance.purchaseStream`) and `Future<void> complete(PurchaseDetails)` → `completePurchase(...)`.
-  - [ ] Read the unified `purchaseDetails.verificationData.serverVerificationData` — on iOS (SK2) this is the JWS, on Android it's the purchaseToken. This single field is what gets POSTed.
-  - [ ] Define the shared product-id constant: `const kIapWeeklyProductId = 'stt_weekly_199';` (must equal `IAP_PRODUCT_ID`, D4).
-- [ ] **Task F2 — `models/subscription_status.dart` (AC2).** Manual `fromJson` (no codegen — project convention, e.g. `call_session.dart`): `tier`, `productId`, `expiresAt`, `status`. Add `bool get isPaid => tier == 'paid';`.
-- [ ] **Task F3 — `repositories/subscription_repository.dart` (AC2).** Constructor takes `ApiClient` (template: `ScenariosRepository`). `Future<SubscriptionStatus> verifyPurchase({required String platform, required String productId, required String verificationData})` → `_apiClient.post('/subscription/verify', data: {...})`, extract `response.data!['data']`, return `SubscriptionStatus.fromJson(...)`. Let `ApiException` propagate (the bloc classifies it).
-- [ ] **Task F4 — `bloc/subscription_bloc.dart` + events/states (AC1, AC2, AC3).** Sealed events/states (template: `scenarios_bloc.dart`). Events: `SubscribePressed`. States: `SubscriptionInitial`, `SubscriptionLoading` (native sheet in flight), `SubscriptionPurchased` (paid), `SubscriptionFailed(code)`, `SubscriptionCancelled` (user dismissed the native sheet). Flow: load product → `buy` → listen on `purchaseStream` → on `PurchaseStatus.purchased`/`restored` call `repository.verifyPurchase(...)` with the right `platform` string → emit `SubscriptionPurchased`; on `PurchaseStatus.error`/cancel → emit failed/cancelled; always `complete()` the purchase. **Enforce the 15-second timeout** (paywall-screen-design.md:401): if no native-sheet response in 15 s, emit a failed state so the UI can recover.
+- [x] **Task F1 — `services/in_app_purchase_service.dart` (AC1).** Thin mockable wrapper: `loadProduct`, `buy` (→`buyNonConsumable`, returns the plugin's bool send-result), `purchaseStream`, `complete`, `isAvailable`. Reads `verificationData.serverVerificationData` (JWS / purchaseToken). Constant `kIapWeeklyProductId = 'stt_weekly_199'` (= `IAP_PRODUCT_ID`).
+- [x] **Task F2 — `models/subscription_status.dart` (AC2).** Manual `fromJson` (`tier`, `productId`, `expiresAt`, `status`) + `bool get isPaid`.
+- [x] **Task F3 — `repositories/subscription_repository.dart` (AC2).** Takes `ApiClient`; `verifyPurchase(...)` POSTs `/subscription/verify`, extracts `data`, returns `SubscriptionStatus.fromJson`; lets `ApiException` propagate.
+- [x] **Task F4 — `bloc/subscription_bloc.dart` + events/states (AC1, AC2, AC3).** Sealed events (`SubscribePressed` + internal `PurchaseUpdated`/`PurchaseTimedOut`) / states (`Initial`/`Loading`/`Purchased`/`Failed(code)`/`Cancelled`). **Declared deviation #2: the purchase stream is subscribed for the bloc's WHOLE lifetime (not per-press)** so a purchase landing after the 15 s window still verifies (closes the "charged but tier never flipped" hole) — the 15 s timeout only changes the UI STATE, never stops listening. `purchased`/`restored` → verify → Purchased; `error`→Failed; `canceled`→Cancelled; always `complete()`. Timeout injectable for tests.
 
 ### G. Client — wiring & tier refresh
 
-- [ ] **Task G1 — Wire the existing paywall placeholder to drive the purchase (AC1, AC2).** Replace the body of `lib/features/paywall/views/paywall_sheet.dart` (`_PaywallSheetBody`, currently the "coming in Story 8.2" placeholder) with a **minimal working** subscribe control: a "Subscribe — $1.99/week" button that provides a `SubscriptionBloc` and dispatches `SubscribePressed`, plus a loading spinner and a simple error line. **Keep it minimal — Story 8.2 restyles this into the real invisible-tier paywall.** Do NOT change where `PaywallSheet.show()` is invoked (`scenario_list_screen.dart:142–145`, from `BottomOverlayCard.onPaywallTap`).
-- [ ] **Task G2 — Refresh tier after success (AC2, AC3).** On `SubscriptionPurchased`: pop the sheet and dispatch `LoadScenariosEvent` to the existing `ScenariosBloc` so the fresh `CallUsage.tier` (`'paid'`) re-flows from `GET /scenarios` `meta` and the `BottomOverlayCard` updates per UX-DR5 (paid + calls remaining → card hidden). Do **not** rely on a cached tier. (8.1 does **not** add `GET /user/profile`; that's Story 8.3's. Tier rides the existing `/scenarios` envelope — `call_usage.dart`.)
+- [x] **Task G1 — Wire the existing paywall placeholder to drive the purchase (AC1, AC2).** `_PaywallSheetBody` is now a `BlocProvider<SubscriptionBloc>` + `BlocConsumer`: "Subscribe — $1.99/week" `FilledButton` → `SubscribePressed`, a spinner while `SubscriptionLoading`, an inline `AppColors.destructive` error line on `SubscriptionFailed`. Kept minimal (8.2 restyles). `PaywallSheet.show` now returns `Future<bool>` (true on purchase) and gained a `@visibleForTesting debugBlocBuilder` seam so the two internal call sites stay plugin-free in widget tests. Invocation points unchanged.
+- [x] **Task G2 — Refresh tier after success (AC2, AC3).** On `SubscriptionPurchased` the sheet pops `true`; BOTH paywall call sites in `scenario_list_screen.dart` (BOC `onPaywallTap` + the `CALL_LIMIT_REACHED` handler) await it and dispatch `LoadScenariosEvent` so the fresh `CallUsage.tier` re-flows from `/scenarios` `meta` (no cached tier; no `GET /user/profile`).
 
 ### H. Client — tests
 
-- [ ] **Task H1 — `client/test/features/subscription/...` (AC5).** Use `mocktail` + `bloc_test`; put `FlutterSecureStorage.setMockInitialValues({})` in every `setUp` (project gotcha). Cover:
-  - [ ] `SubscriptionRepository.verifyPurchase` parses the `{data}` envelope → `SubscriptionStatus(isPaid == true)`; propagates `ApiException`.
-  - [ ] `SubscriptionBloc`: purchased → `[Loading, Purchased]`; error → `[Loading, Failed]`; cancel → `[Loading, Cancelled]`; 15 s timeout → failed. Mock `InAppPurchaseService`.
-  - [ ] `SubscriptionStatus.fromJson` happy + malformed-defensive.
-  - [ ] Run the FULL suite (`flutter test`, no args) — purchasing wiring touches the scenario-list flow; confirm no regression there.
+- [x] **Task H1 — `client/test/features/subscription/...` (AC5).** `mocktail` + `bloc_test`; `FlutterSecureStorage.setMockInitialValues({})` in every `setUp`. Cover:
+  - [x] `SubscriptionRepository.verifyPurchase` parses the `{data}` envelope → `SubscriptionStatus(isPaid == true)`; posts the right body; propagates `ApiException`.
+  - [x] `SubscriptionBloc`: purchased → `[Loading, Purchased]` (+verify+complete); error → `[Loading, Failed]`; cancel → `[Loading, Cancelled]`; verify-`ApiException` → `Failed(code)`; product-unavailable → `Failed`; timeout → `Failed(timeout)`; foreign product id ignored. Mock `InAppPurchaseService`.
+  - [x] `SubscriptionStatus.fromJson` happy + missing-optionals + malformed (throws).
+  - [x] Updated `paywall_sheet_test.dart` to the new minimal UI (via the `debugBlocBuilder` seam). Full suite: **flutter analyze clean + flutter test 567 passed** (553 → 567).
 
 ---
 
@@ -249,8 +244,74 @@ This story carried genuine design forks. **Walid confirmed "prends tes recos par
 
 ### Agent Model Used
 
+claude-opus-4-8[1m] (Opus 4.8, 1M context) — dev-story workflow, 2026-06-16.
+
 ### Debug Log References
+
+- Server gates (warmed sandbox): `python -m ruff check .` clean, `ruff format --check .` clean, `python -m pytest` → **934 passed** (was 910; +24: subscription/billing/config/migration), incl. `test_migrations.py` replay vs `prod_snapshot.sqlite`.
+- Client gates: `flutter analyze` → **No issues found!**; `flutter test` → **567 passed** (was 553; +14 subscription/paywall).
+- Apple Root CA-G3 pinned from `apple.com/certificateauthority/AppleRootCA-G3.cer`, SHA-256 `63343abf…653e9179` asserted at import.
 
 ### Completion Notes List
 
+**What shipped (purchase plumbing only — paywall UI = 8.2, full tier-enforcement/cancellation = 8.3):**
+
+- **Server.** Migration 014 (`users.tier_changed_at` + `purchases` audit table; replay-proven on the prod snapshot). Query layer (`update_user_tier`, `insert_purchase`, `update_purchase_validation`, `get_latest_purchase_by_token`, `get_pending_purchases`). New `billing/` package: library-agnostic `ValidationResult`/`BillingConfigError`, `validate_apple` (Apple `app-store-server-library` offline JWS verify + pinned root), `validate_google` (pyjwt+httpx async service-account → subscriptionsv2), `revalidate_pending_purchases` (D2 sweep). `POST /subscription/verify` (D2 synchronous-validate-then-flip; optimistic grant only when the validator is `unreachable`; 402 on invalid; 503 on missing config) + a 5-min lifespan re-validation loop. Config secrets + the base64 service-account validator.
+- **Client.** `in_app_purchase ^3.3.0`, Android `minSdk>=24`, iOS already 13.0. New `lib/features/subscription/` (service wrapper + model + repo + bloc). Paywall placeholder body replaced with the minimal subscribe control; both paywall entry points reload `/scenarios` on a completed purchase so the `paid` tier re-flows (UX-DR5).
+
+**🚩 Decisions / trade-offs surfaced (per the surface-trade-offs-as-decisions rule):**
+
+1. **Google validator uses `pyjwt`+`httpx`, not `google-auth`** (the spec's recommended lib). google-auth's default transport is the sync `requests` lib (not installed) and forces a thread hop; pyjwt+httpx keep the path fully async and add ZERO deps. The validator interface stays library-agnostic (B1's explicit allowance). Only `app-store-server-library` was added.
+2. **The bloc subscribes to the purchase stream for its WHOLE lifetime, and the 15 s timeout only changes the UI state** (it never stops listening). This closes a "charged by the store but tier never flipped" hole a per-press subscription would open. ⚠️ **Known gap deferred to 8.2/8.3:** there is no APP-STARTUP `purchaseStream` listener yet, so a purchase the store re-delivers on next launch (e.g. an "ask-to-buy"/parental-approval that resolves after the sheet closed) is only verified if the paywall bloc happens to be alive. The minimal 8.1 surface accepts this; 8.2/8.3 own the app-level re-delivery listener.
+3. **`apple_app_apple_id` config added** (not in B2's list) — `app-store-server-library` REQUIRES the numeric App Store app id to verify a PRODUCTION transaction (sandbox doesn't need it). Optional/None default.
+4. **Skipped the optional iOS `Configuration.storekit` test file** + left the bundle id as `$(PRODUCT_BUNDLE_IDENTIFIER)` — both only matter on a local Xcode/simulator dev loop, and iOS is gated until Story 10-4.
+5. **Live validation coverage limit:** neither validator runs LIVE in 8.1 — Apple is gated on D4 + Story 10-4, Google on D4 (store products + service account). Tests mock the validators; the real crypto/HTTP paths are structurally correct + unit-tested (Google branching via a fake httpx client; Apple via config-guard + pinned-root integrity) but mock-tested only until the stores exist.
+6. **prod_snapshot NOT refreshed pre-deploy** — migration 014 replays on top of the pre-014 snapshot exactly as it deploys to prod, and the replay test is green. The refresh is the established post-deploy step (same as 011/012/013; documented in `test_migrations.py`).
+
+**Who-does-what (recap for Walid):** I merged/deployed nothing yet — this is dev-complete, flipped to `review`. The server side is fully runnable now; the on-device purchase smoke gate is BLOCKED on D4 (you create the `stt_weekly_199` products in App Store Connect + Play Console with the test accounts) — iOS additionally waits on Story 10-4. Next: a `/bmad-code-review`, then the Pixel-9 smoke gate clears the `review → done` flip.
+
 ### File List
+
+**Server — new**
+- `server/db/migrations/014_subscriptions.sql`
+- `server/billing/__init__.py`
+- `server/billing/models.py`
+- `server/billing/apple_roots.py`
+- `server/billing/apple_validator.py`
+- `server/billing/google_validator.py`
+- `server/billing/revalidation.py`
+- `server/api/routes_subscription.py`
+- `server/tests/test_subscription.py`
+- `server/tests/test_billing.py`
+
+**Server — modified**
+- `server/pyproject.toml` (+`app-store-server-library`)
+- `server/uv.lock` (resolved new deps)
+- `server/config.py` (billing config fields + base64 validator)
+- `server/db/queries.py` (subscription query functions)
+- `server/api/app.py` (router registration + re-validation lifespan loop)
+- `server/models/schemas.py` (`SubscriptionVerifyIn`/`SubscriptionVerifyOut`)
+- `server/tests/test_migrations.py` (`test_migration_014_subscriptions`)
+- `server/tests/test_config.py` (IAP config tests)
+
+**Client — new**
+- `client/lib/features/subscription/services/in_app_purchase_service.dart`
+- `client/lib/features/subscription/models/subscription_status.dart`
+- `client/lib/features/subscription/repositories/subscription_repository.dart`
+- `client/lib/features/subscription/bloc/subscription_event.dart`
+- `client/lib/features/subscription/bloc/subscription_state.dart`
+- `client/lib/features/subscription/bloc/subscription_bloc.dart`
+- `client/test/features/subscription/models/subscription_status_test.dart`
+- `client/test/features/subscription/repositories/subscription_repository_test.dart`
+- `client/test/features/subscription/bloc/subscription_bloc_test.dart`
+
+**Client — modified**
+- `client/pubspec.yaml` + `client/pubspec.lock` (`in_app_purchase ^3.3.0`)
+- `client/android/app/build.gradle.kts` (`minSdk = maxOf(flutter.minSdkVersion, 24)`)
+- `client/lib/features/paywall/views/paywall_sheet.dart` (minimal subscribe control + `debugBlocBuilder` seam)
+- `client/lib/features/scenarios/views/scenario_list_screen.dart` (G2 tier-refresh at both paywall call sites)
+- `client/test/features/paywall/views/paywall_sheet_test.dart` (new UI assertions)
+
+### Change Log
+
+- 2026-06-16 — Story 8.1 dev-story: StoreKit 2 + Google Play Billing purchase plumbing + first-party server validation (`POST /subscription/verify`, D2 validate-then-flip) + migration 014 (`tier_changed_at` + `purchases`) + tier flip + client subscription feature wired into the paywall placeholder. Gates: server ruff clean + pytest 934; client analyze clean + flutter 567. Status `ready-for-dev` → `in-progress` → `review`.
