@@ -127,10 +127,10 @@ fixed, not replaced**:
 > diagnostic APK build as prep (see the smoke-gate prep block below); the calls
 > are Walid's. The story moves to `review` with that gate owed.
 
-- [ ] **Task 1 — Re-arm diagnostics + confirm the root cause on-device (AC1). _(Pixel 9 gate — Walid; agent does the prep.)_** Do this FIRST on-device; the fix already covers both causes.
-  - [x] The `HESITATION_DIAG` plumbing already exists on BOTH ends (client `onset_rms_alive` publish behind `_kHesitationDiag`; server `DIAG hesitation_onset` / `DIAG onset_rms` logs behind `HESITATION_DIAG=1`) — re-armed via the prep block, no code change needed.
-  - [ ] _(agent prep)_ Build the client with `--dart-define=HESITATION_DIAG=true`; set server env `HESITATION_DIAG=1` + `systemctl restart pipecat.service`.
-  - [ ] _(Walid, in the smoke gate)_ Run ONE diagnostic Pixel 9 call with a deliberate ~6 s freeze; `journalctl -u pipecat.service` and classify tap-dead (no `onset_rms_alive` / `peak_max_rms == 0`) vs meter-silent (`peak_max_rms > 0`, `armed` toggling, but no `hesitation_onset`). Record the verdict in the Debug Log. (Folds into the smoke script as CALL 1.)
+- [x] **Task 1 — Re-arm diagnostics + confirm the root cause on-device (AC1).** _Verdict: NEITHER tap-dead NOR meter-silent — the meter works; the "no gap" calls were the character re-prompt disarming it (by design). See Debug Log._
+  - [x] The `HESITATION_DIAG` plumbing already exists on BOTH ends — re-armed via the prep block, no code change needed.
+  - [x] _(agent prep)_ Built the client with `--dart-define=HESITATION_DIAG=true`; set server env `HESITATION_DIAG=1` + restarted (and set back to 0 post-sign-off, Task 7).
+  - [x] _(Pixel 9 gate)_ Ran diagnostic calls; classified via the journalctl timeline (re-prompt interruption, not a dead tap / contaminated floor). Verdict in the Debug Log.
 
 - [x] **Task 2 — Fix the native record-side tap (AC2, AC8).** `AudioCaptureChannel.kt`. _(native — validated on the Pixel 9 gate; not exercised by `flutter test`.)_
   - [x] `tryAttachCallback` now does a **bounded retry** (≤25 × 150 ms ≈ 3.75 s) on a not-warm record path (`sharedSingleton`/`methodCallHandler`/`recordSamplesReadyCallbackAdapter` null → `NOT_READY` → re-post on `mainHandler`); a reflection error (SDK rename) → `FAILED`, not retried. Keeps the `attachedCallback != null` idempotency guard. Logs a LATE attach at INFO and either terminal at WARN ("onset tap UNAVAILABLE — server fallback covers hesitations").
@@ -157,10 +157,10 @@ fixed, not replaced**:
   - [x] `call_screen_onset_rms_test.dart`: the `onsetRmsFromEvent` seam — num → double, non-`num` → null (the logged contract-break path).
   - [x] Server: `test_device_hesitation_collector.py` de-alias regression (mutating the merge result must not touch the input `server` list) + `test_debrief_teardown.py` teardown-merge integration (a device `hesitation_onset` + a server gap merged via the exact bot.py call shape → `persist_debrief` → persisted `source: "device"` row, winning the same-turn server gap) + `test_bot_pipeline_wiring.py` source-text wiring guard that the teardown feeds `merge_hesitation_sources(...)`, not the bare observer.
 
-- [ ] **Task 7 — On-device tuning + smoke (AC3, AC4, AC10). _(Pixel 9 gate — Walid + agent post-sign-off cleanup.)_**
-  - [ ] _(Walid)_ On the Pixel 9 with `HESITATION_DIAG` armed, tune `confirmationOffset` / `snrThreshold` / `seedWindow` / `debounce` against stopwatch-timed freezes until the debrief reads within ±0.5 s on a good connection.
-  - [ ] _(Walid)_ Run the Pixel 9 smoke gate (script below), INCLUDING the noise money-test (steady TV/fan → a real freeze still reported).
-  - [ ] _(agent, after sign-off)_ Turn `HESITATION_DIAG` back OFF on the VPS (and ship the prod client WITHOUT the dart-define) so prod logs stay clean — the diagnostics are a smoke-gate tool, not a prod feature.
+- [x] **Task 7 — On-device tuning + smoke (AC3, AC4, AC10).**
+  - [x] Tuning: `confirmationOffset` reconciled to **600 ms** = the viseme silence-confirmation window (by construction, NOT a free knob). `snrThreshold`/`seedWindow`/`debounce` left at defaults — onset detection + noise rejection both worked on-device, no tuning needed. Accuracy validated: calls 307=5.3 s / 308=5.0 s for ~5 s phone-stopwatch freezes → within ±0.5 s.
+  - [x] Pixel 9 smoke gate PASSED: device captures cleanly (`source:"device"`), accurate within ±0.5 s, noise money-test held (call 301: a freeze under steady noise still reported, 4.9 s — noise rejection is offset-independent). Lesson recorded: a freeze LONGER than the character's patience (~4.5 s here) is device-invisible-by-design → server-covered (UNRESOLVED freeze); the device's accurate range is pauses shorter than the re-prompt.
+  - [x] _(post-sign-off)_ `HESITATION_DIAG` set back to **0** on the VPS + restarted (prod logs clean). The PROD client release must be built WITHOUT `--dart-define=HESITATION_DIAG=true` (the Pixel 9 currently has the diagnostic build).
 
 ## Smoke Test Gate (Server / Deploy Story)
 
@@ -169,17 +169,15 @@ fixed, not replaced**:
 - [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active` on the commit SHA under test, with `HESITATION_DIAG=1` set for the smoke window.
   - _Proof (agent, 2026-06-16):_ commit `7172597` pushed → CI deploy `27611492385` success → `/health` git_sha `71725971b4b3ec6de773dfe65603b3caa1498811` (matches). VPS `.env` → `HESITATION_DIAG=1`; `systemctl restart pipecat.service` → `is-active: active`. DB backed up to `backups/db.pre-7.6-smokeprep.sqlite`; quota refunded (today's 2 billable calls → failed, 0 billable now → 3 available); `user_progress` waiter_easy_01 reset. Diagnostic APK (`--dart-define=HESITATION_DIAG=true`, 107 MB) built from `7172597` + `adb install -r` → Success on Pixel 9 (45301FDAS00B8W). _Owed: Walid's CALL 1–3 fill the device-source/log boxes below._
 
-- [ ] **Device-source proof (replaces the HTTP round-trip box).** After a real device-measured call (quiet room, deliberate freeze), the persisted debrief's hesitations carry `source: "device"`, and journalctl shows the matching `DIAG hesitation_onset gap_ms=… censored=false` line.
-  - _Command (read the row):_ <!-- /opt/survive-the-talk/current/server/.venv/bin/python -c 'import sqlite3,json; c=sqlite3.connect("/opt/survive-the-talk/data/db.sqlite"); r=c.execute("SELECT hesitations FROM debriefs ORDER BY id DESC LIMIT 1").fetchone(); print(r[0])' -->
-  - _Expected:_ <!-- at least one hesitation with "source":"device" and duration_sec ≈ stopwatch -->
-  - _Actual:_ <!-- paste -->
+- [x] **Device-source proof (replaces the HTTP round-trip box).** After real device-measured calls, the persisted debrief's hesitations carry `source: "device"`, with `DIAG hesitation_onset gap_ms=… censored=False` matching in journalctl.
+  - _Actual (2026-06-16, accuracy re-test @ offset 600 ms):_ debrief 55 (call 307) `[{"id":"d1","duration_sec":5.3,...,"source":"device"}, {h1 server unresolved 4.6}]`; debrief 56 (call 308) `[{"id":"d1","duration_sec":5.0,...,"source":"device"}, {h1 server unresolved 4.6}]`. journalctl: `DIAG hesitation_onset gap_ms=5354 censored=False` / `gap_ms=5022 censored=False`. Walid held ~5 s (phone stopwatch) → device 5.0/5.3 s = within ±0.5 s (AC3). Noise money-test: call 301 captured a freeze under steady noise (4.9 s, not 0/missing — AC4). `source:"device"` is authoritative; the server's UNRESOLVED freezes are still merged in.
 
 - [ ] **HTTP happy/error envelope boxes — N/A.** No FastAPI route added or changed; the teardown path is not an HTTP endpoint. (Rationale recorded; the device-source box above is the equivalent functional proof.)
 
 - [ ] **DB backup / migration boxes — N/A.** No schema change, no migration; the `debriefs.hesitations` column already exists. `test_migrations` must still pass unchanged.
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 80 --since "5 min ago"` shows the expected `DIAG` lines and NO ERROR / Traceback for the call(s).
-  - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
+- [x] **Server logs clean on the happy path.** `DIAG` lines present during the smoke window, NO ERROR / Traceback across all calls (300-308).
+  - _Proof (2026-06-16):_ journalctl error grep over each call window returned empty (`Traceback|ERROR|cartesia_ws_error` → none). Post-sign-off `HESITATION_DIAG=0` + restart → service `active`, `/health` git_sha `71725971…`.
 
 ## Pixel 9 Smoke Gate — ready-to-play script
 
@@ -281,7 +279,8 @@ claude-opus-4-8 (1M context) — dev-story 2026-06-16.
 
 ### Debug Log References
 
-- Diagnostic verdict (tap-dead vs meter-silent): _PENDING the Pixel 9 gate_ — Task 1's call runs as CALL 1 of the smoke script with `HESITATION_DIAG` armed. The code defends BOTH causes, so the verdict informs Task 7 tuning, not a code branch.
+- **Diagnostic verdict (Task 1, AC1) — NEITHER tap-dead NOR meter-silent: the meter works.** Across the Pixel 9 gate the device captured real gaps whenever it got a clean window (calls 300/301/305/306/307/308 all produced `source:"device"` rows). The "no device gap" calls (303/304) were NOT a failure — the journalctl timeline showed Tina's verbal re-prompt (`silence_prompt_seconds=4.5`) firing and its audio playing during the 6 s freeze, which correctly DISARMED the meter (arming gate); the server observer captured those as UNRESOLVED freezes (h1, by design). So a freeze longer than the character's patience is device-invisible-by-design and server-covered. The `onset_rms_alive` periodic ping never logged (the diag flag did not surface it), but it was not needed — the timeline + the captured gaps localized the behavior directly.
+- **`confirmationOffset` reconciliation (Task 3 / Task 7).** Mis-tuned to 1700 ms against a hand-held "6 s" that was actually ~4.8 s (the human clock was off, not the device; the user spoke when the character re-prompted, ~4.3 s after arm). Reverted to **600 ms** — the value it MUST hold by construction (it equals `VisemeScheduler._kDefaultSilenceConfirmation`, the window between audio-end-in-ear and `onSilenceConfirmed`/arm). Validated: calls **307 = 5.3 s, 308 = 5.0 s** for deliberate ~5 s phone-stopwatch freezes → within ±0.5 s (AC3), centered on target, `source:"device"`.
 - Gate output this session: client `flutter analyze` → "No issues found!"; client `flutter test` → 553 passed (+6 new); server `ruff check .` + `ruff format --check .` → clean; server `pytest` → 908 passed (+3 new).
 
 ### Completion Notes List
@@ -295,7 +294,9 @@ claude-opus-4-8 (1M context) — dev-story 2026-06-16.
 - **Task 6 (tests)** — meter tests re-pinned to time/logic; new clamp / disarm-reset / ambient-floor / onset-rms-seam tests; server de-alias regression + teardown-merge integration (device gap → persisted `source:"device"` row) + bot-wiring source-text guard.
 - **No migration** (per spec) — `debriefs.hesitations` already stores the JSON; `test_migrations` untouched/green.
 
-**Owed for `review → done`:** the formal `/bmad-code-review` AND the Pixel 9 smoke gate (incl. the NOISE money-test). Whichever clears last triggers the flip (reviewer).
+**Smoke gate — PASSED (2026-06-16, Walid + agent verification).** Device captures cleanly + accurate within ±0.5 s (calls 307/308 = 5.3/5.0 s for ~5 s phone-stopwatch freezes), `source:"device"` authoritative, server-unresolved freezes merged, noise money-test held (call 301), no crashes. The `confirmationOffset` was reconciled to 600 ms (= the viseme silence window) after a 1700 ms over-correction that was tuned against an unreliable hand-held "6 s" (actually ~4.8 s). Design lesson recorded: a freeze longer than the character's re-prompt patience is device-invisible-by-design → server-covered.
+
+**Owed for `review → done`:** ONLY the formal `/bmad-code-review` (run with a DIFFERENT agent than the implementer). The smoke gate is cleared; the reviewer flips `review → done` once the code review clears.
 
 ### File List
 
@@ -319,4 +320,5 @@ claude-opus-4-8 (1M context) — dev-story 2026-06-16.
 
 ### Change Log
 
-- 2026-06-16 — dev-story: implemented Tasks 2–6 (device-authoritative hesitation: native tap retry + channelCount RMS + bounded delivery; Dart meter clamp/disarm-reset/minGap-4s/seed-from-ambient; call_screen non-num log seam; bot.py teardown merge wired + de-alias). +9 tests (6 client, 3 server). Gates green (analyze clean / flutter 553 / ruff clean / pytest 908). Status `in-progress` → `review`. Owed: `/bmad-code-review` + Pixel 9 smoke gate (incl. NOISE money-test).
+- 2026-06-16 — dev-story: implemented Tasks 2–6 (device-authoritative hesitation: native tap retry + channelCount RMS + bounded delivery; Dart meter clamp/disarm-reset/minGap-4s/seed-from-ambient; call_screen non-num log seam; bot.py teardown merge wired + de-alias). +9 tests (6 client, 3 server). Gates green (analyze clean / flutter 553 / ruff clean / pytest 908). Status `in-progress` → `review`.
+- 2026-06-16 — calibration (Task 3/7): `confirmationOffset` 600 → 1700 ms (over-correction vs a hand-held "6 s") → reverted to 600 ms (= the viseme silence-confirmation window, correct by construction). Pixel 9 smoke gate PASSED: device accurate within ±0.5 s (307=5.3 s, 308=5.0 s for ~5 s freezes), `source:"device"`, noise money-test held, no crashes; `HESITATION_DIAG` set back to 0. Story stays `review` — owed ONLY the `/bmad-code-review`.
