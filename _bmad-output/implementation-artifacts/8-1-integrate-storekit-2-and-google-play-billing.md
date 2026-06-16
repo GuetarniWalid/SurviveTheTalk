@@ -26,25 +26,25 @@ so that I can unlock all scenarios with a seamless, trusted payment experience.
 
 ---
 
-## ⚠️ Pre-Dev Decisions (recommended defaults baked in — Walid may override)
+## ✅ Pre-Dev Decisions — ALL RESOLVED (Walid confirmed the recommended defaults, 2026-06-16)
 
-This story carries genuine design forks. The recommended option is **already baked into the Tasks below** so the dev agent can proceed without blocking. Walid should confirm or override **D2, D3, D4** before/at dev start (D1 is settled by the architecture).
+This story carried genuine design forks. **Walid confirmed "prends tes recos par défaut" on 2026-06-16 → every recommended option below is LOCKED**, and all are already baked into the Tasks. No open forks remain; the dev agent proceeds on the defaults as written. (D1 was already settled by the architecture.)
 
 - **D1 — Library: native `in_app_purchase` + our own server validation (NOT RevenueCat). ✅ SETTLED.**
   Architecture lists "Apple StoreKit 2" and "Google Play Billing" as the integrations (architecture.md:47, :445–446); NFR11 says payment is "delegated entirely to StoreKit 2 / Google Play Billing." RevenueCat appears nowhere in the planning artifacts and would insert a third-party receipt validator. → Use the official `in_app_purchase` ^3.3.0 plugin (iOS uses **StoreKit 2 by default**; Android uses Google Play Billing) + first-party server validation.
 
-- **D2 — Validation timing (the NFR26 tension). ⚠️ CONFIRM.**
+- **D2 — Validation timing (the NFR26 tension). ✅ CONFIRMED (Walid 2026-06-16) → synchronous validate-then-flip + optimistic fallback only when the validator is unreachable.**
   NFR26 reads literally as "grant paid **immediately**, validate **async**, revoke if it fails." A pure-optimistic flip on an *unvalidated* receipt is a fraud window: a forged artifact buys up to the paid daily call-cap (3 calls ≈ $0.15 of API abuse) before the async check reverts it.
-  **Recommended (baked in): synchronous validation in the happy path.** Validate against Apple/Google *inside* the request (~1–4 s); flip `tier='paid'` only on a **valid** result. Fall back to **optimistic grant + `validation_status='pending'` + background re-check** ONLY when the validator is *unreachable* (Apple/Google timeout/5xx) — this preserves NFR26's real intent (never permanently block a paying user on a validator outage) while closing the fraud window in the normal case. AC2/AC3/AC4 are all satisfied either way.
+  **LOCKED (baked in): synchronous validation in the happy path.** Validate against Apple/Google *inside* the request (~1–4 s); flip `tier='paid'` only on a **valid** result. Fall back to **optimistic grant + `validation_status='pending'` + background re-check** ONLY when the validator is *unreachable* (Apple/Google timeout/5xx) — this preserves NFR26's real intent (never permanently block a paying user on a validator outage) while closing the fraud window in the normal case. AC2/AC3/AC4 are all satisfied either way.
   **Alternative:** literal NFR26 — always flip first, always validate in the background. Simpler request path, wider abuse window.
 
-- **D3 — Tier-transition call-count bug / `users.tier_changed_at`. ⚠️ CONFIRM.**
+- **D3 — Tier-transition call-count bug / `users.tier_changed_at`. ✅ CONFIRMED (Walid 2026-06-16) → add the column now, defer the counting rework to 8.3.**
   Known deferred bug (deferred-work.md:401–403): free-tier call counting is **lifetime**, so a user who goes free→paid→free is hard-capped at 0 forever (their paid-era calls count against the free lifetime cap). deferred-work flags this for "Epic 8 — the moment a user can leave free tier."
-  **Recommended (baked in): add the `users.tier_changed_at` column in migration 014 now and stamp it on every tier flip, but DEFER the call-counting rework to Story 8.3.** Rationale: in 8.1 the only paid→free path is a *validation failure* (effectively fraud), where a 0-cap is acceptable; legitimate downgrades (cancellation) arrive in 8.3, which owns the counting fix. Adding the column now avoids a second migration.
+  **LOCKED (baked in): add the `users.tier_changed_at` column in migration 014 now and stamp it on every tier flip, but DEFER the call-counting rework to Story 8.3.** Rationale: in 8.1 the only paid→free path is a *validation failure* (effectively fraud), where a 0-cap is acceptable; legitimate downgrades (cancellation) arrive in 8.3, which owns the counting fix. Adding the column now avoids a second migration.
   **Alternative:** do the full counting rework here (scope creep), or add nothing now (a second migration in 8.3).
 
-- **D4 — Store product configuration is Walid-owned and BLOCKS the live smoke gate. 🔑 ACTION REQUIRED.**
-  The actual products must be created in **App Store Connect** (iOS) and **Google Play Console** (Android) — both require Walid's developer accounts, a paid Apple Developer membership, an uploaded build, and sandbox/license-test accounts. The product ID must match the shared constant the code uses. **Proposed product ID: `stt_weekly_199`** (lowercase, store-portable). Confirm or change. Until the products exist + are in a testable state, the on-device purchase smoke gate cannot run. iOS additionally can't be device-validated until Story 10-4 (no iOS test pipeline yet — `project_ios_test_pipeline_deferred.md`).
+- **D4 — Store product configuration is Walid-owned and BLOCKS the live smoke gate. ✅ CONFIRMED (Walid 2026-06-16) → product ID `stt_weekly_199` LOCKED; store setup remains Walid's action and still blocks the on-device gate.**
+  The actual products must be created in **App Store Connect** (iOS) and **Google Play Console** (Android) — both require Walid's developer accounts, a paid Apple Developer membership, an uploaded build, and sandbox/license-test accounts. The code uses the shared constant **`stt_weekly_199`** (lowercase, store-portable) for both `IAP_PRODUCT_ID` (server) and `kIapWeeklyProductId` (client) — the store products MUST be created with this exact ID. Until the products exist + are in a testable state, the on-device purchase smoke gate cannot run. iOS additionally can't be device-validated until Story 10-4 (no iOS test pipeline yet — `project_ios_test_pipeline_deferred.md`).
 
 ---
 
