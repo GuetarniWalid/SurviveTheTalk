@@ -120,3 +120,62 @@ def test_merge_caps_at_top_n():
         5.0,
         4.0,
     ]
+
+
+def test_merge_keeps_a_server_resolved_gap_for_a_turn_the_device_missed():
+    """Story 7.6 review fix (Walid 2026-06-16) — device authority is PER-TURN,
+    not per-call. The device measured turn "a"; the server ALSO caught a RESOLVED
+    gap on a DIFFERENT turn "b" the device missed (a noisy / censored pause). The
+    server's accurate turn-"b" gap must SURVIVE — the earlier per-call merge
+    wrongly dropped every resolved server gap the instant the device produced any
+    gap, silently losing a real hesitation from a multi-pause call."""
+    device = [
+        {
+            "id": "d1",
+            "duration_sec": 5.0,
+            "preceding_character_line": "a",
+            "resolved": True,
+            "source": "device",
+        }
+    ]
+    server = [
+        {
+            "id": "h1",
+            "duration_sec": 7.0,
+            "preceding_character_line": "b",  # a DIFFERENT turn the device missed
+            "resolved": True,  # resolved, yet KEPT — the device never covered it
+            "source": "server",
+        }
+    ]
+    merged = merge_hesitation_sources(device, server)
+    assert [h["id"] for h in merged] == ["h1", "d1"]  # both survive, longest first
+    assert {h["source"] for h in merged} == {"device", "server"}
+
+
+def test_merge_dedupes_the_same_turn_preferring_the_device():
+    """The common case: BOTH sources measured the SAME turn (the device with the
+    accurate gap, the server with its network-inflated one). The device wins and
+    the server duplicate is dropped — no double-count. The turn is matched by the
+    preceding character line, NORMALISED (whitespace + case), so trivial snapshot
+    differences between the two sources still pair correctly."""
+    device = [
+        {
+            "id": "d1",
+            "duration_sec": 6.0,
+            "preceding_character_line": "Give me your wallet.",
+            "resolved": True,
+            "source": "device",
+        }
+    ]
+    server = [
+        {
+            "id": "h1",
+            "duration_sec": 7.4,  # the server's INFLATED measure of the SAME pause
+            "preceding_character_line": "  give me your WALLET.  ",  # same line, case/space
+            "resolved": True,
+            "source": "server",
+        }
+    ]
+    merged = merge_hesitation_sources(device, server)
+    assert [h["id"] for h in merged] == ["d1"]  # device wins; the duplicate is gone
+    assert merged[0]["source"] == "device"

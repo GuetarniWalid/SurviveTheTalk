@@ -9,11 +9,13 @@ character line that just finished (for the LLM context) and assigns a stable id
 — exactly mirroring `HesitationObserver` so the two are interchangeable at
 teardown.
 
-At teardown `merge_hesitation_sources` PREFERS the device gaps (accurate,
-`source="device"`) and ADDS the server observer's UNRESOLVED freezes — the
-re-speak gaps the device can never see because it DISARMS the instant the
-character speaks again (C2). When no device gaps arrived at all (an old app
-build, or a data-channel failure) it falls back entirely to the server observer.
+At teardown `merge_hesitation_sources` resolves PER TURN (keyed by the preceding
+character line): the device gap WINS for every turn it measured (accurate,
+`source="device"`), and the server observer covers every OTHER turn — its
+UNRESOLVED re-speak freezes (C2, which the device can never see because it
+DISARMS the instant the character speaks again) AND any turn the device missed or
+censored. When no device gaps arrived at all (an old app build, or a data-channel
+failure) it falls back entirely to the server observer.
 """
 
 from __future__ import annotations
@@ -113,26 +115,50 @@ class DeviceHesitationCollector:
 def merge_hesitation_sources(
     device: list[dict], server: list[dict], *, top_n: int = _TOP_N
 ) -> list[dict]:
-    """Story 7.5 D3-c teardown merge — prefer the device-measured gaps.
+    """Story 7.5 D3-c / Story 7.6 teardown merge — PER-TURN device preference.
 
-    - No device gaps (old app / channel failure) → fall back entirely to the
-      server observer (already `source`-tagged "server").
-    - Device gaps present → use them (accurate, resolved) AND add the server
-      observer's UNRESOLVED freezes (the re-speak gaps the device cannot see, C2
-      — the meter disarms when the character speaks again). Re-rank by duration,
-      cap at `top_n`.
+    The merge is resolved one TURN at a time, a turn being keyed by the character
+    line that preceded the pause (`_line_key`) — the natural join both sources
+    snapshot from the SAME shared transcript via an identical
+    `_last_character_line()`:
+
+    - No device gaps at all (old app / data-channel failure) → fall back entirely
+      to the server observer (already `source`-tagged "server").
+    - Otherwise, for EACH turn: the device gap WINS when the device measured that
+      turn (accurate, network-immune); the server gap covers every OTHER turn —
+      both its UNRESOLVED re-speak freezes (C2: the device disarms when the
+      character speaks again, so it never sees them) AND any turn the device
+      MISSED or CENSORED (a noisy or over-long pause). Re-rank by duration, cap at
+      `top_n`.
+
+    Story 7.6 review (Walid 2026-06-16) — the fallback is PER-TURN, NOT per-call:
+    an earlier draft dropped EVERY resolved server gap the instant the device
+    produced any gap, which silently lost an ACCURATE server measure for a turn
+    the device happened to miss (a noisy / censored pause on a multi-pause call).
+    The device's authority is scoped to the turns it actually measured; the
+    server still covers the rest.
 
     Story 7.6 (AC5) — the no-device branch returns a FRESH list (`list(server)`),
-    never the caller's `server` reference: the teardown merge result must be
-    independent of the observer's internal list so a later mutation of either
-    can't alias the other.
+    never the caller's `server` reference, so a later mutation of either can't
+    alias the other.
     """
     if not device:
         return list(server)
-    server_unresolved = [h for h in server if not h.get("resolved", True)]
+    # The turns the device actually measured (keyed by preceding line). An
+    # empty/unknown line never dedupes a server gap away — we would rather show a
+    # pause than silently drop one.
+    device_turns = {key for h in device if (key := _line_key(h))}
+    server_fill = [h for h in server if _line_key(h) not in device_turns]
     merged = sorted(
-        [*device, *server_unresolved],
+        [*device, *server_fill],
         key=lambda h: h.get("duration_sec", 0.0),
         reverse=True,
     )
     return merged[:top_n]
+
+
+def _line_key(h: dict) -> str:
+    """Per-turn join key: the preceding character line, normalised (stripped +
+    case-folded) so the device and server agree on the same turn. Empty when a
+    gap carries no line — an empty key never dedupes another source's gap."""
+    return (h.get("preceding_character_line") or "").strip().casefold()
