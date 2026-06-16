@@ -76,16 +76,17 @@ class HesitationMeter {
     // a sub-ms non-issue at real freeze durations.)
     Duration minGap = const Duration(seconds: 4),
     Duration maxGap = const Duration(seconds: 10),
-    // The meter ARMS at `onSilenceConfirmed`, which fires only AFTER the
-    // character's audio has finished playing out of the phone's jitter buffer
-    // AND the REST-viseme silence window has elapsed — a lag the gap must NOT
-    // count. Subtract it from the gap start so the measured gap reflects the
-    // FELT pause (from when the user's EAR heard silence), not that confirmation
-    // lag. Story 7.6 Pixel 9 calibration: a stopwatch-timed 6.0 s freeze read
-    // 4.9 s at 600 ms (a 1.1 s deficit), corroborated by a measured ~1.7 s
-    // TTS-stop → playback_idle lag, so the offset is 1700 ms. The gap-≥-0 clamp
-    // below keeps the arithmetic safe at any value.
-    Duration confirmationOffset = const Duration(milliseconds: 1700),
+    // The meter ARMS at `onSilenceConfirmed`, which fires exactly ONE
+    // silence-confirmation window (`VisemeScheduler._kDefaultSilenceConfirmation`
+    // = 600 ms) AFTER the character's audio actually ended in the user's ear. So
+    // `gapStart = arm − 600 ms = the felt silence start`, and the measured gap =
+    // the TRUE felt pause BY CONSTRUCTION. This offset is therefore NOT a free
+    // tuning knob — it MUST equal that window. (Story 7.6 lesson: a 1700 ms value
+    // was tried against a hand-held "6 s" stopwatch, but that hold was actually
+    // ~4.8 s — the human clock was off, not the device, and 1700 ms over-stated
+    // by ~1.1 s. Reverted to the by-construction 600 ms.) The gap-≥-0 clamp below
+    // keeps the arithmetic safe.
+    Duration confirmationOffset = const Duration(milliseconds: 600),
     double Function()? clockMs,
   }) : _snrThreshold = snrThreshold,
        _minFloor = minFloor,
