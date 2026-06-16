@@ -1,6 +1,6 @@
 # Story 7.5: Overhaul Debrief Report (v2)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -156,7 +156,7 @@ This is a CONTENT + ACCURACY + INTERACTIVITY overhaul spanning server and client
 - [x] **DB backup taken BEFORE deploy.** `db.pre-b1c7d56.sqlite` (deploy-server.yml auto-backup) + `db.pre-smoke75-20260615-095440.sqlite` (manual pre-quota-check). No SQL migration (JSON-shape only).
 - [ ] **Server logs clean + generation budget.** `journalctl -u pipecat.service` shows the v2 generation under the 10 s ceiling, no ERROR/Traceback. **→ verified on the smoke gate's first call.**
 
-## Pixel 9 Smoke Gate (owed before review → done) — READY-TO-PLAY (finalized 2026-06-15)
+## Pixel 9 Smoke Gate (owed before review → done) — READY-TO-PLAY (finalized 2026-06-15) — ✅ SMOKE GATE SIGNED 2026-06-16 (Walid: "c'est ok, tout ok")
 
 **Prereqs:** install the release APK **rebuilt from `e84a24e`** (the post-code-review HEAD — the old b1c7d56 APK predates the client review patches). You have 3 calls available today (UTC). Responses below are APPROXIMATE (live LLM) — replay the lines, watch the HUD/debrief, no need to predict exactly.
 
