@@ -202,11 +202,12 @@ void main() {
       expect(find.text('Attempt #2 · Previous best: 67%'), findsOneWidget);
       expect(find.text('27% away from surviving The Mugger'), findsOneWidget);
 
-      // Checkpoint breakdown (B7).
+      // Checkpoint breakdown (B7) — collapsed to a tappable summary on the
+      // surface (Story 7.5 review); the per-beat rows live in the sheet.
       expect(find.text('CHECKPOINTS'), findsOneWidget);
       expect(find.text('1 of 2 reached'), findsOneWidget);
-      expect(find.text('Greet the mugger'), findsOneWidget);
-      expect(find.text('Refuse to comply'), findsOneWidget);
+      expect(find.text('Greet the mugger'), findsNothing);
+      expect(find.text('Refuse to comply'), findsNothing);
 
       // Errors — uppercase eyebrow + ×2 badge.
       expect(find.text('LANGUAGE ERRORS'), findsOneWidget);
@@ -239,6 +240,26 @@ void main() {
       expect(find.text('HOW TO PRACTICE'), findsNothing);
 
       verifyNever(() => repository.fetchDebrief(callId: any(named: 'callId')));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping the checkpoint summary opens the sheet, missed first', (
+      tester,
+    ) async {
+      await pumpScreen(tester, buildScreen(payload: fullPayload()));
+
+      // Collapsed on the surface: the per-beat rows are hidden until tapped.
+      expect(find.text('Greet the mugger'), findsNothing);
+      expect(find.text('Refuse to comply'), findsNothing);
+
+      await tester.tap(find.text('1 of 2 reached'));
+      await tester.pumpAndSettle();
+
+      // Both beats now render in the sheet, the MISSED one ('Refuse to comply')
+      // listed before the met one ('Greet the mugger').
+      final missed = tester.getTopLeft(find.text('Refuse to comply')).dy;
+      final met = tester.getTopLeft(find.text('Greet the mugger')).dy;
+      expect(missed, lessThan(met));
       expect(tester.takeException(), isNull);
     });
 
@@ -289,9 +310,10 @@ void main() {
 
     testWidgets('chevrons mark only depth-bearing cards', (tester) async {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
-      // 1 error with depth + 2 areas with a practice prompt = 3 chevrons. The
-      // depthless second error stays chevron-less (honest affordance).
-      expect(find.byIcon(Icons.chevron_right), findsNWidgets(3));
+      // 1 error with depth + 2 areas with a practice prompt + the collapsed
+      // checkpoint summary (Story 7.5 review) = 4 chevrons. The depthless second
+      // error stays chevron-less (honest affordance).
+      expect(find.byIcon(Icons.chevron_right), findsNWidgets(4));
     });
 
     testWidgets('FR37 card keeps the 4px destructive left border', (

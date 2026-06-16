@@ -492,19 +492,17 @@ class _DebriefContent extends StatelessWidget {
                     ),
                   ),
                 ],
-                // CHECKPOINTS (B7) — the "why this score?" factual layer leads.
+                // CHECKPOINTS (B7) — the "why this score?" factual layer. Story
+                // 7.5 review (Walid 2026-06-16): a compact tappable summary; the
+                // full met/missed breakdown (missed first) lives in the dark
+                // sheet, so many checkpoints no longer wall off the rest.
                 if (d.checkpoints.isNotEmpty) ...[
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrCheckpoints),
-                  const SizedBox(height: _kCountLineGap),
-                  Text(
-                    checkpointCountLine(metCount, d.checkpoints.length),
-                    style: mutedCaption,
+                  _CheckpointSummary(
+                    metCount: metCount,
+                    total: d.checkpoints.length,
+                    checkpoints: d.checkpoints,
                   ),
-                  for (final cp in d.checkpoints) ...[
-                    const SizedBox(height: _kCheckpointRowGap),
-                    _CheckpointRow(checkpoint: cp),
-                  ],
                 ],
                 // LANGUAGE ERRORS — always visible (count line).
                 const SizedBox(height: _kSectionGap),
@@ -707,6 +705,62 @@ class _SectionHeader extends StatelessWidget {
 
 /// One met/missed beat row — flat on the rail (no card). The state marker is the
 /// ONLY place accent is earned in the body, and only as a FILL (two-ink rule).
+/// Story 7.5 review (Walid 2026-06-16): the checkpoint breakdown used to render
+/// as a full inline list — a wall of text that buried the rest of the report
+/// when a scenario had many beats. Now a compact, tappable summary (count +
+/// chevron); the full met/missed list (missed first) opens in the dark sheet —
+/// the same "rich on tap, calm at a glance" pattern as the error/area cards.
+class _CheckpointSummary extends StatelessWidget {
+  final int metCount;
+  final int total;
+  final List<DebriefCheckpoint> checkpoints;
+
+  const _CheckpointSummary({
+    required this.metCount,
+    required this.total,
+    required this.checkpoints,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      hint: _kDetailHint,
+      label: 'Checkpoints, ${checkpointCountLine(metCount, total)}',
+      excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => showCheckpointsSheet(context, checkpoints),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SectionHeader(_kHdrCheckpoints),
+            const SizedBox(height: _kCountLineGap),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    checkpointCountLine(metCount, total),
+                    style: AppTypography.body.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: _kChevronGap),
+                const Icon(
+                  Icons.chevron_right,
+                  color: AppColors.textSecondary,
+                  size: _kChevronSize,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _CheckpointRow extends StatelessWidget {
   final DebriefCheckpoint checkpoint;
 
@@ -954,6 +1008,73 @@ class _ErrorDetailSheet extends StatelessWidget {
                     ),
                   ),
                 ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens the DARK checkpoints sheet — the full met/missed breakdown, MISSED
+/// first (the actionable beats). Read-only, fire-and-forget; same plumbing as
+/// the error/area detail sheets.
+Future<void> showCheckpointsSheet(
+  BuildContext context,
+  List<DebriefCheckpoint> checkpoints,
+) {
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: true,
+    builder: (_) => _CheckpointsSheet(checkpoints: checkpoints),
+  );
+}
+
+class _CheckpointsSheet extends StatelessWidget {
+  final List<DebriefCheckpoint> checkpoints;
+
+  const _CheckpointsSheet({required this.checkpoints});
+
+  @override
+  Widget build(BuildContext context) {
+    final metCount = checkpoints.where((c) => c.met).length;
+    // Missed first (the actionable beats), then met.
+    final ordered = <DebriefCheckpoint>[
+      ...checkpoints.where((c) => !c.met),
+      ...checkpoints.where((c) => c.met),
+    ];
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppColors.avatarBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          _kSheetHPad,
+          _kSheetTopPad,
+          _kSheetHPad,
+          _kSheetBottomPad + MediaQuery.viewPaddingOf(context).bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(child: _DragHandle()),
+              const SizedBox(height: _kSheetHandleGap),
+              Text(
+                checkpointCountLine(metCount, checkpoints.length),
+                style: AppTypography.sectionTitle.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              for (final cp in ordered) ...[
+                const SizedBox(height: _kCheckpointRowGap),
+                _CheckpointRow(checkpoint: cp),
               ],
             ],
           ),
