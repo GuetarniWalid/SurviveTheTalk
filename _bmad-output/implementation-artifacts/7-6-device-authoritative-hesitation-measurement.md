@@ -166,8 +166,8 @@ fixed, not replaced**:
 
 > This story changes `server/pipeline/bot.py` (the per-call bot subprocess teardown) and requires a VPS deploy + a temporary `HESITATION_DIAG=1` env flip. **No HTTP route changes and NO DB migration** — the new behavior is exercised by a real LiveKit call writing a `debriefs` row, validated on the Pixel 9 gate. Every unchecked box is a stop-ship for `in-progress → review`. Paste real command output as proof.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test, with `HESITATION_DIAG=1` set for the smoke window.
-  - _Proof:_ <!-- paste the Active/Main PID line + the env confirmation -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active` on the commit SHA under test, with `HESITATION_DIAG=1` set for the smoke window.
+  - _Proof (agent, 2026-06-16):_ commit `7172597` pushed → CI deploy `27611492385` success → `/health` git_sha `71725971b4b3ec6de773dfe65603b3caa1498811` (matches). VPS `.env` → `HESITATION_DIAG=1`; `systemctl restart pipecat.service` → `is-active: active`. DB backed up to `backups/db.pre-7.6-smokeprep.sqlite`; quota refunded (today's 2 billable calls → failed, 0 billable now → 3 available); `user_progress` waiter_easy_01 reset. Diagnostic APK (`--dart-define=HESITATION_DIAG=true`, 107 MB) built from `7172597` + `adb install -r` → Success on Pixel 9 (45301FDAS00B8W). _Owed: Walid's CALL 1–3 fill the device-source/log boxes below._
 
 - [ ] **Device-source proof (replaces the HTTP round-trip box).** After a real device-measured call (quiet room, deliberate freeze), the persisted debrief's hesitations carry `source: "device"`, and journalctl shows the matching `DIAG hesitation_onset gap_ms=… censored=false` line.
   - _Command (read the row):_ <!-- /opt/survive-the-talk/current/server/.venv/bin/python -c 'import sqlite3,json; c=sqlite3.connect("/opt/survive-the-talk/data/db.sqlite"); r=c.execute("SELECT hesitations FROM debriefs ORDER BY id DESC LIMIT 1").fetchone(); print(r[0])' -->
