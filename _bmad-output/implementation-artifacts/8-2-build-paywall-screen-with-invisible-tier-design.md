@@ -170,14 +170,16 @@ The cross-screen rulebook "The Handler's Brief" (project memory `project_design_
 
 > Client-only story → the server "Smoke Test Gate" is intentionally omitted (zero server/DB/deploy impact). This is the on-device gate instead. **The real purchase path is BLOCKED on store config (Story 8.1 Decision D4 — Google Play account not yet created; Apple sandbox needs `APPLE_ACCEPT_SANDBOX=1`).** So this gate validates everything *except* a completed real purchase; the purchase-completion half stays owed until store config lands (track with 8.1's on-device gate). iOS is fully blocked until Story 10-4 (no iOS build pipeline).
 
+**✅ SMOKE GATE SIGNED — Walid 2026-06-17 ("Fini, tout a marché nickel").** APK built from `a19deee`; user 1 flipped `free`/`callsRemaining=1` on prod (verified via live `/scenarios` meta: `tier=free, calls_remaining=1`), tested on the Pixel 9, then the account was surgically restored to `paid` (backup `db.pre-8-2-paywall-test-20260617T135129Z.sqlite`). All testable-now boxes pass; only the real-purchase half stays owed (8.1 D4).
+
 Testable now on a Pixel 9 from a release APK (no real purchase needed):
-- [ ] **AC1** — as a **free** user, tap the call icon on a **paid** scenario → the paywall sheet appears; **no call starts**. (Reset user to free/paid + reset quota as needed — see [[infra_reset_daily_call_quota]].)
-- [ ] **AC4/AC8 visual** — the sheet matches the design: title/subtitle/$1.99·per week/3 benefits/`Let's go`/`Not now`/legal, light surface, radius 16, no overflow on the device.
-- [ ] **AC5** — `Not now`, system back, swipe-down, and scrim-tap all dismiss cleanly back to the unchanged scenario list; tapping the same paid scenario again re-opens it (no nag, no lockout).
-- [ ] **AC2** — tap the BottomOverlayCard (free state) → same paywall.
-- [ ] **AC3 (if D1=implement)** — drive a free user to their 3rd free call; on the debrief, the paywall auto-appears at load; dismiss → debrief stays readable.
-- [ ] **AC6** — with TalkBack on, the sheet announces the price + value prop + CTA/dismiss; targets are reachable.
-- [ ] **Purchase completion (OWED until store config):** tapping `Let's go` → native Play sheet → on success the sheet shows `You're in`, resolves, and the list reflects `paid`. _Cannot run until the Google Play product + signed AAB on Internal testing exist (8.1 D4)._
+- [x] **AC1** — free user, call icon on a **paid** scenario (The Cop) → paywall appears, **no call starts**; browse path (card → briefing → "Pick up") also gates. ✅ Walid 2026-06-17
+- [x] **AC4/AC8 visual** — sheet matches the design (title/subtitle/$1.99·per week/3 benefits/`Let's go`/`Not now`/`Restore purchases`/legal, light surface, radius 16, no overflow). ✅ Walid 2026-06-17
+- [x] **AC5** — `Not now`, system back, swipe-down, and scrim-tap all dismiss cleanly back to the unchanged list; re-tap re-opens (no nag, no lockout). ✅ Walid 2026-06-17
+- [x] **AC2** — BottomOverlayCard ("Unlock all scenarios") → same paywall. ✅ Walid 2026-06-17
+- [x] **AC3** — free user on their 3rd/last free call (The Waiter, user-hung-up) → on the debrief the paywall auto-appears at load; dismiss → debrief stays readable (the money moment). ✅ Walid 2026-06-17
+- [x] **AC6** — TalkBack announces the price naturally + value prop + CTA/dismiss; targets reachable. ✅ Walid 2026-06-17
+- [ ] **Purchase completion (OWED until store config):** tapping `Let's go` → native Play sheet → on success the sheet shows `You're in`, resolves, and the list reflects `paid`. _Cannot run until the Google Play product + signed AAB on Internal testing exist (8.1 D4) — tapping `Let's go` today surfaces the expected Error state (no product). Tracked with Story 8.1's on-device gate._
 
 ## Pre-Dev Decisions (all RESOLVED — ready for `dev-story`)
 
