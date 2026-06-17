@@ -22,6 +22,18 @@
 --      cardholder data (NFR11 — zero PCI-DSS scope). `validation_status`
 --      tracks the D2 validate-then-flip lifecycle: 'pending' on insert,
 --      'valid' once Apple/Google confirm, 'invalid' on a definitive reject.
+--
+--      `verification_token` is UNIQUE (code-review 8.1 F3/F7): it is the
+--      DB-level backstop that (a) prevents a concurrent / retried duplicate
+--      POST from double-inserting the same artifact (the route's BEGIN
+--      IMMEDIATE serialises this, the constraint is belt-and-suspenders), and
+--      (b) makes one store artifact resolvable to exactly one purchase row, so
+--      a leaked/shared token can never be silently recorded twice across
+--      accounts (the route additionally rejects a cross-user re-submit with a
+--      409 before this fires). `transaction_id` is deliberately NOT UNIQUE: a
+--      subscription's transactionId/orderId is stable across re-validations of
+--      the SAME purchase, so a hard UNIQUE there would false-conflict on a
+--      legitimate re-verify (full buyer-account binding is 8.3 scope).
 
 ALTER TABLE users ADD COLUMN tier_changed_at TEXT;
 
@@ -30,7 +42,7 @@ CREATE TABLE IF NOT EXISTS purchases (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     platform TEXT NOT NULL CHECK(platform IN ('ios','android')),
     product_id TEXT NOT NULL,
-    verification_token TEXT NOT NULL,     -- JWS (iOS) / purchaseToken (Android); a store artifact, NOT payment data (NFR11)
+    verification_token TEXT NOT NULL UNIQUE,  -- JWS (iOS) / purchaseToken (Android); a store artifact, NOT payment data (NFR11). UNIQUE = dedup + cross-account replay backstop (8.1 F3/F7).
     transaction_id TEXT,                  -- Apple transactionId / Google orderId, once known
     validation_status TEXT NOT NULL DEFAULT 'pending'
         CHECK(validation_status IN ('pending','valid','invalid')),

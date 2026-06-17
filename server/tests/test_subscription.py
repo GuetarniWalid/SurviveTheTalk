@@ -294,7 +294,11 @@ def test_pending_revalidated_invalid_reverts_to_free(
     resolved = asyncio.run(_run())
 
     assert resolved == 1
-    assert _user_row(test_db_path, user_id)["tier"] == "free"
+    reverted = _user_row(test_db_path, user_id)
+    assert reverted["tier"] == "free"
+    # F25/D3 — the paid->free revert MUST re-stamp tier_changed_at (Story 8.3's
+    # free-tier lifetime call-count rework reads it).
+    assert reverted["tier_changed_at"] is not None
     rows = _purchase_rows(test_db_path)
     assert rows[-1]["validation_status"] == "invalid"
 
@@ -332,3 +336,180 @@ def test_pending_revalidated_unreachable_stays_pending(
     assert resolved == 0
     assert _user_row(test_db_path, user_id)["tier"] == "paid"
     assert _purchase_rows(test_db_path)[-1]["validation_status"] == "pending"
+
+
+@patch("billing.revalidation.validate_google", new_callable=AsyncMock)
+@patch("api.routes_subscription.validate_google", new_callable=AsyncMock)
+def test_pending_revalidated_valid_stays_paid(
+    mock_route_validate: AsyncMock,
+    mock_sweep_validate: AsyncMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path,
+) -> None:
+    """F22 — the sweep's pending→VALID arm: an optimistic grant the store later
+    confirms is marked 'valid' and the user stays paid (resolved += 1)."""
+    from billing.revalidation import revalidate_pending_purchases
+
+    mock_route_validate.return_value = ValidationResult(
+        valid=False, status="unreachable", reason="api_5xx"
+    )
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+    client.post("/subscription/verify", json=_ANDROID_BODY, headers=_auth_header(token))
+
+    mock_sweep_validate.return_value = ValidationResult(
+        valid=True, status="valid", transaction_id="GPA.9", expires_at=None
+    )
+
+    async def _run() -> int:
+        async with get_connection() as db:
+            return await revalidate_pending_purchases(db, settings=Settings())
+
+    resolved = asyncio.run(_run())
+
+    assert resolved == 1
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"
+    assert _purchase_rows(test_db_path)[-1]["validation_status"] == "valid"
+
+
+@patch("billing.revalidation.validate_google", new_callable=AsyncMock)
+@patch("api.routes_subscription.validate_google", new_callable=AsyncMock)
+def test_pending_invalid_keeps_paid_when_other_valid_purchase_exists(
+    mock_route_validate: AsyncMock,
+    mock_sweep_validate: AsyncMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path,
+) -> None:
+    """F2 — the sweep must NOT clobber a separately-entitled user. A stale
+    'pending' row re-validating invalid keeps the user paid when they hold
+    another 'valid' purchase; only that row is marked invalid."""
+    from billing.revalidation import revalidate_pending_purchases
+
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    # Purchase #1 — optimistic 'pending' grant (store unreachable at verify).
+    mock_route_validate.return_value = ValidationResult(
+        valid=False, status="unreachable", reason="api_5xx"
+    )
+    client.post(
+        "/subscription/verify",
+        json={**_ANDROID_BODY, "verification_data": "token-pending-1"},
+        headers=_auth_header(token),
+    )
+    # Purchase #2 — a genuine confirmed 'valid' purchase (different artifact).
+    mock_route_validate.return_value = ValidationResult(
+        valid=True, status="valid", transaction_id="GPA.OK", expires_at=None
+    )
+    client.post(
+        "/subscription/verify",
+        json={**_ANDROID_BODY, "verification_data": "token-valid-2"},
+        headers=_auth_header(token),
+    )
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"
+
+    # Sweep re-validates the pending #1 as definitively invalid.
+    mock_sweep_validate.return_value = ValidationResult(
+        valid=False, status="invalid", reason="state:SUBSCRIPTION_STATE_EXPIRED"
+    )
+
+    async def _run() -> int:
+        async with get_connection() as db:
+            return await revalidate_pending_purchases(db, settings=Settings())
+
+    asyncio.run(_run())
+
+    # The user KEEPS paid (purchase #2 still valid); only #1 is marked invalid.
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"
+    rows = _purchase_rows(test_db_path)
+    by_token = {r["verification_token"]: r["validation_status"] for r in rows}
+    assert by_token["token-pending-1"] == "invalid"
+    assert by_token["token-valid-2"] == "valid"
+
+
+# --------------------------------------------------------------------------
+# Cross-user replay + idempotency guard semantics (code-review 8.1 F6/F7)
+# --------------------------------------------------------------------------
+
+
+@patch("api.routes_subscription.validate_apple", new_callable=AsyncMock)
+def test_verify_cross_user_token_replay_is_409(
+    mock_validate: AsyncMock, client: TestClient, mock_resend, test_db_path
+) -> None:
+    """F7 — a token already recorded for user A must NOT entitle user B who
+    replays it: 409 PURCHASE_CONFLICT, B stays free, no re-validation."""
+    mock_validate.return_value = ValidationResult(
+        valid=True, status="valid", transaction_id="tx-A", expires_at=None
+    )
+    user_a = _register_user(client, test_db_path, email="a@example.com")
+    user_b = _register_user(client, test_db_path, email="b@example.com")
+
+    # A buys.
+    first = client.post(
+        "/subscription/verify",
+        json=_IOS_BODY,
+        headers=_auth_header(issue_token(user_a)),
+    )
+    assert first.status_code == 200
+    mock_validate.reset_mock()
+
+    # B replays A's artifact.
+    second = client.post(
+        "/subscription/verify",
+        json=_IOS_BODY,
+        headers=_auth_header(issue_token(user_b)),
+    )
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "PURCHASE_CONFLICT"
+    assert _user_row(test_db_path, user_b)["tier"] == "free"
+    mock_validate.assert_not_awaited()  # short-circuited before re-validating
+
+
+@patch("api.routes_subscription.validate_google", new_callable=AsyncMock)
+def test_verify_pending_re_post_returns_pending_without_revalidating(
+    mock_validate: AsyncMock, client: TestClient, mock_resend, test_db_path
+) -> None:
+    """F6 — re-POSTing a token still 'pending' (optimistic grant) returns the
+    pending state WITHOUT a second insert or a second validator round-trip."""
+    mock_validate.return_value = ValidationResult(
+        valid=False, status="unreachable", reason="api_5xx"
+    )
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    client.post("/subscription/verify", json=_ANDROID_BODY, headers=_auth_header(token))
+    mock_validate.reset_mock()
+    second = client.post(
+        "/subscription/verify", json=_ANDROID_BODY, headers=_auth_header(token)
+    )
+
+    assert second.status_code == 200
+    assert second.json()["data"]["status"] == "pending"
+    mock_validate.assert_not_awaited()
+    assert len(_purchase_rows(test_db_path)) == 1  # no duplicate row
+
+
+@patch("api.routes_subscription.validate_apple", new_callable=AsyncMock)
+def test_verify_invalid_re_post_is_402_without_revalidating(
+    mock_validate: AsyncMock, client: TestClient, mock_resend, test_db_path
+) -> None:
+    """F6 — re-POSTing a token already recorded 'invalid' 402s WITHOUT a fresh
+    validator call (stops unbounded re-POST validator amplification)."""
+    mock_validate.return_value = ValidationResult(
+        valid=False, status="invalid", reason="verification_failed"
+    )
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    client.post("/subscription/verify", json=_IOS_BODY, headers=_auth_header(token))
+    mock_validate.reset_mock()
+    second = client.post(
+        "/subscription/verify", json=_IOS_BODY, headers=_auth_header(token)
+    )
+
+    assert second.status_code == 402
+    assert second.json()["error"]["code"] == "PURCHASE_INVALID"
+    mock_validate.assert_not_awaited()
+    assert len(_purchase_rows(test_db_path)) == 1

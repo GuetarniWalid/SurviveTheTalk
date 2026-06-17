@@ -353,13 +353,18 @@ class SubscriptionVerifyIn(BaseModel):
     `verification_data` is the unified store artifact the client reads from
     `purchaseDetails.verificationData.serverVerificationData` — on iOS (SK2)
     the signed-transaction JWS, on Android the `purchaseToken`. Bounded length
-    guards against log-amplification on a pathological client. `product_id` is
-    cross-checked server-side against `settings.iap_product_id`.
+    is a sanity bound on a pathological client. `product_id` is cross-checked
+    server-side against `settings.iap_product_id`.
+
+    code-review 8.1 F14 — the cap is 16384, not 8192: a StoreKit 2
+    signed-transaction JWS embeds the x5c certificate chain and runs a few KB;
+    8192 left no margin and would 422 a legitimate iOS purchase pre-validation
+    if Apple ever returned a longer artifact. The field is never logged in full.
     """
 
     platform: Literal["ios", "android"]
     product_id: str = Field(min_length=1, max_length=128)
-    verification_data: str = Field(min_length=1, max_length=8192)
+    verification_data: str = Field(min_length=1, max_length=16384)
 
 
 class SubscriptionVerifyOut(BaseModel):

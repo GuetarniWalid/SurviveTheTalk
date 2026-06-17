@@ -369,6 +369,46 @@ def test_migration_014_subscriptions(test_db_path):
         except sqlite3.IntegrityError:
             pass
 
+        # F25 — the validation_status CHECK rejects an out-of-domain status
+        # (the D2 lifecycle gate: pending/valid/invalid only).
+        try:
+            conn.execute(
+                "INSERT INTO purchases(user_id, platform, product_id, "
+                "verification_token, validation_status, created_at) "
+                "VALUES (1, 'ios', 'x', 't-status', 'bogus', 'now')"
+            )
+            raise AssertionError("validation_status CHECK did not reject 'bogus'")
+        except sqlite3.IntegrityError:
+            pass
+
+        # F3/F7 — verification_token is UNIQUE (dedup + cross-account backstop).
+        conn.execute(
+            "INSERT INTO purchases(user_id, platform, product_id, "
+            "verification_token, created_at) VALUES (1, 'ios', 'x', 'dup-tok', 'now')"
+        )
+        try:
+            conn.execute(
+                "INSERT INTO purchases(user_id, platform, product_id, "
+                "verification_token, created_at) VALUES (1, 'ios', 'x', 'dup-tok', 'now')"
+            )
+            raise AssertionError("verification_token UNIQUE did not reject a dup")
+        except sqlite3.IntegrityError:
+            pass
+
+        # F25 — the FK is ON DELETE CASCADE: deleting the user removes their
+        # purchases rows (no orphaned audit rows).
+        conn.commit()
+        before = conn.execute(
+            "SELECT COUNT(*) FROM purchases WHERE user_id = 1"
+        ).fetchone()[0]
+        assert before >= 1
+        conn.execute("DELETE FROM users WHERE id = 1")
+        conn.commit()
+        after = conn.execute(
+            "SELECT COUNT(*) FROM purchases WHERE user_id = 1"
+        ).fetchone()[0]
+        assert after == 0, "ON DELETE CASCADE did not remove the user's purchases"
+
         # The idx_purchases_user index exists.
         index_names = {
             r[1] for r in conn.execute("PRAGMA index_list(purchases)").fetchall()

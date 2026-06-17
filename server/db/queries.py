@@ -537,6 +537,7 @@ async def update_user_tier(
     tier: str,
     *,
     tier_changed_at: str,
+    commit: bool = True,
 ) -> None:
     """Flip the user's tier and STAMP `tier_changed_at` (Story 8.1, D3).
 
@@ -546,12 +547,18 @@ async def update_user_tier(
     rework that reads this column (deferred-work.md:401-403), but the column
     must already carry an accurate timestamp by the time 8.3 ships, so we
     stamp it from the first flip in 8.1.
+
+    `commit=False` lets a caller fold this write into a surrounding
+    `BEGIN IMMEDIATE` (the verify route's tier-flip + audit-stamp, and the
+    revalidation sweep's mark-invalid + conditional-downgrade) so the pair is
+    atomic — code-review 8.1 F2/F3. The caller then owns the single commit.
     """
     await db.execute(
         "UPDATE users SET tier = ?, tier_changed_at = ? WHERE id = ?",
         (tier, tier_changed_at, user_id),
     )
-    await db.commit()
+    if commit:
+        await db.commit()
 
 
 async def insert_purchase(
@@ -562,6 +569,7 @@ async def insert_purchase(
     product_id: str,
     verification_token: str,
     created_at: str,
+    commit: bool = True,
 ) -> int:
     """Insert a `'pending'` purchases audit row and return its id.
 
@@ -570,9 +578,16 @@ async def insert_purchase(
     to `'pending'` via the column DEFAULT — the route flips it to
     `'valid'`/`'invalid'` once Apple/Google answer (`update_purchase_validation`).
 
+    `commit=False` lets the verify route fold the insert into its idempotency
+    `BEGIN IMMEDIATE` (SELECT-then-INSERT atomic; code-review 8.1 F3). The
+    `verification_token` column is UNIQUE (migration 014), so a concurrent
+    duplicate that races past the in-app guard raises `aiosqlite.IntegrityError`
+    — the caller treats that as an idempotent re-entry.
+
     Asserts `lastrowid` like `insert_user`/`insert_call_session`: a single
     `INSERT ... VALUES` on an integer-PK table always yields a rowid, so a
-    `None` here means something is badly wrong — fail fast.
+    `None` here means something is badly wrong — fail fast. (`lastrowid` is set
+    by `execute`, before any commit, so it is valid even with `commit=False`.)
     """
     cursor = await db.execute(
         "INSERT INTO purchases"
@@ -580,7 +595,8 @@ async def insert_purchase(
         "VALUES (?, ?, ?, ?, ?)",
         (user_id, platform, product_id, verification_token, created_at),
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     purchase_id = cursor.lastrowid
     if purchase_id is None:
         raise RuntimeError("insert_purchase: sqlite returned no lastrowid")
@@ -595,19 +611,43 @@ async def update_purchase_validation(
     transaction_id: str | None,
     expires_at: str | None,
     validated_at: str,
+    commit: bool = True,
 ) -> None:
     """Record the outcome of validating a purchase against Apple/Google.
 
     `validation_status` is `'valid'` or `'invalid'` (a `'pending'` row that
     the D2 optimistic-fallback path left un-flipped stays `'pending'` until
     the background re-check resolves it — see `routes_subscription`).
+
+    `commit=False` lets a caller fold the stamp into a surrounding
+    `BEGIN IMMEDIATE` alongside the tier flip (code-review 8.1 F2/F3).
     """
     await db.execute(
         "UPDATE purchases SET validation_status = ?, transaction_id = ?, "
         "expires_at = ?, validated_at = ? WHERE id = ?",
         (validation_status, transaction_id, expires_at, validated_at, purchase_id),
     )
-    await db.commit()
+    if commit:
+        await db.commit()
+
+
+async def count_user_valid_purchases(db: aiosqlite.Connection, user_id: int) -> int:
+    """Count the user's `'valid'` purchases (Story 8.1, code-review F2).
+
+    The background revalidation sweep uses this to make the paid->free
+    downgrade CONDITIONAL: a single stale `'pending'` row re-validating
+    `'invalid'` must NOT clobber a user who is still entitled via another
+    confirmed (`'valid'`) purchase. 8.1 has no expiry-based tier model
+    (expires_at is stored but never read for entitlement — that is 8.3's
+    F11 follow-up), so a `'valid'` row means currently entitled here.
+    """
+    async with db.execute(
+        "SELECT COUNT(*) FROM purchases "
+        "WHERE user_id = ? AND validation_status = 'valid'",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
 
 async def get_latest_purchase_by_token(

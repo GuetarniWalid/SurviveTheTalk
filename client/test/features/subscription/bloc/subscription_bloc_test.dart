@@ -26,7 +26,11 @@ ProductDetails _product() => ProductDetails(
   currencyCode: 'USD',
 );
 
-PurchaseDetails _purchase(PurchaseStatus status, {String productId = kIapWeeklyProductId}) {
+PurchaseDetails _purchase(
+  PurchaseStatus status, {
+  String productId = kIapWeeklyProductId,
+  bool pendingComplete = false,
+}) {
   return PurchaseDetails(
     productID: productId,
     verificationData: PurchaseVerificationData(
@@ -36,7 +40,7 @@ PurchaseDetails _purchase(PurchaseStatus status, {String productId = kIapWeeklyP
     ),
     transactionDate: '0',
     status: status,
-  );
+  )..pendingCompletePurchase = pendingComplete;
 }
 
 void main() {
@@ -197,4 +201,123 @@ void main() {
       isA<SubscriptionFailed>().having((s) => s.code, 'code', 'timeout'),
     ],
   );
+
+  // ---- code-review 8.1 F5 / F22 — complete() guard + branch coverage ----
+
+  void stubVerifyPaid() {
+    when(
+      () => repository.verifyPurchase(
+        platform: any(named: 'platform'),
+        productId: any(named: 'productId'),
+        verificationData: any(named: 'verificationData'),
+      ),
+    ).thenAnswer(
+      (_) async => const SubscriptionStatus(tier: 'paid', status: 'valid'),
+    );
+  }
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'F5 — a throwing complete() is swallowed; still reaches Purchased (no crash)',
+    setUp: () {
+      stubBuyOk();
+      stubVerifyPaid();
+      when(() => service.complete(any())).thenThrow(Exception('store boom'));
+    },
+    build: buildBloc,
+    act: (bloc) async {
+      bloc.add(const SubscribePressed());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      purchaseController.add([_purchase(PurchaseStatus.purchased)]);
+    },
+    wait: const Duration(milliseconds: 60),
+    expect: () => [isA<SubscriptionLoading>(), isA<SubscriptionPurchased>()],
+    verify: (_) => verify(() => service.complete(any())).called(1),
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'F22 — restored (re-delivered) → verifies + completes → Purchased',
+    setUp: () {
+      stubVerifyPaid();
+    },
+    build: buildBloc,
+    act: (bloc) async {
+      // No SubscribePressed — the lifetime listener catches a re-delivered txn.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      purchaseController.add([_purchase(PurchaseStatus.restored)]);
+    },
+    wait: const Duration(milliseconds: 60),
+    expect: () => [isA<SubscriptionPurchased>()],
+    verify: (_) => verify(() => service.complete(any())).called(1),
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'F22 — error with pendingCompletePurchase finishes the transaction',
+    setUp: stubBuyOk,
+    build: buildBloc,
+    act: (bloc) async {
+      bloc.add(const SubscribePressed());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      purchaseController.add(
+        [_purchase(PurchaseStatus.error, pendingComplete: true)],
+      );
+    },
+    wait: const Duration(milliseconds: 60),
+    expect: () => [isA<SubscriptionLoading>(), isA<SubscriptionFailed>()],
+    verify: (_) => verify(() => service.complete(any())).called(1),
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'F22 — pending keeps Loading and the recovery timeout does NOT fire',
+    setUp: stubBuyOk,
+    build: () => buildBloc(timeout: const Duration(milliseconds: 30)),
+    act: (bloc) async {
+      bloc.add(const SubscribePressed());
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      purchaseController.add([_purchase(PurchaseStatus.pending)]);
+    },
+    wait: const Duration(milliseconds: 90),
+    // pending cancels the timeout and stays Loading — no terminal state.
+    expect: () => [isA<SubscriptionLoading>()],
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'buy() throwing → Failed(buy_failed)',
+    setUp: () {
+      when(() => service.loadProduct(kIapWeeklyProductId))
+          .thenAnswer((_) async => _product());
+      when(() => service.buy(any())).thenThrow(Exception('boom'));
+    },
+    build: buildBloc,
+    act: (bloc) => bloc.add(const SubscribePressed()),
+    expect: () => [
+      isA<SubscriptionLoading>(),
+      isA<SubscriptionFailed>().having((s) => s.code, 'code', 'buy_failed'),
+    ],
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'loadProduct throwing → Failed(product_query_failed)',
+    setUp: () {
+      when(() => service.loadProduct(kIapWeeklyProductId))
+          .thenThrow(Exception('boom'));
+    },
+    build: buildBloc,
+    act: (bloc) => bloc.add(const SubscribePressed()),
+    expect: () => [
+      isA<SubscriptionLoading>(),
+      isA<SubscriptionFailed>()
+          .having((s) => s.code, 'code', 'product_query_failed'),
+    ],
+  );
+
+  test('close() cancels the purchaseStream subscription (no add-after-close)',
+      () async {
+    final bloc = buildBloc();
+    await bloc.close();
+    // If the subscription leaked, this would call add() on a closed bloc and
+    // throw a StateError; a cancelled subscription simply drops it.
+    purchaseController.add([_purchase(PurchaseStatus.purchased)]);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(bloc.state, isA<SubscriptionInitial>());
+  });
 }

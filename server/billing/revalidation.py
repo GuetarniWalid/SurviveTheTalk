@@ -29,6 +29,7 @@ from billing.google_validator import validate_google
 from billing.models import BillingConfigError, ValidationResult
 from config import Settings
 from db.queries import (
+    count_user_valid_purchases,
     get_pending_purchases,
     update_purchase_validation,
     update_user_tier,
@@ -42,11 +43,14 @@ def _now_iso() -> str:
 async def _validate_row(row: aiosqlite.Row, settings: Settings) -> ValidationResult:
     """Re-run the platform validator for one pending purchase row."""
     if row["platform"] == "ios":
+        # (iOS offline crypto never returns 'unreachable', so an iOS row is never
+        # actually 'pending' here — kept consistent with the route regardless.)
         return await validate_apple(
             row["verification_token"],
             bundle_id=settings.apple_bundle_id,
             expected_product_id=settings.iap_product_id,
             app_apple_id=settings.apple_app_apple_id,
+            accept_sandbox=settings.apple_accept_sandbox,
         )
     return await validate_google(
         row["verification_token"],
@@ -92,22 +96,49 @@ async def revalidate_pending_purchases(
             )
             resolved += 1
         elif result.status == "invalid":
-            await update_purchase_validation(
-                db,
-                row["id"],
-                validation_status="invalid",
-                transaction_id=result.transaction_id,
-                expires_at=result.expires_at,
-                validated_at=_now_iso(),
-            )
-            # AC3 — revoke the optimistically-granted access.
-            await update_user_tier(
-                db, row["user_id"], "free", tier_changed_at=_now_iso()
-            )
-            logger.warning(
-                f"reverted user {row['user_id']} to free — purchase "
-                f"id={row['id']} re-validated invalid ({result.reason})"
-            )
+            # AC3 — revoke the optimistically-granted access, but CONDITIONALLY
+            # (code-review 8.1 F2): mark this row invalid always, and downgrade
+            # the user to 'free' ONLY when they hold no OTHER 'valid' purchase,
+            # so a single stale pending row can't clobber a separately-entitled
+            # user. Both writes commit together under one BEGIN IMMEDIATE so the
+            # verify route can't interleave an opposite flip on the same user.
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await update_purchase_validation(
+                    db,
+                    row["id"],
+                    validation_status="invalid",
+                    transaction_id=result.transaction_id,
+                    expires_at=result.expires_at,
+                    validated_at=_now_iso(),
+                    commit=False,
+                )
+                still_entitled = (
+                    await count_user_valid_purchases(db, row["user_id"]) > 0
+                )
+                if not still_entitled:
+                    await update_user_tier(
+                        db,
+                        row["user_id"],
+                        "free",
+                        tier_changed_at=_now_iso(),
+                        commit=False,
+                    )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+            if still_entitled:
+                logger.info(
+                    f"purchase id={row['id']} re-validated invalid "
+                    f"({result.reason}) — user {row['user_id']} keeps paid via "
+                    "another valid purchase"
+                )
+            else:
+                logger.warning(
+                    f"reverted user {row['user_id']} to free — purchase "
+                    f"id={row['id']} re-validated invalid ({result.reason})"
+                )
             resolved += 1
         # 'unreachable' → leave pending.
     return resolved

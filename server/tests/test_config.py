@@ -497,3 +497,46 @@ def test_settings_rejects_malformed_google_service_account_json() -> None:
     ):
         with pytest.raises(ValidationError, match="GOOGLE_SERVICE_ACCOUNT_JSON"):
             Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_rejects_half_configured_google_billing() -> None:
+    """F10 — a HALF-configured Google deploy (one of package_name /
+    service_account_json set, the other empty) must fail at BOOT, not 503 every
+    Android buyer mid-purchase. Both-or-neither."""
+    import base64
+
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    sa_json = base64.b64encode(
+        b'{"client_email":"x@y.iam.gserviceaccount.com","private_key":"-----BEGIN"}'
+    ).decode()
+
+    # package_name set, service account empty.
+    with patch.dict(
+        os.environ,
+        {**base, "GOOGLE_PLAY_PACKAGE_NAME": "com.surviveTheTalk.client"},
+        clear=True,
+    ):
+        with pytest.raises(ValidationError, match="GOOGLE_PLAY_PACKAGE_NAME"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+    # service account set (valid), package_name empty.
+    with patch.dict(
+        os.environ,
+        {**base, "GOOGLE_SERVICE_ACCOUNT_JSON": sa_json},
+        clear=True,
+    ):
+        with pytest.raises(ValidationError, match="GOOGLE_PLAY_PACKAGE_NAME"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_apple_accept_sandbox_defaults_false_and_overrides() -> None:
+    """F1 — sandbox acceptance is OFF by default (a prod deploy must not grant
+    paid on a free sandbox receipt) and is opt-in via APPLE_ACCEPT_SANDBOX for
+    the on-device sandbox smoke gate."""
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, base, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.apple_accept_sandbox is False
+    with patch.dict(os.environ, {**base, "APPLE_ACCEPT_SANDBOX": "1"}, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.apple_accept_sandbox is True

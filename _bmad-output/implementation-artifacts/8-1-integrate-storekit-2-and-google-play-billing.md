@@ -315,3 +315,65 @@ claude-opus-4-8[1m] (Opus 4.8, 1M context) — dev-story workflow, 2026-06-16.
 ### Change Log
 
 - 2026-06-16 — Story 8.1 dev-story: StoreKit 2 + Google Play Billing purchase plumbing + first-party server validation (`POST /subscription/verify`, D2 validate-then-flip) + migration 014 (`tier_changed_at` + `purchases`) + tier flip + client subscription feature wired into the paywall placeholder. Gates: server ruff clean + pytest 934; client analyze clean + flutter 567. Status `ready-for-dev` → `in-progress` → `review`.
+
+---
+
+## Review Findings (formal `/bmad-code-review`, 2026-06-17)
+
+> Adversarial multi-layer review (9 auditors: blind / edge-case / acceptance / payment-fraud / crypto-validator / async-lifespan / migration / flutter / test-quality → dedup → per-finding adversarial verification). 48 raw → 25 canonical findings. AC5 gates **independently re-run green** by the reviewer: server `ruff` clean + `pytest` **934 passed**; client `flutter analyze` clean + `flutter test` **567 passed**.
+>
+> ⚠️ The per-finding verification phase hit API rate-limiting, so F9–F25 were auto-classed "rejected" with 0 verifier votes — those are **infra false-rejections, not refutations**. The reviewer personally re-triaged every one against the code; the classifications below are the reviewer's, not the raw machine verdict.
+>
+> **AC status:** AC1 partial, **AC2 VIOLATED (F1)**, AC3 partial (F2), AC4 satisfied (minor F9), AC5 green-but-masks-test-gaps.
+
+### ✅ Resolution (2026-06-17) — all patches applied, gates re-green
+
+Walid's decisions: **F7 → minimal fix now** ((user_id, token) idempotency + cross-user reject), **F13 → defer to 8.2** (Apple-Restore is a 10-4-gated UI affordance; tracked in deferred-work), **patch batch → fix everything now**.
+
+**Applied this session:**
+- **🔴 F1** — `apple_validator.py` rejects any `environment ∉ {Production, Sandbox}` BEFORE building the verifier (Xcode/LocalTesting skip-path now unreachable); Sandbox gated behind default-off `APPLE_ACCEPT_SANDBOX`; the **forged-`Xcode`-JWS regression test** (F20) drives the real path and asserts `invalid`. **AC2 bypass closed.**
+- **F2** — sweep revert is now conditional (`count_user_valid_purchases`) + atomic (`BEGIN IMMEDIATE`).
+- **F3+F6+F7** — route rewritten to two short atomic transactions (TX1 check+insert / TX2 flip+stamp) with the network validation lock-free between; cross-user replay → 409 `PURCHASE_CONFLICT`; pending/invalid re-POST short-circuits; `UNIQUE(verification_token)` added to migration 014.
+- **F5** — client `complete()` wrapped (`_safeComplete`) so a throw can't escape the handler or strand the transaction.
+- **F8/F9/F10/F14/F19/F4-doc** — Google token URL-encoded; server-validated `product_id` persisted; both-or-neither Google config boot validator; `verification_data` cap 8192→16384; validator `reason` hardened; bloc docstring corrected.
+- **Test gaps F20–F25** — Apple branch coverage (incl. F1 regression), Google 401/403 + IN_GRACE + 404 + URL-encoding, bloc complete/restored/pending/buy/close, paywall UI states + `pop(true)`, migration CHECK/FK-CASCADE/UNIQUE/restamp.
+
+**Gates (reviewer re-ran):** server `ruff` clean + `pytest` **957 passed** (+23); client `flutter analyze` clean + `flutter test` **577 passed** (+10).
+
+**Deferred to 8.2/8.3/10-4** (see deferred-work.md): F4-func (app-lifetime listener), F11/F12 (Google expiry semantics), F13 (Restore Purchases — **must-do before iOS submission**), F15/F16/F17/F18.
+
+**Status:** Story **stays `review`** — the code review is complete, but the Pixel 9 / on-device purchase gate is BLOCKED on D4 (store setup) + Story 10-4 (iOS pipeline). It is review-complete; it waits ONLY on the on-device smoke gate for the `review → done` flip.
+
+### 🔴 Decision-needed (RESOLVED)
+
+- [ ] **[Review][Decision] F7 — Store token not bound to the buyer account (receipt-replay / account-sharing).** `get_latest_purchase_by_token` has no `user_id` predicate and neither validator checks Apple `appAccountToken` / Google `obfuscatedAccountId`, so a leaked/shared *valid* token entitles whichever account POSTs it first. Bounded ($1.99, 3 calls/day, one-upgrade-per-token, first-recorder-wins) and NOT in the declared deviations. **Choice:** (a) minimal in-scope fix now — key idempotency on `(user_id, verification_token)`, reject cross-user replay, `UNIQUE(transaction_id)`; or (b) defer full account-binding to 8.3 with a documented 8.1 limitation. [server/api/routes_subscription.py:86, server/db/queries.py:613]
+- [ ] **[Review][Decision] F13 — No `restorePurchases` path.** `InAppPurchaseService` exposes no restore; a paying subscriber who reinstalls / switches device cannot recover paid, and Apple App Review *requires* a visible "Restore Purchases" affordance for auto-renewable subs (bites at the Story 10-4 iOS gate). **Choice:** add a minimal `restore()` now vs defer to 8.2 (paywall UI) with a tracked must-do-before-iOS-submission note. [client/lib/features/subscription/services/in_app_purchase_service.dart]
+
+### 🩹 Patch (unambiguous, in-scope)
+
+- [ ] **[Review][Patch] 🚨 F1 (BLOCKER, security) — Apple validator trusts the UNVERIFIED `environment` claim → complete iOS validation bypass.** `_verify_sync` reads `environment` from `jwt.decode(..., verify_signature=False)`; `Environment('Xcode')`/`Environment('LocalTesting')` are valid enum members and Apple's `SignedDataVerifier` **skips signature + x5c-chain verification** for those environments. A forged unsigned JWS `{environment:'Xcode', bundleId:ours, productId:ours, expiresDate:future}` returns `status='valid'` → `tier='paid'`, no Apple key / cert / real receipt (empirically reproduced by the crypto-validator agent end-to-end). Latent ONLY because `apple_bundle_id=""` → 503 today; **goes live the instant `APPLE_BUNDLE_ID` is set** (which 8.1's own store-setup plan does for the gate). FIX: reject `environment not in (PRODUCTION, SANDBOX)` BEFORE building the verifier; gate SANDBOX acceptance behind an explicit `APPLE_ACCEPT_SANDBOX` flag (default off in prod) so free sandbox receipts can't grant paid on prod; + regression test. [server/billing/apple_validator.py:65-87, server/api/routes_subscription.py:124]
+- [ ] **[Review][Patch] F2 (HIGH, concurrency) — Background revert to `free` is unconditional + not atomic vs the verify route.** The sweep flips the user to `free` on a single invalid pending row without checking for another still-valid purchase and with no `BEGIN IMMEDIATE`, so it can clobber a legitimately re-subscribed user / race the verify route (last-writer-wins). FIX: only downgrade when the user has no other valid+unexpired purchase; wrap status-write + tier-write in one `BEGIN IMMEDIATE`. [server/billing/revalidation.py:94-106]
+- [ ] **[Review][Patch] F3 (+F6) (MED-HIGH, concurrency) — Verify route check-then-write is not atomic; no `UNIQUE(verification_token)`; idempotency guard only short-circuits on `'valid'`.** Concurrent duplicate POSTs both pass the guard and double-insert/re-validate; the tier flip + audit stamp are two separate commits (crash between → `paid` row stuck `pending`); a forged-invalid token is re-POSTable unbounded. FIX: wrap SELECT→insert→flip→stamp in one `BEGIN IMMEDIATE`; add `UNIQUE(verification_token)` (migration 014) and treat IntegrityError as idempotent re-entry; broaden the guard to handle `pending`/`invalid`. This is the lone money path that omits `BEGIN IMMEDIATE` (cf. routes_calls.py:281). [server/api/routes_subscription.py:82-184, server/db/migrations/014_subscriptions.sql]
+- [ ] **[Review][Patch] F5 (MEDIUM, client) — `complete()` is called unguarded in `finally`; a throw escapes the handler AND leaves the transaction unfinished** (iOS re-delivers it every launch + blocks re-buy). FIX: `try/catch` each `complete()` (verify finally + error/canceled branches); log + rely on next-launch re-delivery. [client/lib/features/subscription/bloc/subscription_bloc.dart:106,112,142]
+- [ ] **[Review][Patch] F8 (LOW, security) — Google `purchaseToken` interpolated raw into the API URL path** (no `urllib.parse.quote`); attacker bytes reshape the request (fails closed to `invalid`, but defense-in-depth). FIX: `quote(purchase_token, safe='')`. [server/billing/google_validator.py:90-93]
+- [ ] **[Review][Patch] F9 (LOW, correctness) — `insert_purchase` stores the unvalidated client `product_id`**, not the server-validated id → misleading audit trail. FIX: persist `settings.iap_product_id`. [server/api/routes_subscription.py:100]
+- [ ] **[Review][Patch] F4-doc (LOW) — Bloc docstring overclaims** ("the plugin re-delivers on next launch — still gets verified" is false; the listener is sheet-scoped). FIX: soften the docstring to scope the guarantee to the sheet/bloc lifetime (the functional gap is declared deviation #2, deferred below). [client/lib/features/subscription/bloc/subscription_bloc.dart:13-21]
+- [ ] **[Review][Patch] F10 (LOW) — Asymmetric Google config boots clean then 503s every Android buyer.** FIX: boot-time "both-or-neither" validator for `google_play_package_name` / `google_service_account_json`. [server/config.py]
+- [ ] **[Review][Patch] F14 (LOW) — `verification_data` capped at 8192** with no margin; a larger StoreKit 2 JWS would 422 a real iOS buyer pre-validation. FIX: raise to 16384 / drop the upper bound. [server/models/schemas.py]
+- [ ] **[Review][Patch] F19 (LOW, hardening) — Raw Apple `VerificationException` text interpolated into logged `reason`.** No secret leak today (keys/JSON never interpolated), but keep reason strings to stable codes. [server/billing/apple_validator.py:94]
+- [ ] **[Review][Patch] F20–F25 (test-gaps) — The money/fraud surface is green-but-uncovered.** F20: no test drives a JWS through the Apple verifier (a single forged-`Xcode` negative test would have caught F1). F21: Google 401/403→`BillingConfigError` untested. F22: bloc `complete()` guard / `restored` / `pending` branches + the sweep's `pending→valid` arm untested. F23: paywall_sheet never drives the bloc UI states / `pop(true)` G2 contract. F24: idempotency tested only same-user-sequential (no cross-user replay, no concurrent, no Google IN_GRACE_PERIOD / 400-404-410). F25: migration test asserts only the platform CHECK (not validation_status CHECK / FK CASCADE / `tier_changed_at` restamp). FIX: add the listed negative/adversarial tests alongside the patches above.
+
+### ✅ Defer (real, but 8.2 / 8.3 / 10-4 scope)
+
+- [x] **[Review][Defer] F4-func — No app-lifetime `purchaseStream` listener** (interrupted / Ask-to-Buy / next-launch re-delivery only verified if the sheet is open). Declared deviation #2 → 8.2/8.3 app-scope listener.
+- [x] **[Review][Defer] F11 — Google valid path never cross-checks `expiryTime` vs now** (ACTIVE + past expiry stays valid; inconsistent with the Apple expiry guard). → 8.3 expiry enforcement.
+- [x] **[Review][Defer] F12 — Google `expiryTime` picked by lexicographic `max()` on RFC3339 strings** (`expires_at` only stored/echoed in 8.1). → 8.3.
+- [x] **[Review][Defer] F16 — `restored` stream updates auto-flip tier / pop the sheet without a user tap** (benign, server re-verifies). → 8.2 paywall UX.
+- [x] **[Review][Defer] F17 — A `pending` purchase parks the paywall on a perpetual spinner** with no progress copy (modal is dismissible). → 8.2 paywall UX.
+- [x] **[Review][Defer] F18 — Lifespan shutdown swallows `CancelledError` per-task** (no leak; `stop_event.set()` covers it). → low-pri robustness.
+- [x] **[Review][Defer] F15 — Client `_platform` maps every non-iOS target to `'android'`** (harmless for the iOS+Android shipping target). → low-pri guard.
+
+### 🟢 Nits (intended no-ops for the minimal 8.1 surface)
+
+- `SubscriptionCancelled` has no UI feedback (sheet stays open) — intended for minimal 8.1 (8.2 owns copy).
+- No bloc test proves `_purchaseSub` is cancelled on `close()` — add a teardown test with the other test-gap fixes.

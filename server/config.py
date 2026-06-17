@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     apple_issuer_id: str = ""  # APPLE_ISSUER_ID (App Store Server API, 8.3)
     apple_key_id: str = ""  # APPLE_KEY_ID (App Store Server API, 8.3)
     apple_private_key_p8: str = ""  # APPLE_PRIVATE_KEY_P8 (App Store Server API, 8.3)
+    # code-review 8.1 F1 — opt a deploy into granting paid on a GENUINE Apple
+    # SANDBOX receipt (signature-valid but free to mint). Default OFF so a
+    # production deploy never grants paid on a tester's sandbox purchase; flip
+    # `APPLE_ACCEPT_SANDBOX=1` only for the on-device sandbox smoke gate. A
+    # forged Xcode/LocalTesting environment is rejected regardless of this flag.
+    apple_accept_sandbox: bool = False  # APPLE_ACCEPT_SANDBOX
 
     # Google: the androidpublisher subscriptionsv2 endpoint is authenticated
     # with a service account. `google_play_package_name` must equal the Android
@@ -464,6 +470,26 @@ class Settings(BaseSettings):
                 f"service-account key ({type(exc).__name__})"
             ) from exc
         return value
+
+    @model_validator(mode="after")
+    def _validate_google_billing_config_paired(self) -> "Settings":
+        """Fail loud at boot on a HALF-configured Google billing deploy (8.1 F10).
+
+        `validate_google` needs BOTH `google_play_package_name` AND
+        `google_service_account_json`; with only one set, the server boots clean
+        but every Android `/subscription/verify` raises `BillingConfigError` →
+        503 to a real buyer. Catch the asymmetric `.env` at `systemctl restart`
+        instead of mid-purchase. Neither set (pre-D4) is a valid state.
+        """
+        if bool(self.google_play_package_name) != bool(
+            self.google_service_account_json
+        ):
+            raise ValueError(
+                "GOOGLE_PLAY_PACKAGE_NAME and GOOGLE_SERVICE_ACCOUNT_JSON must be "
+                "set together — Android subscription validation needs both (or "
+                "neither, pre-store-setup)."
+            )
+        return self
 
     @field_validator("resend_from_name", "resend_from_email")
     @classmethod

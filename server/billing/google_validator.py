@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -87,9 +88,15 @@ async def validate_google(
             f"Malformed Google service account ({type(exc).__name__})"
         ) from exc
 
+    # F8 (code-review 8.1) — `purchase_token` is attacker-controlled
+    # (client-supplied `verification_data`, no charset constraint). Percent-encode
+    # it (safe='') before interpolating into the URL path so a token containing
+    # '/', '?', '#' or '..' cannot reshape the request (inject query params,
+    # traverse the API path). `package_name` is server config, not user input.
     api_url = (
         "https://androidpublisher.googleapis.com/androidpublisher/v3/"
-        f"applications/{package_name}/purchases/subscriptionsv2/tokens/{purchase_token}"
+        f"applications/{package_name}/purchases/subscriptionsv2/tokens/"
+        f"{quote(purchase_token, safe='')}"
     )
 
     try:

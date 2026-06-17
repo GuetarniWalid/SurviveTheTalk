@@ -16,6 +16,7 @@ paywall UI, Story 8.3 owns full tier-enforcement / cancellation handling.
 
 from __future__ import annotations
 
+import aiosqlite
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
@@ -58,12 +59,65 @@ async def _run_validation(platform: str, verification_data: str) -> ValidationRe
             bundle_id=settings.apple_bundle_id,
             expected_product_id=settings.iap_product_id,
             app_apple_id=settings.apple_app_apple_id,
+            accept_sandbox=settings.apple_accept_sandbox,
         )
     return await validate_google(
         verification_data,
         package_name=settings.google_play_package_name,
         product_id=settings.iap_product_id,
         service_account_json=settings.google_service_account_json,
+    )
+
+
+def _respond_existing(existing: aiosqlite.Row, user_id: int, current_tier: str) -> dict:
+    """Idempotent / replay response for a token already recorded (code-review 8.1).
+
+    Called when `get_latest_purchase_by_token` already found a row, so the
+    artifact must NOT be re-inserted or re-validated:
+
+    - **Cross-user (F7):** the token belongs to a DIFFERENT account → 409. A
+      store artifact proves the SUBSCRIPTION is active, not that the submitting
+      account is the buyer, so a leaked/shared token must not entitle whoever
+      replays it. (Full appAccountToken / obfuscatedAccountId buyer-binding is
+      8.3; this closes the cheap cross-account replay now.)
+    - **`valid`:** return the current tier (idempotent — a client retry of an
+      already-validated artifact).
+    - **`pending`:** a D2 optimistic grant is still being reconciled; return the
+      current tier with `status='pending'` WITHOUT re-inserting/re-validating
+      (F6 — the old guard fell through and double-inserted).
+    - **`invalid`:** definitively rejected; 402 without re-validating (F6 —
+      stops unbounded re-POST validator amplification of a forged token).
+    """
+    if existing["user_id"] != user_id:
+        logger.warning(
+            f"subscription cross-user replay user={user_id} "
+            f"token-owner={existing['user_id']} purchase={existing['id']}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PURCHASE_CONFLICT",
+                "message": "That purchase belongs to a different account.",
+            },
+        )
+
+    status = existing["validation_status"]
+    if status == "invalid":
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "PURCHASE_INVALID",
+                "message": "We couldn't validate that purchase.",
+            },
+        )
+    # 'valid' or 'pending' — echo the recorded state without side effects.
+    return ok(
+        SubscriptionVerifyOut(
+            tier=current_tier,
+            product_id=settings.iap_product_id,
+            expires_at=existing["expires_at"],
+            status=status,
+        )
     )
 
 
@@ -74,38 +128,57 @@ async def verify_subscription(request: Request, payload: SubscriptionVerifyIn) -
     Returns the `{data, meta}` envelope with the post-verify `tier` + the
     purchase `status` (`'valid'` on a confirmed grant, `'pending'` on a D2
     optimistic grant). 402 `PURCHASE_INVALID` on a definitively-rejected
-    artifact (tier untouched). 503 `SUBSCRIPTION_UNAVAILABLE` when the store
-    config is absent (a deploy problem — NOT an optimistic grant).
+    artifact (tier untouched). 409 `PURCHASE_CONFLICT` on a cross-account
+    replay. 503 `SUBSCRIPTION_UNAVAILABLE` when the store config is absent.
+
+    Transaction shape (code-review 8.1 F3): the idempotency check + the
+    pending-row insert run together under one `BEGIN IMMEDIATE` (TX1) so two
+    concurrent POSTs of the same artifact can't both insert; the store
+    validation then runs WITHOUT holding any lock (it is 1-4 s of network I/O —
+    holding the write lock across it would stall every other writer); finally
+    the tier flip + audit stamp commit together under a second `BEGIN IMMEDIATE`
+    (TX2) so a crash can't leave `paid` with an un-stamped row.
     """
     user_id: int = request.state.user_id
 
     async with get_connection() as db:
-        # Idempotency — a client retry that re-POSTs an already-validated
-        # artifact returns the current tier without re-validating or
-        # double-inserting (Story 8.1 idempotency guard).
-        existing = await get_latest_purchase_by_token(db, payload.verification_data)
-        if existing is not None and existing["validation_status"] == "valid":
+        # --- TX1: atomic idempotency check + insert (no network) ------------
+        await db.execute("BEGIN IMMEDIATE")
+        existing: aiosqlite.Row | None
+        purchase_id: int | None = None
+        try:
+            existing = await get_latest_purchase_by_token(db, payload.verification_data)
+            if existing is None:
+                purchase_id = await insert_purchase(
+                    db,
+                    user_id=user_id,
+                    platform=payload.platform,
+                    # F9 — persist the SERVER-validated product id, never the
+                    # client-supplied payload.product_id (audit-trail integrity).
+                    product_id=settings.iap_product_id,
+                    verification_token=payload.verification_data,
+                    created_at=now_iso(),
+                    commit=False,
+                )
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            # UNIQUE(verification_token) backstop: a concurrent request inserted
+            # the same artifact between our SELECT and INSERT. Re-read and treat
+            # it as an idempotent re-entry.
+            await db.rollback()
+            existing = await get_latest_purchase_by_token(db, payload.verification_data)
+        except BaseException:
+            await db.rollback()
+            raise
+
+        if existing is not None:
             user = await get_user_by_id(db, user_id)
             current_tier = user["tier"] if user is not None else "free"
-            return ok(
-                SubscriptionVerifyOut(
-                    tier=current_tier,
-                    product_id=settings.iap_product_id,
-                    expires_at=existing["expires_at"],
-                    status="valid",
-                )
-            )
+            return _respond_existing(existing, user_id, current_tier)
 
-        # Record the attempt up-front (validation_status defaults 'pending').
-        purchase_id = await insert_purchase(
-            db,
-            user_id=user_id,
-            platform=payload.platform,
-            product_id=payload.product_id,
-            verification_token=payload.verification_data,
-            created_at=now_iso(),
-        )
+        assert purchase_id is not None  # fresh insert above set it
 
+        # --- Validation: network I/O, NO lock held --------------------------
         try:
             result = await _run_validation(payload.platform, payload.verification_data)
         except BillingConfigError as exc:
@@ -122,15 +195,25 @@ async def verify_subscription(request: Request, payload: SubscriptionVerifyIn) -
             ) from exc
 
         if result.status == "valid":
-            await update_user_tier(db, user_id, "paid", tier_changed_at=now_iso())
-            await update_purchase_validation(
-                db,
-                purchase_id,
-                validation_status="valid",
-                transaction_id=result.transaction_id,
-                expires_at=result.expires_at,
-                validated_at=now_iso(),
-            )
+            # --- TX2: atomic tier flip + audit stamp ------------------------
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await update_user_tier(
+                    db, user_id, "paid", tier_changed_at=now_iso(), commit=False
+                )
+                await update_purchase_validation(
+                    db,
+                    purchase_id,
+                    validation_status="valid",
+                    transaction_id=result.transaction_id,
+                    expires_at=result.expires_at,
+                    validated_at=now_iso(),
+                    commit=False,
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
             logger.info(
                 f"subscription verified user={user_id} platform={payload.platform} "
                 f"purchase={purchase_id} -> tier=paid"

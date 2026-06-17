@@ -13,12 +13,18 @@ import 'subscription_state.dart';
 /// Drives the purchase flow: load product → buy → listen for the store's
 /// terminal update → verify server-side → flip tier.
 ///
-/// The purchase stream is subscribed for the bloc's WHOLE lifetime (not just
-/// during a `SubscribePressed`) so a purchase that lands AFTER the 15 s UI
-/// recovery window — or one the plugin re-delivers on next launch — still gets
-/// verified. That closes the "charged by the store but tier never flipped"
-/// hole a per-press subscription would open. The 15 s timeout only changes the
-/// UI STATE (so the sheet can recover); it never stops the listening.
+/// The purchase stream is subscribed for this bloc's WHOLE lifetime (not just
+/// during a `SubscribePressed`), so a purchase that lands AFTER the 15 s UI
+/// recovery window — while the sheet is still open — still gets verified. The
+/// 15 s timeout only changes the UI STATE (so the sheet can recover); it never
+/// stops the listening.
+///
+/// ⚠️ Scope (Story 8.1 deviation #2): this lifetime is the SHEET's lifetime —
+/// the bloc is created when the paywall opens and closed when it dismisses. A
+/// purchase the plugin re-delivers on NEXT LAUNCH (or an Ask-to-Buy that
+/// resolves after the sheet closed) is NOT verified here; the app-scope
+/// startup listener that closes that "charged but tier never flipped" hole is
+/// deferred to Story 8.2/8.3 (see deferred-work.md).
 class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
   final SubscriptionRepository _repository;
   final InAppPurchaseService _iapService;
@@ -104,13 +110,13 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
         case PurchaseStatus.error:
           _timeoutTimer?.cancel();
           if (purchase.pendingCompletePurchase) {
-            await _iapService.complete(purchase);
+            await _safeComplete(purchase);
           }
           emit(SubscriptionFailed(purchase.error?.code ?? 'purchase_error'));
         case PurchaseStatus.canceled:
           _timeoutTimer?.cancel();
           if (purchase.pendingCompletePurchase) {
-            await _iapService.complete(purchase);
+            await _safeComplete(purchase);
           }
           emit(const SubscriptionCancelled());
       }
@@ -139,7 +145,24 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
     } finally {
       // Finish the transaction regardless of validation outcome — an
       // unfinished purchase is re-delivered every launch and blocks re-buys.
+      await _safeComplete(purchase);
+    }
+  }
+
+  /// Finish a transaction, swallowing a completion failure (code-review 8.1 F5).
+  ///
+  /// The plugin's `completePurchase` is documented to throw on a transient
+  /// store/Billing error. Letting it escape would (a) crash the event handler
+  /// as an unhandled bloc error AND (b) leave the transaction unfinished — the
+  /// exact "charged but stuck, can't re-buy" failure this flow exists to close.
+  /// We log and rely on the next `purchaseStream` re-delivery to retry (the
+  /// subscription lives for the whole bloc lifetime).
+  Future<void> _safeComplete(PurchaseDetails purchase) async {
+    try {
       await _iapService.complete(purchase);
+    } catch (e) {
+      debugPrint('SubscriptionBloc: completePurchase failed (will retry on '
+          're-delivery): $e');
     }
   }
 
