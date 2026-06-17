@@ -10,6 +10,7 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
 
   ScenariosBloc(this._repository) : super(const ScenariosInitial()) {
     on<LoadScenariosEvent>(_onLoad);
+    on<RefreshScenariosEvent>(_onRefresh);
   }
 
   Future<void> _onLoad(
@@ -50,6 +51,28 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
           retryCount: nextRetryCount,
         ),
       );
+    }
+  }
+
+  /// Story 8.2 (D1) — silent background refresh after a call returns. No
+  /// `ScenariosLoading` (so the list never flashes to a spinner mid-session)
+  /// and no `ScenariosError` flip (a failed background refresh keeps the
+  /// current view rather than error-screening the user). Only a successful
+  /// fetch swaps in a fresh `ScenariosLoaded` — which, because the widget type
+  /// at that tree position is unchanged, preserves the list State (the 7.4
+  /// `_initiatedThisSession` mark) while updating `usage`/`scenarios`. Skips
+  /// while a foreground load is in flight so it can't race it.
+  Future<void> _onRefresh(
+    RefreshScenariosEvent event,
+    Emitter<ScenariosState> emit,
+  ) async {
+    if (state is ScenariosLoading) return;
+    try {
+      final result = await _repository.fetchScenarios();
+      emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
+    } catch (_) {
+      // Background refresh — swallow any failure and keep the current state.
+      // Stale usage for one more call beats an error screen after a call.
     }
   }
 

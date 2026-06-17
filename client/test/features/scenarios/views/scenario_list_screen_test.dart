@@ -37,6 +37,15 @@ const _kFreeExhausted = CallUsage(
   period: 'lifetime',
 );
 
+// Story 8.2 (FR29) — a free user on their LAST free call (callsRemaining == 1
+// at call-init → 0 after). The debrief paywall must auto-present for this user.
+const _kFreeLastCall = CallUsage(
+  tier: 'free',
+  callsRemaining: 1,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+);
+
 const _kPaidWithCalls = CallUsage(
   tier: 'paid',
   callsRemaining: 3,
@@ -66,7 +75,11 @@ class MockCallRepository extends Mock implements CallRepository {}
 /// the placeholder copy.
 const Key _kCallStubKey = ValueKey('call_screen_stub');
 
-Widget _stubCallScreen(Scenario scenario, CallSession session) {
+Widget _stubCallScreen(
+  Scenario scenario,
+  CallSession session,
+  bool presentPaywallOnDebrief,
+) {
   return const Scaffold(
     key: _kCallStubKey,
     body: Center(child: Text('CALL_STUB')),
@@ -843,7 +856,7 @@ void main() {
       // PaywallSheet is a modal bottom sheet — its content (any text) sits
       // above the scenario list. We assert by widget type instead of text
       // because the copy is owned by PaywallSheet not this test.
-      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
     },
   );
 
@@ -1178,7 +1191,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('BRIEFING_CONFIRM'));
       await tester.pumpAndSettle();
-      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
 
       // Dismiss the paywall sheet (scrim tap).
@@ -1270,7 +1283,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Paywall sheet shown instead of a call.
-      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
       verifyNoPost(mockRepo);
     },
@@ -1286,7 +1299,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
-      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsNothing);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
       verify(() => mockRepo.initiateCall(
           scenarioId: 's1',
@@ -1310,7 +1323,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
-      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsNothing);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
       verify(() => mockRepo.initiateCall(
           scenarioId: 's1',
@@ -1341,9 +1354,96 @@ void main() {
       // Confirming (the call action) converges on _startCall → the paywall.
       await tester.tap(find.text('BRIEFING_CONFIRM'));
       await tester.pumpAndSettle();
-      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
       verifyNoPost(mockRepo);
+    },
+  );
+
+  // ------- Story 8.2 — FR29 debrief-paywall trigger (D1 + P2, code-review) -------
+  //
+  // `isFinalFreeScenario = usage.isFree && callsRemaining <= 1` is computed in
+  // `_startCall` and threaded to the call surface. Pre-fix the stub builder
+  // discarded it (B6: untested); the builder now carries it so we can assert it.
+  // D1: the hub silently refreshes `/scenarios` on call-return so the snapshot
+  // is fresh for the NEXT call's trigger (reverses the 7.4 no-refetch).
+
+  MockCallRepository happyCallRepo() {
+    final repo = MockCallRepository();
+    when(
+      () => repo.initiateCall(
+        scenarioId: any(named: 'scenarioId'),
+        difficulty: any(named: 'difficulty'),
+      ),
+    ).thenAnswer((_) async => _kFakeSession);
+    return repo;
+  }
+
+  // P2 — the FR29 flag reaches the call surface, computed per `<= 1` && isFree.
+  for (final (label, usage, expected) in <(String, CallUsage, bool)>[
+    ('free, last call (remaining 1)', _kFreeLastCall, true),
+    ('free, exhausted (remaining 0)', _kFreeExhausted, true),
+    ('free, not last (remaining 3)', _kFreshUsage, false),
+    ('paid (never qualifies)', _kPaidExhausted, false),
+  ]) {
+    testWidgets(
+      'FR29 flag → presentPaywallOnDebrief=$expected for $label',
+      (tester) async {
+        final scenario = _build(id: 's1', title: 'Waiter'); // free, no CW/brief
+        bool? captured;
+        await pumpListWithScenario(
+          tester,
+          scenario,
+          callRepository: happyCallRepo(),
+          usage: usage,
+          callScreenBuilder: (s, sess, flag) {
+            captured = flag;
+            return const Scaffold(key: _kCallStubKey, body: SizedBox());
+          },
+        );
+
+        await tester.tap(find.byIcon(Icons.phone_outlined));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(_kCallStubKey), findsOneWidget);
+        expect(captured, expected);
+      },
+    );
+  }
+
+  // D1 — returning from a call dispatches a silent RefreshScenariosEvent.
+  testWidgets(
+    'D1: returning from a call silently refreshes /scenarios',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      await pumpListWithScenario(
+        tester,
+        scenario,
+        callRepository: happyCallRepo(),
+        callScreenBuilder: (s, sess, flag) => Scaffold(
+          key: _kCallStubKey,
+          body: Builder(
+            builder: (ctx) => Center(
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('END_CALL'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+      // No refresh yet — only on RETURN.
+      verifyNever(() => mockBloc.add(const RefreshScenariosEvent()));
+
+      // Call ends → the pushed route pops → `_startCall`'s await resolves.
+      await tester.tap(find.text('END_CALL'));
+      await tester.pumpAndSettle();
+
+      verify(() => mockBloc.add(const RefreshScenariosEvent())).called(1);
     },
   );
 }

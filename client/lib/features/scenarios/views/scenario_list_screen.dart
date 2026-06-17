@@ -29,10 +29,15 @@ import 'widgets/scenario_card.dart';
 /// Builds the in-call surface to push from `_onCallTap`. Defaults to
 /// `CallScreen.new`. Tests pass a lightweight stub to avoid constructing a
 /// real LiveKit `Room` (which spawns background timers that leak across
-/// test boundaries). The production path (no override) constructs `CallScreen`
-/// inline so it can thread the FR29 `presentPaywallOnDebrief` flag (Story 8.2).
+/// test boundaries). The FR29 `presentPaywallOnDebrief` flag (Story 8.2) is
+/// threaded through the builder too, so a stub can assert it reached the call
+/// surface (the production no-override path passes it straight to `CallScreen`).
 typedef CallScreenBuilder =
-    Widget Function(Scenario scenario, CallSession session);
+    Widget Function(
+      Scenario scenario,
+      CallSession session,
+      bool presentPaywallOnDebrief,
+    );
 
 class ScenarioListScreen extends StatelessWidget {
   /// Optional injection seam for tests. Production uses
@@ -345,7 +350,7 @@ class _ListState extends State<_List> {
       await Navigator.of(context, rootNavigator: true).push<void>(
         MaterialPageRoute<void>(
           builder: (_) => callScreenBuilder != null
-              ? callScreenBuilder(scenario, session)
+              ? callScreenBuilder(scenario, session, isFinalFreeScenario)
               : CallScreen(
                   scenario: scenario,
                   callSession: session,
@@ -354,6 +359,15 @@ class _ListState extends State<_List> {
           fullscreenDialog: true,
         ),
       );
+      // Story 8.2 (D1, code-review) — the call screen popped (call ended).
+      // Silently refresh /scenarios so callsRemaining is fresh for the NEXT
+      // call's FR29 trigger (no Loading flash, _initiatedThisSession preserved).
+      // This intentionally reverses the 7.4 "no in-session refetch"; the
+      // briefing gate stays correct because the refreshed server `attempts` is
+      // now authoritative too.
+      if (context.mounted) {
+        context.read<ScenariosBloc>().add(const RefreshScenariosEvent());
+      }
     } on ApiException catch (e) {
       if (!context.mounted) return;
       switch (e.code) {

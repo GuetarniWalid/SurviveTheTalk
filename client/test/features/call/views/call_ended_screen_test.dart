@@ -644,7 +644,7 @@ void main() {
       final debrief = tester.widget<DebriefScreen>(find.byType(DebriefScreen));
       expect(debrief.presentPaywallOnLoad, isTrue);
       // The flag actually fired the sheet on the debrief.
-      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
     });
   });
 }

@@ -399,4 +399,58 @@ void main() {
       ],
     );
   });
+
+  group('RefreshScenariosEvent (Story 8.2 D1 — silent in-session refresh)', () {
+    const refreshedUsage = CallUsage(
+      tier: 'free',
+      callsRemaining: 2, // was 3 (stale) — proves the in-place swap
+      callsPerPeriod: 3,
+      period: 'lifetime',
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'refreshes in place — emits ONLY Loaded, never a Loading flash',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenAnswer(
+          (_) async => _result(_fiveScenarios, usage: refreshedUsage),
+        );
+      },
+      build: buildBloc,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (bloc) => bloc.add(const RefreshScenariosEvent()),
+      // Exactly one emission, and it is Loaded (NOT Loading → no flicker after
+      // every call, and the list State is preserved across the swap).
+      expect: () => [
+        isA<ScenariosLoaded>().having(
+          (s) => s.usage.callsRemaining,
+          'usage.callsRemaining (fresh)',
+          2,
+        ),
+      ],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'on failure keeps the current state — NO Error flip, NO emission',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenThrow(
+          const ApiException(code: 'NETWORK_ERROR', message: 'down'),
+        );
+      },
+      build: buildBloc,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (bloc) => bloc.add(const RefreshScenariosEvent()),
+      expect: () => const <ScenariosState>[],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'is dropped while a foreground load is already in flight',
+      build: buildBloc,
+      seed: ScenariosLoading.new,
+      act: (bloc) => bloc.add(const RefreshScenariosEvent()),
+      expect: () => const <ScenariosState>[],
+      verify: (_) => verifyNever(() => mockRepo.fetchScenarios()),
+    );
+  });
 }
