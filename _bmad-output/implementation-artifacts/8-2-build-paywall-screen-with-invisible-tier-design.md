@@ -31,7 +31,7 @@ _Verbatim from [epics.md → Epic 8 → Story 8.2](../planning-artifacts/epics.m
 
 2. **BottomOverlayCard gate (UX-DR5).** Given the BottomOverlayCard is tapped (free-user states), when the user taps the overlay card, then the paywall screen is displayed. _(Already wired in Story 8.1 G2 — keep working through the restyle; see Dev Notes §3.)_
 
-3. **FR29 debrief gate.** Given FR29 defines paywall timing after the 3rd free scenario, when a free user **completes or fails their 3rd free scenario**, then the paywall is presented **on the debrief screen at the emotional peak**. _(NEW — not implemented today; trigger detection per **Decision D1**; see Dev Notes §4.)_
+3. **FR29 debrief gate.** Given FR29 defines paywall timing after the 3rd free scenario, when a free user **completes or fails their 3rd free scenario**, then the paywall is presented **on the debrief screen at the emotional peak**. _(NEW — not implemented today; **Decision D1 = LOCKED (Walid 2026-06-17): implement in 8.2**; see Dev Notes §4.)_
 
 4. **Offer content + dark theme (Epic 2 design).** Given the paywall is displayed, when the user views the offer, then it shows the price (**$1.99/week**), the value proposition (all scenarios, more daily calls), and a clear subscribe CTA — **and** the visual follows the design with the established design tokens. _(The on-screen price string is split `$1.99` + `per week` per the design — see Dev Notes §2.)_
 
@@ -71,7 +71,7 @@ _Verbatim from [epics.md → Epic 8 → Story 8.2](../planning-artifacts/epics.m
 - [ ] **Task 4 — Entry point #2: BottomOverlayCard (AC: #2)**
   - [ ] No new wiring — `_OverlayHost.onPaywallTap` already calls `PaywallSheet.show` + reloads on purchase (Story 8.1 G2). **Verify it still works after the restyle**; ensure `BottomOverlayCard` actionable states (`freeWithCalls`, `freeExhausted`) still route here and `paidExhausted` stays informational (non-tappable).
 
-- [ ] **Task 5 — Entry point #3: FR29 debrief gate (AC: #3)** — **Decision D1 (recommended option baked in below; confirm before dev)**
+- [ ] **Task 5 — Entry point #3: FR29 debrief gate (AC: #3)** — **Decision D1 = LOCKED (Walid 2026-06-17): IMPLEMENT in 8.2**
   - [ ] Compute `isFinalFreeScenario` at call initiation in `_startCall`: `final isFinalFreeScenario = widget.usage.isFree && widget.usage.callsRemaining <= 1;` (free tier = 3 calls lifetime; at the start of the 3rd/last free call `callsRemaining == 1`, so after it 0 remain → this is the FR29 scenario, whether completed or failed).
   - [ ] Thread the flag through the call→debrief handoff: `CallScreen` constructor → the push of `CallEndedScreen` (`CallEndedScreen.route(...)`) → `CallEndedScreen._debriefRoute()` → `DebriefScreen` constructor (new optional `bool presentPaywallOnLoad = false`). Keep the existing `@visibleForTesting debugDebriefRouteBuilder` seam working.
   - [ ] In `DebriefScreen`, when `presentPaywallOnLoad` is true, present the paywall **immediately on load (0ms, Open-Q1)** once the screen is mounted (the debrief content stays visible behind the scrim; dismiss → user keeps reading the debrief). Use `PaywallSheet.show`. The debrief is **not** modified by dismiss; no reload needed there (the scenario list reloads on its own next visit, and a purchase still resolves `true`).
@@ -80,7 +80,8 @@ _Verbatim from [epics.md → Epic 8 → Story 8.2](../planning-artifacts/epics.m
 - [ ] **Task 6 — Product-unavailable + timeout polish (AC: #8; Open-Q2, Open-Q3)**
   - [ ] **Open-Q2 (product unavailable):** if `InAppPurchaseService.loadProduct(kIapWeeklyProductId)` returns null / store unavailable, **do not present a non-functional paywall** — the CTA must never be tappable without a valid product. Recommended: on `SubscriptionFailed('product_unavailable' | 'product_query_failed')` show the Error state with the dismiss enabled (user can leave cleanly); never spin forever. _(The bloc already emits these codes — render them, don't invent new logic.)_
   - [ ] **Open-Q3 (15s timeout vs native sheet):** the bloc's 15s `sheetTimeout` may fire while the user is in the native Face-ID/password sheet. Recommended: the paywall surface should not punish an in-progress native auth — keep the spinner during the native sheet; the bloc's existing `PurchaseTimedOut` only flips to Error after 15s of no store response. If feasible without bloc surgery, note (do not necessarily fix) that suspending the timer on app-background is the ideal; a bloc change is **out of 8.2 scope** unless trivial — flag as a declared deviation if not done.
-  - [ ] **Decision D2 (Restore Purchases — confirm before dev):** if accepted, add `Future<void> restore()` to `InAppPurchaseService` (wraps `InAppPurchase.instance.restorePurchases()`; restored events already flow through the bloc's `purchaseStream`) and a minimal `Restore purchases` `TextButton` on the paywall (below "Not now" or in the legal row). Apple App Review **requires** a visible Restore affordance for auto-renewable subs (8.1 deferred this as **F13 = MUST-DO before iOS submission**). If deferred, leave a `// TODO(8.3/F13)` and note it.
+  - [ ] **Decision D2 = LOCKED (Walid 2026-06-17): INCLUDE Restore.** Add `Future<void> restore()` to `InAppPurchaseService` (wraps `InAppPurchase.instance.restorePurchases()`; restored events already flow through the bloc's `purchaseStream`) and a minimal `Restore purchases` `TextButton` on the paywall (below "Not now" or in the legal row). Apple App Review **requires** a visible Restore affordance for auto-renewable subs — this **closes 8.1's deferred F13** (MUST-DO before iOS submission). Add a test that the affordance renders and invokes `restore()`.
+  - [ ] **Restore edge case (closes 8.1 F16):** a restore with nothing to restore must NOT show the Success "You're in" state — return to Default with a neutral inline line (e.g. `Nothing to restore.`), no false confirmation. Distinguish a genuine restored subscription (→ verify → `paid`) from an empty restore.
 
 - [ ] **Task 7 — Tests (AC: #1–#9)**
   - [ ] **Rewrite** `client/test/features/paywall/views/paywall_sheet_test.dart` for the new design (the current assertions target the placeholder: "Unlock all scenarios", "Subscribe — $1.99/week", radius 42, fill `AppColors.textPrimary`). New assertions: copy deck verbatim, radius 16, the 4 states, `pop(true)` on `SubscriptionPurchased` (G2), dismiss paths, `PopScope` gating, accessibility semantics (price/CTA/dismiss labels). Drive via `PaywallSheet.debugBlocBuilder` + `MockSubscriptionBloc` + `whenListen`.
@@ -136,9 +137,9 @@ All under `client/lib/features/subscription/`:
 
 There is **no free-scenario counter anywhere** today (grep-confirmed; FR29 lives only in planning docs). The debrief is reached post-call via `CallScreen → CallEndedScreen._exit() → pushReplacement(DebriefScreen)` (NOT the `/:scenarioId` GoRoute, which still points at `DebriefPlaceholderScreen`). `DebriefScreen` is a **StatefulWidget, no bloc** (mirrors `CallEndedScreen`), with a 3-phase state machine + poll fallback. The post-call flow does **not** currently carry `CallUsage`.
 
-**Recommended (baked into Task 5): derive the trigger at call-init, thread a bool to the debrief.** `usage.isFree && usage.callsRemaining <= 1` at `_startCall` time uniquely identifies the 3rd/last free scenario (3 calls lifetime). No extra network call; no dependency on the not-yet-built profile endpoint. Cost = threading one `bool` through `CallScreen` → `CallEndedScreen` → `DebriefScreen` (stable 7.x files — touch carefully, keep the `debugDebriefRouteBuilder`/`debugBlocBuilder` test seams).
+**LOCKED — Decision D1 (Walid 2026-06-17): implement in 8.2 — derive the trigger at call-init, thread a bool to the debrief.** `usage.isFree && usage.callsRemaining <= 1` at `_startCall` time uniquely identifies the 3rd/last free scenario (3 calls lifetime). No extra network call; no dependency on the not-yet-built profile endpoint. Cost = threading one `bool` through `CallScreen` → `CallEndedScreen` → `DebriefScreen` (stable 7.x files — touch carefully, keep the `debugDebriefRouteBuilder`/`debugBlocBuilder` test seams).
 
-**Alternative (Decision D1 = defer):** ship the paywall + AC1 + AC2 in 8.2, and move FR29/AC3 to **Story 8.3**, where `GET /user/profile` (tier + calls-remaining) gives a clean server-side signal and the call-flow threading is avoided. If chosen, this story carries AC1+AC2 only and 8.3's scope absorbs AC3 — record it as an explicit, Walid-approved coverage decision (per the "surface trade-offs as decisions" rule), and update epics.md/8.3 accordingly.
+_(Not chosen — for the record: the alternative was to defer FR29/AC3 to Story 8.3, where `GET /user/profile` gives a clean server-side signal. Walid chose to implement now — FR29 is the PRD's emotional-peak conversion moment.)_
 
 ### 5. Design-rulebook note (resolved — no action needed beyond awareness)
 
@@ -178,15 +179,15 @@ Testable now on a Pixel 9 from a release APK (no real purchase needed):
 - [ ] **AC6** — with TalkBack on, the sheet announces the price + value prop + CTA/dismiss; targets are reachable.
 - [ ] **Purchase completion (OWED until store config):** tapping `Let's go` → native Play sheet → on success the sheet shows `You're in`, resolves, and the list reflects `paid`. _Cannot run until the Google Play product + signed AAB on Internal testing exist (8.1 D4)._
 
-## Pre-Dev Decisions (recommended defaults baked in — confirm or override before `dev-story`)
+## Pre-Dev Decisions (all RESOLVED — ready for `dev-story`)
 
-| # | Decision | Recommended (baked in) | Alternative | Impact |
-|---|----------|------------------------|-------------|--------|
-| **D1** | **FR29 / AC3 scope** | **Implement now**: derive `isFinalFreeScenario` (`free && callsRemaining<=1`) at call-init, thread a bool to the debrief, auto-present paywall on debrief load (0ms). | **Defer AC3 to Story 8.3** (clean signal via the future `/user/profile`); 8.2 ships paywall + AC1 + AC2 only. | If defer: 8.2 covers 2 of 3 triggers; update epics 8.2/8.3. The debrief trigger is the PRD's "emotional-peak" conversion moment (capability #6). |
-| **D2** | **Restore Purchases (8.1 F13)** | **Include** a minimal `Restore purchases` affordance (+ `InAppPurchaseService.restore()`). Apple requires it for submission; the paywall is its canonical home. | **Defer** to 8.3 / pre-submission (10-5). | Cheap now; removes a known iOS-submission blocker. |
-| D3 | Error color token | **Add `AppColors.paywallError #C0392B`** (count→16) for WCAG AA on the light surface. | Reuse `destructive #E74C3C` (fails AA on `#F0F0F0`). | Baked in — design did the contrast math; not blocking. |
-| D4 | Sheet radius | **16** (design doc). | 42 (placeholder BOC lineage). | Baked in — design-doc authority; declared deviation. |
-| D5 | Centered layout + green checks vs "Handler's Brief" rail | **Follow paywall-screen-design.md** (centered, accent checks). | Recolor checks to `#1E1F23`. | Baked in — transactional sheet ≠ dark one-rail screens; flagged. |
+| # | Decision | Resolution | Notes |
+|---|----------|------------|-------|
+| **D1** | **FR29 / AC3 scope** | ✅ **LOCKED (Walid 2026-06-17): IMPLEMENT in 8.2.** Derive `isFinalFreeScenario` (`free && callsRemaining<=1`) at call-init, thread a bool to the debrief, auto-present paywall on debrief load (0ms). | The debrief trigger is the PRD's "emotional-peak" conversion moment (capability #6). Cost = threading one bool through the call→debrief chain. |
+| **D2** | **Restore Purchases (8.1 F13)** | ✅ **LOCKED (Walid 2026-06-17): INCLUDE** a minimal `Restore purchases` affordance (+ `InAppPurchaseService.restore()`). | Closes 8.1's deferred F13 (Apple-required for iOS submission); the paywall is its canonical home. Empty-restore must not fake Success (F16). |
+| D3 | Error color token | ✅ Baked in: **add `AppColors.paywallError #C0392B`** (count 15→16) for WCAG AA (4.7:1) on the light surface. | `destructive #E74C3C` fails AA on `#F0F0F0`. Design did the contrast math. |
+| D4 | Sheet radius | ✅ Baked in: **16** (design doc) over the placeholder's 42. | Design-doc authority; declared deviation. |
+| D5 | Centered layout + green checks vs "Handler's Brief" rail | ✅ Baked in: **follow paywall-screen-design.md** (centered, accent checks). | Transactional commerce sheet ≠ the dark one-rail screens; checks decorative/`ExcludeSemantics`. |
 
 ## Dev Agent Record
 
