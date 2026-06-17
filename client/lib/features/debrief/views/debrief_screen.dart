@@ -287,8 +287,12 @@ class _DebriefScreenState extends State<DebriefScreen> {
     try {
       await PaywallSheet.show(context);
       // ignore: avoid_catches_without_on_clauses
-    } catch (_) {
-      // Swallow — never let a paywall failure crash the debrief (Task 5).
+    } catch (e) {
+      // Fail-open — never let a paywall failure crash the debrief (Task 5) — but
+      // surface it (client/CLAUDE.md gotcha #8: never silently swallow) so a real
+      // defect isn't invisible. debugPrint (not FlutterError.reportError) keeps
+      // the fail-open path green in widget tests, matching SubscriptionBloc._safeComplete.
+      debugPrint('DebriefScreen: paywall present failed (fail-open): $e');
     }
   }
 

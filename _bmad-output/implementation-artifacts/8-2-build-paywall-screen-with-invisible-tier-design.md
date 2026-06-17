@@ -1,6 +1,8 @@
 # Story 8.2: Build Paywall Screen with Invisible Tier Design
 
-Status: review
+Status: in-progress
+
+<!-- Status: review → in-progress (code review 2026-06-17): 2 decisions resolved into substantial patches (D1 reload-on-return, D2 custom dismiss route) + P2 (FR29 test) left as action items; trivial patches P1+P3 applied. Re-enters review once D1/D2/P2 land. -->
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -246,3 +248,25 @@ Client-only story (zero server/DB/deploy impact). All 9 ACs satisfied; D1–D5 h
 ### Change Log
 
 - 2026-06-17 — Story 8.2 dev-story complete (in-progress → review). Invisible-tier paywall: restyled `PaywallSheet` to the binding 4-state design; wired 3 entry points (AC1 paid-scenario gate NEW, AC2 BOC verified, AC3 FR29 debrief NEW); added Restore purchases (D2, closes 8.1 F13/F16) + `paywallError` token (D3). Client-only — zero server changes. Gates: `flutter analyze` clean, `flutter test` 598 green (+21).
+
+### Review Findings (code review — 2026-06-17)
+
+_3-layer adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor) of the 8.2 implementation (`826d9b5..a19deee`). ~33 raw → 23 unique after dedupe: 2 decision-needed, 3 patch, 2 deferred, 16 dismissed (verified against source). Acceptance Auditor: all 9 ACs + D1–D5 satisfied; the one substantive NEW finding is the FR29 trigger's stale-snapshot reliability gap below (the scrim/drag item was already the dev's Declared Deviation #1)._
+
+**Decision-needed:**
+
+- [ ] [Review][Decision→Patch] FR29 debrief-paywall trigger reads a stale usage snapshot — `isFinalFreeScenario = usage.isFree && usage.callsRemaining <= 1` is computed from `widget.usage` (the `/scenarios` load snapshot), but the hub never refetches after a call returns (no lifecycle observer; Story 7.4's deliberate "no in-session refetch" design). In a back-to-back multi-call session `callsRemaining` stays frozen at the session-start value, so the FR29 paywall fires reliably ONLY when that snapshot already shows the last free call; a user burning 2–3 free calls in one sitting may never get the debrief-peak paywall (they still hit a paywall via the BOC card / next paid-scenario tap / next-call `CALL_LIMIT_REACHED`). [scenario_list_screen.dart:330-331] (blind+edge) — **RESOLVED (Walid, 2026-06-17): Option 2** — reload `/scenarios` on every call-return so `callsRemaining` is fresh at the start of each call (knowingly reverses the 7.4 "no in-session refetch"; +1 `/scenarios` round-trip per call-end; re-validate the 7.4 briefing-gate tests). Now a PATCH.
+- [ ] [Review][Decision→Patch] Native swipe/scrim dismiss not blocked during Loading/Success (= dev Declared Deviation #1) — `showModalBottomSheet`'s `isDismissible`/`enableDrag` are static, so only system-back is blocked (`PopScope`); a swipe/scrim-tap during the ~1.5s success-hold dismisses with `false`, so the caller skips the `/scenarios` reload. Contradicts AC8 + design State 2/3 ("dismiss disabled during hold"). Self-heals (tier flips server-side; list reloads next visit). [paywall_sheet.dart:59-61, 176-177] (blind+edge+auditor) — **RESOLVED (Walid, 2026-06-17): Option 3** — replace `showModalBottomSheet` with a custom modal route that toggles `isDismissible`/`enableDrag` by bloc state (block only during Loading/Success, allow swipe/scrim in Default/Error) + a 4-state dismissibility test matrix. Now a PATCH.
+
+**Patch:**
+
+- [x] [Review][Patch] `_presentPaywall` swallows ALL exceptions with no logging — bare `catch (_)` violates the `client/CLAUDE.md` gotcha #8 convention ("never silently swallow"); the bloc's own `_safeComplete` already follows it. [debrief_screen.dart:286-293] (blind) — **APPLIED (code review, 2026-06-17): `catch (_)` → `catch (e)` + `debugPrint` (not `FlutterError.reportError`, which would fail the fail-open widget tests); fail-open preserved.**
+- [ ] [Review][Patch] FR29 thread has no scenario-list test coverage — every `scenario_list_screen_test` injects a stub `callScreenBuilder`, so `isFinalFreeScenario` is computed and discarded; the trigger boundary + delivery to a real `CallScreen` are never asserted (the downstream `CallScreen→Debrief` thread IS tested). [scenario_list_screen_test.dart] (blind) — **ACTION ITEM (option 0 skipped — couples to D1): implement alongside the reload-on-return so the test asserts a per-call-accurate flag.**
+- [x] [Review][Patch] Title/subtitle/price `Text` set `maxLines` with no `overflow` — at large `textScaler` the forced single-line title hard-clips instead of ellipsizing (`client/CLAUDE.md` gotcha #7). [paywall_sheet.dart:261-291] (blind+auditor) — **APPLIED (code review, 2026-06-17): `overflow: TextOverflow.ellipsis` on title/subtitle/price-amount.**
+
+**Deferred:**
+
+- [x] [Review][Defer] Restore 3s lapse timer can flash "Nothing to restore." before a slow restore lands — F16 holds (a late `restored` still verifies→Purchased, never a fake success); only a transient wrong-then-corrected caption on a slow link. Not testable until the Google Play account exists (8.1 D4); revisit the `restoreTimeout` value on-device. [subscription_bloc.dart:47, 125] (blind+edge+auditor) — deferred, not actionable until store config
+- [x] [Review][Defer] "Not now" / "Restore purchases" — two full-width 48px buttons 8px apart, same muted styling (mis-tap risk) — the binding design predates the D2 Restore affordance, so spacing/differentiation wasn't specified; both outcomes recoverable. Revisit when the restore path is testable on-device. [paywall_sheet.dart:326-348] (blind) — deferred, minor UX, revisit with store config
+
+**Dismissed (16, verified against source):** success-timer "regression" pop (B3/E14/E15 — `SubscriptionPurchased` is effectively terminal in the bloc; not reachable); `Timer`→`Navigator.of(context)` (guarded by `mounted`, the correct pattern); `_presentPaywall` context-across-await (mounted guard + no post-await context use); burst restore/subscribe dispatch (bloc serializes event handlers); debrief double-present (one-shot post-frame; hot-reload doesn't re-run `initState`); benefit-3 missing period (MATCHES the design copy deck — false positive); `paywallError` contrast tested by hex-equality (the project's token-test pattern; design-validated const); backgrounded success timer (benign — purchase already succeeded); `callsRemaining==0` double-paywall (needs a server/client cap disagreement; `CALL_LIMIT_REACHED` handles it); re-restore double verify (idempotent server-side); drag-handle visible in success + restore reuses CTA spinner (dev declared deviations, by-design); no unit test for 48px sizes + announcement strings not verbatim (AC6 intent met via per-element semantics; smoke-gate signed AC4/AC6).
