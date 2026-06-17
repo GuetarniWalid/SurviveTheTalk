@@ -132,6 +132,13 @@ class CallScreen extends StatefulWidget {
   final Scenario scenario;
   final CallSession callSession;
 
+  /// Story 8.2 (AC3 / FR29) — true when this is the user's 3rd/last FREE call
+  /// (computed at call-init on the hub as `usage.isFree && callsRemaining<=1`).
+  /// Threaded to the Call Ended overlay → debrief so the paywall auto-presents
+  /// on the debrief at the emotional peak. Production-only flag; tests that
+  /// pump `CallScreen` standalone leave it at its `false` default.
+  final bool presentPaywallOnDebrief;
+
   /// Optional injection seam for tests. Production callers pass nothing —
   /// `CallScreen` constructs `Room()` once in `initState` and forwards it to
   /// `CallBloc`. Tests pass a `MockRoom`.
@@ -158,6 +165,7 @@ class CallScreen extends StatefulWidget {
     super.key,
     required this.scenario,
     required this.callSession,
+    this.presentPaywallOnDebrief = false,
     this.room,
     this.debugCanvasFallback,
     this.debugHandlerBuilder,
@@ -956,6 +964,9 @@ class _CallScreenState extends State<CallScreen> {
                   checkpointsPassed: snapshot?.metCount ?? 0,
                   totalCheckpoints: snapshot?.total ?? 0,
                   callRepository: _callRepository,
+                  // Story 8.2 (FR29) — thread the "last free call" flag through
+                  // to the debrief so the paywall auto-presents at the peak.
+                  presentPaywallOnDebrief: widget.presentPaywallOnDebrief,
                 ),
               );
             } else {

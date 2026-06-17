@@ -29,19 +29,30 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
   final SubscriptionRepository _repository;
   final InAppPurchaseService _iapService;
   final Duration _sheetTimeout;
+  final Duration _restoreTimeout;
 
   StreamSubscription<List<PurchaseDetails>>? _purchaseSub;
   Timer? _timeoutTimer;
+  Timer? _restoreTimer;
+
+  /// True between a `RestorePressed` and either a restored entitlement landing
+  /// on the stream or [RestoreLapsed] firing. Lets the empty-restore branch
+  /// (F16) distinguish "nothing came back" from a genuine restore.
+  bool _restoreInFlight = false;
 
   SubscriptionBloc({
     required SubscriptionRepository repository,
     required InAppPurchaseService iapService,
     Duration sheetTimeout = const Duration(seconds: 15),
+    Duration restoreTimeout = const Duration(seconds: 3),
   }) : _repository = repository,
        _iapService = iapService,
        _sheetTimeout = sheetTimeout,
+       _restoreTimeout = restoreTimeout,
        super(const SubscriptionInitial()) {
     on<SubscribePressed>(_onSubscribePressed);
+    on<RestorePressed>(_onRestorePressed);
+    on<RestoreLapsed>(_onRestoreLapsed);
     on<PurchaseUpdated>(_onPurchaseUpdated);
     on<PurchaseTimedOut>(_onTimedOut);
 
@@ -92,6 +103,36 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
     _timeoutTimer = Timer(_sheetTimeout, () => add(const PurchaseTimedOut()));
   }
 
+  /// Story 8.2 (D2) — kick a restore. A restored entitlement re-delivers on
+  /// `purchaseStream` (→ `restored` → verify → paid, same as a fresh buy); if
+  /// the window elapses with nothing, [RestoreLapsed] surfaces the neutral
+  /// "nothing to restore" state (F16 — never a fake success).
+  Future<void> _onRestorePressed(
+    RestorePressed event,
+    Emitter<SubscriptionState> emit,
+  ) async {
+    if (state is SubscriptionLoading) return;
+    emit(const SubscriptionLoading());
+    _restoreInFlight = true;
+    try {
+      await _iapService.restore();
+    } catch (_) {
+      _restoreInFlight = false;
+      emit(const SubscriptionFailed('restore_failed'));
+      return;
+    }
+    _restoreTimer?.cancel();
+    _restoreTimer = Timer(_restoreTimeout, () => add(const RestoreLapsed()));
+  }
+
+  void _onRestoreLapsed(RestoreLapsed event, Emitter<SubscriptionState> emit) {
+    if (!_restoreInFlight) return;
+    _restoreInFlight = false;
+    // Only surface "nothing to restore" if we're still waiting — a restored
+    // entitlement that landed first already moved us off Loading.
+    if (state is SubscriptionLoading) emit(const SubscriptionRestoreEmpty());
+  }
+
   Future<void> _onPurchaseUpdated(
     PurchaseUpdated event,
     Emitter<SubscriptionState> emit,
@@ -105,22 +146,33 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
           _timeoutTimer?.cancel();
         case PurchaseStatus.purchased:
         case PurchaseStatus.restored:
-          _timeoutTimer?.cancel();
+          // A real entitlement landed — cancel BOTH the buy and the restore
+          // windows and clear the restore flag so its lapse can't later fake a
+          // "nothing to restore" over a confirmed purchase.
+          _cancelTerminalTimers();
           await _verifyAndComplete(purchase, emit);
         case PurchaseStatus.error:
-          _timeoutTimer?.cancel();
+          _cancelTerminalTimers();
           if (purchase.pendingCompletePurchase) {
             await _safeComplete(purchase);
           }
           emit(SubscriptionFailed(purchase.error?.code ?? 'purchase_error'));
         case PurchaseStatus.canceled:
-          _timeoutTimer?.cancel();
+          _cancelTerminalTimers();
           if (purchase.pendingCompletePurchase) {
             await _safeComplete(purchase);
           }
           emit(const SubscriptionCancelled());
       }
     }
+  }
+
+  /// Cancel the buy + restore recovery windows and clear the restore flag on a
+  /// terminal purchase update (purchased / restored / error / canceled).
+  void _cancelTerminalTimers() {
+    _timeoutTimer?.cancel();
+    _restoreTimer?.cancel();
+    _restoreInFlight = false;
   }
 
   Future<void> _verifyAndComplete(
@@ -175,6 +227,7 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
   @override
   Future<void> close() {
     _timeoutTimer?.cancel();
+    _restoreTimer?.cancel();
     _purchaseSub?.cancel();
     return super.close();
   }

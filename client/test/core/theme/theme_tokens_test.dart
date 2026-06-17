@@ -9,8 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('AppColors', () {
-    test('exposes exactly 15 tokens with exact UX-DR1 hex values', () {
-      expect(AppColors.values, hasLength(15));
+    test('exposes exactly 16 tokens with exact UX-DR1 hex values', () {
+      expect(AppColors.values, hasLength(16));
       // Direct Color equality avoids the Flutter 3.27+ `toARGB32()` API;
       // compatible with any Flutter SDK that matches pubspec's sdk floor.
       expect(AppColors.background, const Color(0xFF1E1F23));
@@ -30,9 +30,11 @@ void main() {
       expect(AppColors.hairline, const Color(0x14FFFFFF));
       // Story 7.5 — debrief v2 hero gauge track (dim groove, decorative).
       expect(AppColors.gaugeTrack, const Color(0xFF2A2B30));
+      // Story 8.2 — paywall error caption (darkened red, AA on the light sheet).
+      expect(AppColors.paywallError, const Color(0xFFC0392B));
     });
 
-    test('all 15 tokens are distinct (no accidental duplicates)', () {
+    test('all 16 tokens are distinct (no accidental duplicates)', () {
       expect(AppColors.values.toSet(), hasLength(AppColors.values.length));
     });
   });

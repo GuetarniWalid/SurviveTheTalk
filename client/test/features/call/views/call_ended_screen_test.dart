@@ -7,18 +7,29 @@
 
 import 'dart:async';
 
+import 'package:bloc_test/bloc_test.dart';
 import 'package:client/app/router.dart';
 import 'package:client/core/api/api_exception.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/views/call_ended_screen.dart';
 import 'package:client/features/debrief/views/debrief_screen.dart';
+import 'package:client/features/paywall/views/paywall_sheet.dart';
 import 'package:client/features/scenarios/models/scenario.dart';
+import 'package:client/features/subscription/bloc/subscription_bloc.dart';
+import 'package:client/features/subscription/bloc/subscription_event.dart';
+import 'package:client/features/subscription/bloc/subscription_state.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Story 8.2 (FR29) — drives the auto-presented paywall through the test seam.
+class MockSubscriptionBloc
+    extends MockBloc<SubscriptionEvent, SubscriptionState>
+    implements SubscriptionBloc {}
 
 const Map<String, String> _kPhrases = {
   'hung_up': 'The waitress kicked you out',
@@ -63,6 +74,7 @@ void main() {
     int totalCheckpoints = 6,
     Map<String, String>? endPhrases = _kPhrases,
     Route<void> Function(Map<String, dynamic>? payload)? debriefRouteBuilder,
+    bool presentPaywallOnDebrief = false,
   }) {
     return CallEndedScreen(
       scenario: _scenario(endPhrases: endPhrases),
@@ -72,6 +84,7 @@ void main() {
       checkpointsPassed: checkpointsPassed,
       totalCheckpoints: totalCheckpoints,
       callRepository: repository,
+      presentPaywallOnDebrief: presentPaywallOnDebrief,
       entryDuration: Duration.zero,
       minHold: const Duration(milliseconds: 100),
       minHoldAccessible: const Duration(milliseconds: 300),
@@ -591,6 +604,47 @@ void main() {
       final route = ModalRoute.of(tester.element(debriefFinder))!;
       expect(route.settings.name, AppRoutes.debrief);
       expect(route.settings.arguments, same(payload));
+    });
+
+    testWidgets('Story 8.2 (FR29) — presentPaywallOnDebrief threads to '
+        'DebriefScreen.presentPaywallOnLoad', (tester) async {
+      // Drive the auto-presented paywall through the test seam so it never
+      // touches the real store plugin.
+      FlutterSecureStorage.setMockInitialValues({});
+      final paywallBloc = MockSubscriptionBloc();
+      whenListen(
+        paywallBloc,
+        const Stream<SubscriptionState>.empty(),
+        initialState: const SubscriptionInitial(),
+      );
+      PaywallSheet.debugBlocBuilder = () => paywallBloc;
+      addTearDown(() => PaywallSheet.debugBlocBuilder = null);
+
+      final payload = <String, dynamic>{
+        'survival_pct': 83,
+        'character_name': 'The Waiter',
+        'scenario_title': 'Order your dinner',
+        'attempt_number': 1,
+        'previous_best': null,
+        'errors': <Object?>[],
+        'hesitations': <Object?>[],
+        'idioms': <Object?>[],
+        'areas_to_work_on': ['Articles (a/an/the)'],
+        'inappropriate_behavior': null,
+      };
+      when(
+        () => repository.fetchDebrief(callId: any(named: 'callId')),
+      ).thenAnswer((_) async => payload);
+
+      await pumpScreen(tester, buildScreen(presentPaywallOnDebrief: true));
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump(CallEndedScreen.kExitTransition);
+      await tester.pumpAndSettle();
+
+      final debrief = tester.widget<DebriefScreen>(find.byType(DebriefScreen));
+      expect(debrief.presentPaywallOnLoad, isTrue);
+      // The flag actually fired the sheet on the debrief.
+      expect(find.byType(BottomSheet), findsOneWidget);
     });
   });
 }

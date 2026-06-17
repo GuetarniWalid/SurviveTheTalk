@@ -44,4 +44,11 @@ class InAppPurchaseService {
   /// purchased / restored transaction, else it is re-delivered every launch).
   Future<void> complete(PurchaseDetails purchase) =>
       _iap.completePurchase(purchase);
+
+  /// Ask the store to re-deliver the user's existing entitlements. Any restored
+  /// transaction lands on [purchaseStream] with `PurchaseStatus.restored` (so it
+  /// flows through the SAME verify-then-flip path as a fresh purchase); an empty
+  /// restore delivers nothing. Story 8.2 (D2) — Apple App Review REQUIRES a
+  /// visible Restore affordance for auto-renewable subscriptions.
+  Future<void> restore() => _iap.restorePurchases();
 }

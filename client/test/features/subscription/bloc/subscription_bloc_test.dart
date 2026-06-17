@@ -64,11 +64,13 @@ void main() {
 
   tearDown(() => purchaseController.close());
 
-  SubscriptionBloc buildBloc({Duration? timeout}) => SubscriptionBloc(
-    repository: repository,
-    iapService: service,
-    sheetTimeout: timeout ?? const Duration(seconds: 15),
-  );
+  SubscriptionBloc buildBloc({Duration? timeout, Duration? restoreTimeout}) =>
+      SubscriptionBloc(
+        repository: repository,
+        iapService: service,
+        sheetTimeout: timeout ?? const Duration(seconds: 15),
+        restoreTimeout: restoreTimeout ?? const Duration(seconds: 3),
+      );
 
   void stubBuyOk() {
     when(() => service.loadProduct(kIapWeeklyProductId))
@@ -308,6 +310,73 @@ void main() {
       isA<SubscriptionFailed>()
           .having((s) => s.code, 'code', 'product_query_failed'),
     ],
+  );
+
+  // ---- Story 8.2 (D2) — Restore purchases ----
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'restore → restored entitlement → [Loading, Purchased] + verify + complete',
+    setUp: () {
+      stubVerifyPaid();
+      when(() => service.restore()).thenAnswer((_) async {});
+    },
+    build: buildBloc,
+    act: (bloc) async {
+      bloc.add(const RestorePressed());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      purchaseController.add([_purchase(PurchaseStatus.restored)]);
+    },
+    wait: const Duration(milliseconds: 60),
+    expect: () => [isA<SubscriptionLoading>(), isA<SubscriptionPurchased>()],
+    verify: (_) {
+      verify(() => service.restore()).called(1);
+      verify(() => service.complete(any())).called(1);
+    },
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'restore → nothing to restore (F16) → [Loading, RestoreEmpty] (no fake success)',
+    setUp: () {
+      when(() => service.restore()).thenAnswer((_) async {});
+    },
+    build: () => buildBloc(restoreTimeout: const Duration(milliseconds: 30)),
+    act: (bloc) => bloc.add(const RestorePressed()),
+    wait: const Duration(milliseconds: 90),
+    expect: () => [
+      isA<SubscriptionLoading>(),
+      isA<SubscriptionRestoreEmpty>(),
+    ],
+    verify: (_) => verify(() => service.restore()).called(1),
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'restore() throwing → [Loading, Failed(restore_failed)]',
+    setUp: () {
+      when(() => service.restore()).thenThrow(Exception('boom'));
+    },
+    build: buildBloc,
+    act: (bloc) => bloc.add(const RestorePressed()),
+    expect: () => [
+      isA<SubscriptionLoading>(),
+      isA<SubscriptionFailed>().having((s) => s.code, 'code', 'restore_failed'),
+    ],
+  );
+
+  blocTest<SubscriptionBloc, SubscriptionState>(
+    'restore: a restored txn cancels the lapse timer (no RestoreEmpty after Purchased)',
+    setUp: () {
+      stubVerifyPaid();
+      when(() => service.restore()).thenAnswer((_) async {});
+    },
+    build: () => buildBloc(restoreTimeout: const Duration(milliseconds: 30)),
+    act: (bloc) async {
+      bloc.add(const RestorePressed());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      purchaseController.add([_purchase(PurchaseStatus.restored)]);
+    },
+    // Wait well past the 30ms restore window — RestoreEmpty must NOT appear.
+    wait: const Duration(milliseconds: 90),
+    expect: () => [isA<SubscriptionLoading>(), isA<SubscriptionPurchased>()],
   );
 
   test('close() cancels the purchaseStream subscription (no add-after-close)',

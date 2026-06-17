@@ -7,6 +7,7 @@ import 'package:client/core/theme/app_theme.dart';
 import 'package:client/features/call/models/call_session.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/views/no_network_screen.dart';
+import 'package:client/features/paywall/views/paywall_sheet.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
@@ -87,11 +88,12 @@ Scenario _build({
   int attempts = 0,
   String? contentWarning,
   Map<String, String>? briefing,
+  bool isFree = true,
 }) {
   return Scenario(
     id: id,
     title: title,
-    isFree: true,
+    isFree: isFree,
     riveCharacter: 'waiter',
     languageFocus: const <String>[],
     contentWarning: contentWarning,
@@ -620,18 +622,18 @@ void main() {
     Scenario scenario, {
     CallRepository? callRepository,
     CallScreenBuilder? callScreenBuilder,
+    CallUsage usage = _kFreshUsage,
   }) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     when(() => mockBloc.state).thenReturn(
-      ScenariosLoaded(scenarios: [scenario], usage: _kFreshUsage),
+      ScenariosLoaded(scenarios: [scenario], usage: usage),
     );
     whenListen(
       mockBloc,
       const Stream<ScenariosState>.empty(),
-      initialState:
-          ScenariosLoaded(scenarios: [scenario], usage: _kFreshUsage),
+      initialState: ScenariosLoaded(scenarios: [scenario], usage: usage),
     );
     await tester.pumpWidget(
       _harness(
@@ -1248,4 +1250,100 @@ void main() {
       },
     );
   }
+
+  // ---------- Story 8.2 — AC1 paid-scenario call gate (UX-DR16) ----------
+
+  tearDown(() {
+    // The gate opens the real PaywallSheet (no debugBlocBuilder here, mirroring
+    // the existing CALL_LIMIT_REACHED coverage) — keep the seam clean.
+    PaywallSheet.debugBlocBuilder = null;
+  });
+
+  testWidgets(
+    'free user + PAID scenario: call icon shows the paywall, NO initiateCall',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Premium', isFree: false);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      // Paywall sheet shown instead of a call.
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
+
+  testWidgets(
+    'free user + FREE scenario: call icon runs the normal chain (no paywall)',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter'); // isFree default true
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+    },
+  );
+
+  testWidgets(
+    'PAID user + paid scenario: never gated — the call runs',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Premium', isFree: false);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(
+        tester,
+        scenario,
+        callRepository: mockRepo,
+        usage: _kPaidWithCalls,
+      );
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsOneWidget);
+      verify(() => mockRepo.initiateCall(
+          scenarioId: 's1',
+          difficulty: any(named: 'difficulty'),
+        )).called(1);
+    },
+  );
+
+  testWidgets(
+    'browse path: paid scenario briefing is free, but "Pick up" hits the paywall',
+    (tester) async {
+      const briefing = <String, String>{
+        'context': 'You are negotiating.',
+        'expect': 'They push back hard.',
+        'vocabulary': '"Let me think..."',
+      };
+      final scenario =
+          _build(id: 's1', title: 'Premium', isFree: false, briefing: briefing);
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(tester, scenario, callRepository: mockRepo);
+
+      // Card tap opens the briefing (browsing a paid scenario stays free).
+      await tester.tap(find.text('Premium'));
+      await tester.pumpAndSettle();
+      expect(find.text('BRIEFING_STUB:s1'), findsOneWidget);
+      verifyNoPost(mockRepo);
+
+      // Confirming (the call action) converges on _startCall → the paywall.
+      await tester.tap(find.text('BRIEFING_CONFIRM'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
 }

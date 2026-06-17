@@ -6,16 +6,28 @@
 
 import 'dart:async';
 
+import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/api/api_exception.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/debrief/views/debrief_screen.dart';
+import 'package:client/features/paywall/views/paywall_sheet.dart';
+import 'package:client/features/subscription/bloc/subscription_bloc.dart';
+import 'package:client/features/subscription/bloc/subscription_event.dart';
+import 'package:client/features/subscription/bloc/subscription_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Story 8.2 (FR29) — drives the paywall's bloc through the test seam so the
+/// auto-presented sheet never touches the real store plugin.
+class MockSubscriptionBloc
+    extends MockBloc<SubscriptionEvent, SubscriptionState>
+    implements SubscriptionBloc {}
 
 const String kAboutText =
     'The character ended the call because the conversation included '
@@ -727,5 +739,53 @@ void main() {
       await pumpScreen(tester, buildScreen(payload: fullPayload()));
       expect(tester.getSize(find.byType(IconButton)), const Size(44, 44));
     });
+  });
+
+  group('Story 8.2 — FR29 paywall on load (AC3)', () {
+    setUp(() {
+      FlutterSecureStorage.setMockInitialValues({});
+      final paywallBloc = MockSubscriptionBloc();
+      whenListen(
+        paywallBloc,
+        const Stream<SubscriptionState>.empty(),
+        initialState: const SubscriptionInitial(),
+      );
+      PaywallSheet.debugBlocBuilder = () => paywallBloc;
+    });
+
+    tearDown(() => PaywallSheet.debugBlocBuilder = null);
+
+    testWidgets(
+      'presentPaywallOnLoad: true auto-presents the paywall over the debrief',
+      (tester) async {
+        await pumpScreen(
+          tester,
+          DebriefScreen(
+            payload: fullPayload(),
+            callId: 7,
+            callRepository: repository,
+            presentPaywallOnLoad: true,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // The paywall is shown…
+        expect(find.byType(BottomSheet), findsOneWidget);
+        expect(find.text('Speak English for real'), findsOneWidget);
+        // …with the debrief still rendered behind the scrim.
+        expect(find.text('Survival Rate'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'presentPaywallOnLoad: false (default) does NOT present the paywall',
+      (tester) async {
+        await pumpScreen(tester, buildScreen(payload: fullPayload()));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(BottomSheet), findsNothing);
+        expect(find.text('Speak English for real'), findsNothing);
+      },
+    );
   });
 }

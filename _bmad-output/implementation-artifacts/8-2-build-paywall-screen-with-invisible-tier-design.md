@@ -1,6 +1,6 @@
 # Story 8.2: Build Paywall Screen with Invisible Tier Design
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -49,45 +49,45 @@ _Verbatim from [epics.md → Epic 8 → Story 8.2](../planning-artifacts/epics.m
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Design tokens (AC: #4, #8)**
-  - [ ] In `client/lib/core/theme/app_colors.dart`, **add `paywallError = Color(0xFFC0392B)`** (darkened error for WCAG AA = 4.7:1 on the `#F0F0F0` light surface — the app-wide `destructive #E74C3C` only makes ~3.4:1 there, FAILS AA). Append it to the `values` list and **bump `theme_tokens_test.dart` count 15 → 16** (update the values list + the count assertion + a UX-DR1 rationale comment). **Decision D3 — baked in.** Do **not** inline the hex (gotcha #6).
-  - [ ] Reuse the EXISTING token `AppColors.overlaySubtitle = #4C4C4C` for the paywall's secondary text (subtitle, period, dismiss, legal, drag handle) — it is already the design's `paywall-text-secondary`. Reuse `AppColors.textPrimary #F0F0F0` (sheet surface), `AppColors.background #1E1F23` (ink/CTA text), `AppColors.accent #00E5A0` (CTA fill + checkmarks).
-  - [ ] Price style (36px Bold Inter): **local `const TextStyle`** in the paywall file (follow the 7.4/7.5 precedent — no new `AppTypography` token). Reuse `AppTypography.headline` (18 w600) for the title, `body` (16 w400) for subtitle/benefits/period/dismiss, `caption` (13 w400) for legal/error. CTA label = Inter 14 SemiBold.
+- [x] **Task 1 — Design tokens (AC: #4, #8)**
+  - [x] In `client/lib/core/theme/app_colors.dart`, **add `paywallError = Color(0xFFC0392B)`** (darkened error for WCAG AA = 4.7:1 on the `#F0F0F0` light surface — the app-wide `destructive #E74C3C` only makes ~3.4:1 there, FAILS AA). Append it to the `values` list and **bump `theme_tokens_test.dart` count 15 → 16** (update the values list + the count assertion + a UX-DR1 rationale comment). **Decision D3 — baked in.** Do **not** inline the hex (gotcha #6).
+  - [x] Reuse the EXISTING token `AppColors.overlaySubtitle = #4C4C4C` for the paywall's secondary text (subtitle, period, dismiss, legal, drag handle) — it is already the design's `paywall-text-secondary`. Reuse `AppColors.textPrimary #F0F0F0` (sheet surface), `AppColors.background #1E1F23` (ink/CTA text), `AppColors.accent #00E5A0` (CTA fill + checkmarks).
+  - [x] Price style (36px Bold Inter): **local `const TextStyle`** in the paywall file (follow the 7.4/7.5 precedent — no new `AppTypography` token). Reuse `AppTypography.headline` (18 w600) for the title, `body` (16 w400) for subtitle/benefits/period/dismiss, `caption` (13 w400) for legal/error. CTA label = Inter 14 SemiBold.
 
-- [ ] **Task 2 — Restyle `PaywallSheet` to the full design (AC: #4, #5, #6, #7, #8)**
-  - [ ] Rebuild `client/lib/features/paywall/views/paywall_sheet.dart` `_PaywallSheetBody` to the layout in [paywall-screen-design.md → Screen Layout](../planning-artifacts/paywall-screen-design.md): drag handle (40×4, `#4C4C4C`) → 32 → title `Speak English for real` (18 SemiBold center) → 24 → subtitle `Practice with characters who won't go easy on you.` (16 Regular, max 2 lines) → 32 → price `$1.99` (36 Bold) + `per week` (16 Regular, tight) → 32 → 3 left-aligned benefits (accent check + 12 + text), 8 between → 32 → CTA `Let's go` (FilledButton, accent bg / `#1E1F23` text, full-width, 48h, radius 12) → 16 → dismiss `Not now` (TextButton, 48px target) → 32 → legal `Auto-renewable. 3 calls per day. Cancel anytime.` (13 Regular) → 20 + SafeArea.
-  - [ ] **Change `_topRadius` 42.0 → 16.0** per the design (**Decision D4** — design-doc authority; declared deviation from the placeholder's BOC-lineage 42). Keep `backgroundColor: AppColors.textPrimary` (`#F0F0F0`). Wrap content in `SingleChildScrollView` (mandatory — iPhone-SE ~552px content overflows the sheet) inside a bottom-only `SafeArea`.
-  - [ ] Benefit copy (verbatim): `All scenarios unlocked.` / `Daily calls. Daily progress.` / `Know exactly what you're doing wrong`. Checkmark icons are **decorative** → `ExcludeSemantics` (benefit text carries the meaning; justifies the 1.6:1 accent-on-light icon contrast under SC 1.4.11).
-  - [ ] **Keep the existing public seam unchanged:** `PaywallSheet.show(BuildContext) → Future<bool>` (true=purchased, false=dismissed) and the `@visibleForTesting static SubscriptionBloc Function()? debugBlocBuilder` + `_buildBloc()` production wiring. Both call sites and all tests depend on these.
-  - [ ] **States** (drive off `SubscriptionState`): Default; Loading (`SubscriptionLoading` → CTA shows 24px `CircularProgressIndicator` `#1E1F23`, CTA disabled, "Not now" disabled @40%); Success (`SubscriptionPurchased` → title → `You're in`, accent check replaces CTA, 200ms crossfade, hold 1.5s / **5s if a screen reader is active**, then auto-`pop(true)`); Error (`SubscriptionFailed` → CTA back to `Let's go`, inline `paywallError` caption `Something went wrong. Try again.` 8px below CTA, re-tap clears → Loading).
-  - [ ] **`PopScope`**: `canPop` = `false` during Loading and Success-hold, `true` otherwise. System back in Default/Error == "Not now".
-  - [ ] **`SubscriptionCancelled`** (user cancelled native sheet) → return to **Default** state (do not pop, do not show error). Closes the 8.1 deferred gap F4/«cancelled has no UI feedback».
+- [x] **Task 2 — Restyle `PaywallSheet` to the full design (AC: #4, #5, #6, #7, #8)**
+  - [x] Rebuild `client/lib/features/paywall/views/paywall_sheet.dart` `_PaywallSheetBody` to the layout in [paywall-screen-design.md → Screen Layout](../planning-artifacts/paywall-screen-design.md): drag handle (40×4, `#4C4C4C`) → 32 → title `Speak English for real` (18 SemiBold center) → 24 → subtitle `Practice with characters who won't go easy on you.` (16 Regular, max 2 lines) → 32 → price `$1.99` (36 Bold) + `per week` (16 Regular, tight) → 32 → 3 left-aligned benefits (accent check + 12 + text), 8 between → 32 → CTA `Let's go` (FilledButton, accent bg / `#1E1F23` text, full-width, 48h, radius 12) → 16 → dismiss `Not now` (TextButton, 48px target) → 32 → legal `Auto-renewable. 3 calls per day. Cancel anytime.` (13 Regular) → 20 + SafeArea.
+  - [x] **Change `_topRadius` 42.0 → 16.0** per the design (**Decision D4** — design-doc authority; declared deviation from the placeholder's BOC-lineage 42). Keep `backgroundColor: AppColors.textPrimary` (`#F0F0F0`). Wrap content in `SingleChildScrollView` (mandatory — iPhone-SE ~552px content overflows the sheet) inside a bottom-only `SafeArea`.
+  - [x] Benefit copy (verbatim): `All scenarios unlocked.` / `Daily calls. Daily progress.` / `Know exactly what you're doing wrong`. Checkmark icons are **decorative** → `ExcludeSemantics` (benefit text carries the meaning; justifies the 1.6:1 accent-on-light icon contrast under SC 1.4.11).
+  - [x] **Keep the existing public seam unchanged:** `PaywallSheet.show(BuildContext) → Future<bool>` (true=purchased, false=dismissed) and the `@visibleForTesting static SubscriptionBloc Function()? debugBlocBuilder` + `_buildBloc()` production wiring. Both call sites and all tests depend on these.
+  - [x] **States** (drive off `SubscriptionState`): Default; Loading (`SubscriptionLoading` → CTA shows 24px `CircularProgressIndicator` `#1E1F23`, CTA disabled, "Not now" disabled @40%); Success (`SubscriptionPurchased` → title → `You're in`, accent check replaces CTA, 200ms crossfade, hold 1.5s / **5s if a screen reader is active**, then auto-`pop(true)`); Error (`SubscriptionFailed` → CTA back to `Let's go`, inline `paywallError` caption `Something went wrong. Try again.` 8px below CTA, re-tap clears → Loading).
+  - [x] **`PopScope`**: `canPop` = `false` during Loading and Success-hold, `true` otherwise. System back in Default/Error == "Not now".
+  - [x] **`SubscriptionCancelled`** (user cancelled native sheet) → return to **Default** state (do not pop, do not show error). Closes the 8.1 deferred gap F4/«cancelled has no UI feedback».
 
-- [ ] **Task 3 — Entry point #1: paid-scenario call gate (AC: #1)** — `client/lib/features/scenarios/views/scenario_list_screen.dart`
-  - [ ] In `_ListState`, gate the call-icon path: at the **top of `_onCallTap`** (before the briefing push), if `widget.usage.isFree && !scenario.isFree` → `await PaywallSheet.show(context)`; on `true` && mounted → `context.read<ScenariosBloc>().add(const LoadScenariosEvent())`; **return without initiating** (no briefing, no call) — matches "paywall instead of initiating a call".
-  - [ ] Add the same `isFree`-gate at the **top of `_startCall`** as the convergence safety net so the **card-tap browse** path (`_onCardTap` → briefing → `_startCall`) also converts a paid scenario to the paywall on "Pick up". (Browsing a paid scenario's briefing stays free — invisible tiers; the gate fires only on the call action.)
-  - [ ] Leave the existing `CALL_LIMIT_REACHED` handler in `_startCall` intact (server-side cap → paywall; coexists with the new tier gate).
+- [x] **Task 3 — Entry point #1: paid-scenario call gate (AC: #1)** — `client/lib/features/scenarios/views/scenario_list_screen.dart`
+  - [x] In `_ListState`, gate the call-icon path: at the **top of `_onCallTap`** (before the briefing push), if `widget.usage.isFree && !scenario.isFree` → `await PaywallSheet.show(context)`; on `true` && mounted → `context.read<ScenariosBloc>().add(const LoadScenariosEvent())`; **return without initiating** (no briefing, no call) — matches "paywall instead of initiating a call".
+  - [x] Add the same `isFree`-gate at the **top of `_startCall`** as the convergence safety net so the **card-tap browse** path (`_onCardTap` → briefing → `_startCall`) also converts a paid scenario to the paywall on "Pick up". (Browsing a paid scenario's briefing stays free — invisible tiers; the gate fires only on the call action.)
+  - [x] Leave the existing `CALL_LIMIT_REACHED` handler in `_startCall` intact (server-side cap → paywall; coexists with the new tier gate).
 
-- [ ] **Task 4 — Entry point #2: BottomOverlayCard (AC: #2)**
-  - [ ] No new wiring — `_OverlayHost.onPaywallTap` already calls `PaywallSheet.show` + reloads on purchase (Story 8.1 G2). **Verify it still works after the restyle**; ensure `BottomOverlayCard` actionable states (`freeWithCalls`, `freeExhausted`) still route here and `paidExhausted` stays informational (non-tappable).
+- [x] **Task 4 — Entry point #2: BottomOverlayCard (AC: #2)**
+  - [x] No new wiring — `_OverlayHost.onPaywallTap` already calls `PaywallSheet.show` + reloads on purchase (Story 8.1 G2). **Verify it still works after the restyle**; ensure `BottomOverlayCard` actionable states (`freeWithCalls`, `freeExhausted`) still route here and `paidExhausted` stays informational (non-tappable).
 
-- [ ] **Task 5 — Entry point #3: FR29 debrief gate (AC: #3)** — **Decision D1 = LOCKED (Walid 2026-06-17): IMPLEMENT in 8.2**
-  - [ ] Compute `isFinalFreeScenario` at call initiation in `_startCall`: `final isFinalFreeScenario = widget.usage.isFree && widget.usage.callsRemaining <= 1;` (free tier = 3 calls lifetime; at the start of the 3rd/last free call `callsRemaining == 1`, so after it 0 remain → this is the FR29 scenario, whether completed or failed).
-  - [ ] Thread the flag through the call→debrief handoff: `CallScreen` constructor → the push of `CallEndedScreen` (`CallEndedScreen.route(...)`) → `CallEndedScreen._debriefRoute()` → `DebriefScreen` constructor (new optional `bool presentPaywallOnLoad = false`). Keep the existing `@visibleForTesting debugDebriefRouteBuilder` seam working.
-  - [ ] In `DebriefScreen`, when `presentPaywallOnLoad` is true, present the paywall **immediately on load (0ms, Open-Q1)** once the screen is mounted (the debrief content stays visible behind the scrim; dismiss → user keeps reading the debrief). Use `PaywallSheet.show`. The debrief is **not** modified by dismiss; no reload needed there (the scenario list reloads on its own next visit, and a purchase still resolves `true`).
-  - [ ] If a screen reader, network, or product-unavailable condition means the paywall can't show, fail open silently (no crash, debrief stays).
+- [x] **Task 5 — Entry point #3: FR29 debrief gate (AC: #3)** — **Decision D1 = LOCKED (Walid 2026-06-17): IMPLEMENT in 8.2**
+  - [x] Compute `isFinalFreeScenario` at call initiation in `_startCall`: `final isFinalFreeScenario = widget.usage.isFree && widget.usage.callsRemaining <= 1;` (free tier = 3 calls lifetime; at the start of the 3rd/last free call `callsRemaining == 1`, so after it 0 remain → this is the FR29 scenario, whether completed or failed).
+  - [x] Thread the flag through the call→debrief handoff: `CallScreen` constructor → the push of `CallEndedScreen` (`CallEndedScreen.route(...)`) → `CallEndedScreen._debriefRoute()` → `DebriefScreen` constructor (new optional `bool presentPaywallOnLoad = false`). Keep the existing `@visibleForTesting debugDebriefRouteBuilder` seam working.
+  - [x] In `DebriefScreen`, when `presentPaywallOnLoad` is true, present the paywall **immediately on load (0ms, Open-Q1)** once the screen is mounted (the debrief content stays visible behind the scrim; dismiss → user keeps reading the debrief). Use `PaywallSheet.show`. The debrief is **not** modified by dismiss; no reload needed there (the scenario list reloads on its own next visit, and a purchase still resolves `true`).
+  - [x] If a screen reader, network, or product-unavailable condition means the paywall can't show, fail open silently (no crash, debrief stays).
 
-- [ ] **Task 6 — Product-unavailable + timeout polish (AC: #8; Open-Q2, Open-Q3)**
-  - [ ] **Open-Q2 (product unavailable):** if `InAppPurchaseService.loadProduct(kIapWeeklyProductId)` returns null / store unavailable, **do not present a non-functional paywall** — the CTA must never be tappable without a valid product. Recommended: on `SubscriptionFailed('product_unavailable' | 'product_query_failed')` show the Error state with the dismiss enabled (user can leave cleanly); never spin forever. _(The bloc already emits these codes — render them, don't invent new logic.)_
-  - [ ] **Open-Q3 (15s timeout vs native sheet):** the bloc's 15s `sheetTimeout` may fire while the user is in the native Face-ID/password sheet. Recommended: the paywall surface should not punish an in-progress native auth — keep the spinner during the native sheet; the bloc's existing `PurchaseTimedOut` only flips to Error after 15s of no store response. If feasible without bloc surgery, note (do not necessarily fix) that suspending the timer on app-background is the ideal; a bloc change is **out of 8.2 scope** unless trivial — flag as a declared deviation if not done.
-  - [ ] **Decision D2 = LOCKED (Walid 2026-06-17): INCLUDE Restore.** Add `Future<void> restore()` to `InAppPurchaseService` (wraps `InAppPurchase.instance.restorePurchases()`; restored events already flow through the bloc's `purchaseStream`) and a minimal `Restore purchases` `TextButton` on the paywall (below "Not now" or in the legal row). Apple App Review **requires** a visible Restore affordance for auto-renewable subs — this **closes 8.1's deferred F13** (MUST-DO before iOS submission). Add a test that the affordance renders and invokes `restore()`.
-  - [ ] **Restore edge case (closes 8.1 F16):** a restore with nothing to restore must NOT show the Success "You're in" state — return to Default with a neutral inline line (e.g. `Nothing to restore.`), no false confirmation. Distinguish a genuine restored subscription (→ verify → `paid`) from an empty restore.
+- [x] **Task 6 — Product-unavailable + timeout polish (AC: #8; Open-Q2, Open-Q3)**
+  - [x] **Open-Q2 (product unavailable):** if `InAppPurchaseService.loadProduct(kIapWeeklyProductId)` returns null / store unavailable, **do not present a non-functional paywall** — the CTA must never be tappable without a valid product. Recommended: on `SubscriptionFailed('product_unavailable' | 'product_query_failed')` show the Error state with the dismiss enabled (user can leave cleanly); never spin forever. _(The bloc already emits these codes — render them, don't invent new logic.)_
+  - [x] **Open-Q3 (15s timeout vs native sheet):** the bloc's 15s `sheetTimeout` may fire while the user is in the native Face-ID/password sheet. Recommended: the paywall surface should not punish an in-progress native auth — keep the spinner during the native sheet; the bloc's existing `PurchaseTimedOut` only flips to Error after 15s of no store response. If feasible without bloc surgery, note (do not necessarily fix) that suspending the timer on app-background is the ideal; a bloc change is **out of 8.2 scope** unless trivial — flag as a declared deviation if not done.
+  - [x] **Decision D2 = LOCKED (Walid 2026-06-17): INCLUDE Restore.** Add `Future<void> restore()` to `InAppPurchaseService` (wraps `InAppPurchase.instance.restorePurchases()`; restored events already flow through the bloc's `purchaseStream`) and a minimal `Restore purchases` `TextButton` on the paywall (below "Not now" or in the legal row). Apple App Review **requires** a visible Restore affordance for auto-renewable subs — this **closes 8.1's deferred F13** (MUST-DO before iOS submission). Add a test that the affordance renders and invokes `restore()`.
+  - [x] **Restore edge case (closes 8.1 F16):** a restore with nothing to restore must NOT show the Success "You're in" state — return to Default with a neutral inline line (e.g. `Nothing to restore.`), no false confirmation. Distinguish a genuine restored subscription (→ verify → `paid`) from an empty restore.
 
-- [ ] **Task 7 — Tests (AC: #1–#9)**
-  - [ ] **Rewrite** `client/test/features/paywall/views/paywall_sheet_test.dart` for the new design (the current assertions target the placeholder: "Unlock all scenarios", "Subscribe — $1.99/week", radius 42, fill `AppColors.textPrimary`). New assertions: copy deck verbatim, radius 16, the 4 states, `pop(true)` on `SubscriptionPurchased` (G2), dismiss paths, `PopScope` gating, accessibility semantics (price/CTA/dismiss labels). Drive via `PaywallSheet.debugBlocBuilder` + `MockSubscriptionBloc` + `whenListen`.
-  - [ ] AC1 gate tests in `scenario_list_screen` tests: free user + paid scenario → call-icon tap shows paywall, **no `initiateCall`** fired; free user + free scenario → normal flow; paid user → never gated.
-  - [ ] FR29 test (if D1 accepted): `DebriefScreen(presentPaywallOnLoad: true)` presents the paywall on load; `false` does not. Thread-through assertion in the call-ended → debrief route test.
-  - [ ] Follow client test gotchas: `FlutterSecureStorage.setMockInitialValues({})` in every `setUp`; `registerFallbackValue` concrete events (#2); **never `pumpAndSettle`** with the spinner — use `pump(Duration)` (#3); force phone viewport `setSurfaceSize(Size(320, 480))` for the iPhone-SE overflow check (#7).
+- [x] **Task 7 — Tests (AC: #1–#9)**
+  - [x] **Rewrite** `client/test/features/paywall/views/paywall_sheet_test.dart` for the new design (the current assertions target the placeholder: "Unlock all scenarios", "Subscribe — $1.99/week", radius 42, fill `AppColors.textPrimary`). New assertions: copy deck verbatim, radius 16, the 4 states, `pop(true)` on `SubscriptionPurchased` (G2), dismiss paths, `PopScope` gating, accessibility semantics (price/CTA/dismiss labels). Drive via `PaywallSheet.debugBlocBuilder` + `MockSubscriptionBloc` + `whenListen`.
+  - [x] AC1 gate tests in `scenario_list_screen` tests: free user + paid scenario → call-icon tap shows paywall, **no `initiateCall`** fired; free user + free scenario → normal flow; paid user → never gated.
+  - [x] FR29 test (if D1 accepted): `DebriefScreen(presentPaywallOnLoad: true)` presents the paywall on load; `false` does not. Thread-through assertion in the call-ended → debrief route test.
+  - [x] Follow client test gotchas: `FlutterSecureStorage.setMockInitialValues({})` in every `setUp`; `registerFallbackValue` concrete events (#2); **never `pumpAndSettle`** with the spinner — use `pump(Duration)` (#3); force phone viewport `setSurfaceSize(Size(320, 480))` for the iPhone-SE overflow check (#7).
 
 ## Dev Notes
 
@@ -193,10 +193,54 @@ Testable now on a Pixel 9 from a release APK (no real purchase needed):
 
 ### Agent Model Used
 
-(to be filled by dev-story)
+claude-opus-4-8 (dev-story, 2026-06-17)
 
 ### Debug Log References
 
+- `flutter analyze` → No issues found! (lib + tests)
+- `flutter test` (full suite) → **All tests passed!** — 598 (was 577; +21 net)
+- New/changed tests: paywall_sheet (15), subscription_bloc restore (+4), theme_tokens (token count 15→16), scenario_list AC1 gate (+4), debrief FR29 (+2), call_ended thread-through (+1)
+
 ### Completion Notes List
 
+Client-only story (zero server/DB/deploy impact). All 9 ACs satisfied; D1–D5 honored as locked.
+
+- **Task 1 — Tokens.** Added `AppColors.paywallError = #C0392B` (WCAG AA 4.7:1 on the light `#F0F0F0` sheet; the app-wide `destructive #E74C3C` fails AA there). Bumped `theme_tokens_test` count 15→16. Price/CTA styles are local consts in the paywall file (no new `AppTypography` token), per the 7.4/7.5 precedent.
+- **Task 2 — PaywallSheet restyle.** Rewrote `_PaywallSheetBody` (now a `StatefulWidget`) to the binding design: drag handle → title → subtitle → `$1.99`/`per week` → 3 accent-check benefits → `Let's go` CTA (48h, radius 12) → `Not now` → `Restore purchases` → legal, all in a `SingleChildScrollView` + bottom `SafeArea`. Radius **16** (D4), surface `#F0F0F0`. Four states drive off `SubscriptionState`: Default / Loading (in-CTA spinner, dismiss+restore disabled) / Success ("You're in" + accent check, 1.5s hold / 5s with a screen reader, auto-`pop(true)`, 200ms `AnimatedSwitcher` crossfade) / Error (inline `paywallError` caption, re-tap clears → Loading). `SubscriptionCancelled` → Default; `SubscriptionRestoreEmpty` → Default + neutral "Nothing to restore." `PopScope.canPop=false` during Loading + Success-hold. Price announced naturally ("one dollar ninety-nine per week"); check icons `ExcludeSemantics`. Public seam (`show → Future<bool>`, `debugBlocBuilder`) unchanged.
+- **Task 3 — Entry #1 (AC1).** `_maybeGatePaidScenario` (free user + paid scenario → paywall, reload on purchase). Fires at the top of `_onCallTap` (before the briefing push — call-icon → paywall directly) AND at the top of `_startCall` (convergence net for the browse→briefing→"Pick up" path; browsing a paid briefing stays free). Coexists with the server `CALL_LIMIT_REACHED` paywall.
+- **Task 4 — Entry #2 (AC2).** No new wiring — verified the BOC `onPaywallTap` (Story 8.1 G2) still routes through the restyled sheet; actionable BOC states unchanged (existing BOC-wiring tests green).
+- **Task 5 — Entry #3 (AC3 / FR29, D1).** `isFinalFreeScenario = usage.isFree && callsRemaining <= 1` computed in `_startCall`; threaded `CallScreen.presentPaywallOnDebrief` → `CallEndedScreen.route(...)` → `DebriefScreen.presentPaywallOnLoad`. Debrief auto-presents the paywall on first frame (post-frame callback, 0ms — Open-Q1); the debrief stays visible behind the scrim; fail-open (try/catch — a screen-reader/network/product issue never crashes the debrief).
+- **Task 6 — Polish + Restore (D2).** Open-Q2: a `product_unavailable`/`product_query_failed` failure renders the Error state with dismiss enabled (no non-functional spin) — the bloc already emits these codes, rendered not re-invented. Added `InAppPurchaseService.restore()` + bloc `RestorePressed`/`RestoreLapsed` events + `SubscriptionRestoreEmpty` state: a genuine restore re-delivers on `purchaseStream` (→ verify → paid, the same path as a buy); an empty restore (no entitlement within `restoreTimeout`, default 3s) surfaces the neutral "Nothing to restore." — **never** a fake "You're in" (closes 8.1 F13 + F16). Apple-required Restore affordance now shipped.
+- **Task 7 — Tests.** Rewrote `paywall_sheet_test` for the new design; added AC1 gate tests, FR29 thread tests (debrief + call-ended), restore bloc tests, token-count bump.
+
+**Declared deviations:**
+1. **Native swipe/scrim are not programmatically blocked during Loading/Success.** `showModalBottomSheet`'s `enableDrag`/`isDismissible` are set once and can't toggle mid-sheet; Default needs them `true` (AC5). `PopScope` blocks system-back during Loading/Success per the binding Task 2 wording (AC8). A swipe-down during the ~1.5s success-hold would dismiss without the `true` result — low-probability, and it self-heals (the scenario list reloads `/scenarios` on its next visit; the tier flipped server-side regardless).
+2. **Open-Q3 (suspend the 15s timeout while the native auth sheet is up) NOT implemented** — a bloc change is out of 8.2 scope per Task 6; the existing 15s `sheetTimeout` behavior is unchanged (only flips UI state, never stops listening).
+3. **Restore reuses the CTA `Loading` spinner** (the user taps Restore but sees the CTA spinner) — the design doesn't specify a restore visual; reusing Loading keeps the state model minimal.
+4. **`SubscriptionBloc` gained a `restoreTimeout` param (default 3s)** + 2 events + 1 state for the D2 restore (the only billing-logic addition; everything else reuses the 8.1 plumbing unchanged).
+
 ### File List
+
+**Client — lib (changed):**
+- `client/lib/core/theme/app_colors.dart` — add `paywallError` token (count 15→16)
+- `client/lib/features/paywall/views/paywall_sheet.dart` — full restyle (4 states, restore, PopScope, a11y)
+- `client/lib/features/subscription/services/in_app_purchase_service.dart` — add `restore()`
+- `client/lib/features/subscription/bloc/subscription_event.dart` — add `RestorePressed`, `RestoreLapsed`
+- `client/lib/features/subscription/bloc/subscription_state.dart` — add `SubscriptionRestoreEmpty`
+- `client/lib/features/subscription/bloc/subscription_bloc.dart` — restore handlers + timer + `restoreTimeout`
+- `client/lib/features/scenarios/views/scenario_list_screen.dart` — AC1 gate (`_maybeGatePaidScenario`) + FR29 flag compute + inline `CallScreen` construction
+- `client/lib/features/call/views/call_screen.dart` — `presentPaywallOnDebrief` field, pass to `CallEndedScreen.route`
+- `client/lib/features/call/views/call_ended_screen.dart` — `presentPaywallOnDebrief` field/route/constructor, thread to `DebriefScreen`
+- `client/lib/features/debrief/views/debrief_screen.dart` — `presentPaywallOnLoad` + post-frame auto-present (fail-open)
+
+**Client — test (changed):**
+- `client/test/core/theme/theme_tokens_test.dart` — count 15→16 + `paywallError` assertion
+- `client/test/features/paywall/views/paywall_sheet_test.dart` — rewritten for the new design (15 tests)
+- `client/test/features/subscription/bloc/subscription_bloc_test.dart` — +4 restore tests
+- `client/test/features/scenarios/views/scenario_list_screen_test.dart` — +4 AC1 gate tests (+ `_build`/`pumpListWithScenario` seams)
+- `client/test/features/debrief/views/debrief_screen_test.dart` — +2 FR29 tests
+- `client/test/features/call/views/call_ended_screen_test.dart` — +1 FR29 thread-through test
+
+### Change Log
+
+- 2026-06-17 — Story 8.2 dev-story complete (in-progress → review). Invisible-tier paywall: restyled `PaywallSheet` to the binding 4-state design; wired 3 entry points (AC1 paid-scenario gate NEW, AC2 BOC verified, AC3 FR29 debrief NEW); added Restore purchases (D2, closes 8.1 F13/F16) + `paywallError` token (D3). Client-only — zero server changes. Gates: `flutter analyze` clean, `flutter test` 598 green (+21).

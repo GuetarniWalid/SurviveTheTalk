@@ -29,6 +29,7 @@ import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_toast.dart';
 import '../../call/repositories/call_repository.dart';
+import '../../paywall/views/paywall_sheet.dart';
 import '../models/debrief.dart';
 
 // COPY LINT (Story 7.5 debrief v2 — clinical charter; inherits the 7.4
@@ -224,6 +225,11 @@ class DebriefScreen extends StatefulWidget {
 
   final CallRepository callRepository;
 
+  /// Story 8.2 (AC3 / FR29) — when true, auto-present the paywall on load (the
+  /// user's 3rd/last free scenario). The debrief content stays visible behind
+  /// the scrim; dismissing returns the user to the debrief unchanged.
+  final bool presentPaywallOnLoad;
+
   final Duration pollInterval;
   final Duration pollBudget;
 
@@ -232,6 +238,7 @@ class DebriefScreen extends StatefulWidget {
     required this.payload,
     required this.callId,
     required this.callRepository,
+    this.presentPaywallOnLoad = false,
     this.pollInterval = kPollInterval,
     this.pollBudget = kPollBudget,
   });
@@ -261,6 +268,27 @@ class _DebriefScreenState extends State<DebriefScreen> {
       unawaited(_attemptFetch());
     } else {
       _phase = _DebriefPhase.unavailable;
+    }
+    // Story 8.2 (AC3 / FR29) — auto-present the paywall at the emotional peak
+    // (0ms, design Open-Q1) once the first frame is mounted. The debrief stays
+    // visible behind the scrim; dismissing returns the user to it unchanged.
+    if (widget.presentPaywallOnLoad) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _presentPaywall();
+      });
+    }
+  }
+
+  /// Fail-open (AC5/Task 5): a screen-reader / network / product-unavailable
+  /// condition that prevents the sheet from showing must never crash — the
+  /// debrief simply stays. A purchase resolves `true` but the debrief needs no
+  /// reload (the scenario list refreshes on its own next visit).
+  Future<void> _presentPaywall() async {
+    try {
+      await PaywallSheet.show(context);
+      // ignore: avoid_catches_without_on_clauses
+    } catch (_) {
+      // Swallow — never let a paywall failure crash the debrief (Task 5).
     }
   }
 

@@ -69,7 +69,15 @@ class AppColors {
   // gate finds the existing grey reads fine as the track.
   static const Color gaugeTrack = Color(0xFF2A2B30);
 
-  /// Ordered list used by theme_tokens_test.dart to assert count == 15.
+  // Paywall error caption (Story 8.2, paywall-screen-design.md — UX-DR1
+  // amendment). The paywall sheet is a LIGHT surface (#F0F0F0); the app-wide
+  // `destructive #E74C3C` only makes ~3.4:1 there and FAILS WCAG AA for normal
+  // text. This darkened red yields 4.7:1 on #F0F0F0 (passes AA at 13px caption).
+  // Used ONLY for the purchase-failure caption on the light paywall sheet — the
+  // dark-surface destructive token is unchanged.
+  static const Color paywallError = Color(0xFFC0392B);
+
+  /// Ordered list used by theme_tokens_test.dart to assert count == 16.
   static const List<Color> values = <Color>[
     background,
     avatarBg,
@@ -86,5 +94,6 @@ class AppColors {
     errorBody,
     hairline,
     gaugeTrack,
+    paywallError,
   ];
 }

@@ -29,13 +29,10 @@ import 'widgets/scenario_card.dart';
 /// Builds the in-call surface to push from `_onCallTap`. Defaults to
 /// `CallScreen.new`. Tests pass a lightweight stub to avoid constructing a
 /// real LiveKit `Room` (which spawns background timers that leak across
-/// test boundaries).
+/// test boundaries). The production path (no override) constructs `CallScreen`
+/// inline so it can thread the FR29 `presentPaywallOnDebrief` flag (Story 8.2).
 typedef CallScreenBuilder =
     Widget Function(Scenario scenario, CallSession session);
-
-Widget _defaultCallScreenBuilder(Scenario scenario, CallSession session) {
-  return CallScreen(scenario: scenario, callSession: session);
-}
 
 class ScenarioListScreen extends StatelessWidget {
   /// Optional injection seam for tests. Production uses
@@ -268,6 +265,11 @@ class _ListState extends State<_List> {
     if (_initiating) return;
     setState(() => _initiating = true);
     try {
+      // Story 8.2 (AC1, UX-DR16) — the paid-scenario gate fires BEFORE the
+      // briefing push: tapping the call icon on a paid scenario (as a free
+      // user) opens the paywall directly instead of initiating a call.
+      if (await _maybeGatePaidScenario(context, scenario)) return;
+      if (!context.mounted) return;
       final needsBriefing = scenario.attempts == 0 &&
           !_initiatedThisSession.contains(scenario.id) &&
           scenario.hasBriefingContent;
@@ -306,11 +308,27 @@ class _ListState extends State<_List> {
   // No `_initiating` logic here — the flag is always already held by the
   // caller (`_onCallTap` / `_onCardTap`).
   Future<void> _startCall(BuildContext context, Scenario scenario) async {
+    // Story 8.2 (AC1) — convergence safety net: the browse→briefing→"Pick up"
+    // path also lands here, so a paid scenario converts to the paywall on the
+    // call action (browsing its briefing stays free — invisible tiers, the
+    // gate fires only when the user actually tries to start the call).
+    if (await _maybeGatePaidScenario(context, scenario)) return;
+    if (!context.mounted) return;
+
     if (scenario.contentWarning != null) {
       final proceed = await showContentWarningSheet(context, scenario);
       if (!proceed) return;
       if (!context.mounted) return;
     }
+
+    // Story 8.2 (AC3 / FR29) — is this the user's 3rd/last FREE call? Free tier
+    // is 3 calls lifetime; at the start of the last one `callsRemaining == 1`,
+    // so after it 0 remain. Computed at call-init and threaded through the
+    // call→debrief handoff so the paywall auto-presents on the debrief at the
+    // emotional peak. (A paid user never qualifies — `usage.isFree` is false;
+    // a paid scenario was already gated above.)
+    final isFinalFreeScenario =
+        widget.usage.isFree && widget.usage.callsRemaining <= 1;
 
     try {
       final session = await _callRepository.initiateCall(
@@ -323,11 +341,16 @@ class _ListState extends State<_List> {
       // server-side `attempts` is now stale until the next list load.
       _initiatedThisSession.add(scenario.id);
       if (!context.mounted) return;
-      final builder =
-          widget.callScreenBuilder ?? _defaultCallScreenBuilder;
+      final callScreenBuilder = widget.callScreenBuilder;
       await Navigator.of(context, rootNavigator: true).push<void>(
         MaterialPageRoute<void>(
-          builder: (_) => builder(scenario, session),
+          builder: (_) => callScreenBuilder != null
+              ? callScreenBuilder(scenario, session)
+              : CallScreen(
+                  scenario: scenario,
+                  callSession: session,
+                  presentPaywallOnDebrief: isFinalFreeScenario,
+                ),
           fullscreenDialog: true,
         ),
       );
@@ -364,6 +387,24 @@ class _ListState extends State<_List> {
           );
       }
     }
+  }
+
+  /// Story 8.2 (AC1, UX-DR16 invisible tiers) — when a FREE user acts on a
+  /// PAID scenario, show the paywall instead of starting a call. Returns true
+  /// when the gate fired (the caller must abort the call flow). On a completed
+  /// purchase the list reloads so the fresh `paid` tier re-flows from
+  /// `/scenarios` (Story 8.1 G2). Coexists with the server-side
+  /// `CALL_LIMIT_REACHED` paywall (cap exhaustion) handled in `_startCall`.
+  Future<bool> _maybeGatePaidScenario(
+    BuildContext context,
+    Scenario scenario,
+  ) async {
+    if (!(widget.usage.isFree && !scenario.isFree)) return false;
+    final purchased = await PaywallSheet.show(context);
+    if (purchased && context.mounted) {
+      context.read<ScenariosBloc>().add(const LoadScenariosEvent());
+    }
+    return true;
   }
 
   void _onReportTap(BuildContext context, Scenario scenario) {

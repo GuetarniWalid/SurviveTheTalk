@@ -7,20 +7,12 @@ import 'package:client/features/paywall/views/paywall_sheet.dart';
 import 'package:client/features/subscription/bloc/subscription_bloc.dart';
 import 'package:client/features/subscription/bloc/subscription_event.dart';
 import 'package:client/features/subscription/bloc/subscription_state.dart';
-import 'package:client/features/subscription/repositories/subscription_repository.dart';
-import 'package:client/features/subscription/services/in_app_purchase_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:mocktail/mocktail.dart';
 
-class MockInAppPurchaseService extends Mock implements InAppPurchaseService {}
-
-class MockSubscriptionRepository extends Mock
-    implements SubscriptionRepository {}
-
-/// Drives the sheet through bloc states directly (code-review 8.1 F23).
+/// Drives the sheet through bloc states directly (code-review 8.1 F23 pattern).
 class MockSubscriptionBloc
     extends MockBloc<SubscriptionEvent, SubscriptionState>
     implements SubscriptionBloc {}
@@ -32,128 +24,343 @@ Widget _harness(GlobalKey<NavigatorState> navigatorKey) => MaterialApp(
 );
 
 void main() {
-  late MockInAppPurchaseService mockService;
-  late MockSubscriptionRepository mockRepository;
+  late MockSubscriptionBloc bloc;
 
   setUp(() {
     FlutterSecureStorage.setMockInitialValues({});
-    mockService = MockInAppPurchaseService();
-    mockRepository = MockSubscriptionRepository();
-    // The bloc subscribes to this in its constructor — keep it inert.
-    when(() => mockService.purchaseStream)
-        .thenAnswer((_) => const Stream<List<PurchaseDetails>>.empty());
-    // Build the sheet's bloc from mocks instead of the real store plugin.
-    PaywallSheet.debugBlocBuilder = () => SubscriptionBloc(
-      repository: mockRepository,
-      iapService: mockService,
-    );
+    bloc = MockSubscriptionBloc();
+    PaywallSheet.debugBlocBuilder = () => bloc;
   });
 
   tearDown(() {
     PaywallSheet.debugBlocBuilder = null;
   });
 
-  testWidgets('PaywallSheet.show renders the minimal subscribe control', (
-    tester,
-  ) async {
-    final navigatorKey = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(navigatorKey));
+  /// Seed the mock bloc with [initial] (no further emissions unless [stream]).
+  void seed(
+    SubscriptionState initial, {
+    Stream<SubscriptionState>? stream,
+  }) {
+    whenListen(
+      bloc,
+      stream ?? const Stream<SubscriptionState>.empty(),
+      initialState: initial,
+    );
+  }
 
-    unawaited(PaywallSheet.show(navigatorKey.currentContext!));
+  Future<void> open(WidgetTester tester, GlobalKey<NavigatorState> key) async {
+    await tester.pumpWidget(_harness(key));
+    unawaited(PaywallSheet.show(key.currentContext!));
+  }
+
+  // ---- Default: the verbatim copy deck (paywall-screen-design.md §2) ----
+
+  testWidgets('Default renders the full copy deck verbatim', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
     await tester.pumpAndSettle();
 
-    expect(find.text('Unlock all scenarios'), findsOneWidget);
-    expect(find.text('Subscribe — \$1.99/week'), findsOneWidget);
+    expect(find.text('Speak English for real'), findsOneWidget);
+    expect(
+      find.text("Practice with characters who won't go easy on you."),
+      findsOneWidget,
+    );
+    expect(find.text('\$1.99'), findsOneWidget);
+    expect(find.text('per week'), findsOneWidget);
+    expect(find.text('All scenarios unlocked.'), findsOneWidget);
+    expect(find.text('Daily calls. Daily progress.'), findsOneWidget);
+    expect(find.text("Know exactly what you're doing wrong"), findsOneWidget);
+    expect(find.text("Let's go"), findsOneWidget);
+    expect(find.text('Not now'), findsOneWidget);
+    expect(find.text('Restore purchases'), findsOneWidget);
+    expect(
+      find.text('Auto-renewable. 3 calls per day. Cancel anytime.'),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('PaywallSheet uses the BOC fill colour and a top-rounded shape', (
+  testWidgets('sheet surface is #F0F0F0 with a 16px top radius (D4)', (
     tester,
   ) async {
-    final navigatorKey = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(navigatorKey));
-
-    unawaited(PaywallSheet.show(navigatorKey.currentContext!));
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
     await tester.pumpAndSettle();
 
+    // Scope to the sheet SURFACE Material (color #F0F0F0) — the CTA's
+    // FilledButton is also a RoundedRectangleBorder Material (radius 12).
     final sheet = tester.widget<Material>(
       find.descendant(
         of: find.byType(BottomSheet),
         matching: find.byWidgetPredicate(
-          (w) => w is Material && w.shape is RoundedRectangleBorder,
+          (w) =>
+              w is Material &&
+              w.color == AppColors.textPrimary &&
+              w.shape is RoundedRectangleBorder,
         ),
       ),
     );
-    expect(sheet.color, AppColors.textPrimary);
     final shape = sheet.shape! as RoundedRectangleBorder;
     final radius = (shape.borderRadius as BorderRadius).topLeft.x;
-    expect(radius, 42.0);
+    expect(radius, 16.0);
   });
 
-  // ---- code-review 8.1 F23 — the bloc-driven UI states ----
+  // ---- State 2: Loading ----
 
-  testWidgets('F23 — SubscriptionLoading shows a spinner + disables the button', (
-    tester,
-  ) async {
-    final bloc = MockSubscriptionBloc();
-    whenListen(
-      bloc,
-      const Stream<SubscriptionState>.empty(),
-      initialState: const SubscriptionLoading(),
-    );
-    PaywallSheet.debugBlocBuilder = () => bloc;
-
-    final navigatorKey = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(navigatorKey));
-    unawaited(PaywallSheet.show(navigatorKey.currentContext!));
-    // Explicit pumps — the spinner is a continuous animation, so pumpAndSettle
-    // would hang (client CLAUDE.md gotcha #3). Pump past the sheet entrance.
+  testWidgets('Loading shows the in-CTA spinner and disables CTA/dismiss/restore'
+      ' + PopScope blocks back', (tester) async {
+    seed(const SubscriptionLoading());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    // Spinner is a continuous animation → explicit pumps (CLAUDE.md #3).
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    final button = tester.widget<FilledButton>(find.byType(FilledButton));
-    expect(button.onPressed, isNull); // disabled while loading
+    final cta = tester.widget<FilledButton>(find.byType(FilledButton));
+    expect(cta.onPressed, isNull);
+    final notNow =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Not now'));
+    expect(notNow.onPressed, isNull);
+    final restore = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, 'Restore purchases'),
+    );
+    expect(restore.onPressed, isNull);
+
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isFalse);
   });
 
-  testWidgets('F23 — SubscriptionFailed shows the error copy', (tester) async {
-    final bloc = MockSubscriptionBloc();
-    whenListen(
-      bloc,
-      const Stream<SubscriptionState>.empty(),
-      initialState: const SubscriptionFailed('verification_failed'),
-    );
-    PaywallSheet.debugBlocBuilder = () => bloc;
+  // ---- State 4: Error ----
 
-    final navigatorKey = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(navigatorKey));
-    unawaited(PaywallSheet.show(navigatorKey.currentContext!));
+  testWidgets('Failed shows the error caption in paywallError; CTA re-enabled', (
+    tester,
+  ) async {
+    seed(const SubscriptionFailed('verification_failed'));
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
     await tester.pumpAndSettle();
 
-    expect(find.text('Something went wrong. Please try again.'), findsOneWidget);
+    final errorFinder = find.text('Something went wrong. Try again.');
+    expect(errorFinder, findsOneWidget);
+    expect(tester.widget<Text>(errorFinder).style?.color, AppColors.paywallError);
+    // CTA is back to "Let's go" and tappable; dismiss stays enabled.
+    expect(find.text("Let's go"), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNotNull,
+    );
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isTrue);
   });
 
-  testWidgets('F23 — SubscriptionPurchased pops the sheet with true (G2 reload contract)',
-      (tester) async {
-    final bloc = MockSubscriptionBloc();
-    whenListen(
-      bloc,
-      Stream<SubscriptionState>.fromIterable([const SubscriptionPurchased()]),
-      initialState: const SubscriptionInitial(),
+  testWidgets('product_unavailable renders the Error state with dismiss enabled'
+      ' (Open-Q2)', (tester) async {
+    seed(const SubscriptionFailed('product_unavailable'));
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Something went wrong. Try again.'), findsOneWidget);
+    final notNow =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Not now'));
+    expect(notNow.onPressed, isNotNull); // user can leave cleanly
+  });
+
+  // ---- State 3: Success ----
+
+  testWidgets('Purchased → "You\'re in", holds, then auto-pops true (G2)', (
+    tester,
+  ) async {
+    seed(
+      const SubscriptionInitial(),
+      stream: Stream<SubscriptionState>.fromIterable(
+        [const SubscriptionPurchased()],
+      ),
     );
-    PaywallSheet.debugBlocBuilder = () => bloc;
-
-    final navigatorKey = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(navigatorKey));
-
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(_harness(key));
     bool? result;
     unawaited(
-      PaywallSheet.show(navigatorKey.currentContext!).then((r) => result = r),
+      PaywallSheet.show(key.currentContext!).then((r) => result = r),
+    );
+    // Sheet entrance + the Purchased emission → the success view appears.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text("You're in"), findsOneWidget);
+    // Let the 200ms AnimatedSwitcher crossfade evict the offer view.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text("Let's go"), findsNothing);
+
+    // Hold (1.5s default) then the slide-down dismiss.
+    await tester.pump(const Duration(milliseconds: 1600));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(result, isTrue);
+    expect(find.byType(BottomSheet), findsNothing);
+  });
+
+  testWidgets('PopScope blocks back during the success hold', (tester) async {
+    seed(
+      const SubscriptionInitial(),
+      stream: Stream<SubscriptionState>.fromIterable(
+        [const SubscriptionPurchased()],
+      ),
+    );
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(_harness(key));
+    unawaited(PaywallSheet.show(key.currentContext!));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isFalse);
+
+    // Drain the success-hold timer so teardown sees no pending timer.
+    await tester.pump(const Duration(milliseconds: 1600));
+    await tester.pump(const Duration(milliseconds: 400));
+  });
+
+  // ---- Cancelled → Default (no error) ----
+
+  testWidgets('Cancelled returns to Default (no error caption)', (tester) async {
+    seed(const SubscriptionCancelled());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    expect(find.text("Let's go"), findsOneWidget);
+    expect(find.text('Something went wrong. Try again.'), findsNothing);
+    expect(find.text("You're in"), findsNothing);
+  });
+
+  // ---- Restore (D2) ----
+
+  testWidgets('tapping "Restore purchases" dispatches RestorePressed', (
+    tester,
+  ) async {
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Restore purchases'));
+    await tester.pump();
+    verify(() => bloc.add(const RestorePressed())).called(1);
+  });
+
+  testWidgets('RestoreEmpty shows a neutral "Nothing to restore." (F16, no fake'
+      ' success)', (tester) async {
+    seed(const SubscriptionRestoreEmpty());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    final line = find.text('Nothing to restore.');
+    expect(line, findsOneWidget);
+    // Neutral (secondary ink), NOT the error red, NOT the success state.
+    expect(
+      tester.widget<Text>(line).style?.color,
+      AppColors.overlaySubtitle,
+    );
+    expect(find.text("You're in"), findsNothing);
+    expect(find.text("Let's go"), findsOneWidget); // offer still present
+  });
+
+  // ---- CTA + dismiss wiring ----
+
+  testWidgets('tapping "Let\'s go" dispatches SubscribePressed', (tester) async {
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text("Let's go"));
+    await tester.pump();
+    verify(() => bloc.add(const SubscribePressed())).called(1);
+  });
+
+  testWidgets('"Not now" pops the sheet with false (clean dismiss, AC5)', (
+    tester,
+  ) async {
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(_harness(key));
+    bool? result;
+    unawaited(
+      PaywallSheet.show(key.currentContext!).then((r) => result = r),
     );
     await tester.pumpAndSettle();
 
-    // The BlocConsumer listener pops(true) on Purchased — the bool the
-    // scenario-list awaits to trigger its /scenarios reload.
-    expect(result, isTrue);
+    await tester.tap(find.text('Not now'));
+    await tester.pumpAndSettle();
+    expect(result, isFalse);
     expect(find.byType(BottomSheet), findsNothing);
+  });
+
+  testWidgets('scrim tap dismisses cleanly with false (AC5)', (tester) async {
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(_harness(key));
+    bool? result;
+    unawaited(
+      PaywallSheet.show(key.currentContext!).then((r) => result = r),
+    );
+    await tester.pumpAndSettle();
+
+    // (20,20) lands on the scrim above the bottom-anchored sheet.
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(result, isFalse);
+    expect(find.byType(BottomSheet), findsNothing);
+  });
+
+  // ---- Accessibility (AC6) ----
+
+  testWidgets('price is announced naturally ("one dollar ninety-nine per'
+      ' week")', (tester) async {
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.bySemanticsLabel('One dollar ninety-nine per week'),
+      findsOneWidget,
+    );
+  });
+
+  // ---- iPhone SE overflow (#7) ----
+
+  testWidgets('no overflow on a 320x480 viewport (iPhone-SE scroll)', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    // The scrollable container keeps the content reachable.
+    expect(find.byType(SingleChildScrollView), findsWidgets);
   });
 }

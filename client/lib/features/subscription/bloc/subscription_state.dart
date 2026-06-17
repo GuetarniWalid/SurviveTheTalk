@@ -28,3 +28,10 @@ final class SubscriptionFailed extends SubscriptionState {
 final class SubscriptionCancelled extends SubscriptionState {
   const SubscriptionCancelled();
 }
+
+/// A "Restore purchases" tap returned no entitlement to restore (Story 8.2,
+/// F16). The UI returns to the Default offer with a neutral "Nothing to
+/// restore." line — NEVER the "You're in" success state (no false confirmation).
+final class SubscriptionRestoreEmpty extends SubscriptionState {
+  const SubscriptionRestoreEmpty();
+}

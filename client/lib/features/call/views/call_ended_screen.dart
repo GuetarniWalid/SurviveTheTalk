@@ -154,6 +154,10 @@ class CallEndedScreen extends StatefulWidget {
 
   final CallRepository callRepository;
 
+  /// Story 8.2 (AC3 / FR29) — when true, the debrief this overlay hands off to
+  /// auto-presents the paywall on load (the user's 3rd/last free scenario).
+  final bool presentPaywallOnDebrief;
+
   /// Timing seams — production uses the canonical constants; tests shrink
   /// them so the hold logic runs inside a pumped test window.
   final Duration entryDuration;
@@ -178,6 +182,7 @@ class CallEndedScreen extends StatefulWidget {
     required this.checkpointsPassed,
     required this.totalCheckpoints,
     required this.callRepository,
+    this.presentPaywallOnDebrief = false,
     this.entryDuration = kEntryDuration,
     this.minHold = kMinHold,
     this.minHoldAccessible = kMinHoldAccessible,
@@ -201,6 +206,7 @@ class CallEndedScreen extends StatefulWidget {
     required int checkpointsPassed,
     required int totalCheckpoints,
     required CallRepository callRepository,
+    bool presentPaywallOnDebrief = false,
   }) {
     return PageRouteBuilder<void>(
       transitionDuration: kEntryDuration,
@@ -212,6 +218,7 @@ class CallEndedScreen extends StatefulWidget {
         checkpointsPassed: checkpointsPassed,
         totalCheckpoints: totalCheckpoints,
         callRepository: callRepository,
+        presentPaywallOnDebrief: presentPaywallOnDebrief,
       ),
       transitionsBuilder: (_, animation, secondaryAnimation, child) {
         final backdrop = CurvedAnimation(
@@ -349,6 +356,9 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
         payload: _debriefPayload,
         callId: widget.callId,
         callRepository: widget.callRepository,
+        // Story 8.2 (FR29) — auto-present the paywall on the debrief when this
+        // was the user's last free scenario.
+        presentPaywallOnLoad: widget.presentPaywallOnDebrief,
       ),
       transitionsBuilder: (_, animation, _, child) => FadeTransition(
         opacity: CurvedAnimation(
