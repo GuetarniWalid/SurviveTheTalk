@@ -378,3 +378,7 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   textSecondary border, textPrimary label), accent FILL reserved for the free
   "Subscribe" conversion CTA (two-ink intact). Gates re-green: analyze clean +
   flutter 644.
+- 2026-06-18 — Walid follow-up: moved "Restore purchases" back ABOVE the primary
+  CTA (cleaner reading order). Pinned block = Restore → [msg] → CTA → Terms·
+  Privacy. Tests flipped to assert Restore above the CTA (both tiers); flutter
+  644, analyze clean.

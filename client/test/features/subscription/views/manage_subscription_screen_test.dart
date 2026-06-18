@@ -120,7 +120,7 @@ void main() {
     expect(side?.color, AppColors.textSecondary); // neutral border, not accent
   });
 
-  testWidgets('free: Restore sits BELOW the Subscribe pill', (tester) async {
+  testWidgets('free: Restore sits ABOVE the Subscribe pill', (tester) async {
     seedCubit(const UserProfileLoaded(_free));
     await tester.pumpWidget(harness());
     await tester.pump();
@@ -130,10 +130,10 @@ void main() {
     final restoreY = tester
         .getTopLeft(find.widgetWithText(TextButton, 'Restore purchases'))
         .dy;
-    expect(restoreY, greaterThan(ctaY));
+    expect(restoreY, lessThan(ctaY));
   });
 
-  testWidgets('paid: Restore sits BELOW the Manage button', (tester) async {
+  testWidgets('paid: Restore sits ABOVE the Manage button', (tester) async {
     seedCubit(const UserProfileLoaded(_paid));
     await tester.pumpWidget(harness());
     await tester.pump();
@@ -143,7 +143,7 @@ void main() {
     final restoreY = tester
         .getTopLeft(find.widgetWithText(TextButton, 'Restore purchases'))
         .dy;
-    expect(restoreY, greaterThan(ctaY));
+    expect(restoreY, lessThan(ctaY));
   });
 
   testWidgets('paid → Premium + price + Renews date + Manage CTA',

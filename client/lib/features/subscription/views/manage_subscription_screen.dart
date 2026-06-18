@@ -330,27 +330,8 @@ class _Frame extends StatelessWidget {
                 ),
               ),
             ),
-            if (storeOpenFailed) ...[
-              Semantics(
-                liveRegion: true,
-                child: Text(
-                  _kStoreOpenFailed,
-                  textAlign: TextAlign.center,
-                  style: AppTypography.caption.copyWith(
-                    color: AppColors.destructive,
-                  ),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.base),
-            ],
-            _PrimaryCta(
-              label: isPaid ? _kCtaManage : _kCtaSubscribe,
-              isPaid: isPaid,
-              onPressed: loading ? null : (isPaid ? onManage : onSubscribe),
-            ),
-            const SizedBox(height: AppSpacing.base * 2),
-            // Restore sits BELOW the primary CTA (quieter, better hierarchy);
-            // still reachable in every purchasable state (Apple 3.1.1).
+            // Restore sits ABOVE the primary CTA (quieter, cleaner reading
+            // order); reachable in every purchasable state (Apple 3.1.1).
             BlocBuilder<SubscriptionBloc, SubscriptionState>(
               builder: (context, s) => _RestoreRow(
                 onPressed: onRestore,
@@ -372,7 +353,26 @@ class _Frame extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: AppSpacing.cardGap),
+            const SizedBox(height: AppSpacing.base * 2),
+            if (storeOpenFailed) ...[
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  _kStoreOpenFailed,
+                  textAlign: TextAlign.center,
+                  style: AppTypography.caption.copyWith(
+                    color: AppColors.destructive,
+                  ),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.base),
+            ],
+            _PrimaryCta(
+              label: isPaid ? _kCtaManage : _kCtaSubscribe,
+              isPaid: isPaid,
+              onPressed: loading ? null : (isPaid ? onManage : onSubscribe),
+            ),
+            const SizedBox(height: AppSpacing.base * 2),
             _LegalFooter(
               termsRecognizer: termsRecognizer,
               privacyRecognizer: privacyRecognizer,
