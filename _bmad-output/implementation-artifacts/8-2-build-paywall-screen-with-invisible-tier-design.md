@@ -1,7 +1,8 @@
 # Story 8.2: Build Paywall Screen with Invisible Tier Design
 
-Status: review
+Status: done
 
+<!-- Status: review → done (2026-06-18, reviewer flip — Walid signed off): on-device gate — D1/FR29 PASSED (paywall auto-presented on the 3rd free call; stale-snapshot fix verified live). D2 custom route reverted to native showModalBottomSheet (swipe regressed on-device), swipe-block-during-purchase DEFERRED (deferred-work.md). Native-sheet dismiss is identical to the shipped content-warning/difficulty sheets → no further on-device swipe gate owed. Gates green (analyze clean, flutter 606). Both flip gates clear: code review + smoke gate (D1 on-device). -->
 <!-- Status: in-progress → review (code review 2026-06-17): D1 (reload-on-return), D2 (custom dismiss route) + P2 (FR29 test coverage) all implemented + gates green (analyze clean, flutter 613); P1+P3 applied earlier. Review-complete; awaiting the Pixel 9 smoke gate (RE-OWED — D1/D2 change behavior vs the a19deee-signed gate) for review → done. -->
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
