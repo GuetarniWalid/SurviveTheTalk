@@ -29,7 +29,16 @@ A follow-up UX/parcours + store-compliance design pass (3 footer treatments → 
 - **"Auto-renewable. Cancel anytime." DROPPED from the status footer. Compliance verdict: COMPLIANT** — Apple 3.1.2 / Google Play attach the auto-renew disclosure to the POINT OF SALE; the paywall retains the full disclosure there, so a post-purchase status screen carries no separate duty. `Terms · Privacy` links kept (hygiene); footer is now tier-independent.
 - Zero new tokens; `Colors.transparent` is a Material const (not a scanned hex literal).
 
-Everything in §§4–9 below about data source, copy locks (`Premium`/`Subscribe`/`Manage subscription`/`Restore purchases`), navigation, a11y, safe zones, and the no-new-token discipline still holds; the §3 *visual layout* is superseded by the ring hero, and the §5 *button emphasis + footer* by the action-block refinement above.
+### Malaise fix (2026-06-18, 3rd pass — real Pixel 9 feedback; UX + UI + copywriting)
+
+On-device the screen still felt off; a UX + UI + copywriting pass (3 diagnoses → 3 concepts → 4 critics → synthesis) fixed three concrete problems:
+
+- **Vertical balance.** The hero was top-anchored (title + fixed gap + hero, with an `Expanded` dumping all slack at the bottom → a big void on a tall phone). Fix: the scroll child is now `LayoutBuilder → SingleChildScrollView → ConstrainedBox(minHeight: viewport) → IntrinsicHeight → Column`, with the hero as `Expanded(child: hero)`. On a tall screen the hero **centers in the slack** (void split symmetrically); on a short screen (SE / 200% text) the content exceeds `minHeight`, the `Expanded` collapses and it **scrolls**. (Probe-verified buildable at 393×852, 320×480, 320×480×2.0 — the Center-in-scroll/unbounded-height trap is avoided by the `ConstrainedBox`+`IntrinsicHeight`.) The fixed `_kHeroTitleGap` (32) is deleted.
+- **The confusing "0".** A bare "0" in an empty groove read as broken. Fix: at `callsRemaining == 0` the caption's count line is reframed to the calm, factual, past-tense **"You have used your {N} free calls"** (live cap), and the ring `semanticsLabel` is state-aware (a reader never hears a bare "0 of 3 remaining"). The number now has a referent; the forward path is the accent `Subscribe` button ALONE (no second imperative line in the caption — that would be a coercive double-CTA + net-new sell on a status screen). Ring fraction stays honest (`remaining/cap`). The bore stays **count-only** (a bore label like "calls left" is banned + test-locked). The single NEW copy string is `You have used your {N} free calls` (A2/B1, ban-clean, status fact — not a gated CTA/plan label).
+- **Spacing / button size.** Primary CTA height **48 → 64** (`hangUpButtonSize`, the "Pick up"/"Try again" precedent) so it reads as THE action and stops crowding the legal line. Footer rhythm: Restore(+msg) → **24** (`base*3`) → CTA(64) → **16** (`base*2`) → Terms·Privacy → bottom inset **16** (`base*2`, raised from 8 so it clears the gesture bar). Restore stays 48 (quiet vs the 64 CTA).
+- Zero new `AppColors`/`AppSpacing` tokens; data lines stay `errorBody` (11.4:1) — `textSecondary` is chrome-only.
+
+Everything in §§4–9 below about data source, copy locks (`Premium`/`Subscribe`/`Manage subscription`/`Restore purchases`), navigation, a11y, safe zones, and the no-new-token discipline still holds; the §3 *visual layout* is superseded by the ring hero (centered per the malaise fix), and the §5 *button emphasis + footer* by the action-block refinement + the spacing/sizing system above.
 
 ---
 

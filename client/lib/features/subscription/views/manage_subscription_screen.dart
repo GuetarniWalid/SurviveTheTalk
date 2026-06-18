@@ -68,7 +68,6 @@ const double _kHeroRingSize = 180.0; // == debrief _kGaugeSize
 const double _kHeroRingStroke = 12.0; // == debrief _kGaugeStroke
 const double _kHeroInnerWidth = 100.0; // == debrief _kGaugeInnerWidth
 const double _kHeroCaptionGap = 20.0; // ring -> caption
-const double _kHeroTitleGap = 32.0; // title -> hero
 const Duration _kSweepDuration = Duration(milliseconds: 700);
 
 // CTA label — Inter 14 SemiBold (matches the paywall CTA recipe).
@@ -289,9 +288,12 @@ class _Frame extends StatelessWidget {
           ),
         ),
         caption: _freeCaption(profile),
-        semanticsLabel:
-            '${profile.callsRemaining} of ${profile.callsPerPeriod} calls '
-            'remaining',
+        // State-aware: at 0 the reader hears the calm sentence, never a bare
+        // "0 of 3 remaining" (the alarm in audio).
+        semanticsLabel: profile.callsRemaining == 0
+            ? 'You have used your ${profile.callsPerPeriod} free calls'
+            : '${profile.callsRemaining} of ${profile.callsPerPeriod} calls '
+                  'remaining',
       );
     }
 
@@ -306,28 +308,48 @@ class _Frame extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: _BackArrow(),
-                    ),
-                    const SizedBox(height: AppSpacing.screenVerticalList),
-                    Semantics(
-                      header: true,
-                      child: Text(
-                        'Subscription',
-                        style: AppTypography.headline.copyWith(
-                          color: AppColors.textPrimary,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    child: ConstrainedBox(
+                      // Floor the scroll child to the viewport so the inner
+                      // Expanded has slack to balance the hero in the optical
+                      // middle on a TALL phone; on a short screen (SE / 200%
+                      // text) the content exceeds minHeight, the Expanded
+                      // collapses to the hero's natural height and this scrolls.
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                      ),
+                      child: IntrinsicHeight(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: _BackArrow(),
+                            ),
+                            const SizedBox(
+                              height: AppSpacing.screenVerticalList,
+                            ),
+                            Semantics(
+                              header: true,
+                              child: Text(
+                                'Subscription',
+                                style: AppTypography.headline.copyWith(
+                                  color: AppColors.textPrimary,
+                                ),
+                              ),
+                            ),
+                            // Hero takes the remaining slack and self-centers
+                            // in it (_PlanHero / _HeroSkeleton already wrap in
+                            // Center) — no redundant outer Center.
+                            Expanded(child: hero),
+                          ],
                         ),
                       ),
                     ),
-                    const SizedBox(height: _kHeroTitleGap),
-                    hero,
-                  ],
-                ),
+                  );
+                },
               ),
             ),
             // Restore sits ABOVE the primary CTA (quieter, cleaner reading
@@ -353,7 +375,7 @@ class _Frame extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: AppSpacing.base * 2),
+            const SizedBox(height: AppSpacing.base * 3),
             if (storeOpenFailed) ...[
               Semantics(
                 liveRegion: true,
@@ -379,7 +401,7 @@ class _Frame extends StatelessWidget {
             ),
             SizedBox(
               height: bottomInset > 0
-                  ? AppSpacing.base
+                  ? AppSpacing.base * 2
                   : AppSpacing.screenVerticalList,
             ),
           ],
@@ -394,6 +416,13 @@ class _Frame extends StatelessWidget {
 Widget _freeCaption(UserProfile profile) {
   final ended = _endedDate(profile.subscriptionExpiresAt);
   final detail = AppTypography.caption.copyWith(color: AppColors.errorBody);
+  // At 0 the count line is reframed as a completed, expected fact — no leading
+  // bare "0", no fear/urgency. The empty ring then has a referent (it explains
+  // WHY it is empty); the forward path is the Subscribe button alone, never a
+  // second imperative line here. Live cap, never a hardcoded 3.
+  final usageLine = profile.callsRemaining == 0
+      ? 'You have used your ${profile.callsPerPeriod} free calls'
+      : '${profile.callsRemaining} of ${profile.callsPerPeriod} free calls left';
   return MergeSemantics(
     child: Column(
       mainAxisSize: MainAxisSize.min,
@@ -407,12 +436,7 @@ Widget _freeCaption(UserProfile profile) {
           ),
         ),
         const SizedBox(height: AppSpacing.cardTextGap),
-        Text(
-          '${profile.callsRemaining} of ${profile.callsPerPeriod} free calls '
-          'left',
-          textAlign: TextAlign.center,
-          style: detail,
-        ),
+        Text(usageLine, textAlign: TextAlign.center, style: detail),
         if (ended != null) ...[
           const SizedBox(height: AppSpacing.cardTextGap),
           // Historical, not current data → the quieter chrome grey, never red.
@@ -653,7 +677,9 @@ class _HeroSkeleton extends StatelessWidget {
 /// the loud accent FILL pill (the action we want). PAID "Manage subscription"
 /// is a quiet NEUTRAL-OUTLINED pill — present + clearly tappable (Apple 3.1.1,
 /// no dark pattern) but de-emphasized: accent stays fill-only (two-ink), never
-/// a border/text. Both share the "Pick up" StadiumBorder geometry + 48 height.
+/// a border/text. Both share the "Pick up"/"Try again" StadiumBorder geometry +
+/// 64 height (`hangUpButtonSize`) so the primary action reads as THE action and
+/// stops crowding the legal line.
 class _PrimaryCta extends StatelessWidget {
   final String label;
   final bool isPaid;
@@ -668,7 +694,7 @@ class _PrimaryCta extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
-      height: AppSpacing.touchTargetComfortable,
+      height: AppSpacing.hangUpButtonSize,
       child: isPaid
           ? OutlinedButton(
               onPressed: onPressed,

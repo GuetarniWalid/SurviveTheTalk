@@ -44,6 +44,13 @@ const _expired = UserProfile(
   period: 'lifetime',
   subscriptionExpiresAt: '2020-01-01T00:00:00Z',
 );
+// Free user who has SPENT all their calls (the "0" malaise state).
+const _free0 = UserProfile(
+  tier: 'free',
+  callsRemaining: 0,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+);
 
 void main() {
   late MockUserProfileCubit cubit;
@@ -382,5 +389,75 @@ void main() {
     await tester.pump(); // fire the post-frame forward()
     await tester.pump(const Duration(milliseconds: 800)); // past the 700ms sweep
     expect(tester.takeException(), isNull);
+  });
+
+  // ---------- Story 8.3 malaise fix — 0-state copy, centering, sizing ----------
+
+  testWidgets('free 0-state reframes the count (no bare "0 of 3", no sell line)',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_free0));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(find.text('You have used your 3 free calls'), findsOneWidget);
+    expect(find.text('0'), findsOneWidget); // the bore digit is still there
+    expect(find.text('0 of 3 free calls left'), findsNothing); // bare count gone
+    expect(find.textContaining('unlimited'), findsNothing); // no forward sell
+    expect(find.text('Subscribe'), findsOneWidget); // the one forward path
+  });
+
+  testWidgets('free 0-state has no overflow at 320x480 × textScaler 2.0',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    seedCubit(const UserProfileLoaded(_free0));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2.0)),
+          child: MultiBlocProvider(
+            providers: [
+              BlocProvider<UserProfileCubit>.value(value: cubit),
+              BlocProvider<SubscriptionBloc>.value(value: subBloc),
+            ],
+            child: const ManageSubscriptionScreen(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tall screen: the hero is balanced well below the title',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    seedCubit(const UserProfileLoaded(_free)); // bore "2"
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    final heroY = tester.getCenter(find.text('2')).dy;
+    final titleBottom = tester.getBottomLeft(find.text('Subscription')).dy;
+    // Centered in the slack, not hugging the title at the top.
+    expect(heroY, greaterThan(titleBottom + 120));
+  });
+
+  testWidgets('primary CTA is 64 tall (the loud-action precedent)',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    final cta = tester.widget<SizedBox>(
+      find
+          .ancestor(
+            of: find.widgetWithText(FilledButton, 'Subscribe'),
+            matching: find.byType(SizedBox),
+          )
+          .first,
+    );
+    expect(cta.height, 64);
   });
 }

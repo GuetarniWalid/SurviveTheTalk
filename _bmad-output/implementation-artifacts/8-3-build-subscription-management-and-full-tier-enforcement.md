@@ -382,3 +382,13 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   CTA (cleaner reading order). Pinned block = Restore → [msg] → CTA → Terms·
   Privacy. Tests flipped to assert Restore above the CTA (both tiers); flutter
   644, analyze clean.
+- 2026-06-18 — Walid Pixel 9 malaise feedback (3rd design pass: UX + UI +
+  copywriting, 11 agents): (1) hero now CENTERED in the vertical slack
+  (LayoutBuilder + ConstrainedBox(minHeight) + IntrinsicHeight + Expanded(hero)
+  — balances on tall, scrolls on SE; deleted _kHeroTitleGap); (2) the confusing
+  "0" reframed — at 0 the caption reads "You have used your N free calls" (calm
+  factual fact), ring semantics state-aware, Subscribe is the sole forward path
+  (no sell line, no bore label); (3) spacing/sizing — CTA 48→64
+  (hangUpButtonSize), Restore→CTA 24, CTA→legal 16, bottom inset 16. Zero new
+  tokens; 1 new in-voice copy string. +4 tests (0-state copy, 0-state overflow,
+  tall-screen balance, CTA height 64); flutter 648, analyze clean.
