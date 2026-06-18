@@ -82,16 +82,21 @@ const List<String> _kBenefits = <String>[
   'Know exactly what you\'re doing wrong',
 ];
 const String _kCta = "Let's go";
-const String _kDismiss = 'Not now';
 const String _kLegal = 'Auto-renewable. 3 calls per day. Cancel anytime.';
 const String _kSuccessTitle = "You're in";
 const String _kError = 'Something went wrong. Try again.';
 // Story 8.3 (F17) — store purchase pending external approval (Ask to Buy / SCA).
 const String _kPendingApproval = 'Waiting for approval. You can close this.';
-// Story 8.3 — Restore purchases moved OUT of the paywall (it now lives on the
-// Manage Subscription screen, reached via the Account hub line). Apple 3.1.1's
-// "visible restore" requirement is still met there. The paywall is a pure
-// transactional moment now.
+// Story 8.3 (2026-06-18 pivot) — Restore lives on the paywall, in the slot the
+// "Not now" dismiss button used to occupy. The sheet still dismisses via swipe /
+// scrim / system back (PopScope), so a dedicated dismiss button is redundant. A
+// free-SEEN returning payer (reinstall / new device) lands HERE — not on the
+// paid-only Manage drawer — so this is the correct Apple 3.1.1 "visible restore"
+// home. A genuine restore re-delivers like a purchase (→ Purchased → "You're
+// in"); an empty one surfaces a neutral "Nothing to restore." (never a fake
+// success — Story 8.2 F16).
+const String _kRestore = 'Restore purchases';
+const String _kNothingToRestore = 'Nothing to restore.';
 
 // ---- Screen-reader announcements (design → Accessibility) ----
 const String _kPriceSemantics = 'One dollar ninety-nine per week';
@@ -171,11 +176,12 @@ class _PaywallSheetBodyState extends State<_PaywallSheetBody> {
         final isSuccess = state is SubscriptionPurchased;
         final isLoading = state is SubscriptionLoading;
         // PopScope blocks system back during the in-flight purchase and the
-        // success hold; in Default/Error, system back == "Not now" (the sheet
-        // pops with no result → `show` returns false). AC8 / design back-button
-        // table. (Native swipe/scrim stay enabled — `showModalBottomSheet`'s
-        // `enableDrag`/`isDismissible` are static; PopScope is the contracted
-        // dismiss block. See the story's declared deviation.)
+        // success hold; in Default/Error, system back is a clean dismiss (the
+        // sheet pops with no result → `show` returns false). AC8 / design
+        // back-button table. (Native swipe/scrim stay enabled —
+        // `showModalBottomSheet`'s `enableDrag`/`isDismissible` are static;
+        // PopScope is the contracted dismiss block. Story 8.3 dropped the
+        // explicit "Not now" button — these three dismiss paths replace it.)
         return PopScope(
           canPop: !(isLoading || isSuccess),
           child: SingleChildScrollView(
@@ -198,8 +204,9 @@ class _PaywallSheetBodyState extends State<_PaywallSheetBody> {
                               onSubscribe: () => context
                                   .read<SubscriptionBloc>()
                                   .add(const SubscribePressed()),
-                              onDismiss: () =>
-                                  Navigator.of(context).pop(false),
+                              onRestore: () => context
+                                  .read<SubscriptionBloc>()
+                                  .add(const RestorePressed()),
                             ),
                     ),
                   ],
@@ -235,13 +242,13 @@ class _DragHandle extends StatelessWidget {
 class _OfferView extends StatelessWidget {
   final SubscriptionState state;
   final VoidCallback onSubscribe;
-  final VoidCallback onDismiss;
+  final VoidCallback onRestore;
 
   const _OfferView({
     super.key,
     required this.state,
     required this.onSubscribe,
-    required this.onDismiss,
+    required this.onRestore,
   });
 
   @override
@@ -251,6 +258,9 @@ class _OfferView extends StatelessWidget {
     // Story 8.3 (F17) — pending external approval: actions are inert (no
     // double-buy) but the sheet stays dismissible ("You can close this.").
     final pending = state is SubscriptionPendingApproval;
+    // Story 8.3 — a "Restore purchases" tap that found no entitlement (F16):
+    // a neutral caption, never a fake success.
+    final restoreEmpty = state is SubscriptionRestoreEmpty;
     final actionsDisabled = loading || pending;
     final secondary = AppTypography.body.copyWith(
       color: AppColors.overlaySubtitle,
@@ -329,17 +339,35 @@ class _OfferView extends StatelessWidget {
             ),
           ),
         ],
+        if (restoreEmpty) ...[
+          const SizedBox(height: 8),
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              _kNothingToRestore,
+              textAlign: TextAlign.center,
+              style: AppTypography.caption.copyWith(
+                color: AppColors.overlaySubtitle,
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
+        // Story 8.3 — Restore occupies the old "Not now" slot (quiet secondary
+        // text button). Disabled while a purchase/restore is in flight or
+        // pending approval (no double-fire). A genuine restore flips to
+        // Purchased → "You're in"; an empty one shows the caption above.
         TextButton(
-          onPressed: loading ? null : onDismiss,
+          onPressed: actionsDisabled ? null : onRestore,
           style: TextButton.styleFrom(
             foregroundColor: AppColors.overlaySubtitle,
-            disabledForegroundColor:
-                AppColors.overlaySubtitle.withValues(alpha: 0.4),
+            disabledForegroundColor: AppColors.overlaySubtitle.withValues(
+              alpha: 0.4,
+            ),
             minimumSize: const Size.fromHeight(48),
             textStyle: AppTypography.body,
           ),
-          child: const Text(_kDismiss),
+          child: const Text(_kRestore),
         ),
         const SizedBox(height: 24),
         Text(

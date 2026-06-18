@@ -318,6 +318,29 @@ same posture as 8.1/8.2.
    allows it) rather than loading `ProductDetails.price`.
 4. **Google webhook security** — the interim secret `?token=` gate is
    implemented; `GOOGLE_PUBSUB_AUDIENCE` (OIDC) is reserved for prod hardening.
+5. **Manage surface = a paid-only DRAWER, not a full-screen page (2026-06-18
+   pivot, REVERSES D1's "real screen" ruling on the CLIENT side only).** After
+   three on-device design passes Walid judged the full-page Manage screen
+   over-engineered for its little content. The route-pushed
+   `ManageSubscriptionScreen` + `/account` route + its 25 tests were DELETED and
+   replaced by `manage_sheet.dart` — a paid-only white bottom-sheet **retention
+   drawer** reusing the paywall scaffold (opens on value, ends on a quiet,
+   de-emphasized "Manage subscription" handoff whose caption literally says
+   "cancel"). Designed by a 7-agent retention/sales design pass + reviewed by a
+   3-dimension adversarial workflow. The drawer carries NO Restore and NO
+   `SubscriptionBloc` (a recognized member has nothing to restore). The hub
+   `Account` line now shares ONE row with the difficulty line — Account LEADING,
+   **paid-users only** (gated on `!usage.isFree`); free users see no Account line
+   (their surface is the paywall). **Server side of 8.3 (migration 015, tier
+   enforcement, `/user/profile`, webhooks, expiry sweep) is UNCHANGED.**
+6. **Restore relocated to the paywall (REVERSES the 2026-06-18 "Restore moved
+   OUT of the paywall" change).** Restore now lives on the `PaywallSheet`, in the
+   slot the removed "Not now" dismiss button occupied (the sheet still dismisses
+   via swipe / scrim / system-back). This is the correct Apple 3.1.1 home: a
+   free-SEEN returning payer (reinstall / new device) lands on the paywall, never
+   on the paid-only Manage drawer, so Restore must be reachable there. The
+   paywall's previously-commented `_kRestore` is live again; `Subscription
+   RestoreEmpty` renders a neutral "Nothing to restore." (no fake success, F16).
 
 ### File List
 
@@ -350,6 +373,12 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
 `pubspec.lock`, `test/features/scenarios/views/scenario_list_screen_test.dart`,
 `test/features/paywall/views/paywall_sheet_test.dart`,
 `test/features/subscription/bloc/subscription_bloc_test.dart`
+
+**Client-UI rewrite (2026-06-18 pivot — see Declared deviations #5/#6):**
+- **NEW:** `features/subscription/views/manage_sheet.dart` + `test/features/subscription/views/manage_sheet_test.dart` (the retention drawer, 11 tests).
+- **DELETED:** `features/subscription/views/manage_subscription_screen.dart` + `test/.../manage_subscription_screen_test.dart` (the full-page screen + its 25 tests).
+- **MODIFIED:** `features/subscription/services/store_links.dart` (+`isApplePlatform` getter for the drawer caption); `features/paywall/views/paywall_sheet.dart` (Restore back in, replacing "Not now"); `features/scenarios/views/scenario_list_screen.dart` (Account+difficulty share one row, Account paid-only leading); `lib/app/router.dart` (removed the `/account` route + `AppRoutes.account` + its 6 subscription imports). `scenario_list_screen_test.dart` (+3 hub-row tests) + `paywall_sheet_test.dart` (Restore-on-paywall tests).
+- KEPT (still used by the drawer): `user_profile.dart`, `user_repository.dart`, `user_profile_cubit.dart`, `purchase_sync_service.dart`. **Server side of 8.3 untouched.** Gates re-green: `flutter analyze` clean, `flutter test` → 636 passed.
 
 ### Change Log
 
@@ -392,3 +421,15 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   (hangUpButtonSize), Restore→CTA 24, CTA→legal 16, bottom inset 16. Zero new
   tokens; 1 new in-voice copy string. +4 tests (0-state copy, 0-state overflow,
   tall-screen balance, CTA height 64); flutter 648, analyze clean.
+- 2026-06-18 — Walid PIVOT (Declared deviations #5/#6): the full-page Manage
+  screen was judged over-engineered → REWRITTEN as a paid-only white retention
+  DRAWER (`manage_sheet.dart`, reuses the paywall scaffold; opens on value, ends
+  on a quiet de-emphasized "Manage subscription" handoff with a "cancel"
+  caption; NO Restore, NO SubscriptionBloc). Deleted the full-page screen +
+  `/account` route + 25 tests. Restore moved back ONTO the paywall (replacing
+  "Not now"; the correct Apple 3.1.1 home). Hub `Account` line now shares one row
+  with difficulty (Account LEADING, paid-only via `!usage.isFree`); free users
+  see no Account line. Designed via a 7-agent retention design pass + a
+  3-dimension adversarial review. Server side untouched. Gates re-green: analyze
+  clean, flutter test 636. Net tests: −25 (old screen) +11 (drawer) +3 (hub) +2
+  (paywall Restore) −2 (obsolete paywall).

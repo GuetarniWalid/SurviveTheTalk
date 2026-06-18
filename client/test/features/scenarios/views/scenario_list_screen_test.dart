@@ -16,6 +16,9 @@ import 'package:client/features/scenarios/models/scenario.dart';
 import 'package:client/features/scenarios/views/scenario_list_screen.dart';
 import 'package:client/features/scenarios/views/widgets/bottom_overlay_card.dart';
 import 'package:client/features/scenarios/views/widgets/scenario_card.dart';
+import 'package:client/features/subscription/bloc/user_profile_cubit.dart';
+import 'package:client/features/subscription/models/user_profile.dart';
+import 'package:client/features/subscription/views/manage_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -64,6 +67,19 @@ class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
     implements ScenariosBloc {}
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Drives the Manage drawer (opened from the paid `Account` hub line) without
+/// touching the real `GET /user/profile`.
+class MockUserProfileCubit extends MockCubit<UserProfileState>
+    implements UserProfileCubit {}
+
+const _kPaidProfile = UserProfile(
+  tier: 'paid',
+  callsRemaining: 3,
+  callsPerPeriod: 3,
+  period: 'day',
+  subscriptionExpiresAt: '2026-07-18T12:00:00Z',
+);
 
 /// Test stub that stands in for `CallScreen` so the production push goes
 /// through real `Navigator.push` machinery without constructing a real
@@ -683,6 +699,86 @@ void main() {
       expect(find.text('Difficulty: Hard'), findsOneWidget);
     },
   );
+
+  // ---------- Story 8.3 (2026-06-18 pivot) — Account hub line ----------
+
+  testWidgets('paid user: Account leads, difficulty trails on the same row',
+      (tester) async {
+    await pumpWithUsage(tester, _kPaidWithCalls);
+
+    expect(find.text('Account'), findsOneWidget);
+    expect(find.text('Difficulty: Easy'), findsOneWidget);
+    // Account is leading (left of difficulty) — the shared one-row layout.
+    final accountX = tester.getTopLeft(find.text('Account')).dx;
+    final difficultyX = tester.getTopLeft(find.text('Difficulty: Easy')).dx;
+    expect(accountX, lessThan(difficultyX));
+  });
+
+  testWidgets('free user: NO Account line; difficulty still present', (
+    tester,
+  ) async {
+    await pumpWithUsage(tester, _kFreshUsage);
+
+    expect(find.text('Account'), findsNothing);
+    expect(find.text('Difficulty: Easy'), findsOneWidget);
+  });
+
+  testWidgets('paid user: tapping Account opens the Manage drawer', (
+    tester,
+  ) async {
+    final manageCubit = MockUserProfileCubit();
+    whenListen(
+      manageCubit,
+      const Stream<UserProfileState>.empty(),
+      initialState: const UserProfileLoaded(_kPaidProfile),
+    );
+    ManageSheet.debugCubitBuilder = () => manageCubit;
+    addTearDown(() => ManageSheet.debugCubitBuilder = null);
+
+    await pumpWithUsage(tester, _kPaidWithCalls);
+    await tester.tap(find.text('Account'));
+    await tester.pumpAndSettle();
+
+    // The drawer mounted: its "Premium" header + value block are on-screen.
+    expect(find.text('Premium'), findsOneWidget);
+    expect(find.text('What your membership gives you'), findsOneWidget);
+  });
+
+  testWidgets('paid hub row does not overflow at 320x480, textScaler 1.5', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final scenarios = [_build(id: 'a', title: 'Alpha')];
+    final state = ScenariosLoaded(scenarios: scenarios, usage: _kPaidWithCalls);
+    when(() => mockBloc.state).thenReturn(state);
+    whenListen(
+      mockBloc,
+      const Stream<ScenariosState>.empty(),
+      initialState: state,
+    );
+    await tester.pumpWidget(
+      MaterialApp.router(
+        theme: AppTheme.dark(),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(1.5),
+          ),
+          child: child!,
+        ),
+        routerConfig: _router(
+          const ScenarioListScreen(callScreenBuilder: _stubCallScreen),
+          mockBloc,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // The Expanded + ellipsis on the difficulty label absorbs the large text
+    // scale; the shared Account+difficulty row must not RenderFlex-overflow.
+    expect(tester.takeException(), isNull);
+    expect(find.text('Account'), findsOneWidget);
+  });
 
   testWidgets(
     'tapping phone icon on a scenario WITH content_warning shows the sheet',

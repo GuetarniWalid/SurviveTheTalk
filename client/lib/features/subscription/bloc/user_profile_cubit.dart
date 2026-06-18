@@ -4,10 +4,12 @@ import '../../../core/api/api_exception.dart';
 import '../models/user_profile.dart';
 import '../repositories/user_repository.dart';
 
-/// The 4 base states the Manage Subscription screen drives off (design §4):
-/// Initial → Loading (skeleton) → Loaded (states A–D by tier/expiry) / Error
-/// (EmpatheticErrorScreen). A Cubit (not a full Bloc) — the only "event" is
-/// "(re)load the profile".
+/// The 4 base states the Manage subscription DRAWER drives off (Story 8.3,
+/// 2026-06-18 pivot): Initial → Loading (a dim skeleton renewal bar) → Loaded
+/// (the renewal line, by expiry) / Error (a compact inline "Try again" rendered
+/// in the drawer's `_RenewalSlot` — NOT the full-screen EmpatheticErrorScreen,
+/// which would flood the sheet). A Cubit (not a full Bloc) — the only "event"
+/// is "(re)load the profile".
 sealed class UserProfileState {
   const UserProfileState();
 }
@@ -25,9 +27,10 @@ final class UserProfileLoaded extends UserProfileState {
   const UserProfileLoaded(this.profile);
 }
 
-/// `code` is an `ApiException` code ('NETWORK_ERROR' / 'SERVER_ERROR' / …) the
-/// error view feeds straight into `EmpatheticErrorScreen`; `retryCount`
-/// toggles its repeat-failure copy.
+/// `code` is an `ApiException` code ('NETWORK_ERROR' / 'SERVER_ERROR' / …). The
+/// drawer renders one compact inline "Couldn't load your details." + "Try
+/// again" for every code; `retryCount` is retained (parity with other error
+/// surfaces) but the drawer does not branch its copy on it.
 final class UserProfileError extends UserProfileState {
   final String code;
   final int retryCount;

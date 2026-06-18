@@ -38,6 +38,12 @@ class StoreLinks {
   static const String googleSubscriptionsBase =
       'https://play.google.com/store/account/subscriptions';
 
+  /// True when the target store is Apple's App Store. Drives the manage-drawer
+  /// caption copy ("App Store" vs "Play Store") off the SAME resolved platform
+  /// the launch path uses, so a test-injected `platform` flows through (never
+  /// `Theme.platform`, which is wrong on foldables/desktop).
+  bool get isApplePlatform => _platform == TargetPlatform.iOS;
+
   /// Open the native subscription-management screen. Returns true on a
   /// successful launch; the caller surfaces an inline failure message on false.
   Future<bool> openManageSubscriptions() async {

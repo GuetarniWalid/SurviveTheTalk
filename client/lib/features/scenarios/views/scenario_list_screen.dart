@@ -19,6 +19,7 @@ import '../../call/views/call_screen.dart';
 import '../../call/views/no_network_screen.dart';
 import '../../paywall/views/paywall_sheet.dart';
 import '../../subscription/services/purchase_sync_service.dart';
+import '../../subscription/views/manage_sheet.dart';
 import '../bloc/scenarios_bloc.dart';
 import '../bloc/scenarios_event.dart';
 import '../bloc/scenarios_state.dart';
@@ -248,16 +249,28 @@ class _ListState extends State<_List> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Story 8.3 (AC1, UX-DR16) — quiet, tier-neutral Account line, trailing
-        // (edge-gesture-safe) and stacked directly above the difficulty line.
-        // No tier badge — invisible tiers preserved; the screen differentiates.
-        _AccountHubLine(onTap: () => context.push(AppRoutes.account)),
-        // Story 6.19 — discreet GLOBAL difficulty line (set once, applies to
-        // every call). Sits above the scrolling list (and so above the pinned
-        // BottomOverlayCard); tapping it opens the difficulty bottom sheet.
-        _DifficultyHubLine(
-          difficulty: _difficultyStorage.getSync(),
-          onTap: () => _onDifficultyTap(context),
+        // Story 8.3 (2026-06-18 pivot, AC1, UX-DR16) — the hub's two quiet
+        // setting lines share ONE row: `Account` LEADS (left) for PAID users
+        // only (it opens the paid-only Manage drawer — a free user has nothing
+        // to manage; their surface is the paywall), the global difficulty line
+        // TRAILS (right). For a free user the `Spacer` keeps difficulty
+        // right-aligned exactly as before — the row is visually identical.
+        Row(
+          children: [
+            if (!widget.usage.isFree)
+              _AccountHubLine(onTap: () => ManageSheet.show(context)),
+            // Story 6.19 — discreet GLOBAL difficulty line (set once, applies
+            // to every call); tapping it opens the difficulty bottom sheet.
+            // `Expanded` so it right-aligns AND its label ellipsizes under large
+            // text scales instead of overflowing the shared row (review
+            // hardening — the only over-budget combo is ~320dp + textScaler≥1.5).
+            Expanded(
+              child: _DifficultyHubLine(
+                difficulty: _difficultyStorage.getSync(),
+                onTap: () => _onDifficultyTap(context),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: AppSpacing.cardGap),
         Expanded(
@@ -497,12 +510,15 @@ class _ListState extends State<_List> {
   }
 }
 
-/// Story 8.3 (AC1, design §2) — the quiet, tier-neutral `Account` hub line.
-/// Mirrors `_DifficultyHubLine` (textSecondary grey, no new colors) but lifts
-/// the hit box to >= 44dp (the difficulty line's vertical:4 padding falls short)
-/// and is trailing-aligned so it never sits in the left edge-back-swipe gutter
-/// (ADR 003). No tier badge — invisible tiers (UX-DR16); both tiers see the
-/// same line, the SCREEN differentiates.
+/// Story 8.3 (AC1, design §2) — the quiet, tier-neutral `Account` hub line,
+/// shown to PAID users only and LEADING (left) on the shared hub row. Mirrors
+/// `_DifficultyHubLine` (textSecondary grey, no new colors) but lifts the hit
+/// box to >= 44dp (the difficulty line's vertical:4 padding falls short).
+/// Content-hugging (`MainAxisSize.min`) so it sits at its intrinsic width in
+/// the row. No tier badge — invisible tiers (UX-DR16); the DRAWER it opens is
+/// what differentiates, not this line. It now sits in the left edge-back-swipe
+/// gutter (a tap target, not a draggable control), which is fine — ADR 003's
+/// root-Navigator detach governs predictive-back on the call route, not here.
 class _AccountHubLine extends StatelessWidget {
   final VoidCallback onTap;
 
@@ -513,13 +529,10 @@ class _AccountHubLine extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(
-          minHeight: AppSpacing.minTouchTarget,
-        ),
-        alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: AppSpacing.minTouchTarget),
         child: const Row(
-          mainAxisAlignment: MainAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               Icons.account_circle_outlined,
@@ -561,6 +574,9 @@ class _DifficultyHubLine extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
+        // Right-aligned within the shared hub Row's `Expanded`; the label is
+        // `Flexible` + ellipsis so it yields under large text scales instead of
+        // overflowing the row (Story 8.3 2026-06-18 pivot — review hardening).
         child: Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
@@ -570,13 +586,17 @@ class _DifficultyHubLine extends StatelessWidget {
               color: AppColors.textSecondary,
             ),
             const SizedBox(width: 6),
-            Text(
-              'Difficulty: $label',
-              style: const TextStyle(
-                fontFamily: AppTypography.fontFamily,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-                color: AppColors.textSecondary,
+            Flexible(
+              child: Text(
+                'Difficulty: $label',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontFamily: AppTypography.fontFamily,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.textSecondary,
+                ),
               ),
             ),
           ],
