@@ -1,7 +1,7 @@
 # Manage Subscription Screen — Design Specification
 Status: binding (Story 8.3)
 
-> Buildable once the two named dependencies in §10 clear. The screen is dark-surface, route-pushed, and reuses the existing `SubscriptionBloc`, `PaywallSheet`, `EmpatheticErrorScreen`, and `AppToast` plumbing. Every token below is verbatim from `client/lib/core/theme/`. Two prerequisites gate the **paid** view and are tracked as hard blockers, not soft risks: the steady-state data source `GET /user/profile` (Story 8.3 Task 2) and one product/copy approval (the paid plan label). The **free** view is fully buildable today against the existing `CallUsage` data.
+> Buildable once the two named dependencies in §10 clear. The screen is dark-surface, route-pushed, and reuses the existing `SubscriptionBloc`, `PaywallSheet`, `EmpatheticErrorScreen`, and `AppToast` plumbing. Every token below is verbatim from `client/lib/core/theme/`. One prerequisite gates the **paid** view (a hard blocker, not a soft risk): the steady-state data source `GET /user/profile` (Story 8.3 Task 2). Copy is locked (Walid 2026-06-18: paid-plan display label `Premium`; CTAs `Subscribe` / `Manage subscription`). The **free** view is fully buildable today against the existing `CallUsage` data.
 >
 > _Origin: produced by a multi-agent design workflow (our design-DNA analysis + current mobile-UX research + platform-compliance research → synthesis → two adversarial critiques [design-DNA fit + mobile ergonomics/a11y] → finalize). 2026-06-18._
 
@@ -128,7 +128,7 @@ One left rail, nothing centered, **zero furniture** — no cards, no dividers, n
   ```
   Render `Text('PLAN', style: _eyebrowStyle)`. **Do not** use `AppTypography.label` + `copyWith(letterSpacing:)` — `AppTypography.label` carries no tracking; the eyebrow idiom is a standalone `const TextStyle`, exactly as briefing and debrief declare it. This is the one style on the screen that does not map to an `AppTypography` token (no new token is added — it is a local `const`, the `_DifficultyHubLine` / content-warning-sheet precedent).
 - `SizedBox(height: AppSpacing.base /*8*/)`.
-- **Plan line** (the data, primary ink): `Text(<plan>, style: AppTypography.bodyEmphasis.copyWith(color: AppColors.textPrimary))` (16/w500) — e.g. "Free plan" or the approved paid label (§4 / R-copy).
+- **Plan line** (the data, primary ink): `Text(<plan>, style: AppTypography.bodyEmphasis.copyWith(color: AppColors.textPrimary))` (16/w500) — "Free plan" (free) or "Premium" (paid); see §4.
 - `SizedBox(height: AppSpacing.cardTextGap /*5*/)`.
 - **Detail lines** (metadata): price + period, renewal/expiry date, etc. One `Text` per fact, stacked, `SizedBox(height: 4)` between. **Ink: `AppColors.errorBody` (#D8D8D8, documented 11.4:1 on background).** See the contrast note below. Exact strings in §4.
 - Gap before the secondary action: `SizedBox(height: 40)` (the briefing "after-lockup" rhythm).
@@ -166,7 +166,8 @@ One left rail, nothing centered, **zero furniture** — no cards, no dividers, n
 //   This is a data/utility screen: it intentionally exceeds the 2-voiced-slot
 //   narrative budget (title + status + CTAs + legal). That is correct for a
 //   status surface; the budget governs narrative beats, not utility chrome.
-//   CTA strings are fixed + diegetic and require Walid sign-off (see R-copy).
+//   CTA strings are fixed + diegetic — Walid-approved 2026-06-18:
+//   paid-plan display label "Premium"; CTAs "Subscribe" / "Manage subscription".
 ```
 
 ### A. Free user (`tier == 'free'`)
@@ -178,14 +179,14 @@ One left rail, nothing centered, **zero furniture** — no cards, no dividers, n
 
 ### B. Paid — active, renews (`tier == 'paid'`, future `subscription_expires_at`, auto-renew on)
 - Eyebrow: `PLAN`
-- Plan line: the approved paid label (R-copy)
+- Plan line: `Premium`
 - Detail lines:
   - `$1.99 per week` *(prefer the live `ProductDetails.price` if loaded, else the static `$1.99 per week`; product id `stt_weekly_199`.)*
   - `Renews {date}` → "Renews 18 Jul 2026"
 - Actions: **Manage subscription** (primary) + **Restore purchases** (secondary).
 
 ### C. Paid — cancelled but active until expiry (`tier == 'paid'`, future expiry, auto-renew off)
-- Plan line: the approved paid label
+- Plan line: `Premium`
 - Detail lines:
   - `$1.99 per week`
   - `Access until {date}` → "Access until 18 Jul 2026" *(stated as fact, no fear hook)*
@@ -336,7 +337,7 @@ Free view: status block → `Restore purchases` → `Subscribe` (pinned) → leg
 
 ## 10. Open items the build agent must clear
 
-- **R-copy (blocker) — the paid plan label + both CTA strings need Walid sign-off.** CTA copy is fixed and diegetic (The Handler's Brief), so new strings are not coined unilaterally. `Subscribe` (1 word, verb-first) and `Manage subscription` (2 words, verb-first) satisfy the 1–3-word rule but have no existing precedent and must be approved. Separately, the app surfaces no product name today (tier canonical is `'paid'`, ADR 002) — **do not coin "Premium" silently.** Get the paid plan label approved (e.g. `Paid plan` to mirror `Free plan`, or an approved brand name) before dev.
+- **R-copy — RESOLVED (Walid 2026-06-18).** Paid-plan display label = **`Premium`**; CTA strings = **`Subscribe`** (free) / **`Manage subscription`** (paid). All Handler's-Brief compliant (1–2 words, verb-first for the CTAs). No further copy sign-off owed. **`Premium` is the user-facing display label ONLY — the tier value stays `'paid'` (ADR 002). Do NOT introduce a `'premium'` tier string** (it would break the `users.tier` CHECK + `compute_call_usage`).
 
 - **R2 (blocker) — `GET /user/profile` does not exist yet.** It is Story 8.3 Task 2 (in-scope, same story). `CallUsage` (from `/scenarios` meta) carries tier + calls but **no `subscription_expires_at`**, so the paid view's renewal/expiry date has no steady-state source until 8.3 ships it. Either (a) sequence this screen after 8.3 Task 2, (b) ship the **free-only** view first (tier + calls from existing `CallUsage`, Subscribe + Restore, no date), then add the paid date when the endpoint lands, or (c) build `GET /user/profile` as part of this work. Do not assume the field is available.
 

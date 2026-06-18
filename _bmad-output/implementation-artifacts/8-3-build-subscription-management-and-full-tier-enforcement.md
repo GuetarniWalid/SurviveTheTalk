@@ -44,7 +44,7 @@ These five were surfaced at create-story and Walid ruled on each. **The spec bel
 
 - **D5 — BUILD `GET /user/profile`.** Walid: *"oui si vraiment utile … le projet a évolué … oui."* It is genuinely useful (the new Manage Subscription screen reads it for the expiry date, which no steady-state endpoint exposes today) — not just an AC literal. Build it (Task 2).
 
-**Open copy sign-off (not blocking dev start, settle before the screen ships):** the design doc's **R-copy** — the paid-plan label (e.g. `Paid plan` to mirror `Free plan`; do NOT silently coin "Premium") and the two CTA strings (`Subscribe`, `Manage subscription`). Surface to Walid for a one-line OK.
+**Copy — APPROVED by Walid 2026-06-18 (closes the design doc's R-copy):** paid-plan display label = **`Premium`**; CTA strings = **`Subscribe`** (free) / **`Manage subscription`** (paid). ⚠️ **`Premium` is a display label only — the tier value stays `'paid'` (ADR 002). Do NOT add a `'premium'` tier string** (it would break the `users.tier` CHECK + `compute_call_usage`).
 
 ---
 
