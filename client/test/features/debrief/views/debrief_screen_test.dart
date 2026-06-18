@@ -770,7 +770,7 @@ void main() {
         await tester.pumpAndSettle();
 
         // The paywall is shown…
-        expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
+        expect(find.byType(BottomSheet), findsOneWidget);
         expect(find.text('Speak English for real'), findsOneWidget);
         // …with the debrief still rendered behind the scrim.
         expect(find.text('Survival Rate'), findsOneWidget);
@@ -783,7 +783,7 @@ void main() {
         await pumpScreen(tester, buildScreen(payload: fullPayload()));
         await tester.pumpAndSettle();
 
-        expect(find.byKey(const Key('paywall-drag-handle')), findsNothing);
+        expect(find.byType(BottomSheet), findsNothing);
         expect(find.text('Speak English for real'), findsNothing);
       },
     );

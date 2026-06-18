@@ -49,151 +49,25 @@ class PaywallSheet {
 
   /// Open the sheet. Resolves to `true` when a purchase/restore completed, else
   /// `false` (dismissed / failed / cancelled).
-  ///
-  /// Story 8.2 (code-review D2): a custom [_PaywallRoute] rather than
-  /// `showModalBottomSheet`, because the design (States 2 & 3) requires every
-  /// manual dismiss path — swipe, scrim tap, system back — DISABLED during
-  /// Loading and the success hold, then re-enabled in Default/Error.
-  /// `showModalBottomSheet` bakes `enableDrag`/`isDismissible` in at call time
-  /// (its drag-dismiss calls `Navigator.pop` directly, bypassing `PopScope`),
-  /// so it cannot toggle by state. The custom route draws its own scrim + drag,
-  /// both gated on the live [SubscriptionState], so dismissibility tracks state.
   static Future<bool> show(BuildContext context) async {
-    final result = await Navigator.of(context).push<bool>(
-      _PaywallRoute(buildBloc: _buildBloc),
-    );
-    return result ?? false;
-  }
-}
-
-/// A state is dismissible (swipe / scrim / back allowed) EXCEPT while a
-/// purchase/restore is in flight ([SubscriptionLoading]) or during the
-/// post-purchase hold ([SubscriptionPurchased]) — design States 2 & 3 disable
-/// every manual dismiss path then, so the user can't interrupt the store
-/// round-trip or the post-purchase tier-flip reload.
-bool _isDismissibleState(SubscriptionState state) =>
-    state is! SubscriptionLoading && state is! SubscriptionPurchased;
-
-/// Custom modal route for the paywall (see [PaywallSheet.show] for the why).
-/// Translucent + slide-up, with a self-drawn scrim so the scrim tap, the
-/// drag-down and the system-back can all be gated on the live
-/// [SubscriptionState] via [_isDismissibleState].
-class _PaywallRoute extends PopupRoute<bool> {
-  _PaywallRoute({required this.buildBloc});
-
-  final SubscriptionBloc Function() buildBloc;
-
-  @override
-  Color? get barrierColor => null; // the layout draws its own (reactive) scrim
-  @override
-  bool get barrierDismissible => false; // dismissal is gated on the bloc state
-  @override
-  String? get barrierLabel => null;
-  @override
-  bool get opaque => false;
-  @override
-  Duration get transitionDuration => const Duration(milliseconds: 250);
-  @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 200);
-
-  @override
-  Widget buildPage(
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-  ) {
-    return BlocProvider<SubscriptionBloc>(
-      create: (_) => buildBloc(),
-      child: const _PaywallModalLayout(),
-    );
-  }
-}
-
-/// Scrim + bottom-anchored slide-up sheet. A single [BlocBuilder] computes
-/// dismissibility per state change and gates BOTH the scrim tap and the
-/// drag-down, so the design's State 2/3 "no manual dismiss during
-/// Loading/Success" holds without per-gesture re-checks.
-class _PaywallModalLayout extends StatelessWidget {
-  const _PaywallModalLayout();
-
-  @override
-  Widget build(BuildContext context) {
-    final animation = ModalRoute.of(context)!.animation!;
-    return BlocBuilder<SubscriptionBloc, SubscriptionState>(
-      builder: (context, state) {
-        final dismissible = _isDismissibleState(state);
-        return Stack(
-          children: [
-            // Scrim — fades with the route animation; absorbs all taps
-            // (`opaque`), but only DISMISSES when the state allows it.
-            Positioned.fill(
-              child: FadeTransition(
-                opacity: animation,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: dismissible
-                      ? () => Navigator.of(context).pop(false)
-                      : null,
-                  child: const ColoredBox(color: Colors.black54),
-                ),
-              ),
-            ),
-            // Sheet — slides up from the bottom; drag-down + system-back are
-            // gated on `dismissible` inside [_PaywallSheetSurface].
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SlideTransition(
-                position: animation.drive(
-                  Tween<Offset>(
-                    begin: const Offset(0, 1),
-                    end: Offset.zero,
-                  ).chain(CurveTween(curve: Curves.easeOutCubic)),
-                ),
-                child: _PaywallSheetSurface(dismissible: dismissible),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-/// The light sheet surface (radius [PaywallSheet._topRadius], `#F0F0F0`)
-/// wrapping the scrolling content. Owns the drag-down-to-dismiss and the
-/// system-back [PopScope], both gated on [dismissible] so they no-op during
-/// Loading/Success.
-class _PaywallSheetSurface extends StatelessWidget {
-  final bool dismissible;
-
-  const _PaywallSheetSurface({required this.dismissible});
-
-  @override
-  Widget build(BuildContext context) {
-    // Cap the sheet so tall content scrolls on small phones (the old
-    // `isScrollControlled` "iPhone SE mitigation") instead of overflowing.
-    final maxHeight = MediaQuery.sizeOf(context).height * 0.92;
-    // The drag-down-to-dismiss lives on the pinned handle INSIDE
-    // `_PaywallSheetBody` (so it never fights the content's scroll); here we own
-    // only the system-back `PopScope` (gated on `dismissible`) and the surface.
-    return PopScope(
-      canPop: dismissible,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: const Material(
-          color: AppColors.textPrimary,
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(
-              top: Radius.circular(PaywallSheet._topRadius),
-            ),
-          ),
-          child: _PaywallSheetBody(),
-        ),
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: AppColors.textPrimary,
+      // Tall content (~552px) overflows iPhone-SE — `isScrollControlled` lets
+      // the sheet hug content and the inner `SingleChildScrollView` scrolls on
+      // small phones (design "iPhone SE mitigation").
+      isScrollControlled: true,
+      isDismissible: true,
+      enableDrag: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_topRadius)),
+      ),
+      builder: (_) => BlocProvider<SubscriptionBloc>(
+        create: (_) => _buildBloc(),
+        child: const _PaywallSheetBody(),
       ),
     );
+    return result ?? false;
   }
 }
 
@@ -235,10 +109,6 @@ const double _kSuccessCheckSize = 48.0;
 const Duration _kSuccessHold = Duration(milliseconds: 1500);
 const Duration _kSuccessHoldAccessible = Duration(seconds: 5);
 const Duration _kCrossfade = Duration(milliseconds: 200);
-
-// Downward fling velocity (px/s) past which a drag dismisses the sheet — only
-// honored when the state is dismissible (Default/Error). Story 8.2 (D2).
-const double _kDismissFlingVelocity = 700.0;
 
 // Price hero — screen-specific 36px Bold (`paywall-price`); a local const per
 // the 7.4/7.5 precedent (no new AppTypography token for a one-screen size).
@@ -290,55 +160,35 @@ class _PaywallSheetBodyState extends State<_PaywallSheetBody> {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
-    // The sheet surface, scrim, drag-down and system-back `PopScope` all live
-    // in the parent `_PaywallModalLayout`/`_PaywallSheetSurface` (Story 8.2 D2 —
-    // dismissibility is gated there on the live state). This widget is just the
-    // scrolling content + the success-hold side-effect.
     return BlocConsumer<SubscriptionBloc, SubscriptionState>(
       listener: (context, state) {
         if (state is SubscriptionPurchased) _startSuccessHold(context);
       },
       builder: (context, state) {
         final isSuccess = state is SubscriptionPurchased;
-        final dismissible = _isDismissibleState(state);
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Pinned drag handle, OUTSIDE the scroll view so its vertical drag
-            // never fights the content's scroll. A downward fling dismisses —
-            // but only when the state allows it (Default/Error). Full-width hit
-            // band so the grab is easy.
-            GestureDetector(
-              key: const Key('paywall-drag-handle'),
-              behavior: HitTestBehavior.opaque,
-              onVerticalDragEnd: dismissible
-                  ? (details) {
-                      if ((details.primaryVelocity ?? 0) >
-                          _kDismissFlingVelocity) {
-                        Navigator.of(context).pop(false);
-                      }
-                    }
-                  : null,
-              child: const SizedBox(
-                width: double.infinity,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Center(child: _DragHandle()),
-                ),
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                child: SafeArea(
-                  top: false,
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + bottomInset),
-                    child: AnimatedSwitcher(
+        final isLoading = state is SubscriptionLoading;
+        // PopScope blocks system back during the in-flight purchase and the
+        // success hold; in Default/Error, system back == "Not now" (the sheet
+        // pops with no result → `show` returns false). AC8 / design back-button
+        // table. (Native swipe/scrim stay enabled — `showModalBottomSheet`'s
+        // `enableDrag`/`isDismissible` are static; PopScope is the contracted
+        // dismiss block. See the story's declared deviation.)
+        return PopScope(
+          canPop: !(isLoading || isSuccess),
+          child: SingleChildScrollView(
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 20 + bottomInset),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _DragHandle(),
+                    const SizedBox(height: 32),
+                    AnimatedSwitcher(
                       duration: _kCrossfade,
                       child: isSuccess
-                          ? const _SuccessView(
-                              key: ValueKey('paywall-success'),
-                            )
+                          ? const _SuccessView(key: ValueKey('paywall-success'))
                           : _OfferView(
                               key: const ValueKey('paywall-offer'),
                               state: state,
@@ -352,11 +202,11 @@ class _PaywallSheetBodyState extends State<_PaywallSheetBody> {
                                   Navigator.of(context).pop(false),
                             ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
-          ],
+          ),
         );
       },
     );

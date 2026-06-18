@@ -26,18 +26,6 @@ Widget _harness(GlobalKey<NavigatorState> navigatorKey) => MaterialApp(
 void main() {
   late MockSubscriptionBloc bloc;
 
-  // The sheet's surface Material (#F0F0F0, rounded top) — present iff the sheet
-  // is open. The CTA's FilledButton Material is `accent`, so this is unambiguous
-  // and replaces the old `find.byType(BottomSheet)` (Story 8.2 D2 dropped the
-  // framework bottom sheet for a custom route).
-  final sheetSurface = find.byWidgetPredicate(
-    (w) =>
-        w is Material &&
-        w.color == AppColors.textPrimary &&
-        w.shape is RoundedRectangleBorder,
-  );
-  const handle = Key('paywall-drag-handle');
-
   setUp(() {
     FlutterSecureStorage.setMockInitialValues({});
     bloc = MockSubscriptionBloc();
@@ -102,7 +90,19 @@ void main() {
     await open(tester, key);
     await tester.pumpAndSettle();
 
-    final sheet = tester.widget<Material>(sheetSurface);
+    // Scope to the sheet SURFACE Material (color #F0F0F0) — the CTA's
+    // FilledButton is also a RoundedRectangleBorder Material (radius 12).
+    final sheet = tester.widget<Material>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is Material &&
+              w.color == AppColors.textPrimary &&
+              w.shape is RoundedRectangleBorder,
+        ),
+      ),
+    );
     final shape = sheet.shape! as RoundedRectangleBorder;
     final radius = (shape.borderRadius as BorderRadius).topLeft.x;
     expect(radius, 16.0);
@@ -110,8 +110,8 @@ void main() {
 
   // ---- State 2: Loading ----
 
-  testWidgets('Loading shows the in-CTA spinner and disables CTA/dismiss/restore',
-      (tester) async {
+  testWidgets('Loading shows the in-CTA spinner and disables CTA/dismiss/restore'
+      ' + PopScope blocks back', (tester) async {
     seed(const SubscriptionLoading());
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
@@ -129,6 +129,14 @@ void main() {
       find.widgetWithText(TextButton, 'Restore purchases'),
     );
     expect(restore.onPressed, isNull);
+
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isFalse);
   });
 
   // ---- State 4: Error ----
@@ -143,16 +151,20 @@ void main() {
 
     final errorFinder = find.text('Something went wrong. Try again.');
     expect(errorFinder, findsOneWidget);
-    expect(
-      tester.widget<Text>(errorFinder).style?.color,
-      AppColors.paywallError,
-    );
+    expect(tester.widget<Text>(errorFinder).style?.color, AppColors.paywallError);
     // CTA is back to "Let's go" and tappable; dismiss stays enabled.
     expect(find.text("Let's go"), findsOneWidget);
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
       isNotNull,
     );
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isTrue);
   });
 
   testWidgets('product_unavailable renders the Error state with dismiss enabled'
@@ -197,7 +209,33 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1600));
     await tester.pump(const Duration(milliseconds: 400));
     expect(result, isTrue);
-    expect(sheetSurface, findsNothing);
+    expect(find.byType(BottomSheet), findsNothing);
+  });
+
+  testWidgets('PopScope blocks back during the success hold', (tester) async {
+    seed(
+      const SubscriptionInitial(),
+      stream: Stream<SubscriptionState>.fromIterable(
+        [const SubscriptionPurchased()],
+      ),
+    );
+    final key = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(_harness(key));
+    unawaited(PaywallSheet.show(key.currentContext!));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final popScope = tester.widget<PopScope>(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(PopScope),
+      ),
+    );
+    expect(popScope.canPop, isFalse);
+
+    // Drain the success-hold timer so teardown sees no pending timer.
+    await tester.pump(const Duration(milliseconds: 1600));
+    await tester.pump(const Duration(milliseconds: 400));
   });
 
   // ---- Cancelled → Default (no error) ----
@@ -274,157 +312,24 @@ void main() {
     await tester.tap(find.text('Not now'));
     await tester.pumpAndSettle();
     expect(result, isFalse);
-    expect(sheetSurface, findsNothing);
+    expect(find.byType(BottomSheet), findsNothing);
   });
 
-  // ---- D2 dismiss matrix: swipe / scrim / system-back × the 4 states ----
-  //
-  // Default & Error are dismissible (swipe, scrim tap, back all return false);
-  // Loading & the success hold are NOT (every manual path is a no-op — design
-  // States 2 & 3). The custom route gates all three on the live bloc state.
-
-  testWidgets('Default: scrim tap dismisses with false (AC5)', (tester) async {
+  testWidgets('scrim tap dismisses cleanly with false (AC5)', (tester) async {
     seed(const SubscriptionInitial());
     final key = GlobalKey<NavigatorState>();
     await tester.pumpWidget(_harness(key));
     bool? result;
-    unawaited(PaywallSheet.show(key.currentContext!).then((r) => result = r));
+    unawaited(
+      PaywallSheet.show(key.currentContext!).then((r) => result = r),
+    );
     await tester.pumpAndSettle();
 
     // (20,20) lands on the scrim above the bottom-anchored sheet.
     await tester.tapAt(const Offset(20, 20));
     await tester.pumpAndSettle();
     expect(result, isFalse);
-    expect(sheetSurface, findsNothing);
-  });
-
-  testWidgets('Default: swiping the handle down dismisses with false (AC5)', (
-    tester,
-  ) async {
-    seed(const SubscriptionInitial());
-    final key = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(key));
-    bool? result;
-    unawaited(PaywallSheet.show(key.currentContext!).then((r) => result = r));
-    await tester.pumpAndSettle();
-
-    await tester.fling(find.byKey(handle), const Offset(0, 300), 1500);
-    await tester.pumpAndSettle();
-    expect(result, isFalse);
-    expect(sheetSurface, findsNothing);
-  });
-
-  testWidgets('Default: system back dismisses (AC8)', (tester) async {
-    seed(const SubscriptionInitial());
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-    await tester.pumpAndSettle();
-
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(sheetSurface, findsNothing);
-  });
-
-  testWidgets('Error: scrim tap dismisses with false (AC5)', (tester) async {
-    seed(const SubscriptionFailed('verification_failed'));
-    final key = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(key));
-    bool? result;
-    unawaited(PaywallSheet.show(key.currentContext!).then((r) => result = r));
-    await tester.pumpAndSettle();
-
-    await tester.tapAt(const Offset(20, 20));
-    await tester.pumpAndSettle();
-    expect(result, isFalse);
-    expect(sheetSurface, findsNothing);
-  });
-
-  testWidgets('Loading: scrim tap is a no-op (dismiss blocked, design State 2)',
-      (tester) async {
-    seed(const SubscriptionLoading());
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.tapAt(const Offset(20, 20));
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(sheetSurface, findsOneWidget); // still open
-  });
-
-  testWidgets('Loading: swiping the handle is a no-op (dismiss blocked)', (
-    tester,
-  ) async {
-    seed(const SubscriptionLoading());
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.fling(find.byKey(handle), const Offset(0, 300), 1500);
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(sheetSurface, findsOneWidget); // still open
-  });
-
-  testWidgets('Loading: system back is blocked (PopScope, design State 2)', (
-    tester,
-  ) async {
-    seed(const SubscriptionLoading());
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.binding.handlePopRoute();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(sheetSurface, findsOneWidget); // still open
-  });
-
-  testWidgets('Success hold: system back is blocked (design State 3)', (
-    tester,
-  ) async {
-    seed(
-      const SubscriptionInitial(),
-      stream: Stream<SubscriptionState>.fromIterable(
-        [const SubscriptionPurchased()],
-      ),
-    );
-    final key = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(key));
-    unawaited(PaywallSheet.show(key.currentContext!));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.binding.handlePopRoute();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text("You're in"), findsOneWidget); // still held, not dismissed
-
-    // Drain the 1.5s success-hold timer so teardown sees no pending timer.
-    await tester.pump(const Duration(milliseconds: 1600));
-    await tester.pump(const Duration(milliseconds: 400));
-  });
-
-  testWidgets('Success hold: scrim tap is a no-op (design State 3)', (
-    tester,
-  ) async {
-    seed(
-      const SubscriptionInitial(),
-      stream: Stream<SubscriptionState>.fromIterable(
-        [const SubscriptionPurchased()],
-      ),
-    );
-    final key = GlobalKey<NavigatorState>();
-    await tester.pumpWidget(_harness(key));
-    unawaited(PaywallSheet.show(key.currentContext!));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.tapAt(const Offset(20, 20));
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text("You're in"), findsOneWidget); // still held
-
-    await tester.pump(const Duration(milliseconds: 1600));
-    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(BottomSheet), findsNothing);
   });
 
   // ---- Accessibility (AC6) ----

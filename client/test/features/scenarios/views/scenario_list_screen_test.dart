@@ -856,7 +856,7 @@ void main() {
       // PaywallSheet is a modal bottom sheet — its content (any text) sits
       // above the scenario list. We assert by widget type instead of text
       // because the copy is owned by PaywallSheet not this test.
-      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
     },
   );
 
@@ -1191,7 +1191,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('BRIEFING_CONFIRM'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
 
       // Dismiss the paywall sheet (scrim tap).
@@ -1283,7 +1283,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // Paywall sheet shown instead of a call.
-      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
       verifyNoPost(mockRepo);
     },
@@ -1299,7 +1299,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('paywall-drag-handle')), findsNothing);
+      expect(find.byType(BottomSheet), findsNothing);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
       verify(() => mockRepo.initiateCall(
           scenarioId: 's1',
@@ -1323,7 +1323,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.phone_outlined));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('paywall-drag-handle')), findsNothing);
+      expect(find.byType(BottomSheet), findsNothing);
       expect(find.byKey(_kCallStubKey), findsOneWidget);
       verify(() => mockRepo.initiateCall(
           scenarioId: 's1',
@@ -1354,7 +1354,7 @@ void main() {
       // Confirming (the call action) converges on _startCall → the paywall.
       await tester.tap(find.text('BRIEFING_CONFIRM'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('paywall-drag-handle')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
       expect(find.byKey(_kCallStubKey), findsNothing);
       verifyNoPost(mockRepo);
     },
