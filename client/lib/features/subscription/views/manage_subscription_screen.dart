@@ -69,7 +69,6 @@ const double _kHeroRingStroke = 12.0; // == debrief _kGaugeStroke
 const double _kHeroInnerWidth = 100.0; // == debrief _kGaugeInnerWidth
 const double _kHeroCaptionGap = 20.0; // ring -> caption
 const double _kHeroTitleGap = 32.0; // title -> hero
-const double _kHeroRestoreGap = 40.0; // hero -> Restore
 const Duration _kSweepDuration = Duration(milliseconds: 700);
 
 // CTA label — Inter 14 SemiBold (matches the paywall CTA recipe).
@@ -327,28 +326,6 @@ class _Frame extends StatelessWidget {
                     ),
                     const SizedBox(height: _kHeroTitleGap),
                     hero,
-                    const SizedBox(height: _kHeroRestoreGap),
-                    BlocBuilder<SubscriptionBloc, SubscriptionState>(
-                      builder: (context, s) => _RestoreRow(
-                        onPressed: onRestore,
-                        inFlight: s is SubscriptionLoading,
-                      ),
-                    ),
-                    if (restoreMessage != null) ...[
-                      const SizedBox(height: AppSpacing.base),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(
-                          restoreMessage!,
-                          textAlign: TextAlign.center,
-                          style: AppTypography.caption.copyWith(
-                            color: restoreFailed
-                                ? AppColors.destructive
-                                : AppColors.textSecondary,
-                          ),
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -368,11 +345,35 @@ class _Frame extends StatelessWidget {
             ],
             _PrimaryCta(
               label: isPaid ? _kCtaManage : _kCtaSubscribe,
+              isPaid: isPaid,
               onPressed: loading ? null : (isPaid ? onManage : onSubscribe),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.base * 2),
+            // Restore sits BELOW the primary CTA (quieter, better hierarchy);
+            // still reachable in every purchasable state (Apple 3.1.1).
+            BlocBuilder<SubscriptionBloc, SubscriptionState>(
+              builder: (context, s) => _RestoreRow(
+                onPressed: onRestore,
+                inFlight: s is SubscriptionLoading,
+              ),
+            ),
+            if (restoreMessage != null) ...[
+              const SizedBox(height: AppSpacing.base),
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  restoreMessage!,
+                  textAlign: TextAlign.center,
+                  style: AppTypography.caption.copyWith(
+                    color: restoreFailed
+                        ? AppColors.destructive
+                        : AppColors.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: AppSpacing.cardGap),
             _LegalFooter(
-              isPaid: isPaid,
               termsRecognizer: termsRecognizer,
               privacyRecognizer: privacyRecognizer,
             ),
@@ -648,29 +649,63 @@ class _HeroSkeleton extends StatelessWidget {
   }
 }
 
+/// Asymmetric emphasis by tier (retention vs conversion). FREE "Subscribe" is
+/// the loud accent FILL pill (the action we want). PAID "Manage subscription"
+/// is a quiet NEUTRAL-OUTLINED pill — present + clearly tappable (Apple 3.1.1,
+/// no dark pattern) but de-emphasized: accent stays fill-only (two-ink), never
+/// a border/text. Both share the "Pick up" StadiumBorder geometry + 48 height.
 class _PrimaryCta extends StatelessWidget {
   final String label;
+  final bool isPaid;
   final VoidCallback? onPressed;
-  const _PrimaryCta({required this.label, required this.onPressed});
+  const _PrimaryCta({
+    required this.label,
+    required this.isPaid,
+    required this.onPressed,
+  });
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
       height: AppSpacing.touchTargetComfortable,
-      child: FilledButton(
-        onPressed: onPressed,
-        style: FilledButton.styleFrom(
-          backgroundColor: AppColors.accent,
-          foregroundColor: AppColors.background,
-          disabledBackgroundColor: AppColors.accent.withValues(alpha: 0.4),
-          disabledForegroundColor: AppColors.background,
-          // Story 8.3 — match the briefing "Pick up" pill (StadiumBorder).
-          shape: const StadiumBorder(),
-          textStyle: _kCtaTextStyle,
-        ),
-        child: Text(label),
-      ),
+      child: isPaid
+          ? OutlinedButton(
+              onPressed: onPressed,
+              style: OutlinedButton.styleFrom(
+                backgroundColor: Colors.transparent,
+                foregroundColor: AppColors.textPrimary,
+                disabledForegroundColor: AppColors.textPrimary.withValues(
+                  alpha: 0.4,
+                ),
+                // `side` set EXPLICITLY in both states so Material never
+                // auto-recolors the border to a theme default (two-ink guard).
+                side: BorderSide(
+                  color: onPressed == null
+                      ? AppColors.textSecondary.withValues(alpha: 0.4)
+                      : AppColors.textSecondary,
+                  width: 1,
+                ),
+                shape: const StadiumBorder(),
+                textStyle: _kCtaTextStyle,
+              ),
+              child: Text(label),
+            )
+          : FilledButton(
+              onPressed: onPressed,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.background,
+                disabledBackgroundColor: AppColors.accent.withValues(
+                  alpha: 0.4,
+                ),
+                disabledForegroundColor: AppColors.background,
+                // Match the briefing "Pick up" pill (StadiumBorder).
+                shape: const StadiumBorder(),
+                textStyle: _kCtaTextStyle,
+              ),
+              child: Text(label),
+            ),
     );
   }
 }
@@ -714,12 +749,10 @@ class _RestoreRow extends StatelessWidget {
 }
 
 class _LegalFooter extends StatelessWidget {
-  final bool isPaid;
   final TapGestureRecognizer termsRecognizer;
   final TapGestureRecognizer privacyRecognizer;
 
   const _LegalFooter({
-    required this.isPaid,
     required this.termsRecognizer,
     required this.privacyRecognizer,
   });
@@ -728,14 +761,14 @@ class _LegalFooter extends StatelessWidget {
   Widget build(BuildContext context) {
     final base = AppTypography.caption.copyWith(color: AppColors.textSecondary);
     final link = base.copyWith(decoration: TextDecoration.underline);
+    // Story 8.3 — the auto-renewable disclosure lives at the POINT OF SALE (the
+    // paywall), which retains it; a post-purchase status screen carries no
+    // separate disclosure duty (Apple 3.1.2 / Google Play). Terms · Privacy
+    // links are kept (hygiene). Tier-independent now.
     return Text.rich(
       TextSpan(
         style: base,
         children: [
-          // Paid: the store-required auto-renew disclosure (compliance carve-out
-          // from the A2/B1 rule). Free: nothing is renewing — omit it.
-          if (isPaid)
-            const TextSpan(text: 'Auto-renewable. Cancel anytime.\n'),
           TextSpan(
             text: 'Terms',
             style: link,

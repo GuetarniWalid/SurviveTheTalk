@@ -369,3 +369,12 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   ring + count; paid = full "Premium" membership medallion; 700ms entrance sweep,
   reduce-motion-gated) + a fixed centered-pill Restore. Zero new tokens/copy.
   Binding design doc amended. Gates re-green: analyze clean + flutter 641.
+- 2026-06-18 — Walid action-block feedback (2nd design pass: 3 treatments → 3
+  critics → synthesis): (1) Restore moved BELOW the primary CTA (quieter
+  hierarchy, still reachable every state); (2) dropped the "Auto-renewable.
+  Cancel anytime." footer line (compliance verdict: the paywall retains the
+  disclosure at point-of-sale, so the status screen has no separate duty);
+  (3) paid "Manage subscription" → quiet neutral-OUTLINED pill (1px
+  textSecondary border, textPrimary label), accent FILL reserved for the free
+  "Subscribe" conversion CTA (two-ink intact). Gates re-green: analyze clean +
+  flutter 644.

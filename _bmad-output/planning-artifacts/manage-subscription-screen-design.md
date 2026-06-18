@@ -20,7 +20,16 @@ The first build shipped the §3 flat status block (eyebrow + plan + calls line).
 - **F17** — the new `_kRestorePending = 'Waiting for approval.'` restore-outcome copy (Ask-to-Buy / SCA hold) + the `SubscriptionCancelled` branch (clears the message) were added to `_onSubscriptionState`.
 - **Tokens / copy:** ZERO new `AppColors` (count stays 16) and ZERO new shared typography token; the new consts are dimension/timing locals (the `_kGaugeSize` precedent). Two-ink intact (accent is fill-only on the arc + CTA). CTAs = `StadiumBorder` accent pills matching "Pick up". The `'PLAN'` eyebrow is dropped (the ring + caption carry the hierarchy).
 
-Everything in §§4–9 below about data source, copy locks (`Premium`/`Subscribe`/`Manage subscription`/`Restore purchases`), navigation, legal footer, a11y, safe zones, and the no-new-token discipline still holds; only the §3 *visual layout* of the status block is superseded by the ring hero above.
+### Action-block refinement (2026-06-18, 2nd pass — supersedes §5 button emphasis + footer)
+
+A follow-up UX/parcours + store-compliance design pass (3 footer treatments → 3 critics → synthesis) set the bottom action block:
+
+- **Asymmetric CTA emphasis by tier.** FREE `Subscribe` stays the LOUD accent FILL pill (the conversion we want). PAID `Manage subscription` becomes a **quiet neutral-OUTLINED pill** — transparent fill, **1px `textSecondary` border**, **`textPrimary` label**, same `StadiumBorder`+48 geometry. We don't push a paying user toward the exit, but the exit is never hidden/faint/buried (full-width, 48dp, 13.5:1 label, ~4:1 border — Apple 3.1.1 + anti-dark-pattern satisfied). **Two-ink intact: accent is FILL-only** (free pill + ring arc), NEVER a border/text — so the outline uses a neutral border, not accent. (`OutlinedButton` with an explicit `side` in both states so Material can't recolor it to a theme default.)
+- **Restore moved BELOW the primary CTA**, into the pinned block (`CTA → 16 → Restore → [msg] → cardGap 12 → Terms·Privacy`). Quieter, cleaner hierarchy; still its centered `StadiumBorder` text button, still reachable + enabled in every purchasable state (free/paid/loading) → Apple 3.1.1.
+- **"Auto-renewable. Cancel anytime." DROPPED from the status footer. Compliance verdict: COMPLIANT** — Apple 3.1.2 / Google Play attach the auto-renew disclosure to the POINT OF SALE; the paywall retains the full disclosure there, so a post-purchase status screen carries no separate duty. `Terms · Privacy` links kept (hygiene); footer is now tier-independent.
+- Zero new tokens; `Colors.transparent` is a Material const (not a scanned hex literal).
+
+Everything in §§4–9 below about data source, copy locks (`Premium`/`Subscribe`/`Manage subscription`/`Restore purchases`), navigation, a11y, safe zones, and the no-new-token discipline still holds; the §3 *visual layout* is superseded by the ring hero, and the §5 *button emphasis + footer* by the action-block refinement above.
 
 ---
 

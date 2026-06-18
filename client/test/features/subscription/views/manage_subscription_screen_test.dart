@@ -99,6 +99,51 @@ void main() {
     expect(find.text('Subscribe'), findsOneWidget);
     expect(find.text('Manage subscription'), findsNothing);
     expect(find.text('Restore purchases'), findsOneWidget);
+    // Free "Subscribe" stays the loud accent FILL pill (conversion).
+    expect(find.widgetWithText(FilledButton, 'Subscribe'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Subscribe'), findsNothing);
+    // No auto-renewable line on the free footer either.
+    expect(find.textContaining('Auto-renewable'), findsNothing);
+  });
+
+  testWidgets('paid Manage is a neutral OUTLINED pill, not the accent fill',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_paid));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+
+    // Discreet (retention): outlined, NOT a green FilledButton.
+    expect(find.widgetWithText(FilledButton, 'Manage subscription'), findsNothing);
+    final manage = find.widgetWithText(OutlinedButton, 'Manage subscription');
+    expect(manage, findsOneWidget);
+    final side = tester.widget<OutlinedButton>(manage).style?.side?.resolve({});
+    expect(side?.color, AppColors.textSecondary); // neutral border, not accent
+  });
+
+  testWidgets('free: Restore sits BELOW the Subscribe pill', (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    final ctaY = tester
+        .getTopLeft(find.widgetWithText(FilledButton, 'Subscribe'))
+        .dy;
+    final restoreY = tester
+        .getTopLeft(find.widgetWithText(TextButton, 'Restore purchases'))
+        .dy;
+    expect(restoreY, greaterThan(ctaY));
+  });
+
+  testWidgets('paid: Restore sits BELOW the Manage button', (tester) async {
+    seedCubit(const UserProfileLoaded(_paid));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    final ctaY = tester
+        .getTopLeft(find.widgetWithText(OutlinedButton, 'Manage subscription'))
+        .dy;
+    final restoreY = tester
+        .getTopLeft(find.widgetWithText(TextButton, 'Restore purchases'))
+        .dy;
+    expect(restoreY, greaterThan(ctaY));
   });
 
   testWidgets('paid → Premium + price + Renews date + Manage CTA',
@@ -113,8 +158,9 @@ void main() {
     expect(find.textContaining('2099'), findsOneWidget);
     expect(find.text('Manage subscription'), findsOneWidget);
     expect(find.text('Subscribe'), findsNothing);
-    // Auto-renew disclosure shown for paid.
-    expect(find.textContaining('Auto-renewable'), findsOneWidget);
+    // Auto-renewable disclosure removed from the status screen (it lives at the
+    // point of sale — the paywall — per the compliance verdict).
+    expect(find.textContaining('Auto-renewable'), findsNothing);
   });
 
   testWidgets('loading → skeleton, CTA disabled, Restore enabled',
