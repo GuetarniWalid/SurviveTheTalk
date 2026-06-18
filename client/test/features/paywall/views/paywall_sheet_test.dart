@@ -75,7 +75,9 @@ void main() {
     expect(find.text("Know exactly what you're doing wrong"), findsOneWidget);
     expect(find.text("Let's go"), findsOneWidget);
     expect(find.text('Not now'), findsOneWidget);
-    expect(find.text('Restore purchases'), findsOneWidget);
+    // Story 8.3 — Restore moved OUT of the paywall (it lives on the Manage
+    // Subscription screen now); the paywall is a pure buy moment.
+    expect(find.text('Restore purchases'), findsNothing);
     expect(
       find.text('Auto-renewable. 3 calls per day. Cancel anytime.'),
       findsOneWidget,
@@ -110,7 +112,7 @@ void main() {
 
   // ---- State 2: Loading ----
 
-  testWidgets('Loading shows the in-CTA spinner and disables CTA/dismiss/restore'
+  testWidgets('Loading shows the in-CTA spinner and disables CTA/dismiss'
       ' + PopScope blocks back', (tester) async {
     seed(const SubscriptionLoading());
     final key = GlobalKey<NavigatorState>();
@@ -125,10 +127,6 @@ void main() {
     final notNow =
         tester.widget<TextButton>(find.widgetWithText(TextButton, 'Not now'));
     expect(notNow.onPressed, isNull);
-    final restore = tester.widget<TextButton>(
-      find.widgetWithText(TextButton, 'Restore purchases'),
-    );
-    expect(restore.onPressed, isNull);
 
     final popScope = tester.widget<PopScope>(
       find.descendant(
@@ -251,37 +249,20 @@ void main() {
     expect(find.text("You're in"), findsNothing);
   });
 
-  // ---- Restore (D2) ----
+  // ---- Restore — Story 8.3: moved OUT of the paywall ----
+  //
+  // Restore purchases now lives ONLY on the Manage Subscription screen (reached
+  // via the Account hub line), covered by manage_subscription_screen_test.dart.
+  // The paywall is a pure transactional moment — no Restore affordance.
 
-  testWidgets('tapping "Restore purchases" dispatches RestorePressed', (
-    tester,
-  ) async {
+  testWidgets('paywall has NO Restore affordance (moved to Subscription screen)',
+      (tester) async {
     seed(const SubscriptionInitial());
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Restore purchases'));
-    await tester.pump();
-    verify(() => bloc.add(const RestorePressed())).called(1);
-  });
-
-  testWidgets('RestoreEmpty shows a neutral "Nothing to restore." (F16, no fake'
-      ' success)', (tester) async {
-    seed(const SubscriptionRestoreEmpty());
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-    await tester.pumpAndSettle();
-
-    final line = find.text('Nothing to restore.');
-    expect(line, findsOneWidget);
-    // Neutral (secondary ink), NOT the error red, NOT the success state.
-    expect(
-      tester.widget<Text>(line).style?.color,
-      AppColors.overlaySubtitle,
-    );
-    expect(find.text("You're in"), findsNothing);
-    expect(find.text("Let's go"), findsOneWidget); // offer still present
+    expect(find.text('Restore purchases'), findsNothing);
   });
 
   testWidgets('PendingApproval (F17) shows the waiting copy + stays dismissible',

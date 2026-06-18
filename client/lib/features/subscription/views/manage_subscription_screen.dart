@@ -439,9 +439,8 @@ class _PrimaryCta extends StatelessWidget {
           foregroundColor: AppColors.background,
           disabledBackgroundColor: AppColors.accent.withValues(alpha: 0.4),
           disabledForegroundColor: AppColors.background,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+          // Story 8.3 — match the briefing "Pick up" pill (StadiumBorder).
+          shape: const StadiumBorder(),
           textStyle: _kCtaTextStyle,
         ),
         child: Text(label),

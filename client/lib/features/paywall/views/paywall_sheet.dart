@@ -83,13 +83,15 @@ const List<String> _kBenefits = <String>[
 ];
 const String _kCta = "Let's go";
 const String _kDismiss = 'Not now';
-const String _kRestore = 'Restore purchases';
 const String _kLegal = 'Auto-renewable. 3 calls per day. Cancel anytime.';
 const String _kSuccessTitle = "You're in";
 const String _kError = 'Something went wrong. Try again.';
-const String _kNothingToRestore = 'Nothing to restore.';
 // Story 8.3 (F17) — store purchase pending external approval (Ask to Buy / SCA).
 const String _kPendingApproval = 'Waiting for approval. You can close this.';
+// Story 8.3 — Restore purchases moved OUT of the paywall (it now lives on the
+// Manage Subscription screen, reached via the Account hub line). Apple 3.1.1's
+// "visible restore" requirement is still met there. The paywall is a pure
+// transactional moment now.
 
 // ---- Screen-reader announcements (design → Accessibility) ----
 const String _kPriceSemantics = 'One dollar ninety-nine per week';
@@ -100,7 +102,6 @@ const String _kSuccessSemantics = "Subscription confirmed. You're in.";
 const double _kHandleWidth = 40.0;
 const double _kHandleHeight = 4.0;
 const double _kCtaHeight = 48.0;
-const double _kCtaRadius = 12.0;
 const double _kSpinnerSize = 24.0;
 const double _kBenefitIconSize = 20.0;
 const double _kBenefitIconGap = 12.0;
@@ -197,9 +198,6 @@ class _PaywallSheetBodyState extends State<_PaywallSheetBody> {
                               onSubscribe: () => context
                                   .read<SubscriptionBloc>()
                                   .add(const SubscribePressed()),
-                              onRestore: () => context
-                                  .read<SubscriptionBloc>()
-                                  .add(const RestorePressed()),
                               onDismiss: () =>
                                   Navigator.of(context).pop(false),
                             ),
@@ -237,14 +235,12 @@ class _DragHandle extends StatelessWidget {
 class _OfferView extends StatelessWidget {
   final SubscriptionState state;
   final VoidCallback onSubscribe;
-  final VoidCallback onRestore;
   final VoidCallback onDismiss;
 
   const _OfferView({
     super.key,
     required this.state,
     required this.onSubscribe,
-    required this.onRestore,
     required this.onDismiss,
   });
 
@@ -252,7 +248,6 @@ class _OfferView extends StatelessWidget {
   Widget build(BuildContext context) {
     final loading = state is SubscriptionLoading;
     final failed = state is SubscriptionFailed;
-    final restoreEmpty = state is SubscriptionRestoreEmpty;
     // Story 8.3 (F17) — pending external approval: actions are inert (no
     // double-buy) but the sheet stays dismissible ("You can close this.").
     final pending = state is SubscriptionPendingApproval;
@@ -334,19 +329,6 @@ class _OfferView extends StatelessWidget {
             ),
           ),
         ],
-        if (restoreEmpty) ...[
-          const SizedBox(height: 8),
-          Semantics(
-            liveRegion: true,
-            child: Text(
-              _kNothingToRestore,
-              textAlign: TextAlign.center,
-              style: AppTypography.caption.copyWith(
-                color: AppColors.overlaySubtitle,
-              ),
-            ),
-          ),
-        ],
         const SizedBox(height: 16),
         TextButton(
           onPressed: loading ? null : onDismiss,
@@ -358,18 +340,6 @@ class _OfferView extends StatelessWidget {
             textStyle: AppTypography.body,
           ),
           child: const Text(_kDismiss),
-        ),
-        const SizedBox(height: 8),
-        TextButton(
-          onPressed: actionsDisabled ? null : onRestore,
-          style: TextButton.styleFrom(
-            foregroundColor: AppColors.overlaySubtitle,
-            disabledForegroundColor:
-                AppColors.overlaySubtitle.withValues(alpha: 0.4),
-            minimumSize: const Size.fromHeight(48),
-            textStyle: AppTypography.caption,
-          ),
-          child: const Text(_kRestore),
         ),
         const SizedBox(height: 24),
         Text(
@@ -436,9 +406,8 @@ class _CtaButton extends StatelessWidget {
           foregroundColor: AppColors.background,
           disabledBackgroundColor: AppColors.accent,
           disabledForegroundColor: AppColors.background,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(_kCtaRadius),
-          ),
+          // Story 8.3 — match the briefing "Pick up" pill (StadiumBorder).
+          shape: const StadiumBorder(),
           textStyle: _kCtaTextStyle,
         ),
         child: loading
