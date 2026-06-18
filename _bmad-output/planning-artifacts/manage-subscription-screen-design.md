@@ -7,6 +7,23 @@ Status: binding (Story 8.3)
 
 ---
 
+## REDESIGN AMENDMENT — hero-ring (2026-06-18, supersedes the flat status block below where they conflict)
+
+The first build shipped the §3 flat status block (eyebrow + plan + calls line). Walid rejected it on device as **empty / not pretty**, and flagged a mis-calibrated Restore button. A second multi-agent design pass (3 concepts → 4 adversarial critics → synthesis) produced the binding hero-ring redesign now implemented in `manage_subscription_screen.dart`:
+
+- **Focal hero ring (the debrief gauge visual language).** A centered 180px ring (stroke 12, `gaugeTrack` groove, `accent` value arc — the exact `_ScoreGaugePainter` geometry, 270° speedometer) that **sweeps in once over 700ms** (`Curves.easeOutCubic`, reduce-motion paints the final frame, no count-up). This is the screen's center of gravity and fills the void purposefully (on-brand, no foreign motif).
+- **FREE = usage ring.** Arc fraction = `callsRemaining / callsPerPeriod` (full when calls remain, drains as spent — ring and number always agree; a fresh user sees a near-full ring, not the old empty void). Bore shows the **count only** (`AppTypography.display`, `FittedBox`); **no inner label** (`'calls left'`/`'CALLS LEFT'` dropped). Caption below (centered, `MergeSemantics`): `'Free plan'` + `'{n} of {cap} free calls left'` (verbatim).
+- **PAID = membership medallion, NOT a daily meter.** Arc fraction = **1.0** always (a full ring = active entitlement). A paid `/user/profile` is a point-in-time daily count, so a `remaining/cap` ring would show an *alarming empty ring on Premium at end of day* — so the paid ring does NOT visualize the daily allowance. Bore shows the word **`Premium`** (`AppTypography.headline`, `FittedBox`); caption = `'$1.99 per week'` + `'Renews {date}'` (the plan word is in the ring, not repeated).
+- **State D (expired/reverted-free)** = the free ring + a quiet `'Subscription ended {date}'` line in `textSecondary` (historical, never red). **Loading** = groove-only ring (`fraction:0`) + the two dim bars. **Error** = `EmpatheticErrorScreen` (unchanged).
+- **Restore affordance fixed.** Replaced the full-width zero-padding left-glued `TextButton` (label glued left, full-width highlight flash) with a **centered, intrinsic-width `StadiumBorder` text button** (`textSecondary` chrome ink, ≥48dp, padding 16, ripple hugs the label). In-flight → bounded spinner + disabled. Present in every purchasable state (Apple 3.1.1).
+- **Restore moved OUT of the paywall** (Walid 2026-06-18) — it lives only here now; the paywall is a pure buy moment.
+- **F17** — the new `_kRestorePending = 'Waiting for approval.'` restore-outcome copy (Ask-to-Buy / SCA hold) + the `SubscriptionCancelled` branch (clears the message) were added to `_onSubscriptionState`.
+- **Tokens / copy:** ZERO new `AppColors` (count stays 16) and ZERO new shared typography token; the new consts are dimension/timing locals (the `_kGaugeSize` precedent). Two-ink intact (accent is fill-only on the arc + CTA). CTAs = `StadiumBorder` accent pills matching "Pick up". The `'PLAN'` eyebrow is dropped (the ring + caption carry the hierarchy).
+
+Everything in §§4–9 below about data source, copy locks (`Premium`/`Subscribe`/`Manage subscription`/`Restore purchases`), navigation, legal footer, a11y, safe zones, and the no-new-token discipline still holds; only the §3 *visual layout* of the status block is superseded by the ring hero above.
+
+---
+
 ## 1. Purpose & scope
 
 A single, flat **account/subscription status screen** reached from a quiet hub affordance. It shows the user where they stand and offers the one right action:

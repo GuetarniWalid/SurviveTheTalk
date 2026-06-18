@@ -1,4 +1,5 @@
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/widgets/empathetic_error_screen.dart';
 import 'package:client/features/paywall/views/paywall_sheet.dart';
 import 'package:client/features/subscription/bloc/subscription_bloc.dart';
@@ -34,6 +35,14 @@ const _paid = UserProfile(
   callsPerPeriod: 3,
   period: 'day',
   subscriptionExpiresAt: '2099-07-18T00:00:00Z',
+);
+// A reverted/churned user: now free, carries a PAST expiry (state D).
+const _expired = UserProfile(
+  tier: 'free',
+  callsRemaining: 1,
+  callsPerPeriod: 3,
+  period: 'lifetime',
+  subscriptionExpiresAt: '2020-01-01T00:00:00Z',
 );
 
 void main() {
@@ -235,6 +244,97 @@ void main() {
     );
     await tester.pump();
 
+    expect(tester.takeException(), isNull);
+  });
+
+  // ---------- Story 8.3 hero-ring redesign ----------
+
+  testWidgets('free hero shows the count in the ring + a gauge, no inner label',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_free)); // remaining 2 of 3
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800)); // finish the sweep
+
+    expect(find.text('2'), findsOneWidget); // the count in the ring bore
+    expect(find.byType(CustomPaint), findsWidgets); // the gauge painter
+    // No invented inner ring labels (the dropped-copy decision).
+    expect(find.text('CALLS LEFT'), findsNothing);
+    expect(find.text('calls a day'), findsNothing);
+  });
+
+  testWidgets('paid hero is a Premium medallion — word in the ring, not doubled',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_paid));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(find.text('Premium'), findsOneWidget); // in the ring, not repeated
+    expect(find.text('\$1.99 per week'), findsOneWidget);
+    expect(find.textContaining('Renews'), findsOneWidget);
+  });
+
+  testWidgets('expired/reverted (state D) shows a quiet "Subscription ended" line',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_expired));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(find.text('Free plan'), findsOneWidget);
+    expect(find.text('1 of 3 free calls left'), findsOneWidget);
+    final ended = find.textContaining('Subscription ended');
+    expect(ended, findsOneWidget);
+    // Historical line uses the quiet chrome grey, never destructive red.
+    expect(tester.widget<Text>(ended).style?.color, AppColors.textSecondary);
+    expect(find.text('Subscribe'), findsOneWidget);
+  });
+
+  testWidgets('Restore is a centered pill (not the glued-left full-width slab)',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    await tester.pumpWidget(harness());
+    await tester.pump();
+
+    final restoreBtn = find.widgetWithText(TextButton, 'Restore purchases');
+    expect(restoreBtn, findsOneWidget);
+    // Centered (the layout fix), not Alignment.centerLeft.
+    expect(
+      find.ancestor(of: restoreBtn, matching: find.byType(Center)),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('Restore in-flight shows a spinner (label hidden)', (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    seedSubStream(const [SubscriptionLoading()]);
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Restore purchases'), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('Restore pending (F17) → inline "Waiting for approval." (not red)',
+      (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    seedSubStream(const [SubscriptionPendingApproval()]);
+    await tester.pumpWidget(harness());
+    await tester.pump();
+    await tester.pump();
+
+    final pending = find.text('Waiting for approval.');
+    expect(pending, findsOneWidget);
+    expect(tester.widget<Text>(pending).style?.color, AppColors.textSecondary);
+  });
+
+  testWidgets('hero entrance animation settles with no exception', (tester) async {
+    seedCubit(const UserProfileLoaded(_free));
+    await tester.pumpWidget(harness());
+    await tester.pump(); // fire the post-frame forward()
+    await tester.pump(const Duration(milliseconds: 800)); // past the 700ms sweep
     expect(tester.takeException(), isNull);
   });
 }

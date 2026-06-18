@@ -358,3 +358,14 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   entry + app-lifetime purchase listener + F17). Gates green (server pytest 994,
   client flutter 635, ruff + analyze clean). Status → review. Task 10 (deploy +
   server Smoke Test Gate + snapshot refresh) owed; on-device gate deferred.
+- 2026-06-18 — deployed + server Smoke Test Gate PASSED (commit f6d69ee, CI
+  27756245681; migration 015 live; 8/8 server boxes filled; prod_snapshot
+  refreshed). Only `/bmad-code-review` owed for review→done.
+- 2026-06-18 — Walid design feedback: (1) removed Restore from the paywall
+  (lives only on the Subscription screen now); (2) "Let's go" + "Subscribe"
+  CTAs → StadiumBorder pills (match "Pick up"); (3) **Manage Subscription screen
+  REDESIGNED** via a multi-agent critical design pass (3 concepts → 4 adversarial
+  critics → synthesis) into a hero "survival-ring" (free = remaining/cap usage
+  ring + count; paid = full "Premium" membership medallion; 700ms entrance sweep,
+  reduce-motion-gated) + a fixed centered-pill Restore. Zero new tokens/copy.
+  Binding design doc amended. Gates re-green: analyze clean + flutter 641.
