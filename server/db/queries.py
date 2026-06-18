@@ -154,6 +154,8 @@ async def insert_call_session(
     user_id: int,
     scenario_id: str,
     started_at: str,
+    *,
+    tier_at_call: str | None = None,
 ) -> int:
     """Insert a new call_sessions row in `'pending'` state, returning the new id.
 
@@ -166,11 +168,18 @@ async def insert_call_session(
     rows on the migration 008 path — every NEW row written via this helper
     is in-flight and must count toward the cap (Story 6.5 AC3) until
     `/end` flips it OR the janitor sweeps it to `'failed'`.
+
+    Story 8.3 (D2) — `tier_at_call` STAMPS the user's tier at initiate time
+    (migration 015). The free lifetime cap counts only `tier_at_call='free'`
+    calls, so a churned paid->free user "returns where they were" (paid-era
+    calls never burned a free credit). Optional / `None` (legacy callers and
+    the empty default) writes NULL, which the count treats as `'free'` via
+    `COALESCE(tier_at_call,'free')`.
     """
     cursor = await db.execute(
-        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status) "
-        "VALUES (?, ?, ?, 'pending')",
-        (user_id, scenario_id, started_at),
+        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status, "
+        "tier_at_call) VALUES (?, ?, ?, 'pending', ?)",
+        (user_id, scenario_id, started_at, tier_at_call),
     )
     await db.commit()
     call_id = cursor.lastrowid
@@ -346,7 +355,9 @@ async def upsert_scenario(db: aiosqlite.Connection, row: dict) -> None:
     await db.execute(_UPSERT_SCENARIO_SQL, row)
 
 
-async def count_user_call_sessions_total(db: aiosqlite.Connection, user_id: int) -> int:
+async def count_user_call_sessions_total(
+    db: aiosqlite.Connection, user_id: int, *, tier_at_call: str | None = None
+) -> int:
     """Lifetime cap-eligible call_sessions count (used by free-tier policy).
 
     Story 6.5 added the `status` filter: only `'pending'` (in-flight) and
@@ -359,12 +370,22 @@ async def count_user_call_sessions_total(db: aiosqlite.Connection, user_id: int)
     /calls/initiate in a tight loop without ever calling /end and bypass
     FR21 entirely. The janitor frees abandoned `'pending'` rows after 1 h
     so the cap-counter is eventually consistent.
+
+    Story 8.3 (D2) — when `tier_at_call` is given, also filter on
+    `COALESCE(tier_at_call,'free') = ?` so the free lifetime cap counts only
+    free-era calls (legacy NULL rows count as free). Omitted / `None` counts
+    every cap-eligible row (the pre-8.3 behaviour, preserved for any caller
+    that doesn't care about the tier split).
     """
-    async with db.execute(
+    sql = (
         "SELECT COUNT(*) FROM call_sessions "
-        "WHERE user_id = ? AND status IN ('pending', 'completed')",
-        (user_id,),
-    ) as cursor:
+        "WHERE user_id = ? AND status IN ('pending', 'completed')"
+    )
+    params: list = [user_id]
+    if tier_at_call is not None:
+        sql += " AND COALESCE(tier_at_call, 'free') = ?"
+        params.append(tier_at_call)
+    async with db.execute(sql, params) as cursor:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
@@ -395,7 +416,11 @@ async def count_user_gifts_today(
 
 
 async def count_user_call_sessions_since(
-    db: aiosqlite.Connection, user_id: int, since_iso: str
+    db: aiosqlite.Connection,
+    user_id: int,
+    since_iso: str,
+    *,
+    tier_at_call: str | None = None,
 ) -> int:
     """Cap-eligible call_sessions count since `since_iso` (paid-tier policy).
 
@@ -406,13 +431,23 @@ async def count_user_call_sessions_since(
     Story 6.5 added the `status IN ('pending', 'completed')` filter — same
     rationale as `count_user_call_sessions_total` above (`'failed'` rows
     don't count; `'pending'` rows do).
+
+    Story 8.3 (D2) — when `tier_at_call` is given, also filter on
+    `COALESCE(tier_at_call,'free') = ?` so the paid daily cap counts only
+    today's paid-era calls (a fresh upgrader gets a clean 3 even if they made
+    a free call earlier today). Omitted / `None` counts every cap-eligible
+    row in the window (the pre-8.3 behaviour).
     """
-    async with db.execute(
+    sql = (
         "SELECT COUNT(*) FROM call_sessions "
         "WHERE user_id = ? AND started_at >= ? "
-        "AND status IN ('pending', 'completed')",
-        (user_id, since_iso),
-    ) as cursor:
+        "AND status IN ('pending', 'completed')"
+    )
+    params: list = [user_id, since_iso]
+    if tier_at_call is not None:
+        sql += " AND COALESCE(tier_at_call, 'free') = ?"
+        params.append(tier_at_call)
+    async with db.execute(sql, params) as cursor:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
@@ -665,6 +700,115 @@ async def get_latest_purchase_by_token(
         (verification_token,),
     ) as cursor:
         return await cursor.fetchone()
+
+
+async def get_active_entitlement_expiry(
+    db: aiosqlite.Connection, user_id: int
+) -> str | None:
+    """Return the latest `expires_at` among the user's `'valid'` purchases, or None.
+
+    Story 8.3 (Task 2) — the steady-state source for `GET /user/profile`'s
+    `subscription_expires_at` (the Manage-Subscription screen's renewal/expiry
+    date, which no other endpoint exposes). `expires_at` is stored as a
+    `Z`-suffixed ISO 8601 string, so `ORDER BY expires_at DESC` is chronological
+    (same lexicographic-==-temporal convention as `started_at`). NULL when the
+    user has no `'valid'` purchase carrying an expiry (free users, legacy rows).
+    """
+    async with db.execute(
+        "SELECT expires_at FROM purchases "
+        "WHERE user_id = ? AND validation_status = 'valid' "
+        "AND expires_at IS NOT NULL "
+        "ORDER BY expires_at DESC LIMIT 1",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row["expires_at"] if row else None
+
+
+async def get_users_with_expired_entitlement(
+    db: aiosqlite.Connection, now_iso: str
+) -> list[aiosqlite.Row]:
+    """Return `'paid'` users whose entitlement has lapsed (Story 8.3 Task 4).
+
+    A user is expired when they are `tier='paid'` but hold NO `'valid'` purchase
+    with `expires_at > now`. This is the expiry-downgrade backstop's worklist:
+    `downgrade_expired_entitlements` flips each to `'free'`. `expires_at` is a
+    `Z`-suffixed ISO string so the `> now_iso` comparison is chronological.
+
+    A `'valid'` purchase with NULL `expires_at` is treated as NON-expiring
+    (it does not appear as a lapse) — defensive, though every subscription
+    validation records an expiry. The NOT EXISTS keeps a user paid as long as
+    ANY of their valid purchases is still in the future.
+    """
+    async with db.execute(
+        "SELECT * FROM users u WHERE u.tier = 'paid' AND NOT EXISTS ("
+        "  SELECT 1 FROM purchases p "
+        "  WHERE p.user_id = u.id AND p.validation_status = 'valid' "
+        "  AND (p.expires_at IS NULL OR p.expires_at > ?)"
+        ")",
+        (now_iso,),
+    ) as cursor:
+        return list(await cursor.fetchall())
+
+
+async def get_purchase_by_transaction_id(
+    db: aiosqlite.Connection, transaction_id: str
+) -> aiosqlite.Row | None:
+    """Return the most-recent purchases row for `transaction_id`, or None.
+
+    Story 8.3 (Task 5) — the Apple webhook resolves a notification back to a
+    user via the stored Apple `transactionId`. Most-recent (`id DESC`) so a
+    re-verified subscription's latest audit row wins. A notification for an
+    unknown transaction (e.g. a renewal whose new transactionId we never
+    stored) returns None → the webhook ACKs 200 + logs (the expiry-sweep
+    backstop still covers it).
+    """
+    async with db.execute(
+        "SELECT * FROM purchases WHERE transaction_id = ? ORDER BY id DESC LIMIT 1",
+        (transaction_id,),
+    ) as cursor:
+        return await cursor.fetchone()
+
+
+async def record_subscription_event(
+    db: aiosqlite.Connection,
+    *,
+    provider: str,
+    notification_id: str,
+    notification_type: str | None,
+    received_at: str,
+) -> bool:
+    """Insert a webhook event into `subscription_events`; dedup on UNIQUE.
+
+    Story 8.3 (Task 5/D3) — the idempotency ledger behind "return 200 quickly +
+    no-op on replay". Returns True when the row was NEWLY inserted (process the
+    event), False when the `notification_id` (Apple notificationUUID / Google
+    Pub/Sub messageId) was already recorded (a replay → no-op). Commits on the
+    happy path; rolls back + returns False on the UNIQUE collision.
+    """
+    try:
+        await db.execute(
+            "INSERT INTO subscription_events"
+            "(provider, notification_id, notification_type, received_at) "
+            "VALUES (?, ?, ?, ?)",
+            (provider, notification_id, notification_type, received_at),
+        )
+        await db.commit()
+        return True
+    except aiosqlite.IntegrityError:
+        await db.rollback()
+        return False
+
+
+async def mark_subscription_event_processed(
+    db: aiosqlite.Connection, notification_id: str, processed_at: str
+) -> None:
+    """Stamp `processed_at` on a subscription_events row (audit/observability)."""
+    await db.execute(
+        "UPDATE subscription_events SET processed_at = ? WHERE notification_id = ?",
+        (processed_at, notification_id),
+    )
+    await db.commit()
 
 
 async def get_pending_purchases(

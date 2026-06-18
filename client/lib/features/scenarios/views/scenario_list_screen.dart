@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -16,6 +18,7 @@ import '../../call/repositories/call_repository.dart';
 import '../../call/views/call_screen.dart';
 import '../../call/views/no_network_screen.dart';
 import '../../paywall/views/paywall_sheet.dart';
+import '../../subscription/services/purchase_sync_service.dart';
 import '../bloc/scenarios_bloc.dart';
 import '../bloc/scenarios_event.dart';
 import '../bloc/scenarios_state.dart';
@@ -204,6 +207,35 @@ class _ListState extends State<_List> {
   late final DifficultyStorage _difficultyStorage =
       widget.difficultyStorage ?? DifficultyStorage();
 
+  /// Story 8.3 (Task 6) — fires a silent reload when the app-lifetime purchase
+  /// listener verifies a re-delivered purchase, so the now-paid tier re-flows.
+  StreamSubscription<void>? _entitlementSub;
+
+  @override
+  void initState() {
+    super.initState();
+    PurchaseSyncService? syncService;
+    try {
+      syncService = context.read<PurchaseSyncService>();
+    } catch (_) {
+      // No PurchaseSyncService in the tree (tests / older wiring) — skip.
+      syncService = null;
+    }
+    if (syncService != null) {
+      _entitlementSub = syncService.onEntitlementChanged.listen((_) {
+        if (mounted) {
+          context.read<ScenariosBloc>().add(const RefreshScenariosEvent());
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _entitlementSub?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     // Reserve exactly the BOC's rendered height (static content + the
@@ -216,6 +248,10 @@ class _ListState extends State<_List> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Story 8.3 (AC1, UX-DR16) — quiet, tier-neutral Account line, trailing
+        // (edge-gesture-safe) and stacked directly above the difficulty line.
+        // No tier badge — invisible tiers preserved; the screen differentiates.
+        _AccountHubLine(onTap: () => context.push(AppRoutes.account)),
         // Story 6.19 — discreet GLOBAL difficulty line (set once, applies to
         // every call). Sits above the scrolling list (and so above the pinned
         // BottomOverlayCard); tapping it opens the difficulty bottom sheet.
@@ -270,6 +306,19 @@ class _ListState extends State<_List> {
     if (_initiating) return;
     setState(() => _initiating = true);
     try {
+      // Story 8.3 (AC3) — at 0 calls the call icon is INERT: never initiate.
+      // A free user is routed to the paywall (the way forward); a paid user at
+      // their daily cap is a no-op (the BOC already says "come back tomorrow").
+      // No reliance on the server 403 round-trip.
+      if (widget.usage.callsRemaining == 0) {
+        if (widget.usage.isFree) {
+          final purchased = await PaywallSheet.show(context);
+          if (purchased && context.mounted) {
+            context.read<ScenariosBloc>().add(const LoadScenariosEvent());
+          }
+        }
+        return;
+      }
       // Story 8.2 (AC1, UX-DR16) — the paid-scenario gate fires BEFORE the
       // briefing push: tapping the call icon on a paid scenario (as a free
       // user) opens the paywall directly instead of initiating a call.
@@ -445,6 +494,52 @@ class _ListState extends State<_List> {
         setState(() => _initiating = false);
       }
     }
+  }
+}
+
+/// Story 8.3 (AC1, design §2) — the quiet, tier-neutral `Account` hub line.
+/// Mirrors `_DifficultyHubLine` (textSecondary grey, no new colors) but lifts
+/// the hit box to >= 44dp (the difficulty line's vertical:4 padding falls short)
+/// and is trailing-aligned so it never sits in the left edge-back-swipe gutter
+/// (ADR 003). No tier badge — invisible tiers (UX-DR16); both tiers see the
+/// same line, the SCREEN differentiates.
+class _AccountHubLine extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _AccountHubLine({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(
+          minHeight: AppSpacing.minTouchTarget,
+        ),
+        alignment: Alignment.center,
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Icon(
+              Icons.account_circle_outlined,
+              size: 15,
+              color: AppColors.textSecondary,
+            ),
+            SizedBox(width: 6),
+            Text(
+              'Account',
+              style: TextStyle(
+                fontFamily: AppTypography.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

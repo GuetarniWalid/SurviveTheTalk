@@ -418,3 +418,91 @@ def test_migration_014_subscriptions(test_db_path):
         )
     finally:
         conn.close()
+
+
+def test_migration_015_tier_at_call_and_subscription_events(test_db_path):
+    """Story 8.3 D2/D3 — migration 015 adds the nullable
+    `call_sessions.tier_at_call` column (with the free/paid CHECK) and creates
+    the `subscription_events` webhook-dedup table (provider CHECK + UNIQUE
+    notification_id). Asserted against a freshly-migrated empty DB so a
+    regression in 015's DDL fails fast; the prod-snapshot replay above covers
+    the populated-DB case.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        # call_sessions.tier_at_call — nullable TEXT.
+        call_cols = {
+            r[1]: r for r in conn.execute("PRAGMA table_info(call_sessions)").fetchall()
+        }
+        assert "tier_at_call" in call_cols, (
+            f"call_sessions missing tier_at_call: {set(call_cols)}"
+        )
+        assert call_cols["tier_at_call"][2] == "TEXT"
+        assert call_cols["tier_at_call"][3] == 0, "tier_at_call must be nullable"
+
+        # The tier_at_call CHECK rejects an out-of-domain value but allows NULL.
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users(email, tier, created_at) VALUES (?, 'free', ?)",
+            ("buyer15@example.invalid", "2026-06-18T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO scenarios(id, title, is_free, rive_character, base_prompt, "
+            "checkpoints, briefing, exit_lines, language_focus) "
+            "VALUES ('s15', 't', 1, 'waiter', 'p', '[]', '{}', '{}', '[]')"
+        )
+        # NULL tier_at_call is accepted (legacy rows).
+        conn.execute(
+            "INSERT INTO call_sessions(user_id, scenario_id, started_at) "
+            "VALUES (1, 's15', 'now')"
+        )
+        # A bad tier_at_call is rejected.
+        try:
+            conn.execute(
+                "INSERT INTO call_sessions(user_id, scenario_id, started_at, "
+                "tier_at_call) VALUES (1, 's15', 'now', 'platinum')"
+            )
+            raise AssertionError("tier_at_call CHECK did not reject 'platinum'")
+        except sqlite3.IntegrityError:
+            pass
+
+        # subscription_events — the webhook-dedup ledger.
+        event_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(subscription_events)")
+        }
+        assert {
+            "id",
+            "provider",
+            "notification_id",
+            "notification_type",
+            "received_at",
+            "processed_at",
+        } <= event_cols, f"subscription_events missing columns: {event_cols}"
+
+        # provider CHECK rejects an out-of-domain provider.
+        try:
+            conn.execute(
+                "INSERT INTO subscription_events(provider, notification_id, "
+                "received_at) VALUES ('stripe', 'n1', 'now')"
+            )
+            raise AssertionError("provider CHECK did not reject 'stripe'")
+        except sqlite3.IntegrityError:
+            pass
+
+        # notification_id is UNIQUE — a replayed notification is a no-op.
+        conn.execute(
+            "INSERT INTO subscription_events(provider, notification_id, "
+            "received_at) VALUES ('apple', 'uuid-dup', 'now')"
+        )
+        try:
+            conn.execute(
+                "INSERT INTO subscription_events(provider, notification_id, "
+                "received_at) VALUES ('google', 'uuid-dup', 'now')"
+            )
+            raise AssertionError("notification_id UNIQUE did not reject a dup")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()

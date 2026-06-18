@@ -24,6 +24,12 @@ import '../features/scenarios/bloc/scenarios_event.dart';
 import '../features/scenarios/models/scenario.dart';
 import '../features/scenarios/repositories/scenarios_repository.dart';
 import '../features/scenarios/views/scenario_list_screen.dart';
+import '../features/subscription/bloc/subscription_bloc.dart';
+import '../features/subscription/bloc/user_profile_cubit.dart';
+import '../features/subscription/repositories/subscription_repository.dart';
+import '../features/subscription/repositories/user_repository.dart';
+import '../features/subscription/services/in_app_purchase_service.dart';
+import '../features/subscription/views/manage_subscription_screen.dart';
 
 /// Central registry of all route paths used by [AppRouter].
 class AppRoutes {
@@ -37,6 +43,9 @@ class AppRoutes {
   static const String incomingCall = '/incoming-call';
   static const String debrief = '/debrief';
   static const String briefing = '/briefing';
+  // Story 8.3 (AC1) — the Manage Subscription screen, pushed from the quiet
+  // `Account` hub line.
+  static const String account = '/account';
 }
 
 class AppRouter {
@@ -187,6 +196,29 @@ class AppRouter {
             key: state.pageKey,
             child: DebriefPlaceholderScreen(
               scenarioId: state.pathParameters['scenarioId'] ?? 'unknown',
+            ),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.account,
+          // Story 8.3 (AC1) — the route owns the read (UserProfileCubit over
+          // GET /user/profile) + the action bloc (SubscriptionBloc for
+          // Restore/verify), built exactly as the PaywallSheet builds its own.
+          pageBuilder: (context, state) => _fadePage(
+            key: state.pageKey,
+            child: MultiBlocProvider(
+              providers: [
+                BlocProvider<UserProfileCubit>(
+                  create: (_) => UserProfileCubit(UserRepository(ApiClient())),
+                ),
+                BlocProvider<SubscriptionBloc>(
+                  create: (_) => SubscriptionBloc(
+                    repository: SubscriptionRepository(ApiClient()),
+                    iapService: InAppPurchaseService(),
+                  ),
+                ),
+              ],
+              child: const ManageSubscriptionScreen(),
             ),
           ),
         ),

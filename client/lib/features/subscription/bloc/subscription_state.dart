@@ -35,3 +35,14 @@ final class SubscriptionCancelled extends SubscriptionState {
 final class SubscriptionRestoreEmpty extends SubscriptionState {
   const SubscriptionRestoreEmpty();
 }
+
+/// The store reported the purchase as `pending` — awaiting external approval
+/// (StoreKit "Ask to Buy" parental consent, or SCA bank verification). It is
+/// NOT a failure and NOT a confirmed purchase: it may resolve to purchased
+/// (→ verify) or canceled minutes/hours later, possibly after the sheet has
+/// closed (the app-lifetime listener catches that). Story 8.3 (F17) — the
+/// paywall renders this dismissible with "Waiting for approval. You can close
+/// this." instead of spinning on Loading forever.
+final class SubscriptionPendingApproval extends SubscriptionState {
+  const SubscriptionPendingApproval();
+}

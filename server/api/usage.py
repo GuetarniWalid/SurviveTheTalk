@@ -41,11 +41,17 @@ async def compute_call_usage(
         now = datetime.now(UTC)
 
     if tier == "free":
-        used = await count_user_call_sessions_total(db, user_id)
+        # Story 8.3 (D2) — count ONLY free-era calls (tier_at_call='free',
+        # legacy NULL treated as free). A churned paid->free user keeps their
+        # prior free-era count = "returns where they were"; paid-era calls
+        # never burned a free credit.
+        used = await count_user_call_sessions_total(db, user_id, tier_at_call="free")
         period = "lifetime"
     elif tier == "paid":
+        # Story 8.3 (D2) — count ONLY today's paid-era calls so a fresh
+        # upgrader gets a clean 3 even if they made a free call earlier today.
         used = await count_user_call_sessions_since(
-            db, user_id, _utc_day_start_iso(now)
+            db, user_id, _utc_day_start_iso(now), tier_at_call="paid"
         )
         period = "day"
     else:

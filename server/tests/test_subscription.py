@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from auth.jwt_service import issue_token
 from billing.models import BillingConfigError, ValidationResult
 from config import Settings
-from db.database import get_connection
+from db.database import get_connection, run_migrations
 from tests.conftest import register_user as _register_user
 
 _IOS_BODY = {
@@ -513,3 +515,133 @@ def test_verify_invalid_re_post_is_402_without_revalidating(
     assert second.json()["error"]["code"] == "PURCHASE_INVALID"
     mock_validate.assert_not_awaited()
     assert len(_purchase_rows(test_db_path)) == 1
+
+
+# --------------------------------------------------------------------------
+# Story 8.3 (Task 4) — expiry-downgrade backstop sweep (AC6)
+# --------------------------------------------------------------------------
+
+_NOW = datetime(2026, 6, 18, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def migrated_db(test_db_path):
+    """Run migrations so users/purchases exist (no scenarios needed here)."""
+    asyncio.run(run_migrations())
+    return test_db_path
+
+
+def _insert_user_row(db_path: str, email: str, *, tier: str) -> int:
+    conn = sqlite3.connect(db_path)
+    cur = conn.execute(
+        "INSERT INTO users(email, tier, created_at) VALUES (?, ?, '2026-06-18T00:00:00Z')",
+        (email, tier),
+    )
+    uid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    assert uid is not None
+    return uid
+
+
+def _insert_purchase_row(
+    db_path: str,
+    user_id: int,
+    *,
+    validation_status: str,
+    expires_at: str | None,
+    token: str,
+) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO purchases(user_id, platform, product_id, verification_token, "
+        "validation_status, expires_at, created_at) "
+        "VALUES (?, 'ios', 'stt_weekly_199', ?, ?, ?, '2026-06-18T00:00:00Z')",
+        (user_id, token, validation_status, expires_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _run_downgrade(now: datetime) -> int:
+    from billing.revalidation import downgrade_expired_entitlements
+
+    async def _go() -> int:
+        async with get_connection() as db:
+            return await downgrade_expired_entitlements(db, now=now)
+
+    return asyncio.run(_go())
+
+
+def test_downgrade_flips_expired_paid_user_to_free(migrated_db) -> None:
+    """A paid user whose only valid purchase has lapsed → flipped to free with a
+    fresh tier_changed_at; the purchase row is NOT mutated."""
+    user_id = _insert_user_row(migrated_db, "expired@example.invalid", tier="paid")
+    _insert_purchase_row(
+        migrated_db,
+        user_id,
+        validation_status="valid",
+        expires_at="2020-01-01T00:00:00Z",  # long past
+        token="tok-expired",
+    )
+
+    downgraded = _run_downgrade(_NOW)
+
+    assert downgraded == 1
+    row = _user_row(migrated_db, user_id)
+    assert row["tier"] == "free"
+    assert row["tier_changed_at"] is not None
+    # The purchase row is left intact (it was validly issued).
+    assert _purchase_rows(migrated_db)[0]["validation_status"] == "valid"
+
+
+def test_downgrade_leaves_future_dated_paid_user_alone(migrated_db) -> None:
+    user_id = _insert_user_row(migrated_db, "future@example.invalid", tier="paid")
+    _insert_purchase_row(
+        migrated_db,
+        user_id,
+        validation_status="valid",
+        expires_at="2099-01-01T00:00:00Z",
+        token="tok-future",
+    )
+
+    downgraded = _run_downgrade(_NOW)
+
+    assert downgraded == 0
+    assert _user_row(migrated_db, user_id)["tier"] == "paid"
+
+
+def test_downgrade_leaves_free_user_alone(migrated_db) -> None:
+    user_id = _insert_user_row(migrated_db, "free@example.invalid", tier="free")
+
+    downgraded = _run_downgrade(_NOW)
+
+    assert downgraded == 0
+    assert _user_row(migrated_db, user_id)["tier"] == "free"
+
+
+def test_downgrade_keeps_paid_when_one_future_valid_purchase_exists(
+    migrated_db,
+) -> None:
+    """A user with one expired + one future-valid purchase stays paid (NOT
+    downgraded) — the NOT-EXISTS query keeps them entitled via the live one."""
+    user_id = _insert_user_row(migrated_db, "mixed@example.invalid", tier="paid")
+    _insert_purchase_row(
+        migrated_db,
+        user_id,
+        validation_status="valid",
+        expires_at="2020-01-01T00:00:00Z",
+        token="tok-old",
+    )
+    _insert_purchase_row(
+        migrated_db,
+        user_id,
+        validation_status="valid",
+        expires_at="2099-01-01T00:00:00Z",
+        token="tok-live",
+    )
+
+    downgraded = _run_downgrade(_NOW)
+
+    assert downgraded == 0
+    assert _user_row(migrated_db, user_id)["tier"] == "paid"

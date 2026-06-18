@@ -88,6 +88,8 @@ const String _kLegal = 'Auto-renewable. 3 calls per day. Cancel anytime.';
 const String _kSuccessTitle = "You're in";
 const String _kError = 'Something went wrong. Try again.';
 const String _kNothingToRestore = 'Nothing to restore.';
+// Story 8.3 (F17) — store purchase pending external approval (Ask to Buy / SCA).
+const String _kPendingApproval = 'Waiting for approval. You can close this.';
 
 // ---- Screen-reader announcements (design → Accessibility) ----
 const String _kPriceSemantics = 'One dollar ninety-nine per week';
@@ -251,6 +253,10 @@ class _OfferView extends StatelessWidget {
     final loading = state is SubscriptionLoading;
     final failed = state is SubscriptionFailed;
     final restoreEmpty = state is SubscriptionRestoreEmpty;
+    // Story 8.3 (F17) — pending external approval: actions are inert (no
+    // double-buy) but the sheet stays dismissible ("You can close this.").
+    final pending = state is SubscriptionPendingApproval;
+    final actionsDisabled = loading || pending;
     final secondary = AppTypography.body.copyWith(
       color: AppColors.overlaySubtitle,
     );
@@ -298,7 +304,10 @@ class _OfferView extends StatelessWidget {
           _BenefitRow(text: _kBenefits[i]),
         ],
         const SizedBox(height: 32),
-        _CtaButton(loading: loading, onPressed: loading ? null : onSubscribe),
+        _CtaButton(
+          loading: loading,
+          onPressed: actionsDisabled ? null : onSubscribe,
+        ),
         if (failed) ...[
           const SizedBox(height: 8),
           Semantics(
@@ -308,6 +317,19 @@ class _OfferView extends StatelessWidget {
               textAlign: TextAlign.center,
               style: AppTypography.caption.copyWith(
                 color: AppColors.paywallError,
+              ),
+            ),
+          ),
+        ],
+        if (pending) ...[
+          const SizedBox(height: 8),
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              _kPendingApproval,
+              textAlign: TextAlign.center,
+              style: AppTypography.caption.copyWith(
+                color: AppColors.overlaySubtitle,
               ),
             ),
           ),
@@ -339,7 +361,7 @@ class _OfferView extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         TextButton(
-          onPressed: loading ? null : onRestore,
+          onPressed: actionsDisabled ? null : onRestore,
           style: TextButton.styleFrom(
             foregroundColor: AppColors.overlaySubtitle,
             disabledForegroundColor:

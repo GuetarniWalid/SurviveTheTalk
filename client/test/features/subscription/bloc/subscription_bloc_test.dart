@@ -269,7 +269,8 @@ void main() {
   );
 
   blocTest<SubscriptionBloc, SubscriptionState>(
-    'F22 — pending keeps Loading and the recovery timeout does NOT fire',
+    'F17 — pending surfaces PendingApproval and the recovery timeout does NOT '
+    'fire',
     setUp: stubBuyOk,
     build: () => buildBloc(timeout: const Duration(milliseconds: 30)),
     act: (bloc) async {
@@ -278,8 +279,12 @@ void main() {
       purchaseController.add([_purchase(PurchaseStatus.pending)]);
     },
     wait: const Duration(milliseconds: 90),
-    // pending cancels the timeout and stays Loading — no terminal state.
-    expect: () => [isA<SubscriptionLoading>()],
+    // Story 8.3 (F17) — pending cancels the timeout and emits the dismissible
+    // PendingApproval state (NOT a spin-forever Loading, NOT a Failed timeout).
+    expect: () => [
+      isA<SubscriptionLoading>(),
+      isA<SubscriptionPendingApproval>(),
+    ],
   );
 
   blocTest<SubscriptionBloc, SubscriptionState>(

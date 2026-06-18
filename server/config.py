@@ -144,6 +144,23 @@ class Settings(BaseSettings):
     google_play_package_name: str = ""  # GOOGLE_PLAY_PACKAGE_NAME
     google_service_account_json: str = ""  # GOOGLE_SERVICE_ACCOUNT_JSON (base64)
 
+    # Story 8.3 (Task 5/D3) — subscription lifecycle WEBHOOK security.
+    #
+    # Google RTDN (Pub/Sub push): the INTERIM, store-documented security is a
+    # secret query token configured on the push subscription endpoint URL
+    # (`.../webhook/google?token=<secret>`). When set, the webhook REQUIRES a
+    # matching `?token=`; mismatch/absent → 403; when EMPTY (pre-store-config)
+    # the Google webhook returns 503 (not yet wired) rather than accepting an
+    # unauthenticated push. `google_pubsub_audience` is RESERVED for the
+    # production hardening (full Pub/Sub OIDC bearer-token audience check) and
+    # is unused today. Both default-empty so the server boots without them.
+    #
+    # Apple ASSN V2 needs NO extra secret: the pushed payload is a signed JWS
+    # verified OFFLINE with the existing `apple_bundle_id` + bundled roots (D4
+    # stays deferred — no App Store Server API key required to RECEIVE+verify).
+    google_pubsub_verification_token: str = ""  # GOOGLE_PUBSUB_VERIFICATION_TOKEN
+    google_pubsub_audience: str = ""  # GOOGLE_PUBSUB_AUDIENCE (reserved, OIDC)
+
     # The expected store product id, shared verbatim with the client constant
     # `kIapWeeklyProductId` (D4). A purchase whose productId differs is judged
     # invalid (never flips tier). Lowercase + store-portable.

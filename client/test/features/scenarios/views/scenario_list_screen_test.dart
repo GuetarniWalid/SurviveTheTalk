@@ -1360,6 +1360,54 @@ void main() {
     },
   );
 
+  // ---------- Story 8.3 — AC3 call-icon disablement at 0 calls ----------
+  //
+  // At 0 calls the call icon is INERT (never initiates a call, no server
+  // round-trip): a free user is routed to the paywall (the way forward), a
+  // paid user at their daily cap is a no-op (the BOC says "come back tomorrow").
+
+  testWidgets(
+    'free user + 0 calls: call icon is inert — shows the paywall, NO call',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter'); // free scenario
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(
+        tester,
+        scenario,
+        callRepository: mockRepo,
+        usage: _kFreeExhausted,
+      );
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(BottomSheet), findsOneWidget); // paywall, not a call
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
+
+  testWidgets(
+    'paid user + 0 daily calls: call icon is inert — no call, no paywall',
+    (tester) async {
+      final scenario = _build(id: 's1', title: 'Waiter');
+      final mockRepo = happyRepo();
+      await pumpListWithScenario(
+        tester,
+        scenario,
+        callRepository: mockRepo,
+        usage: _kPaidExhausted,
+      );
+
+      await tester.tap(find.byIcon(Icons.phone_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.byKey(_kCallStubKey), findsNothing);
+      verifyNoPost(mockRepo);
+    },
+  );
+
   // ------- Story 8.2 — FR29 debrief-paywall trigger (D1 + P2, code-review) -------
   //
   // `isFinalFreeScenario = usage.isFree && callsRemaining <= 1` is computed in
@@ -1380,11 +1428,13 @@ void main() {
   }
 
   // P2 — the FR29 flag reaches the call surface, computed per `<= 1` && isFree.
+  // (The remaining-0 cases moved to the AC3 section below: under Story 8.3 the
+  // call icon is INERT at 0 calls, so a call never starts to carry the flag.
+  // The paid case uses a paid-WITH-calls usage so the call actually runs.)
   for (final (label, usage, expected) in <(String, CallUsage, bool)>[
     ('free, last call (remaining 1)', _kFreeLastCall, true),
-    ('free, exhausted (remaining 0)', _kFreeExhausted, true),
     ('free, not last (remaining 3)', _kFreshUsage, false),
-    ('paid (never qualifies)', _kPaidExhausted, false),
+    ('paid (never qualifies)', _kPaidWithCalls, false),
   ]) {
     testWidgets(
       'FR29 flag → presentPaywallOnDebrief=$expected for $label',

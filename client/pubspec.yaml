@@ -49,6 +49,12 @@ dependencies:
   # Android wraps Google Play Billing). Server-side validation is first-party
   # (POST /subscription/verify); the plugin ships no validator of its own.
   in_app_purchase: ^3.3.0
+  # Story 8.3 — Manage Subscription screen. `intl` formats the subscription
+  # expiry date (`d MMM yyyy`, never a raw ISO string); `package_info_plus`
+  # supplies the Android `applicationId` at runtime for the Play "manage
+  # subscriptions" deep link (both `sku` + `package` are required).
+  intl: ^0.20.2
+  package_info_plus: ^9.0.1
 
 dev_dependencies:
   flutter_test:

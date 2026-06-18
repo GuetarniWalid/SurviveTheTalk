@@ -284,7 +284,9 @@ def test_validate_google_active_is_valid(monkeypatch) -> None:
                 "lineItems": [
                     {
                         "productId": "stt_weekly_199",
-                        "expiryTime": "2026-06-23T00:00:00Z",
+                        # Far-future so the Story 8.3 F11 guard (active +
+                        # past-expiry → invalid) never time-bombs this test.
+                        "expiryTime": "2099-06-23T00:00:00Z",
                     }
                 ],
             },
@@ -303,7 +305,7 @@ def test_validate_google_active_is_valid(monkeypatch) -> None:
     assert result.valid is True
     assert result.status == "valid"
     assert result.transaction_id == "GPA.1"
-    assert result.expires_at == "2026-06-23T00:00:00Z"
+    assert result.expires_at == "2099-06-23T00:00:00Z"
 
 
 def test_validate_google_wrong_product_is_invalid(monkeypatch) -> None:
@@ -486,3 +488,90 @@ def test_validate_google_token_percent_encoded_in_url(monkeypatch) -> None:
     # The raw special chars must NOT survive into the path; the encoded forms do.
     assert "a/b?c#d../e" not in fake.last_get_url
     assert "a%2Fb%3Fc%23d..%2Fe" in fake.last_get_url
+
+
+# ---------- Story 8.3 (F11/F12) — Google expiry handling ----------
+
+
+def test_validate_google_active_but_past_expiry_is_invalid(monkeypatch) -> None:
+    """F11 — an ACTIVE state whose expiry is already in the past is NOT
+    currently entitled (a stale-but-active token must not grant paid forever).
+    Mirrors the Apple `expiresDate<=now` guard."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+                "latestOrderId": "GPA.past",
+                "lineItems": [
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2020-01-01T00:00:00Z",  # long past
+                    }
+                ],
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is False
+    assert result.status == "invalid"
+    assert result.reason == "expired"
+    assert result.expires_at == "2020-01-01T00:00:00Z"
+
+
+def test_validate_google_picks_latest_expiry_chronologically(monkeypatch) -> None:
+    """F12 — the chosen expiry is the chronological max, NOT the lexicographic
+    one. A fractional-second stamp sorts BEFORE a whole-second stamp as a raw
+    string ('.' < 'Z') but is LATER in time; `max()` over raw strings would pick
+    the wrong (earlier) one."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+                "latestOrderId": "GPA.frac",
+                "lineItems": [
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2099-01-01T00:00:00.500Z",  # 0.5s LATER
+                    },
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2099-01-01T00:00:00Z",  # lexicographic max
+                    },
+                ],
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is True
+    # Chronological max = the fractional-second stamp (0.5s later), echoed raw.
+    assert result.expires_at == "2099-01-01T00:00:00.500Z"
+
+
+def test_validate_google_tolerates_nanosecond_expiry(monkeypatch) -> None:
+    """F12 — the RFC3339 parser tolerates >6 fractional digits (Google can emit
+    nanoseconds) without crashing; the active+future subscription stays valid
+    and the raw string is echoed verbatim."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+                "latestOrderId": "GPA.nano",
+                "lineItems": [
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2099-01-01T00:00:00.123456789Z",
+                    }
+                ],
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is True
+    assert result.status == "valid"
+    assert result.expires_at == "2099-01-01T00:00:00.123456789Z"

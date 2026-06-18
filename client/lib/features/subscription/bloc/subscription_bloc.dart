@@ -142,8 +142,13 @@ class SubscriptionBloc extends Bloc<SubscriptionEvent, SubscriptionState> {
       switch (purchase.status) {
         case PurchaseStatus.pending:
           // The sheet responded — don't let the UI timeout fire on a slow
-          // (but live) purchase. Stay in Loading until a terminal update.
+          // (but live) purchase. Story 8.3 (F17) — surface a dismissible
+          // "awaiting approval" state instead of spinning on Loading forever
+          // (Ask-to-Buy / SCA can take minutes). The eventual terminal update
+          // (purchased / canceled) transitions normally; if it lands after the
+          // sheet closed, the app-lifetime listener (Task 6) catches it.
           _timeoutTimer?.cancel();
+          emit(const SubscriptionPendingApproval());
         case PurchaseStatus.purchased:
         case PurchaseStatus.restored:
           // A real entitlement landed — cancel BOTH the buy and the restore

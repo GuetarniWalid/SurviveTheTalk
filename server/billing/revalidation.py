@@ -31,6 +31,7 @@ from config import Settings
 from db.queries import (
     count_user_valid_purchases,
     get_pending_purchases,
+    get_users_with_expired_entitlement,
     update_purchase_validation,
     update_user_tier,
 )
@@ -142,3 +143,49 @@ async def revalidate_pending_purchases(
             resolved += 1
         # 'unreachable' → leave pending.
     return resolved
+
+
+async def downgrade_expired_entitlements(
+    db: aiosqlite.Connection, *, now: datetime | None = None
+) -> int:
+    """Flip lapsed paid users back to free (Story 8.3 Task 4, AC6 backstop).
+
+    The lifecycle WEBHOOKS (Task 5) are the PRIMARY cancel/expiry signal; this
+    5-min sweep is the defense-in-depth backstop for a missed / misconfigured
+    webhook. A user is "expired" when they are `tier='paid'` but hold NO
+    `'valid'` purchase with `expires_at > now`
+    (`get_users_with_expired_entitlement`). For each, atomically flip
+    `tier->'free'` and stamp `tier_changed_at`.
+
+    The purchase row is deliberately NOT mutated — it was validly issued and
+    simply stopped granting because `expires_at <= now`, so a later
+    `DID_RENEW` / re-verify can re-grant without re-inserting. Idempotent (a
+    user already free is not in the worklist) and fail-soft per user (one
+    failure cannot abort the batch). Returns the count downgraded.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    now_iso = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+    users = await get_users_with_expired_entitlement(db, now_iso)
+    downgraded = 0
+    for user in users:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await update_user_tier(
+                    db, user["id"], "free", tier_changed_at=now_iso, commit=False
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        except Exception:
+            logger.exception(
+                f"expiry-downgrade failed for user {user['id']}; leaving paid"
+            )
+            continue
+        downgraded += 1
+        logger.warning(
+            f"expiry-downgrade: user {user['id']} paid->free (entitlement lapsed)"
+        )
+    return downgraded

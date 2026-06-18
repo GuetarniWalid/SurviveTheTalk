@@ -26,7 +26,12 @@ from api.routes_debriefs import router as debriefs_router
 from api.routes_health import router as health_router
 from api.routes_scenarios import router as scenarios_router
 from api.routes_subscription import router as subscription_router
-from billing.revalidation import revalidate_pending_purchases
+from api.routes_subscription_webhooks import router as subscription_webhooks_router
+from api.routes_user import router as user_router
+from billing.revalidation import (
+    downgrade_expired_entitlements,
+    revalidate_pending_purchases,
+)
 from config import Settings
 from db.database import get_connection, run_migrations
 from db.janitor import sweep_abandoned_call_sessions
@@ -128,6 +133,14 @@ async def _subscription_revalidation_loop(stop_event: asyncio.Event) -> None:
                 resolved = await revalidate_pending_purchases(db, settings=settings)
                 if resolved > 0:
                     logger.info(f"subscription_revalidation_resolved count={resolved}")
+                # Story 8.3 (Task 4) — expiry-downgrade backstop. Webhooks
+                # (Task 5) are the primary signal; this sweep catches a
+                # missed/misconfigured one by flipping lapsed paid users to free.
+                downgraded = await downgrade_expired_entitlements(
+                    db, now=datetime.now(UTC)
+                )
+                if downgraded > 0:
+                    logger.info(f"subscription_expiry_downgraded count={downgraded}")
             consecutive_failures = 0
         except Exception:
             consecutive_failures += 1
@@ -232,6 +245,8 @@ app.include_router(debriefs_router)
 app.include_router(health_router)
 app.include_router(scenarios_router)
 app.include_router(subscription_router)
+app.include_router(subscription_webhooks_router)
+app.include_router(user_router)
 
 
 _GENERIC_HTTP_MESSAGES = {

@@ -195,7 +195,7 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
 
     try:
         async with get_connection() as db:
-            # 1. Cap-check (DB).
+            # 1. Load the caller.
             user = await get_user_by_id(db, user_id)
             if user is None:
                 raise HTTPException(
@@ -205,19 +205,11 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                         "message": "Missing or invalid token.",
                     },
                 )
-            usage = await compute_call_usage(db, user_id, user["tier"])
-            if usage["calls_remaining"] == 0:
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "code": "CALL_LIMIT_REACHED",
-                        "message": "You've used all your calls for now.",
-                    },
-                )
 
             # 2. Scenario prompt + metadata (file IO, no DB) — fail fast on
             # bad YAML. Story 6.3 added `metadata.rive_character` plumbing so
             # the spawned bot can build character-aware classifier prompts.
+            # Loaded BEFORE the gates so the tier gate can read `is_free`.
             try:
                 system_prompt = load_scenario_prompt(scenario_id)
                 scenario_metadata = load_scenario_metadata(scenario_id)
@@ -237,6 +229,32 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                     },
                 ) from exc
             rive_character = str(scenario_metadata.get("rive_character") or "waiter")
+            scenario_is_free = bool(scenario_metadata.get("is_free"))
+
+            # 3. Tier gate (Story 8.3, AC2/FR31) — a free user cannot call a
+            # PAID scenario. Checked BEFORE the cap so the client routes to the
+            # paywall ("subscribe"), NOT the "no calls left" state. Until 8.3
+            # this gate was client-only (8.2): a free user could bypass the
+            # paywall by hitting the API directly. This closes it server-side.
+            if user["tier"] == "free" and not scenario_is_free:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "TIER_RESTRICTED",
+                        "message": "This scenario is for subscribers.",
+                    },
+                )
+
+            # 4. Cap-check (DB) — fast-fail before token mint.
+            usage = await compute_call_usage(db, user_id, user["tier"])
+            if usage["calls_remaining"] == 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "CALL_LIMIT_REACHED",
+                        "message": "You've used all your calls for now.",
+                    },
+                )
 
             # 3. LiveKit tokens (no DB). Story 6.14 AC2 — both tokens carry
             # the `min_playout_delay` room config (jitter buffer) so the SFU
@@ -280,7 +298,23 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
             # rather than raising `database is locked`.
             await db.execute("BEGIN IMMEDIATE")
             try:
-                final_usage = await compute_call_usage(db, user_id, user["tier"])
+                # Re-read the user inside the lock so both gates re-assert
+                # against the CURRENT tier (a concurrent webhook/sweep could
+                # have downgraded paid->free between the outer read and here).
+                final_user = await get_user_by_id(db, user_id)
+                final_tier = final_user["tier"] if final_user is not None else "free"
+                # Story 8.3 — re-assert the tier gate under the lock (mirror the
+                # TOCTOU re-check for the limit) before the INSERT.
+                if final_tier == "free" and not scenario_is_free:
+                    await db.rollback()
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "TIER_RESTRICTED",
+                            "message": "This scenario is for subscribers.",
+                        },
+                    )
+                final_usage = await compute_call_usage(db, user_id, final_tier)
                 if final_usage["calls_remaining"] == 0:
                     await db.rollback()
                     raise HTTPException(
@@ -295,6 +329,10 @@ async def initiate_call(request: Request, payload: InitiateCallIn) -> dict:
                     user_id=user_id,
                     scenario_id=scenario_id,
                     started_at=now_iso(),
+                    # Story 8.3 (D2) — stamp the tier at call time so the free
+                    # lifetime cap counts only free-era calls (a churned
+                    # paid->free user returns where they were).
+                    tier_at_call=final_tier,
                 )
                 await db.commit()
             except HTTPException:

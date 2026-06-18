@@ -367,6 +367,26 @@ class SubscriptionVerifyIn(BaseModel):
     verification_data: str = Field(min_length=1, max_length=16384)
 
 
+class UserProfileOut(BaseModel):
+    """Response body for `GET /user/profile` (Story 8.3, AC5/D5).
+
+    The steady-state subscription-status source for the Manage-Subscription
+    screen. `tier` is canonical `'free'`/`'paid'` (ADR 002 — `'Premium'` is a
+    DISPLAY label only, never a tier value). `calls_remaining` / `period`
+    mirror `compute_call_usage` (free = lifetime, paid = per-day). `period` is
+    a plain `str` (`'lifetime'` | `'day'`) — same shape `/scenarios` meta
+    carries. `subscription_expires_at` is the latest expiry among the user's
+    `'valid'` purchases; `null` is meaningful (no subscription on record — a
+    free user, or a legacy row without an expiry) and is kept explicit.
+    """
+
+    tier: Literal["free", "paid"]
+    calls_remaining: int
+    calls_per_period: int
+    period: str
+    subscription_expires_at: str | None = None
+
+
 class SubscriptionVerifyOut(BaseModel):
     """Response body for `POST /subscription/verify`.
 
@@ -381,3 +401,33 @@ class SubscriptionVerifyOut(BaseModel):
     product_id: str
     expires_at: str | None = None
     status: str
+
+
+# --- Story 8.3: subscription lifecycle webhooks (Task 5) -------------------
+#
+# These mirror the EXTERNAL store payloads verbatim (camelCase) — Apple and
+# Google POST them, so the field names are theirs, not our snake_case
+# convention. The bodies are NOT trusted by shape: the Apple JWS is verified
+# offline, the Google push is gated by the secret query token + a re-validation
+# of the purchaseToken.
+
+
+class AppleWebhookIn(BaseModel):
+    """App Store Server Notifications V2 body: `{ "signedPayload": "<JWS>" }`."""
+
+    signedPayload: str = Field(min_length=1, max_length=65536)
+
+
+class GooglePubSubMessage(BaseModel):
+    """The `message` block of a Pub/Sub push envelope. `data` is base64-encoded
+    JSON (the RTDN payload); `messageId` is the dedup key. Both `data` and
+    `messageId` are present on a real push; `data` is bounded for sanity."""
+
+    data: str | None = Field(default=None, max_length=65536)
+    messageId: str = Field(min_length=1, max_length=256)
+
+
+class GoogleWebhookIn(BaseModel):
+    """Google RTDN Pub/Sub push envelope: `{ "message": { "data", "messageId" } }`."""
+
+    message: GooglePubSubMessage

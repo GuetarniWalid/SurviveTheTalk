@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -36,6 +38,32 @@ _HTTP_TIMEOUT_SECONDS = 10.0
 _ACTIVE_STATES = frozenset(
     {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"}
 )
+
+# Matches the fractional-second group in an RFC3339 timestamp (NOT the offset,
+# which uses a colon). Used to trim nanosecond precision Google may emit down to
+# the microseconds Python's `datetime.fromisoformat` accepts.
+_FRACTION_RE = re.compile(r"\.(\d+)")
+
+
+def _parse_rfc3339(raw: str | None) -> datetime | None:
+    """Parse a Google RFC3339 `expiryTime` to an aware UTC datetime, or None.
+
+    Story 8.3 (F12) — tolerant of a trailing `Z` and of fractional seconds with
+    more than 6 digits (Google can emit nanoseconds; `fromisoformat` accepts at
+    most microseconds). A naive datetime is assumed UTC. Returns None on any
+    unparseable value so a single malformed line-item can't crash validation.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    s = _FRACTION_RE.sub(lambda m: "." + m.group(1)[:6], s, count=1)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _load_service_account(service_account_json: str) -> dict:
@@ -162,25 +190,48 @@ async def validate_google(
         )
 
     transaction_id = body.get("latestOrderId")
-    # Latest expiry across the matching line items.
-    expiries = [
-        item.get("expiryTime")
-        for item in line_items
-        if item.get("productId") == product_id and item.get("expiryTime")
+    # F12 — pick the latest expiry CHRONOLOGICALLY by parsing each RFC3339
+    # `expiryTime` to an aware datetime, NOT lexicographically via raw-string
+    # max() (which mis-orders fractional-second vs whole-second stamps, and any
+    # format drift). We carry both the parsed datetime (for the F11 guard +
+    # ordering) and the original raw string (returned verbatim as expires_at).
+    parsed = [
+        (raw, dt)
+        for raw in (
+            item.get("expiryTime")
+            for item in line_items
+            if item.get("productId") == product_id and item.get("expiryTime")
+        )
+        if (dt := _parse_rfc3339(raw)) is not None
     ]
-    expires_at = max(expiries) if expiries else None
+    if parsed:
+        expires_raw, expires_dt = max(parsed, key=lambda pair: pair[1])
+    else:
+        expires_raw, expires_dt = None, None
 
     if state in _ACTIVE_STATES:
+        # F11 — an ACTIVE / IN_GRACE_PERIOD state whose expiry is already in the
+        # past is NOT currently entitled (mirrors the Apple validator's
+        # expiresDate<=now guard). Without this a stale-but-"active" token could
+        # keep granting paid forever.
+        if expires_dt is not None and expires_dt <= datetime.now(UTC):
+            return ValidationResult(
+                valid=False,
+                status="invalid",
+                transaction_id=transaction_id,
+                expires_at=expires_raw,
+                reason="expired",
+            )
         return ValidationResult(
             valid=True,
             status="valid",
             transaction_id=transaction_id,
-            expires_at=expires_at,
+            expires_at=expires_raw,
         )
     return ValidationResult(
         valid=False,
         status="invalid",
         transaction_id=transaction_id,
-        expires_at=expires_at,
+        expires_at=expires_raw,
         reason=f"state:{state}",
     )

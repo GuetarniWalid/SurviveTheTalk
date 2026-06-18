@@ -12,6 +12,9 @@ import 'core/services/connectivity_service.dart';
 import 'core/services/end_call_retry_service.dart';
 import 'core/services/end_call_retry_storage.dart';
 import 'features/call/repositories/call_repository.dart';
+import 'features/subscription/repositories/subscription_repository.dart';
+import 'features/subscription/services/in_app_purchase_service.dart';
+import 'features/subscription/services/purchase_sync_service.dart';
 
 /// Bootstrap sequence required by Rive 0.14.x:
 ///   1. WidgetsFlutterBinding.ensureInitialized() — enables async plugins
@@ -96,12 +99,24 @@ Future<void> bootstrap() async {
   // network round-trip.
   unawaited(endCallRetryService.replayAll());
 
+  // Story 8.3 (Task 6) — app-lifetime purchase listener. Verifies + completes
+  // any purchase the store re-delivers outside an open paywall sheet (next
+  // launch, or an Ask-to-Buy / SCA that resolved after the sheet closed),
+  // closing the 8.1 "charged but tier never flipped" hole. Same app-singleton
+  // lifecycle as EndCallRetryService — started before runApp, provided to the
+  // tree so the hub can refresh on its `onEntitlementChanged` signal.
+  final purchaseSyncService = PurchaseSyncService(
+    iapService: InAppPurchaseService(),
+    repository: SubscriptionRepository(ApiClient()),
+  )..start();
+
   runApp(
     App(
       consentStorage: consentStorage,
       tokenStorage: tokenStorage,
       difficultyStorage: difficultyStorage,
       endCallRetryService: endCallRetryService,
+      purchaseSyncService: purchaseSyncService,
     ),
   );
 }

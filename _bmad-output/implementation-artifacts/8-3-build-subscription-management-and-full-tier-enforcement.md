@@ -1,6 +1,6 @@
 # Story 8.3: Build Subscription Management and Full Tier Enforcement
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -52,100 +52,100 @@ These five were surfaced at create-story and Walid ruled on each. **The spec bel
 
 ### Task 0 — Server: migration 015 (D2 per-call tier stamp + D3 webhook dedup)
 
-- [ ] New `server/db/migrations/015_tier_at_call_and_subscription_events.sql`. **ADD-only, no table rebuild** (so no `PRAGMA foreign_keys` toggle; replays cleanly on the prod snapshot — same posture as 008/014):
-  - [ ] `ALTER TABLE call_sessions ADD COLUMN tier_at_call TEXT CHECK(tier_at_call IS NULL OR tier_at_call IN ('free','paid'));` — nullable, no default. **Legacy rows stay NULL and are treated as `'free'` via `COALESCE(tier_at_call,'free')` in the count** (prod history is effectively all free-era; documented assumption). Going forward, `/calls/initiate` stamps the user's tier at call time.
-  - [ ] `CREATE TABLE IF NOT EXISTS subscription_events (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL CHECK(provider IN ('apple','google')), notification_id TEXT NOT NULL UNIQUE, notification_type TEXT, received_at TEXT NOT NULL, processed_at TEXT);` — the webhook idempotency/audit ledger (`notification_id` = Apple `notificationUUID` / Google Pub/Sub `messageId`; `UNIQUE` makes replays no-ops).
-- [ ] Add `test_migration_015_*` to `server/tests/test_migrations.py` mirroring `test_migration_014_subscriptions` (assert the new column via `PRAGMA table_info`, the CHECK rejections via `sqlite3.IntegrityError`, the `subscription_events` table + UNIQUE). **Keep `test_migrations_apply_against_prod_snapshot_with_no_violations` green** (it replays 001→015 on `tests/fixtures/prod_snapshot.sqlite`).
-- [ ] Post-deploy: refresh + commit the snapshot — `cd server && python scripts/refresh_prod_snapshot.py` (the established post-deploy step, as for 011/012/013/014).
+- [x] New `server/db/migrations/015_tier_at_call_and_subscription_events.sql`. **ADD-only, no table rebuild** (so no `PRAGMA foreign_keys` toggle; replays cleanly on the prod snapshot — same posture as 008/014):
+  - [x] `ALTER TABLE call_sessions ADD COLUMN tier_at_call TEXT CHECK(tier_at_call IS NULL OR tier_at_call IN ('free','paid'));` — nullable, no default. **Legacy rows stay NULL and are treated as `'free'` via `COALESCE(tier_at_call,'free')` in the count** (prod history is effectively all free-era; documented assumption). Going forward, `/calls/initiate` stamps the user's tier at call time.
+  - [x] `CREATE TABLE IF NOT EXISTS subscription_events (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL CHECK(provider IN ('apple','google')), notification_id TEXT NOT NULL UNIQUE, notification_type TEXT, received_at TEXT NOT NULL, processed_at TEXT);` — the webhook idempotency/audit ledger (`notification_id` = Apple `notificationUUID` / Google Pub/Sub `messageId`; `UNIQUE` makes replays no-ops).
+- [x] Add `test_migration_015_*` to `server/tests/test_migrations.py` mirroring `test_migration_014_subscriptions` (assert the new column via `PRAGMA table_info`, the CHECK rejections via `sqlite3.IntegrityError`, the `subscription_events` table + UNIQUE). **Keep `test_migrations_apply_against_prod_snapshot_with_no_violations` green** (it replays 001→015 on `tests/fixtures/prod_snapshot.sqlite`).
+- [ ] Post-deploy: refresh + commit the snapshot — `cd server && python scripts/refresh_prod_snapshot.py` (the established post-deploy step, as for 011/012/013/014).  ⟵ OWED (post-deploy)
 
 ### Task 1 — Server: tier-transition-aware free-call counting (AC6, D2) ⟵ the headline server fix
 
-- [ ] **Stamp the tier at call time.** In `server/api/routes_calls.py` `/calls/initiate`, pass the loaded `user["tier"]` into the call-session INSERT; add a `tier_at_call` arg to the `insert_call_session(...)` query in `server/db/queries.py`.
-- [ ] **Count free usage as free-era only.** Add an optional `tier_at_call: str | None = None` filter to `count_user_call_sessions_total` and `count_user_call_sessions_since` (`server/db/queries.py`); when provided, append `AND COALESCE(tier_at_call,'free') = ?`.
-- [ ] In `server/api/usage.py` `compute_call_usage`:
-  - [ ] **Free path:** `used = await count_user_call_sessions_total(db, user_id, tier_at_call='free')`; `period = "lifetime"`. (Counts only calls made while free, lifetime → a reverted user keeps their prior free-era count = "returns where they were".)
-  - [ ] **Paid path:** `used = await count_user_call_sessions_since(db, user_id, _utc_day_start_iso(now), tier_at_call='paid')`; `period = "day"`. (Paid daily cap counts only today's *paid-era* calls → a fresh upgrader gets a clean 3 even if they made a free call earlier today.)
-  - [ ] `calls_remaining = max(0, CALLS_PER_PERIOD - used)`; keep the `ValueError` on tier ∉ {free,paid}.
-- [ ] Both `compute_call_usage` callers (`routes_calls.py` initiate gate, `routes_scenarios.py` meta) need no signature change (tier already passed; the tier_at_call filter is internal to usage.py).
-- [ ] Tests in `server/tests/test_call_usage.py`: never-paid free user counts all free calls (regression); a user with 2 free-era + N paid-era calls who is now free → `calls_remaining == 1` (Walid's exact example); paid daily ignores earlier same-day free calls; `failed` sessions still excluded; legacy NULL `tier_at_call` counts as free.
+- [x] **Stamp the tier at call time.** In `server/api/routes_calls.py` `/calls/initiate`, pass the loaded `user["tier"]` into the call-session INSERT; add a `tier_at_call` arg to the `insert_call_session(...)` query in `server/db/queries.py`.
+- [x] **Count free usage as free-era only.** Add an optional `tier_at_call: str | None = None` filter to `count_user_call_sessions_total` and `count_user_call_sessions_since` (`server/db/queries.py`); when provided, append `AND COALESCE(tier_at_call,'free') = ?`.
+- [x] In `server/api/usage.py` `compute_call_usage`:
+  - [x] **Free path:** `used = await count_user_call_sessions_total(db, user_id, tier_at_call='free')`; `period = "lifetime"`. (Counts only calls made while free, lifetime → a reverted user keeps their prior free-era count = "returns where they were".)
+  - [x] **Paid path:** `used = await count_user_call_sessions_since(db, user_id, _utc_day_start_iso(now), tier_at_call='paid')`; `period = "day"`. (Paid daily cap counts only today's *paid-era* calls → a fresh upgrader gets a clean 3 even if they made a free call earlier today.)
+  - [x] `calls_remaining = max(0, CALLS_PER_PERIOD - used)`; keep the `ValueError` on tier ∉ {free,paid}.
+- [x] Both `compute_call_usage` callers (`routes_calls.py` initiate gate, `routes_scenarios.py` meta) need no signature change (tier already passed; the tier_at_call filter is internal to usage.py).
+- [x] Tests in `server/tests/test_call_usage.py`: never-paid free user counts all free calls (regression); a user with 2 free-era + N paid-era calls who is now free → `calls_remaining == 1` (Walid's exact example); paid daily ignores earlier same-day free calls; `failed` sessions still excluded; legacy NULL `tier_at_call` counts as free.
 
 ### Task 2 — Server: `GET /user/profile` endpoint (AC5, D5)
 
-- [ ] New route module `server/api/routes_user.py`: `APIRouter(prefix="/user", tags=["user"], dependencies=[AUTH_DEPENDENCY])`, `GET /user/profile`. Register in `server/api/app.py` alongside the other routers.
-- [ ] Handler: resolve `user_id` → `get_user_by_id` → `compute_call_usage(db, user_id, user["tier"])` → `expiry = await get_active_entitlement_expiry(db, user_id)`. Return via `ok(...)` `{data, meta}`.
-- [ ] New query `get_active_entitlement_expiry(db, user_id) -> str | None` in `server/db/queries.py`: latest `expires_at` among `purchases WHERE user_id=? AND validation_status='valid' AND expires_at IS NOT NULL` ordered `expires_at DESC LIMIT 1`. No raw SQL in the route (Boundary 4).
-- [ ] Response model `UserProfileOut` in `server/models/schemas.py`: `tier: Literal["free","paid"]`, `calls_remaining: int`, `calls_per_period: int`, `period: str`, `subscription_expires_at: str | None`. snake_case; `subscription_expires_at: null` is meaningful (no subscription on record) → keep it explicit.
-- [ ] Tests `server/tests/test_user_profile.py`: 401 without JWT; free user → `tier:"free"` + correct `calls_remaining` + `subscription_expires_at: null`; paid user with a valid future-dated purchase → `tier:"paid"` + expiry echoed; envelope `{data, meta}`.
+- [x] New route module `server/api/routes_user.py`: `APIRouter(prefix="/user", tags=["user"], dependencies=[AUTH_DEPENDENCY])`, `GET /user/profile`. Register in `server/api/app.py` alongside the other routers.
+- [x] Handler: resolve `user_id` → `get_user_by_id` → `compute_call_usage(db, user_id, user["tier"])` → `expiry = await get_active_entitlement_expiry(db, user_id)`. Return via `ok(...)` `{data, meta}`.
+- [x] New query `get_active_entitlement_expiry(db, user_id) -> str | None` in `server/db/queries.py`: latest `expires_at` among `purchases WHERE user_id=? AND validation_status='valid' AND expires_at IS NOT NULL` ordered `expires_at DESC LIMIT 1`. No raw SQL in the route (Boundary 4).
+- [x] Response model `UserProfileOut` in `server/models/schemas.py`: `tier: Literal["free","paid"]`, `calls_remaining: int`, `calls_per_period: int`, `period: str`, `subscription_expires_at: str | None`. snake_case; `subscription_expires_at: null` is meaningful (no subscription on record) → keep it explicit.
+- [x] Tests `server/tests/test_user_profile.py`: 401 without JWT; free user → `tier:"free"` + correct `calls_remaining` + `subscription_expires_at: null`; paid user with a valid future-dated purchase → `tier:"paid"` + expiry echoed; envelope `{data, meta}`.
 
 ### Task 3 — Server: full tier/limit enforcement on `POST /calls/initiate` (AC2, AC5)
 
-- [ ] In `server/api/routes_calls.py` initiate handler, BEFORE the existing `CALL_LIMIT_REACHED` check, add a **scenario-tier gate**: if `user["tier"] == "free"` AND the target scenario is **not free** (`scenario["is_free"]` falsy) → `HTTPException(403, {"code": "TIER_RESTRICTED", "message": "..."})`. Today the paid-scenario gate is client-only (8.2) — a free user could bypass the paywall by hitting the API directly; this closes it server-side.
-  - [ ] Re-assert inside the `BEGIN IMMEDIATE` block (mirror the existing TOCTOU re-check for the limit) so the gate holds under concurrency, before the INSERT.
-- [ ] Keep `CALL_LIMIT_REACHED` 403 (now powered by Task 1's free-era count). Both use the canonical `{"error":{"code","message"}}` envelope.
-- [ ] Tests `server/tests/test_calls.py`: free user + paid scenario → 403 `TIER_RESTRICTED` (no row, no LiveKit token); free user + free scenario at cap → 403 `CALL_LIMIT_REACHED`; paid user + paid scenario under cap → 200 (and the inserted row carries `tier_at_call='paid'`).
+- [x] In `server/api/routes_calls.py` initiate handler, BEFORE the existing `CALL_LIMIT_REACHED` check, add a **scenario-tier gate**: if `user["tier"] == "free"` AND the target scenario is **not free** (`scenario["is_free"]` falsy) → `HTTPException(403, {"code": "TIER_RESTRICTED", "message": "..."})`. Today the paid-scenario gate is client-only (8.2) — a free user could bypass the paywall by hitting the API directly; this closes it server-side.
+  - [x] Re-assert inside the `BEGIN IMMEDIATE` block (mirror the existing TOCTOU re-check for the limit) so the gate holds under concurrency, before the INSERT.
+- [x] Keep `CALL_LIMIT_REACHED` 403 (now powered by Task 1's free-era count). Both use the canonical `{"error":{"code","message"}}` envelope.
+- [x] Tests `server/tests/test_calls.py`: free user + paid scenario → 403 `TIER_RESTRICTED` (no row, no LiveKit token); free user + free scenario at cap → 403 `CALL_LIMIT_REACHED`; paid user + paid scenario under cap → 200 (and the inserted row carries `tier_at_call='paid'`).
 
 ### Task 4 — Server: expiry enforcement + downgrade backstop (AC6, F11/F12)
 
-- [ ] **Fix the Google validator (deferred F11/F12)** `server/billing/google_validator.py` (the bug is at lines 166-179):
-  - [ ] **F12** (line 171, `expires_at = max(expiries)`): select `expiryTime` **chronologically** — parse each matching line-item `expiryTime` (RFC3339; tolerate fractional seconds + `Z`) to an aware `datetime`, take the max by datetime, return its ISO string. Today `max()` over raw strings is lexicographic.
-  - [ ] **F11** (the `if state in _ACTIVE_STATES` branch, line 173): after the state check, **also reject when the chosen expiry parses to `≤ now`** → `ValidationResult(valid=False, status="invalid", reason="expired")`, mirroring the Apple guard (`apple_validator.py` already rejects `expiresDate <= now`).
-- [ ] **Expiry-downgrade backstop sweep** in `server/billing/revalidation.py`: new `async def downgrade_expired_entitlements(db, *, now=None) -> int`. New query `get_users_with_expired_entitlement(db, now)` → users where `tier='paid'` AND there is **no** `valid` purchase with `expires_at > now`. For each, atomically (`BEGIN IMMEDIATE`) `update_user_tier(db, user_id, "free", tier_changed_at=now_iso())`. **Do NOT mutate the purchase row** (it was validly issued; it stops granting purely because `expires_at ≤ now`). Idempotent; fail-soft per user.
-- [ ] Wire `downgrade_expired_entitlements` into the existing 5-min loop `_subscription_revalidation_loop` (`server/api/app.py`), right after `revalidate_pending_purchases`, on the shared `stop_event`. This is the **backstop**; webhooks (Task 5) are the primary path.
-- [ ] **AC6 "retains access to all past debriefs":** verify debriefs are never tier-gated; add a one-line test that a `free` user can still read a previously-created debrief.
-- [ ] Tests: `test_billing.py` — Google `ACTIVE` state but past `expiryTime` → `invalid` (the missing F11 case); chronological vs lexicographic expiry pick (F12, fractional-second strings). `test_subscription.py` — `downgrade_expired_entitlements` flips an expired-paid user → free + stamps `tier_changed_at`; leaves a future-dated paid user alone; leaves a free user alone; a user with one expired + one future-valid purchase stays paid.
+- [x] **Fix the Google validator (deferred F11/F12)** `server/billing/google_validator.py` (the bug is at lines 166-179):
+  - [x] **F12** (line 171, `expires_at = max(expiries)`): select `expiryTime` **chronologically** — parse each matching line-item `expiryTime` (RFC3339; tolerate fractional seconds + `Z`) to an aware `datetime`, take the max by datetime, return its ISO string. Today `max()` over raw strings is lexicographic.
+  - [x] **F11** (the `if state in _ACTIVE_STATES` branch, line 173): after the state check, **also reject when the chosen expiry parses to `≤ now`** → `ValidationResult(valid=False, status="invalid", reason="expired")`, mirroring the Apple guard (`apple_validator.py` already rejects `expiresDate <= now`).
+- [x] **Expiry-downgrade backstop sweep** in `server/billing/revalidation.py`: new `async def downgrade_expired_entitlements(db, *, now=None) -> int`. New query `get_users_with_expired_entitlement(db, now)` → users where `tier='paid'` AND there is **no** `valid` purchase with `expires_at > now`. For each, atomically (`BEGIN IMMEDIATE`) `update_user_tier(db, user_id, "free", tier_changed_at=now_iso())`. **Do NOT mutate the purchase row** (it was validly issued; it stops granting purely because `expires_at ≤ now`). Idempotent; fail-soft per user.
+- [x] Wire `downgrade_expired_entitlements` into the existing 5-min loop `_subscription_revalidation_loop` (`server/api/app.py`), right after `revalidate_pending_purchases`, on the shared `stop_event`. This is the **backstop**; webhooks (Task 5) are the primary path.
+- [x] **AC6 "retains access to all past debriefs":** verify debriefs are never tier-gated; add a one-line test that a `free` user can still read a previously-created debrief.
+- [x] Tests: `test_billing.py` — Google `ACTIVE` state but past `expiryTime` → `invalid` (the missing F11 case); chronological vs lexicographic expiry pick (F12, fractional-second strings). `test_subscription.py` — `downgrade_expired_entitlements` flips an expired-paid user → free + stamps `tier_changed_at`; leaves a future-dated paid user alone; leaves a free user alone; a user with one expired + one future-valid purchase stays paid.
 
 ### Task 5 — Server: subscription lifecycle WEBHOOKS (AC6, D3) — primary detection path
 
 > Both endpoints are **unauthenticated to the app JWT** (Apple/Google POST to them), secured instead by verifying the signed payload / Pub/Sub token, and **idempotent** via `subscription_events`. Each must **return 200 quickly** (Apple & Pub/Sub retry on non-2xx). They are **structurally buildable + unit-testable now**; the live store wiring (App Store Connect notification URL; Google Pub/Sub topic + push subscription) is **store-config-gated** like everything IAP (8.1-D4 + 10-4) → flag as deferred-to-live.
 
-- [ ] **Apple — `POST /subscription/webhook/apple`** (no `AUTH_DEPENDENCY`). Body `{ "signedPayload": "<JWS>" }`. **Verify the JWS OFFLINE** with the same `app-store-server-library` verifier infra used in `billing/apple_validator.py` (no App Store Server API key — D4 stays deferred). Decode `ResponseBodyV2DecodedPayload` → `notificationType` (+ `subtype`) and the nested `signedTransactionInfo` / `signedRenewalInfo` (verify these too). Map:
+- [x] **Apple — `POST /subscription/webhook/apple`** (no `AUTH_DEPENDENCY`). Body `{ "signedPayload": "<JWS>" }`. **Verify the JWS OFFLINE** with the same `app-store-server-library` verifier infra used in `billing/apple_validator.py` (no App Store Server API key — D4 stays deferred). Decode `ResponseBodyV2DecodedPayload` → `notificationType` (+ `subtype`) and the nested `signedTransactionInfo` / `signedRenewalInfo` (verify these too). Map:
   - `DID_RENEW` → re-stamp `expires_at` (from the renewal/transaction info), keep `paid`.
   - `EXPIRED`, `GRACE_PERIOD_EXPIRED` → downgrade user to `free` (stamp `tier_changed_at`).
   - `REFUND`, `REVOKE` → downgrade to `free` immediately.
   - `DID_CHANGE_RENEWAL_STATUS` (subtype `AUTO_RENEW_DISABLED`) → record cancellation intent; **keep `paid` until `expires_at`** (correct subscription behavior — see the design doc's "Access until" state).
   - Dedup on `notificationUUID` via `subscription_events` (insert-or-skip).
-- [ ] **Google — `POST /subscription/webhook/google`** (no `AUTH_DEPENDENCY`). Body = Pub/Sub push envelope `{ "message": { "data": "<base64 JSON>", "messageId": "..." } }`. **Secure it** by verifying the Pub/Sub OIDC bearer token (audience check) — or, acceptable interim, a hard-to-guess secret path segment configured on the push subscription; document the choice. Decode `data` → `{ subscriptionNotification: { purchaseToken, notificationType, subscriptionId }, packageName }`. On any lifecycle `notificationType` (`SUBSCRIPTION_RENEWED`, `SUBSCRIPTION_EXPIRED`, `SUBSCRIPTION_CANCELED`, `SUBSCRIPTION_REVOKED`, `SUBSCRIPTION_IN_GRACE_PERIOD`, `SUBSCRIPTION_ON_HOLD`, …) **re-call `validate_google(purchase_token)`** (already built in 8.1) to get the authoritative state, then update the matching `purchases` row + `users.tier` accordingly (active/grace → keep paid + refresh `expires_at`; expired/revoked/on-hold-past-grace → downgrade to free). Dedup on `messageId`.
-- [ ] Resolve a notification's `purchaseToken`/`transaction_id` back to a user via the `purchases` table (`verification_token` / `transaction_id`). If no matching purchase row exists, ACK 200 and log (a notification for an unknown token is not an error).
-- [ ] Config: add the webhook-security knobs to `server/config.py` (e.g. `google_pubsub_audience`/secret), default-empty so the server boots without them; the Apple path needs only the existing `apple_bundle_id` + roots.
-- [ ] Tests `server/tests/test_subscription_webhooks.py`: Apple — a crafted/mocked-verified `EXPIRED` payload downgrades the user; `DID_RENEW` refreshes `expires_at` + keeps paid; `DID_CHANGE_RENEWAL_STATUS/AUTO_RENEW_DISABLED` keeps paid; a forged/invalid JWS is rejected (no tier change); replay of the same `notificationUUID` is a no-op. Google — `SUBSCRIPTION_EXPIRED` (with `validate_google` mocked to `invalid`/expired) downgrades; `SUBSCRIPTION_RENEWED` (mocked `valid`) keeps paid + refreshes expiry; bad/missing Pub/Sub token → 401/403; duplicate `messageId` is a no-op; unknown `purchaseToken` → 200 + logged. Always-200-on-handled-error contract asserted.
+- [x] **Google — `POST /subscription/webhook/google`** (no `AUTH_DEPENDENCY`). Body = Pub/Sub push envelope `{ "message": { "data": "<base64 JSON>", "messageId": "..." } }`. **Secure it** by verifying the Pub/Sub OIDC bearer token (audience check) — or, acceptable interim, a hard-to-guess secret path segment configured on the push subscription; document the choice. Decode `data` → `{ subscriptionNotification: { purchaseToken, notificationType, subscriptionId }, packageName }`. On any lifecycle `notificationType` (`SUBSCRIPTION_RENEWED`, `SUBSCRIPTION_EXPIRED`, `SUBSCRIPTION_CANCELED`, `SUBSCRIPTION_REVOKED`, `SUBSCRIPTION_IN_GRACE_PERIOD`, `SUBSCRIPTION_ON_HOLD`, …) **re-call `validate_google(purchase_token)`** (already built in 8.1) to get the authoritative state, then update the matching `purchases` row + `users.tier` accordingly (active/grace → keep paid + refresh `expires_at`; expired/revoked/on-hold-past-grace → downgrade to free). Dedup on `messageId`.
+- [x] Resolve a notification's `purchaseToken`/`transaction_id` back to a user via the `purchases` table (`verification_token` / `transaction_id`). If no matching purchase row exists, ACK 200 and log (a notification for an unknown token is not an error).
+- [x] Config: add the webhook-security knobs to `server/config.py` (e.g. `google_pubsub_audience`/secret), default-empty so the server boots without them; the Apple path needs only the existing `apple_bundle_id` + roots.
+- [x] Tests `server/tests/test_subscription_webhooks.py`: Apple — a crafted/mocked-verified `EXPIRED` payload downgrades the user; `DID_RENEW` refreshes `expires_at` + keeps paid; `DID_CHANGE_RENEWAL_STATUS/AUTO_RENEW_DISABLED` keeps paid; a forged/invalid JWS is rejected (no tier change); replay of the same `notificationUUID` is a no-op. Google — `SUBSCRIPTION_EXPIRED` (with `validate_google` mocked to `invalid`/expired) downgrades; `SUBSCRIPTION_RENEWED` (mocked `valid`) keeps paid + refreshes expiry; bad/missing Pub/Sub token → 401/403; duplicate `messageId` is a no-op; unknown `purchaseToken` → 200 + logged. Always-200-on-handled-error contract asserted.
 
 ### Task 6 — Client: app-lifetime `purchaseStream` listener (AC6, deferred F4-func)
 
-- [ ] New app-scoped service `client/lib/features/subscription/services/purchase_sync_service.dart` (mirror the `EndCallRetryService` app-singleton precedent in `main.dart`). Holds `InAppPurchaseService` + `SubscriptionRepository`. `.listen()`s to `purchaseStream` for the **whole app lifetime**; for each re-delivered `purchased`/`restored` transaction it `verifyPurchase(...)` then `complete(...)` (reuse 8.1 plumbing — no duplicate verify logic), independent of whether the paywall is open. Expose a `Stream<void> onEntitlementChanged` (or `ValueListenable`) that fires after a successful verify.
-- [ ] Construct it in `client/lib/main.dart` `bootstrap()` BEFORE `runApp` (next to `EndCallRetryService`); provide via `RepositoryProvider.value` in `app.dart`. On `onEntitlementChanged`, the hub dispatches a silent `RefreshScenariosEvent` so tier re-flows from `/scenarios` meta.
-- [ ] **Do NOT** remove/alter the paywall bloc's own (sheet-scoped) stream subscription — both coexist; `complete()` + the verify endpoint are idempotent (409-guarded server-side), so a duplicate verify is safe. Preserve restore semantics (8.2 F16 intentional).
-- [ ] Tests: a fake `InAppPurchaseService` emits a `purchased` event while no paywall is mounted → the service `verifyPurchase` + `complete` + fires `onEntitlementChanged`. `FlutterSecureStorage.setMockInitialValues({})` in `setUp`; never `pumpAndSettle` on spinners.
+- [x] New app-scoped service `client/lib/features/subscription/services/purchase_sync_service.dart` (mirror the `EndCallRetryService` app-singleton precedent in `main.dart`). Holds `InAppPurchaseService` + `SubscriptionRepository`. `.listen()`s to `purchaseStream` for the **whole app lifetime**; for each re-delivered `purchased`/`restored` transaction it `verifyPurchase(...)` then `complete(...)` (reuse 8.1 plumbing — no duplicate verify logic), independent of whether the paywall is open. Expose a `Stream<void> onEntitlementChanged` (or `ValueListenable`) that fires after a successful verify.
+- [x] Construct it in `client/lib/main.dart` `bootstrap()` BEFORE `runApp` (next to `EndCallRetryService`); provide via `RepositoryProvider.value` in `app.dart`. On `onEntitlementChanged`, the hub dispatches a silent `RefreshScenariosEvent` so tier re-flows from `/scenarios` meta.
+- [x] **Do NOT** remove/alter the paywall bloc's own (sheet-scoped) stream subscription — both coexist; `complete()` + the verify endpoint are idempotent (409-guarded server-side), so a duplicate verify is safe. Preserve restore semantics (8.2 F16 intentional).
+- [x] Tests: a fake `InAppPurchaseService` emits a `purchased` event while no paywall is mounted → the service `verifyPurchase` + `complete` + fires `onEntitlementChanged`. `FlutterSecureStorage.setMockInitialValues({})` in `setUp`; never `pumpAndSettle` on spinners.
 
 ### Task 7 — Client: the Manage Subscription screen (AC1) + minimalist hub entry + CallUsage clamp ⟵ build to the binding design doc
 
 > **The binding UI spec is [`manage-subscription-screen-design.md`](../planning-artifacts/manage-subscription-screen-design.md).** Implement it exactly (it already resolves layout, tokens, copy, states A–F, mobile safe/unsafe zones, accessibility, navigation, and the reuse map). Highlights below; the doc governs on any conflict.
 
-- [ ] **`UserProfile` model + read path.** New `client/lib/features/subscription/models/user_profile.dart` (mirror `CallUsage`/`SubscriptionStatus`; `tier`/`callsRemaining`/`callsPerPeriod`/`period`/`subscriptionExpiresAt`). New `UserRepository.getProfile()` (or extend `SubscriptionRepository`) → `GET /user/profile`, reusing `ApiClient`. A `UserProfileBloc`/`Cubit` (4 base states) drives the screen.
-- [ ] **`ManageSubscriptionScreen`** — dark app surface, route-pushed, no AppBar; pinned-CTA structure (the `EmpatheticErrorScreen` pattern); states A (free), B (paid renews), C (paid cancelled-until-expiry; default to "Renews" if no auto-renew flag — design R3), D (expired/reverted), E (loading skeleton), F (error → reuse `EmpatheticErrorScreen`). Use ONLY existing tokens (no new `AppColors` — keep `theme_tokens_test` count==16; no inline hex). `Subscribe` → `PaywallSheet.show`; `Manage subscription` → native handoff (Task 7b); `Restore purchases` → existing `RestorePressed` flow; legal footer (Terms/Privacy flat `Text.rich` links). All tap targets ≥44dp; SafeArea top+bottom; nothing under the home indicator; no horizontally-draggable controls.
-- [ ] **`_AccountHubLine`** on the Scenarios hub — a quiet, **trailing (right-aligned)**, tier-neutral grey `Account` line stacked directly above `_DifficultyHubLine`, ≥44dp hit box, on the 18-rail. `onTap` → `context.push(AppRoutes.account)`. **Minimal — no tier badge, invisible tiers preserved (UX-DR16).** (Per Walid D1: keep the hub uncluttered while the app is small.)
-- [ ] **Router:** add `AppRoutes.account = '/account'` + a `GoRoute` using the existing `_fadePage`.
-- [ ] **Task 7b — native manage handoff (`StoreLinks` helper).** `url_launcher` (already a dep), `LaunchMode.externalApplication`. iOS: `https://apps.apple.com/account/subscriptions` (fallback `itms-apps://…`). Android: `https://play.google.com/store/account/subscriptions?sku=stt_weekly_199&package=<applicationId>` (both params required; get `<applicationId>` at runtime from `PackageInfo.fromPlatform()` — **add `package_info_plus`**). Inline `AppColors.destructive` text on launch failure; never a dialog.
-- [ ] **New deps:** `intl` (format `subscription_expires_at` as `d MMM yyyy`; never show raw ISO), `package_info_plus` (Android package id).
-- [ ] **`CallUsage` negative clamp** (deferred item — triggered because the new screen displays `calls_remaining`): in `client/lib/features/scenarios/models/call_usage.dart` `fromMeta`, `callsRemaining = max(0, json['calls_remaining'] as int)`; assert `calls_per_period > 0` else `FormatException`. Mirror in the `UserProfile` parse.
-- [ ] Tests (per the design doc §10 R5 + house patterns): screen renders each state via the bloc seam; `StoreLinks` launches the correct per-platform URL (mock `url_launcher`); free→Subscribe opens the paywall; paid→Manage launches the store; Restore success → toast + flip, empty → "Nothing to restore."; overflow test at `Size(320,480)` × `textScaler 2.0`; theme-token count unchanged; `_AccountHubLine` pushes the route and shows no tier signal. `FlutterSecureStorage.setMockInitialValues({})`; `pump(Duration)` not `pumpAndSettle` for any timed UI.
+- [x] **`UserProfile` model + read path.** New `client/lib/features/subscription/models/user_profile.dart` (mirror `CallUsage`/`SubscriptionStatus`; `tier`/`callsRemaining`/`callsPerPeriod`/`period`/`subscriptionExpiresAt`). New `UserRepository.getProfile()` (or extend `SubscriptionRepository`) → `GET /user/profile`, reusing `ApiClient`. A `UserProfileBloc`/`Cubit` (4 base states) drives the screen.
+- [x] **`ManageSubscriptionScreen`** — dark app surface, route-pushed, no AppBar; pinned-CTA structure (the `EmpatheticErrorScreen` pattern); states A (free), B (paid renews), C (paid cancelled-until-expiry; default to "Renews" if no auto-renew flag — design R3), D (expired/reverted), E (loading skeleton), F (error → reuse `EmpatheticErrorScreen`). Use ONLY existing tokens (no new `AppColors` — keep `theme_tokens_test` count==16; no inline hex). `Subscribe` → `PaywallSheet.show`; `Manage subscription` → native handoff (Task 7b); `Restore purchases` → existing `RestorePressed` flow; legal footer (Terms/Privacy flat `Text.rich` links). All tap targets ≥44dp; SafeArea top+bottom; nothing under the home indicator; no horizontally-draggable controls.
+- [x] **`_AccountHubLine`** on the Scenarios hub — a quiet, **trailing (right-aligned)**, tier-neutral grey `Account` line stacked directly above `_DifficultyHubLine`, ≥44dp hit box, on the 18-rail. `onTap` → `context.push(AppRoutes.account)`. **Minimal — no tier badge, invisible tiers preserved (UX-DR16).** (Per Walid D1: keep the hub uncluttered while the app is small.)
+- [x] **Router:** add `AppRoutes.account = '/account'` + a `GoRoute` using the existing `_fadePage`.
+- [x] **Task 7b — native manage handoff (`StoreLinks` helper).** `url_launcher` (already a dep), `LaunchMode.externalApplication`. iOS: `https://apps.apple.com/account/subscriptions` (fallback `itms-apps://…`). Android: `https://play.google.com/store/account/subscriptions?sku=stt_weekly_199&package=<applicationId>` (both params required; get `<applicationId>` at runtime from `PackageInfo.fromPlatform()` — **add `package_info_plus`**). Inline `AppColors.destructive` text on launch failure; never a dialog.
+- [x] **New deps:** `intl` (format `subscription_expires_at` as `d MMM yyyy`; never show raw ISO), `package_info_plus` (Android package id).
+- [x] **`CallUsage` negative clamp** (deferred item — triggered because the new screen displays `calls_remaining`): in `client/lib/features/scenarios/models/call_usage.dart` `fromMeta`, `callsRemaining = max(0, json['calls_remaining'] as int)`; assert `calls_per_period > 0` else `FormatException`. Mirror in the `UserProfile` parse.
+- [x] Tests (per the design doc §10 R5 + house patterns): screen renders each state via the bloc seam; `StoreLinks` launches the correct per-platform URL (mock `url_launcher`); free→Subscribe opens the paywall; paid→Manage launches the store; Restore success → toast + flip, empty → "Nothing to restore."; overflow test at `Size(320,480)` × `textScaler 2.0`; theme-token count unchanged; `_AccountHubLine` pushes the route and shows no tier signal. `FlutterSecureStorage.setMockInitialValues({})`; `pump(Duration)` not `pumpAndSettle` for any timed UI.
 
 ### Task 8 — Client: AC3/AC4 live-state verification (mostly already built — verify + close gaps)
 
-- [ ] **AC4 BOC matrix** is already implemented (`bottom_overlay_card.dart` `_variantFor`): free+calls→"Unlock all scenarios", free/0→"Subscribe to keep calling", paid+calls→hidden (`SizedBox.shrink`), paid/0→"No more calls today"/"Come back tomorrow". **Verify it reflects LIVE status after a tier change** (purchase, expiry-downgrade) via the post-event `/scenarios` reload. Keep widget tests for all 4 variants.
-- [ ] **AC3 call-icon disablement at 0 calls.** Confirm that when `usage.callsRemaining == 0` the per-scenario call icons are **non-functional** (tapping must NOT initiate a call). The server returns 403 and the client routes it to the paywall; make the client also reflect the inert affordance proactively (no reliance on a round-trip). Widget test: 0 calls → tapping a call icon does not dispatch `_startCall`/`InitiateCall`.
-- [ ] **Do NOT** restyle the BOC or add tier badges to cards (UX-DR16).
+- [x] **AC4 BOC matrix** is already implemented (`bottom_overlay_card.dart` `_variantFor`): free+calls→"Unlock all scenarios", free/0→"Subscribe to keep calling", paid+calls→hidden (`SizedBox.shrink`), paid/0→"No more calls today"/"Come back tomorrow". **Verify it reflects LIVE status after a tier change** (purchase, expiry-downgrade) via the post-event `/scenarios` reload. Keep widget tests for all 4 variants.
+- [x] **AC3 call-icon disablement at 0 calls.** Confirm that when `usage.callsRemaining == 0` the per-scenario call icons are **non-functional** (tapping must NOT initiate a call). The server returns 403 and the client routes it to the paywall; make the client also reflect the inert affordance proactively (no reliance on a round-trip). Widget test: 0 calls → tapping a call icon does not dispatch `_startCall`/`InitiateCall`.
+- [x] **Do NOT** restyle the BOC or add tier badges to cards (UX-DR16).
 
 ### Task 9 — Tests + gates (all green before commit, per CLAUDE.md)
 
-- [ ] Server: `cd server && python -m ruff check . && python -m ruff format --check . && <venv> -m pytest` — all green (warm `import aiohttp` once if cold). Includes `test_migrations` (with 015).
-- [ ] Client: `cd client && flutter analyze` → "No issues found!" (zero infos) and `flutter test` → all pass.
-- [ ] Update the story File List + Completion Notes + declare any deviations.
+- [x] Server: `cd server && python -m ruff check . && python -m ruff format --check . && <venv> -m pytest` — all green (warm `import aiohttp` once if cold). Includes `test_migrations` (with 015).
+- [x] Client: `cd client && flutter analyze` → "No issues found!" (zero infos) and `flutter test` → all pass.
+- [x] Update the story File List + Completion Notes + declare any deviations.
 
 ### Task 10 — Deploy + Smoke Test Gate (server) + on-device deferral
 
-- [ ] Deploy to VPS (migration 015 auto-applies; pre-deploy DB backup via `deploy-server.yml`); confirm `/health` git_sha matches. Refresh + commit `prod_snapshot.sqlite` post-deploy.
-- [ ] Fill the **Smoke Test Gate (Server)** boxes with real output.
-- [ ] **On-device IAP gate + live webhooks are DEFERRED** (real purchase/renewal/restore/manage-deep-link/store-push untestable until 8.1-D4 store config lands AND Story 10-4 ships the iOS pipeline) — same posture as 8.1/8.2. Server enforcement (count rework, `/user/profile`, `TIER_RESTRICTED`, expiry sweep, webhook handlers with crafted payloads) is fully pytest-testable now; the Android `url_launcher` manage path + the screen are widget-testable. Note this explicitly in the review summary so the story isn't blocked on an ungated capability.
+- [ ] Deploy to VPS (migration 015 auto-applies; pre-deploy DB backup via `deploy-server.yml`); confirm `/health` git_sha matches. Refresh + commit `prod_snapshot.sqlite` post-deploy.  ⟵ OWED
+- [ ] Fill the **Smoke Test Gate (Server)** boxes with real output.  ⟵ OWED
+- [x] **On-device IAP gate + live webhooks are DEFERRED** (real purchase/renewal/restore/manage-deep-link/store-push untestable until 8.1-D4 store config lands AND Story 10-4 ships the iOS pipeline) — same posture as 8.1/8.2. Server enforcement (count rework, `/user/profile`, `TIER_RESTRICTED`, expiry sweep, webhook handlers with crafted payloads) is fully pytest-testable now; the Android `url_launcher` manage path + the screen are widget-testable. Note this explicitly in the review summary so the story isn't blocked on an ungated capability.
 
 ---
 
@@ -262,10 +262,103 @@ architecture.md predates Stories 8.1/8.2 and is stale on billing/tier. As built 
 
 ### Agent Model Used
 
-_TBD by dev-story_
+claude-opus-4-8 (dev-story, 2026-06-18)
 
 ### Debug Log References
 
+- Server gates: `python -m ruff check .` ✅, `ruff format --check .` ✅, full `pytest` → **994 passed** (warm `aiohttp`).
+- Client gates: `flutter analyze` → **No issues found!**, `flutter test` → **635 passed**.
+
 ### Completion Notes List
 
+Implementation complete for Tasks 0–9 (code + automated gates green). Task 10
+(VPS deploy + on-prod Smoke Test Gate + `prod_snapshot` refresh) is OWED; the
+on-device IAP / live-webhook gate is DEFERRED (8.1-D4 store config + Story 10-4),
+same posture as 8.1/8.2.
+
+- **Task 0 — migration 015.** ADD-only: `call_sessions.tier_at_call` (free/paid
+  CHECK, nullable) + `subscription_events` (provider CHECK + UNIQUE
+  notification_id). `test_migrations` green incl. the prod-snapshot replay.
+  Snapshot refresh is post-deploy (owed).
+- **Task 1 — free-era counting (D2).** `insert_call_session` stamps
+  `tier_at_call`; the two count queries take an optional `tier_at_call` filter
+  (`COALESCE(tier_at_call,'free')`); `compute_call_usage` free=free-era-lifetime,
+  paid=today's-paid-era. The churned 2-free-then-paid→1-left case is tested.
+- **Task 2 — `GET /user/profile`.** New `routes_user.py` + `UserProfileOut` +
+  `get_active_entitlement_expiry`. 401 / free / paid+expiry / latest-valid /
+  null-expiry covered.
+- **Task 3 — server tier gate.** `/calls/initiate` 403 `TIER_RESTRICTED` (free +
+  paid scenario), re-asserted inside `BEGIN IMMEDIATE` against a re-read tier;
+  `CALL_LIMIT_REACHED` powered by the free-era count.
+- **Task 4 — expiry enforcement.** Google validator F11 (active+past-expiry →
+  invalid) + F12 (chronological RFC3339 max, nanosecond-tolerant);
+  `downgrade_expired_entitlements` backstop wired into the 5-min loop; AC6
+  debrief-access test added (debriefs not tier-gated).
+- **Task 5 — webhooks.** Apple ASSN V2 offline-verify (`verify_apple_notification`
+  reusing `SignedDataVerifier`, F1 env guard) + Google RTDN (Pub/Sub push,
+  secret `?token=` gate, authoritative re-validate). New
+  `routes_subscription_webhooks.py` (no AUTH_DEPENDENCY); dedup via
+  `subscription_events`; always-200-on-handled-error.
+- **Task 6 — app-lifetime listener.** `PurchaseSyncService` verifies+completes
+  re-delivered purchases + `onEntitlementChanged`; wired in `bootstrap()` +
+  provided in `app.dart`; hub silently refreshes on it.
+- **Task 7 — Manage Subscription screen.** `UserProfile` (+clamp) +
+  `UserRepository` + `UserProfileCubit` + `ManageSubscriptionScreen` (states
+  A–F, pinned CTA, skeleton, error reuse) + `_AccountHubLine` (quiet trailing,
+  ≥44dp) + `/account` route + `StoreLinks` + `intl` date + `CallUsage` clamp.
+- **F17 — pending approval.** `SubscriptionPendingApproval` state; bloc emits it
+  on `PurchaseStatus.pending`; paywall renders it dismissible.
+- **Task 8 — AC3/AC4.** AC3 call-icon inert at 0 calls (free→paywall, paid→no-op,
+  no round-trip) + 2 tests; AC4 BOC matrix verified.
+
+**Declared deviations:**
+1. **Legal footer links** — no client Terms/Privacy URL config exists (Story
+   10-1 owns the legal pages); the paywall ships its legal as flat non-linked
+   text. We link Terms/Privacy to the SAME real domain the consent screen
+   already uses (`https://survivethe.talk/{terms,privacy}`), NOT a placeholder.
+2. **State C ("Access until")** — `/user/profile` exposes no auto-renew flag
+   (design R3), so the paid view always reads `Renews {date}`.
+3. **Live price** — the price line uses the static `$1.99 per week` (design
+   allows it) rather than loading `ProductDetails.price`.
+4. **Google webhook security** — the interim secret `?token=` gate is
+   implemented; `GOOGLE_PUBSUB_AUDIENCE` (OIDC) is reserved for prod hardening.
+
 ### File List
+
+**New (server):** `db/migrations/015_tier_at_call_and_subscription_events.sql`,
+`api/routes_user.py`, `api/routes_subscription_webhooks.py`,
+`tests/test_user_profile.py`, `tests/test_subscription_webhooks.py`
+
+**Modified (server):** `db/queries.py`, `api/usage.py`, `api/routes_calls.py`,
+`api/app.py`, `billing/google_validator.py`, `billing/revalidation.py`,
+`billing/apple_validator.py`, `billing/__init__.py`, `models/schemas.py`,
+`config.py`, `tests/test_migrations.py`, `tests/test_call_usage.py`,
+`tests/test_calls.py`, `tests/test_billing.py`, `tests/test_subscription.py`,
+`tests/test_routes_debriefs.py`
+
+**New (client):** `features/subscription/models/user_profile.dart`,
+`features/subscription/repositories/user_repository.dart`,
+`features/subscription/bloc/user_profile_cubit.dart`,
+`features/subscription/services/purchase_sync_service.dart`,
+`features/subscription/services/store_links.dart`,
+`features/subscription/views/manage_subscription_screen.dart`, +
+`test/features/subscription/{models/user_profile_test, services/store_links_test,
+services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart`
+
+**Modified (client):** `lib/main.dart`, `lib/app/app.dart`, `lib/app/router.dart`,
+`features/subscription/bloc/subscription_bloc.dart`,
+`features/subscription/bloc/subscription_state.dart`,
+`features/paywall/views/paywall_sheet.dart`,
+`features/scenarios/models/call_usage.dart`,
+`features/scenarios/views/scenario_list_screen.dart`, `pubspec.yaml`,
+`pubspec.lock`, `test/features/scenarios/views/scenario_list_screen_test.dart`,
+`test/features/paywall/views/paywall_sheet_test.dart`,
+`test/features/subscription/bloc/subscription_bloc_test.dart`
+
+### Change Log
+
+- 2026-06-18 — dev-story: implemented Tasks 0–9 (server full tier enforcement +
+  `/user/profile` + expiry/webhooks; client Manage Subscription screen + hub
+  entry + app-lifetime purchase listener + F17). Gates green (server pytest 994,
+  client flutter 635, ruff + analyze clean). Status → review. Task 10 (deploy +
+  server Smoke Test Gate + snapshot refresh) owed; on-device gate deferred.

@@ -17,6 +17,7 @@ App Store Server API online-revocation check).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import jwt
@@ -206,3 +207,138 @@ async def validate_apple(
             status="invalid",
             reason=f"validator_error:{type(exc).__name__}",
         )
+
+
+# --- Story 8.3 (Task 5) — App Store Server Notifications V2 (webhook) -------
+
+
+@dataclass(frozen=True)
+class AppleNotification:
+    """The fields of an offline-verified App Store Server Notification V2 the
+    webhook acts on. `notification_type` (+ optional `subtype`) drives the
+    lifecycle action; `notification_uuid` is the dedup key; the nested
+    transaction info (when present) supplies `transaction_id` / `product_id` /
+    `expires_at` used to resolve the user + re-stamp the entitlement.
+    """
+
+    notification_type: str | None
+    subtype: str | None
+    notification_uuid: str | None
+    transaction_id: str | None
+    product_id: str | None
+    expires_at: str | None
+    environment: str | None
+
+
+class AppleNotificationError(Exception):
+    """Raised when an App Store Server Notification fails OFFLINE verification
+    (forged signature, untrusted/sandbox-rejected environment, unparseable
+    payload). The webhook route maps it to a 400 reject — DISTINCT from
+    `BillingConfigError` (no Apple config → 503) so a genuine misconfig retries
+    later while a forged payload is rejected outright."""
+
+
+def _verify_notification_sync(
+    signed_payload: str,
+    *,
+    bundle_id: str,
+    app_apple_id: int | None,
+    accept_sandbox: bool,
+) -> AppleNotification:
+    """Blocking offline verification of a notification JWS (run via to_thread).
+
+    Mirrors `_verify_sync`'s F1 guard: the environment is read from the
+    UNVERIFIED payload only to select the verifier; Xcode/LocalTesting (which
+    `SignedDataVerifier` would skip-verify) are rejected BEFORE the verifier is
+    built so a self-signed `environment:'Xcode'` notification cannot forge a
+    downgrade/renewal.
+    """
+    try:
+        unverified = jwt.decode(signed_payload, options={"verify_signature": False})
+    except jwt.PyJWTError as exc:
+        raise AppleNotificationError(f"unparseable_jws:{type(exc).__name__}") from exc
+
+    data = unverified.get("data") if isinstance(unverified, dict) else None
+    raw_env = data.get("environment") if isinstance(data, dict) else None
+    try:
+        environment = Environment(raw_env)
+    except ValueError as exc:
+        raise AppleNotificationError(f"unknown_environment:{raw_env!r}") from exc
+
+    if environment not in (Environment.PRODUCTION, Environment.SANDBOX):
+        raise AppleNotificationError(f"untrusted_environment:{raw_env!r}")
+    if environment == Environment.SANDBOX and not accept_sandbox:
+        raise AppleNotificationError("sandbox_rejected")
+    if environment == Environment.PRODUCTION and app_apple_id is None:
+        raise BillingConfigError(
+            "APPLE_APP_APPLE_ID is required to verify a Production notification."
+        )
+
+    verifier = SignedDataVerifier(
+        root_certificates=apple_root_certificates(),
+        enable_online_checks=False,
+        environment=environment,
+        bundle_id=bundle_id,
+        app_apple_id=app_apple_id,
+    )
+    try:
+        decoded = verifier.verify_and_decode_notification(signed_payload)
+    except VerificationException as exc:
+        logger.warning("Apple notification verification failed: {}", exc)
+        raise AppleNotificationError("verification_failed") from exc
+
+    txn_id: str | None = None
+    product_id: str | None = None
+    expires_at: str | None = None
+    data_obj = decoded.data
+    if data_obj is not None and data_obj.signedTransactionInfo:
+        try:
+            txn = verifier.verify_and_decode_signed_transaction(
+                data_obj.signedTransactionInfo
+            )
+            txn_id = txn.transactionId
+            product_id = txn.productId
+            expires_at = _ms_to_iso(txn.expiresDate)
+        except VerificationException as exc:
+            # The notification itself verified; only the nested txn JWS didn't.
+            # Keep the type + uuid so type-driven actions still fire.
+            logger.warning("Apple notification txn-info verification failed: {}", exc)
+
+    return AppleNotification(
+        notification_type=decoded.rawNotificationType,
+        subtype=decoded.rawSubtype,
+        notification_uuid=decoded.notificationUUID,
+        transaction_id=txn_id,
+        product_id=product_id,
+        expires_at=expires_at,
+        environment=raw_env,
+    )
+
+
+async def verify_apple_notification(
+    signed_payload: str,
+    *,
+    bundle_id: str,
+    app_apple_id: int | None = None,
+    accept_sandbox: bool = False,
+) -> AppleNotification:
+    """Offline-verify an App Store Server Notification V2 `signedPayload`.
+
+    Raises `BillingConfigError` when `bundle_id` is empty (no Apple config) or a
+    Production notification arrives without `app_apple_id`; raises
+    `AppleNotificationError` for a forged / untrusted / unparseable payload.
+    Returns the extracted `AppleNotification` on success. Uses the SAME
+    `SignedDataVerifier` infra as `validate_apple` — NO App Store Server API key
+    needed (D4 stays deferred); the pushed JWS is self-contained.
+    """
+    if not bundle_id:
+        raise BillingConfigError(
+            "APPLE_BUNDLE_ID is not configured — cannot verify Apple notifications."
+        )
+    return await asyncio.to_thread(
+        _verify_notification_sync,
+        signed_payload,
+        bundle_id=bundle_id,
+        app_apple_id=app_apple_id,
+        accept_sandbox=accept_sandbox,
+    )

@@ -88,6 +88,27 @@ def test_get_debrief_happy_path(client, test_db_path):
     assert resp.json()["meta"]["timestamp"]
 
 
+def test_free_user_retains_access_to_past_debrief(client, test_db_path):
+    """Story 8.3 AC6 — a free (or reverted-to-free) user keeps access to all
+    past debriefs. The debrief route is NOT tier-gated; it enforces only
+    call_session ownership. `register_user` mints a default `free` user, so a
+    200 here proves a churned paid->free user still reads their history."""
+    import sqlite3
+
+    user_id = register_user(client, test_db_path, email="reverted@example.com")
+    call_id = _seed_call(user_id, with_debrief=True)
+    # Make the tier explicitly free (the reverted-payer state).
+    conn = sqlite3.connect(test_db_path)
+    conn.execute("UPDATE users SET tier = 'free' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    resp = client.get(f"/debriefs/{call_id}", headers=_auth(issue_token(user_id)))
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["survival_pct"] == 73
+
+
 def test_get_debrief_omits_framing_below_threshold(client, test_db_path):
     user_id = register_user(client, test_db_path, email="low@example.com")
     call_id = _seed_call(user_id, with_debrief=True, survival=30)

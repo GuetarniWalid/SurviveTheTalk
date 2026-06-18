@@ -417,8 +417,13 @@ def test_initiate_persists_requested_scenario_id(
     mock_resend,
     test_db_path: str,
 ) -> None:
-    """Parametrised happy path — `call_sessions.scenario_id` matches the body."""
+    """Parametrised happy path — `call_sessions.scenario_id` matches the body.
+
+    Story 8.3 — the user is set to paid so a PAID scenario (`cop_hard_01`)
+    passes the new server-side tier gate (a free user calling it now gets 403
+    TIER_RESTRICTED; that path has its own test below)."""
     user_id = _register_user(client, test_db_path)
+    _set_tier(test_db_path, user_id, "paid")
     token = issue_token(user_id)
 
     response = client.post(
@@ -442,14 +447,25 @@ def test_initiate_persists_requested_scenario_id(
 # ---------- Story 5.3 — daily/lifetime call cap enforcement ----------
 
 
-def _seed_call_sessions(db_path: str, user_id: int, started_ats: list[str]) -> None:
-    """Insert one row per `started_ats` timestamp via raw SQL."""
+def _seed_call_sessions(
+    db_path: str,
+    user_id: int,
+    started_ats: list[str],
+    tier_at_call: str | None = None,
+) -> None:
+    """Insert one row per `started_ats` timestamp via raw SQL.
+
+    Story 8.3 (D2) — `tier_at_call` stamps the seeded rows so paid-tier cap
+    tests count them under the paid daily window (the paid path now filters
+    `tier_at_call='paid'`). Default `None` (NULL) is treated as free-era by
+    `compute_call_usage`, which is correct for the free-tier cap tests.
+    """
     conn = sqlite3.connect(db_path)
     for ts in started_ats:
         conn.execute(
-            "INSERT INTO call_sessions(user_id, scenario_id, started_at) "
-            "VALUES (?, ?, ?)",
-            (user_id, "waiter_easy_01", ts),
+            "INSERT INTO call_sessions(user_id, scenario_id, started_at, "
+            "tier_at_call) VALUES (?, ?, ?, ?)",
+            (user_id, "waiter_easy_01", ts, tier_at_call),
         )
     conn.commit()
     conn.close()
@@ -524,10 +540,13 @@ def test_initiate_returns_403_when_paid_user_exhausted_today(
     mock_datetime.now.return_value = _FROZEN_NOW
     user_id = _register_user(client, test_db_path)
     _set_tier(test_db_path, user_id, "paid")
+    # Story 8.3 (D2) — the paid daily cap counts only paid-era calls, so the
+    # seeded "today" sessions must carry tier_at_call='paid' to exhaust it.
     _seed_call_sessions(
         test_db_path,
         user_id,
         [_today_iso(0), _today_iso(8), _today_iso(20)],
+        tier_at_call="paid",
     )
     token = issue_token(user_id)
 
@@ -646,6 +665,109 @@ def test_initiate_does_not_spawn_bot_when_capped(
     mock_popen.assert_not_called()
     mock_gen_token.assert_not_called()
     mock_gen_agent.assert_not_called()
+
+
+# ---------- Story 8.3 — server-side scenario-tier gate (AC2/FR31) ----------
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_free_user_paid_scenario_returns_403_tier_restricted(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """A free user calling a PAID scenario → 403 TIER_RESTRICTED, with NO row,
+    NO token mint, NO bot spawn. Closes the server-side hole (the paid-scenario
+    gate was client-only until 8.3)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "cop_hard_01"},  # the-cop.yaml is_free: false
+        headers=_auth_header(token),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "TIER_RESTRICTED"
+
+    conn = sqlite3.connect(test_db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM call_sessions WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0, "TIER_RESTRICTED must not insert a call_sessions row"
+    mock_popen.assert_not_called()
+    mock_gen_token.assert_not_called()
+    mock_gen_agent.assert_not_called()
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_paid_user_paid_scenario_succeeds_and_stamps_paid(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """A paid user calling a PAID scenario under cap → 200, and the inserted
+    row carries tier_at_call='paid' (D2 stamp)."""
+    user_id = _register_user(client, test_db_path)
+    _set_tier(test_db_path, user_id, "paid")
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate",
+        json={"scenario_id": "cop_hard_01"},
+        headers=_auth_header(token),
+    )
+
+    assert response.status_code == 200
+    call_id = response.json()["data"]["call_id"]
+    conn = sqlite3.connect(test_db_path)
+    row = conn.execute(
+        "SELECT tier_at_call FROM call_sessions WHERE id = ?", (call_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == "paid"
+
+
+@patch("api.routes_calls.subprocess.Popen")
+@patch("api.routes_calls.generate_token_with_agent", return_value="agent-token-abc")
+@patch("api.routes_calls.generate_token", return_value="user-token-xyz")
+def test_initiate_free_user_free_scenario_stamps_free(
+    mock_gen_token: MagicMock,
+    mock_gen_agent: MagicMock,
+    mock_popen: MagicMock,
+    client: TestClient,
+    mock_resend,
+    test_db_path: str,
+) -> None:
+    """A free user calling a FREE scenario → 200, row stamped tier_at_call='free'
+    (so it counts toward the free lifetime cap)."""
+    user_id = _register_user(client, test_db_path)
+    token = issue_token(user_id)
+
+    response = client.post(
+        "/calls/initiate", json=_TUTORIAL_BODY, headers=_auth_header(token)
+    )
+
+    assert response.status_code == 200
+    call_id = response.json()["data"]["call_id"]
+    conn = sqlite3.connect(test_db_path)
+    row = conn.execute(
+        "SELECT tier_at_call FROM call_sessions WHERE id = ?", (call_id,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == "free"
 
 
 # ---------- Story 6.5 — Popen rollback LiveKit cleanup ----------

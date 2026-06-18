@@ -13,6 +13,7 @@ import '../core/onboarding/permission_service.dart';
 import '../core/services/end_call_retry_service.dart';
 import '../core/theme/app_theme.dart';
 import '../core/widgets/app_toast.dart';
+import '../features/subscription/services/purchase_sync_service.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_event.dart';
 import '../features/auth/bloc/auth_state.dart';
@@ -31,6 +32,8 @@ class App extends StatefulWidget {
   final EndCallRetryService? endCallRetryService;
   // Story 6.19 — global difficulty preference store (bootstrap-preloaded).
   final DifficultyStorage? difficultyStorage;
+  // Story 8.3 (Task 6) — app-lifetime purchase listener (bootstrap-owned).
+  final PurchaseSyncService? purchaseSyncService;
 
   const App({
     super.key,
@@ -41,6 +44,7 @@ class App extends StatefulWidget {
     this.scenariosBloc,
     this.endCallRetryService,
     this.difficultyStorage,
+    this.purchaseSyncService,
   });
 
   @override
@@ -227,12 +231,24 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     // `bootstrap()`, not by this widget — App should not dispose
     // the service. Tests that construct `App` without passing the
     // service simply skip this wrapper (the bloc's null-tolerant path
-    // covers the test surface).
+    // covers the test surface). Story 8.3 (Task 6) — the
+    // PurchaseSyncService is exposed the same way (the hub reads it via
+    // `context.read<PurchaseSyncService>()` to refresh on entitlement change).
+    Widget tree = blocs;
     final retryService = widget.endCallRetryService;
-    if (retryService == null) return blocs;
-    return RepositoryProvider<EndCallRetryService>.value(
-      value: retryService,
-      child: blocs,
-    );
+    if (retryService != null) {
+      tree = RepositoryProvider<EndCallRetryService>.value(
+        value: retryService,
+        child: tree,
+      );
+    }
+    final purchaseSync = widget.purchaseSyncService;
+    if (purchaseSync != null) {
+      tree = RepositoryProvider<PurchaseSyncService>.value(
+        value: purchaseSync,
+        child: tree,
+      );
+    }
+    return tree;
   }
 }

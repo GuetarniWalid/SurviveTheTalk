@@ -59,12 +59,13 @@ def _insert_call_session(
     started_at: str,
     scenario_id: str = "waiter_easy_01",
     status: str = "completed",
+    tier_at_call: str | None = None,
 ) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status) "
-        "VALUES (?, ?, ?, ?)",
-        (user_id, scenario_id, started_at, status),
+        "INSERT INTO call_sessions(user_id, scenario_id, started_at, status, "
+        "tier_at_call) VALUES (?, ?, ?, ?, ?)",
+        (user_id, scenario_id, started_at, status, tier_at_call),
     )
     conn.commit()
     conn.close()
@@ -147,13 +148,13 @@ def test_paid_zero_sessions_today_returns_three_remaining_day(migrated_db):
 def test_paid_three_sessions_today_returns_zero_remaining(migrated_db):
     user_id = _insert_user(migrated_db)
     _set_tier(migrated_db, user_id, "paid")
-    # All three sessions are today (2026-04-28 UTC).
+    # All three sessions are today (2026-04-28 UTC), made WHILE paid (D2).
     for ts in (
         "2026-04-28T01:00:00Z",
         "2026-04-28T08:00:00Z",
         "2026-04-28T20:00:00Z",
     ):
-        _insert_call_session(migrated_db, user_id, ts)
+        _insert_call_session(migrated_db, user_id, ts, tier_at_call="paid")
 
     now = datetime(2026, 4, 28, 23, 0, tzinfo=UTC)
     usage = asyncio.run(_compute(user_id, "paid", now=now))
@@ -166,7 +167,7 @@ def test_paid_three_sessions_today_plus_two_yesterday_still_zero(migrated_db):
     """Yesterday's sessions don't influence today's cap — only today counts."""
     user_id = _insert_user(migrated_db)
     _set_tier(migrated_db, user_id, "paid")
-    # Three today + two yesterday.
+    # Three today + two yesterday, all made WHILE paid (D2).
     for ts in (
         "2026-04-28T01:00:00Z",
         "2026-04-28T08:00:00Z",
@@ -174,7 +175,7 @@ def test_paid_three_sessions_today_plus_two_yesterday_still_zero(migrated_db):
         "2026-04-27T10:00:00Z",
         "2026-04-27T22:00:00Z",
     ):
-        _insert_call_session(migrated_db, user_id, ts)
+        _insert_call_session(migrated_db, user_id, ts, tier_at_call="paid")
 
     now = datetime(2026, 4, 28, 23, 30, tzinfo=UTC)
     usage = asyncio.run(_compute(user_id, "paid", now=now))
@@ -247,3 +248,86 @@ def test_pending_row_decrements_calls_remaining(migrated_db):
     usage = asyncio.run(_compute(user_id, "free"))
 
     assert usage["calls_remaining"] == CALLS_PER_PERIOD - 1
+
+
+# ---------- Story 8.3 (D2) — tier-transition-aware free-call counting ----------
+
+
+def test_free_legacy_null_tier_at_call_counts_as_free(migrated_db):
+    """A legacy row with NULL `tier_at_call` counts toward the FREE cap
+    (`COALESCE(tier_at_call,'free')`). Prod history pre-dates the stamp and is
+    effectively all free-era — it must not become free quota the user never
+    spends."""
+    user_id = _insert_user(migrated_db)
+    # Two legacy (NULL) rows + one explicit free-era row.
+    _insert_call_session(migrated_db, user_id, "2026-04-01T08:00:00Z")  # NULL
+    _insert_call_session(migrated_db, user_id, "2026-04-02T08:00:00Z")  # NULL
+    _insert_call_session(
+        migrated_db, user_id, "2026-04-03T08:00:00Z", tier_at_call="free"
+    )
+
+    usage = asyncio.run(_compute(user_id, "free"))
+
+    assert usage["calls_remaining"] == 0
+
+
+def test_churned_paid_to_free_returns_where_they_were(migrated_db):
+    """D2 / Walid's exact example — a user who used 2 FREE calls before paying,
+    then made several PAID calls, then churned back to free → has 1 free call
+    left (NOT a fresh 3). Paid-era calls never burned a free credit."""
+    user_id = _insert_user(migrated_db)
+    # 2 free-era calls (before paying).
+    _insert_call_session(
+        migrated_db, user_id, "2026-04-01T08:00:00Z", tier_at_call="free"
+    )
+    _insert_call_session(
+        migrated_db, user_id, "2026-04-02T08:00:00Z", tier_at_call="free"
+    )
+    # 4 paid-era calls (while subscribed) — these must NOT consume free credit.
+    for i in range(4):
+        _insert_call_session(
+            migrated_db, user_id, f"2026-04-1{i}T08:00:00Z", tier_at_call="paid"
+        )
+
+    # Now churned back to free.
+    usage = asyncio.run(_compute(user_id, "free"))
+
+    assert usage["calls_remaining"] == 1  # 3 - 2 free-era = 1
+    assert usage["period"] == "lifetime"
+
+
+def test_paid_daily_ignores_earlier_same_day_free_calls(migrated_db):
+    """D2 — a fresh upgrader's paid daily cap counts only today's PAID-era
+    calls. A free call made earlier the same day (before subscribing) does NOT
+    eat into the clean 3-per-day paid allowance."""
+    user_id = _insert_user(migrated_db)
+    _set_tier(migrated_db, user_id, "paid")
+    # A free-era call earlier today (pre-upgrade).
+    _insert_call_session(
+        migrated_db, user_id, "2026-04-28T01:00:00Z", tier_at_call="free"
+    )
+    # One paid-era call today.
+    _insert_call_session(
+        migrated_db, user_id, "2026-04-28T09:00:00Z", tier_at_call="paid"
+    )
+
+    now = datetime(2026, 4, 28, 23, 0, tzinfo=UTC)
+    usage = asyncio.run(_compute(user_id, "paid", now=now))
+
+    # Only the 1 paid-era call counts → 2 remaining (not 1).
+    assert usage["calls_remaining"] == CALLS_PER_PERIOD - 1
+    assert usage["period"] == "day"
+
+
+def test_free_path_ignores_paid_era_calls(migrated_db):
+    """A still-free user with ONLY paid-era rows (an odd state, e.g. mid-churn
+    data) has the full free cap — paid-era calls never count as free."""
+    user_id = _insert_user(migrated_db)
+    for i in range(3):
+        _insert_call_session(
+            migrated_db, user_id, f"2026-04-0{i + 1}T08:00:00Z", tier_at_call="paid"
+        )
+
+    usage = asyncio.run(_compute(user_id, "free"))
+
+    assert usage["calls_remaining"] == CALLS_PER_PERIOD

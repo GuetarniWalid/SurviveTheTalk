@@ -284,6 +284,26 @@ void main() {
     expect(find.text("Let's go"), findsOneWidget); // offer still present
   });
 
+  testWidgets('PendingApproval (F17) shows the waiting copy + stays dismissible',
+      (tester) async {
+    seed(const SubscriptionPendingApproval());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    // The dismissible "awaiting approval" copy (not a fake success, not error).
+    expect(find.text('Waiting for approval. You can close this.'), findsOneWidget);
+    expect(find.text("You're in"), findsNothing);
+    // The sheet stays dismissible during pending (PopScope canPop true).
+    final popScope = tester.widget<PopScope<dynamic>>(find.byType(PopScope));
+    expect(popScope.canPop, isTrue);
+    // Subscribe is disabled while pending (no double-buy).
+    final cta = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, "Let's go"),
+    );
+    expect(cta.onPressed, isNull);
+  });
+
   // ---- CTA + dismiss wiring ----
 
   testWidgets('tapping "Let\'s go" dispatches SubscribePressed', (tester) async {
