@@ -88,9 +88,9 @@ Two hosting/scope facts shape everything:
   - [x] Server: pytest for `DELETE /user/me` against a seeded user with rows in every owned table — all rows gone, no FK/integrity error, second-delete → 401, unauth-delete → 401, does-not-touch-other-users; `GET /user/data-export` shape (`tests/test_account_deletion.py`).
   - [x] Client: widget/unit tests that the consent link + the two paywall links + the shared `LegalLinksRow` invoke the launcher with the expected URLs (injected launcher seams); `DeleteAccountTile` confirm → `onDelete` → `onDeleted` (success) / inline error (failure); `AuthBloc` `SignOutEvent` → deletes token + emits `AuthInitial`; `UserRepository.deleteAccount` → `DELETE /user/me`; scenario-list free-user Account-line opens the Account sheet.
 
-- [ ] **Task 7 — Deploy + Smoke Test Gate** (AC: 1, 7, 8) — see the gate section below.
+- [x] **Task 7 — Deploy + Smoke Test Gate** (AC: 1, 7, 8) — see the gate section below.
   - [x] Automated gates green: `flutter analyze` clean, `flutter test` (686 passed), `ruff check`/`ruff format` clean, `pytest` (1018 passed).
-  - [ ] Deploy + the server-side Smoke Test Gate boxes below (run against the deployed build).
+  - [x] Deploy + the server-side Smoke Test Gate boxes below — deployed (CI `deploy-server.yml` run 27840892018 = success; running `git_sha` c73ca71); 7/7 smoke boxes PASS.
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -98,34 +98,34 @@ Two hosting/scope facts shape everything:
 >
 > **Transition rule:** Every unchecked box is a stop-ship for `in-progress → review`. Paste the actual command + output as proof.
 
-- [ ] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
-  - _Proof:_ <!-- paste the Active/Main PID line -->
+- [x] **Deployed to VPS.** `systemctl status pipecat.service` shows `active (running)` on the commit SHA under test.
+  - _Proof:_ `Active: active (running) since Fri 2026-06-19 17:57:18 UTC` / `Main PID: 1302059 (python)`. `GET /health` → `git_sha: c73ca71fdf2ba8498b0ca564add463db9b4565e2` == deployed HEAD (CI `deploy-server.yml` run 27840892018 = success).
 
-- [ ] **Privacy page round-trip (public, no JWT).** `curl` against the IP returns `200` + HTML containing the AI disclosure and at least one real sub-processor name.
+- [x] **Privacy page round-trip (public, no JWT).** `curl` against the IP returns `200` + HTML containing the AI disclosure and at least one real sub-processor name.
   - _Command:_ `curl -sS -i http://167.235.63.129/legal/privacy | head -n 20`
   - _Expected:_ `200`, `content-type: text/html`, body contains "AI-generated" and e.g. "Soniox"/"Groq"
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_ `HTTP/1.1 200 OK` · `Content-Type: text/html; charset=utf-8` · `Via: 1.1 Caddy` · body grep matched: `AI-generated`, `Groq`, `Soniox`, `biometric`, `never stored`.
 
-- [ ] **Terms page round-trip (public, no JWT).** `curl` returns `200` + HTML containing the subscription terms.
+- [x] **Terms page round-trip (public, no JWT).** `curl` returns `200` + HTML containing the subscription terms.
   - _Command:_ `curl -sS -i http://167.235.63.129/legal/terms | head -n 20`
   - _Expected:_ `200`, body contains "$1.99" and "auto-renew"
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_ `HTTP/1.1 200 OK` · `Content-Type: text/html; charset=utf-8` · body grep matched: `$1.99`, `auto-renew`, `stt_weekly_199`.
 
-- [ ] **Negative path.** An unknown legal path returns `404` (not a 500, not a blank 200).
+- [x] **Negative path.** An unknown legal path returns `404` (not a 500, not a blank 200).
   - _Command:_ `curl -sS -o /dev/null -w "%{http_code}\n" http://167.235.63.129/legal/does-not-exist`
   - _Expected:_ `404`
-  - _Actual:_ <!-- paste output -->
+  - _Actual:_ `HTTP 404`.
 
-- [ ] **DB side-effect — account deletion actually removes the rows.** Create a throwaway test user (mint a JWT per the VPS recipe in memory), give it at least one call/debrief, call `DELETE /user/me`, then read the prod DB back via the venv stdlib (`sqlite3` is also installed on the VPS) and confirm **zero** rows remain for that user_id across `users`/`call_sessions`/`debriefs`/`user_progress`/`purchases`.
-  - _Command:_ <!-- DELETE curl, then: .venv/bin/python -c 'import sqlite3; c=sqlite3.connect("/opt/survive-the-talk/data/db.sqlite"); print([c.execute(f"SELECT count(*) FROM {t} WHERE user_id=?", (UID,)).fetchone() for t in ("call_sessions","debriefs","user_progress","purchases")])' -->
-  - _Actual:_ <!-- paste rows (all zero) -->
+- [x] **DB side-effect — account deletion actually removes the rows.** Created a throwaway user `smoke-10-1-delete@example.invalid` (uid=3) on prod with a row in EVERY owned table (`ROWS_BEFORE = {call_sessions:1, user_progress:1, purchases:1, debriefs:1}`), minted its JWT, called `DELETE /user/me` from the IP, then read prod back via the venv `sqlite3`.
+  - _Actual:_ first `DELETE /user/me` → `200 {"data":{"deleted":true}}`; second (orphan token) → `401 AUTH_UNAUTHORIZED` (idempotent). DB after: `ROWS_AFTER = {call_sessions:0, user_progress:0, purchases:0, users_by_uid:0, users_by_email:0, auth_codes_by_email:0, orphan_debriefs:0}` → `ALL_ZERO = True`. No FK/integrity error. Log: `account_deleted user_id=3` (INFO).
 
-- [ ] **DB backup taken BEFORE the deletion test.** Deletion is destructive — snapshot prod first.
-  - _Command:_ `ssh root@167.235.63.129 "cp /opt/survive-the-talk/data/db.sqlite /opt/survive-the-talk/data/db.sqlite.bak-pre-10.1-$(date +%Y%m%d-%H%M%S)"`
-  - _Proof:_ <!-- paste the resulting filename -->
+- [x] **DB backup taken BEFORE the deletion test.** Deletion is destructive — snapshot prod first.
+  - _Proof:_ `deploy-server.yml` auto-snapshotted prod immediately before this release → `/opt/survive-the-talk/backups/db.pre-c73ca71.sqlite` (Jun 19 17:57), present and predating the 18:00 deletion test (fully restorable).
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 50 --since "5 min ago"` shows no ERROR/Traceback for the three requests above.
-  - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
+- [x] **Server logs clean on the happy path.** `journalctl -u pipecat.service --since "5 min ago"` shows no ERROR/Traceback for the requests above.
+  - _Proof:_ grep for `ERROR|Traceback|Exception` over the window → empty; only `account_deleted user_id=3` INFO line for the deletion. Clean at 2026-06-19 18:00 UTC.
+
+**Smoke gate: 7/7 PASS (server-side, agent-run). The on-device IAP/UI gate stays deferred (iOS blocked until Story 10-4), consistent with 8.1/8.2/8.3.**
 
 ## Dev Notes
 
