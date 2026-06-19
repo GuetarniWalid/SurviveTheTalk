@@ -608,22 +608,29 @@ def test_apple_expired_keeps_paid_when_other_valid_purchase_exists(
 ) -> None:
     """A user who re-subscribed on a new device holds a SECOND valid+future
     purchase. An EXPIRED notification for the OLD subscription must NOT downgrade
-    them — they are still entitled via the new one (mirror the Google path)."""
+    them — they are still entitled via the new one (mirror the Google path).
+
+    NOTE: seed the valid+future (NEW) purchase FIRST so the user is never
+    transiently "paid with only an expired purchase" between the two commits —
+    that intermediate state is legitimately sweep-eligible, and the background
+    expiry-downgrade loop (started by the `client` fixture's lifespan, running on
+    the portal thread) would race in and downgrade it, masking the webhook's own
+    keep-paid behaviour under test."""
     user_id = _seed_paid_user_with_purchase(
         test_db_path,
         email="multi@example.invalid",
-        transaction_id="txn-old",
-        verification_token="gtok-old",
-        original_transaction_id="orig-old",
-        expires_at="2026-01-01T00:00:00Z",  # the lapsing one
+        transaction_id="txn-new",
+        verification_token="gtok-new",
+        original_transaction_id="orig-new",
+        expires_at="2099-09-09T00:00:00Z",  # still active — keeps the user entitled
     )
     _add_purchase(
         test_db_path,
         user_id=user_id,
-        transaction_id="txn-new",
-        verification_token="gtok-new",
-        original_transaction_id="orig-new",
-        expires_at="2099-09-09T00:00:00Z",  # still active
+        transaction_id="txn-old",
+        verification_token="gtok-old",
+        original_transaction_id="orig-old",
+        expires_at="2026-01-01T00:00:00Z",  # the lapsing one the EXPIRED targets
     )
     mock_verify.return_value = _apple_notif(
         notification_type="EXPIRED",
