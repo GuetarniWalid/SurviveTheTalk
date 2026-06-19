@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/app/router.dart';
 import 'package:client/core/api/api_exception.dart';
+import 'package:client/core/local_cache/debrief_cache_store.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/views/call_ended_screen.dart';
@@ -25,6 +26,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Story 9.1 (Task 4) — the offline debrief cache injected into the overlay.
+class MockDebriefCacheStore extends Mock implements DebriefCacheStore {}
 
 /// Story 8.2 (FR29) — drives the auto-presented paywall through the test seam.
 class MockSubscriptionBloc
@@ -75,6 +79,7 @@ void main() {
     Map<String, String>? endPhrases = _kPhrases,
     Route<void> Function(Map<String, dynamic>? payload)? debriefRouteBuilder,
     bool presentPaywallOnDebrief = false,
+    DebriefCacheStore? debriefCacheStore,
   }) {
     return CallEndedScreen(
       scenario: _scenario(endPhrases: endPhrases),
@@ -84,6 +89,7 @@ void main() {
       checkpointsPassed: checkpointsPassed,
       totalCheckpoints: totalCheckpoints,
       callRepository: repository,
+      debriefCacheStore: debriefCacheStore,
       presentPaywallOnDebrief: presentPaywallOnDebrief,
       entryDuration: Duration.zero,
       minHold: const Duration(milliseconds: 100),
@@ -646,5 +652,103 @@ void main() {
       // The flag actually fired the sheet on the debrief.
       expect(find.byType(BottomSheet), findsOneWidget);
     });
+  });
+
+  // Story 9.1 (Task 4 / AC2) — the ONLY debrief cache-write in the app. The
+  // store is injected via the new `debriefCacheStore` overlay param.
+  group('Story 9.1 — debrief cache write-on-fetch', () {
+    testWidgets(
+      'caches the fetched debrief via the store (keyed by callId + scenarioId)',
+      (tester) async {
+        final store = MockDebriefCacheStore();
+        final payload = <String, dynamic>{'survival_pct': 83};
+        when(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        ).thenAnswer((_) async => payload);
+        when(
+          () => store.write(
+            callId: 7,
+            scenarioId: 'waiter_easy_01',
+            payload: payload,
+          ),
+        ).thenAnswer((_) async {});
+        final forwarded = <Map<String, dynamic>?>[];
+
+        await pumpScreen(
+          tester,
+          buildScreen(
+            debriefCacheStore: store,
+            debriefRouteBuilder: sentinelRoute(forwarded),
+          ),
+        );
+        await tester.pump(); // resolve fetch → _cacheDebrief → store.write
+
+        verify(
+          () => store.write(
+            callId: 7,
+            scenarioId: 'waiter_easy_01',
+            payload: payload,
+          ),
+        ).called(1);
+
+        // Drain the hold timers to a clean exit (no pending-timer teardown).
+        await tester.pump(const Duration(milliseconds: 150));
+      },
+    );
+
+    testWidgets(
+      'no store wired (onboarding tutorial call) → no debrief write',
+      (tester) async {
+        final store = MockDebriefCacheStore();
+        final payload = <String, dynamic>{'survival_pct': 83};
+        when(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        ).thenAnswer((_) async => payload);
+        final forwarded = <Map<String, dynamic>?>[];
+
+        // debriefCacheStore omitted → null → the write path early-returns.
+        await pumpScreen(
+          tester,
+          buildScreen(debriefRouteBuilder: sentinelRoute(forwarded)),
+        );
+        await tester.pump();
+
+        verifyZeroInteractions(store);
+        await tester.pump(const Duration(milliseconds: 150));
+      },
+    );
+
+    testWidgets(
+      'a failing cache-write never blocks the exit transition or surfaces',
+      (tester) async {
+        final store = MockDebriefCacheStore();
+        final payload = <String, dynamic>{'survival_pct': 83};
+        when(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        ).thenAnswer((_) async => payload);
+        when(
+          () => store.write(
+            callId: 7,
+            scenarioId: 'waiter_easy_01',
+            payload: payload,
+          ),
+        ).thenAnswer((_) async => throw Exception('disk full'));
+        final forwarded = <Map<String, dynamic>?>[];
+
+        await pumpScreen(
+          tester,
+          buildScreen(
+            debriefCacheStore: store,
+            debriefRouteBuilder: sentinelRoute(forwarded),
+          ),
+        );
+        await tester.pump(); // fetch + failed write (swallowed by catchError)
+        await tester.pump(const Duration(milliseconds: 150)); // minHold → exit
+
+        expect(forwarded, hasLength(1)); // exit still fired
+        expect(forwarded.single, payload); // payload forwarded to the debrief
+        expect(tester.takeException(), isNull); // write failure swallowed
+      },
+    );
   });
 }

@@ -587,5 +587,39 @@ void main() {
         isA<ScenariosLoaded>().having((s) => s.fromCache, 'fromCache', false),
       ],
     );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'a re-entrant load DURING the cache-hit refresh window is dropped '
+      '(in-flight guard holds when the state is Loaded, not Loading)',
+      setUp: () {
+        // Cache hit → the bloc emits Loaded(fromCache) and stays Loaded for the
+        // whole fetch window. The old `state is ScenariosLoading` guard alone
+        // would NOT fire here; `_loadInFlight` must.
+        when(() => mockStore.readScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+        when(() => mockRepo.fetchScenarios()).thenAnswer((_) async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          return _result(_fiveScenarios);
+        });
+      },
+      build: buildBloc,
+      act: (bloc) async {
+        bloc.add(const LoadScenariosEvent());
+        // Yield so the first load emits Loaded(fromCache) and parks on the
+        // (delayed) network fetch with _loadInFlight == true.
+        await pumpEventQueue();
+        bloc.add(const LoadScenariosEvent()); // must be dropped
+      },
+      wait: const Duration(milliseconds: 200),
+      expect: () => [
+        isA<ScenariosLoaded>().having((s) => s.fromCache, 'fromCache', true),
+        isA<ScenariosLoaded>().having((s) => s.fromCache, 'fromCache', false),
+      ],
+      verify: (_) {
+        // The guard cancelled the second load — exactly ONE network fetch
+        // (no stacked parallel requests / out-of-order overwrite).
+        verify(() => mockRepo.fetchScenarios()).called(1);
+      },
+    );
   });
 }

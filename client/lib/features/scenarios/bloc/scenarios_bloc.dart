@@ -17,6 +17,15 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
   /// already used for `difficultyStorage` / `purchaseSyncService`.
   final ScenarioCacheStore? _cacheStore;
 
+  /// In-flight guard, independent of the emitted state. The cache-first path
+  /// (Story 9.1) emits `ScenariosLoaded` (NOT `ScenariosLoading`) for the whole
+  /// network window, so the old `state is ScenariosLoading` check alone would
+  /// let a re-entrant `LoadScenariosEvent` (the bloc's default transformer is
+  /// concurrent) start a SECOND parallel `/scenarios` fetch — re-introducing the
+  /// exact out-of-order `usage` overwrite the guard exists to prevent. This flag
+  /// restores the pre-9.1 single-fetch invariant on the cache-hit branch too.
+  bool _loadInFlight = false;
+
   ScenariosBloc(this._repository, {ScenarioCacheStore? cacheStore})
     : _cacheStore = cacheStore,
       super(const ScenariosInitial()) {
@@ -28,66 +37,72 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     LoadScenariosEvent event,
     Emitter<ScenariosState> emit,
   ) async {
-    // Drop spam taps on "Try again" while a fetch is already in flight —
-    // otherwise we stack N parallel Dio requests whose responses can land
-    // out of order. Mirrors the guard in `IncomingCallBloc._onAccept`.
-    if (state is ScenariosLoading) return;
+    // Drop spam taps on "Try again" / re-entrant loads while a fetch is already
+    // in flight — otherwise we stack N parallel Dio requests whose responses can
+    // land out of order. `_loadInFlight` covers the cache-hit branch (state stays
+    // Loaded, not Loading); the `state is ScenariosLoading` check is kept for the
+    // no-cache branch and mirrors `IncomingCallBloc._onAccept`.
+    if (_loadInFlight || state is ScenariosLoading) return;
+    _loadInFlight = true;
+    try {
+      // Capture the next retry index BEFORE Loading clobbers the previous
+      // ScenariosError state. Resets to 0 on any non-error prior state, so a
+      // successful Loaded → fresh failure starts at 0 again.
+      final previous = state;
+      final nextRetryCount =
+          previous is ScenariosError ? previous.retryCount + 1 : 0;
 
-    // Capture the next retry index BEFORE Loading clobbers the previous
-    // ScenariosError state. Resets to 0 on any non-error prior state, so a
-    // successful Loaded → fresh failure starts at 0 again.
-    final previous = state;
-    final nextRetryCount =
-        previous is ScenariosError ? previous.retryCount + 1 : 0;
+      // Story 9.1 — cache-first: render last-known data instantly when a cache
+      // exists, then refresh from the network below. A null cache (empty,
+      // corrupt, or no store wired) falls through to the Loading→fetch path.
+      var shownFromCache = false;
+      final cacheStore = _cacheStore;
+      if (cacheStore != null) {
+        final cached = await cacheStore.readScenarios();
+        if (cached != null) {
+          shownFromCache = true;
+          emit(
+            ScenariosLoaded(
+              scenarios: cached.scenarios,
+              usage: cached.usage,
+              fromCache: true,
+            ),
+          );
+        }
+      }
 
-    // Story 9.1 — cache-first: render last-known data instantly when a cache
-    // exists, then refresh from the network below. A null cache (empty,
-    // corrupt, or no store wired) falls through to today's Loading→fetch path.
-    var shownFromCache = false;
-    final cacheStore = _cacheStore;
-    if (cacheStore != null) {
-      final cached = await cacheStore.readScenarios();
-      if (cached != null) {
-        shownFromCache = true;
+      if (!shownFromCache) emit(ScenariosLoading());
+
+      try {
+        final result = await _repository.fetchScenarios();
+        await _writeCacheSafely(result);
+        emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
+      } on ApiException catch (e) {
+        // Story 9.1 — a failed refresh while a cache is already on screen is
+        // SILENT (keep last-known data, never the error screen). Only
+        // error-screen when there was no cache to fall back to.
+        if (shownFromCache) return;
         emit(
-          ScenariosLoaded(
-            scenarios: cached.scenarios,
-            usage: cached.usage,
-            fromCache: true,
+          ScenariosError(
+            code: _classifyApiException(e),
+            retryCount: nextRetryCount,
+          ),
+        );
+      } catch (_) {
+        // TypeError / FormatException / etc. from a malformed payload
+        // (Scenario.fromJson cast failure, missing 'data' key, wrong types).
+        // Without this catch the exception escapes the bloc and the UI
+        // hangs forever in ScenariosLoading.
+        if (shownFromCache) return;
+        emit(
+          ScenariosError(
+            code: 'MALFORMED_RESPONSE',
+            retryCount: nextRetryCount,
           ),
         );
       }
-    }
-
-    if (!shownFromCache) emit(ScenariosLoading());
-
-    try {
-      final result = await _repository.fetchScenarios();
-      await _writeCacheSafely(result);
-      emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
-    } on ApiException catch (e) {
-      // Story 9.1 — a failed refresh while a cache is already on screen is
-      // SILENT (keep last-known data, never the error screen). Only
-      // error-screen when there was no cache to fall back to.
-      if (shownFromCache) return;
-      emit(
-        ScenariosError(
-          code: _classifyApiException(e),
-          retryCount: nextRetryCount,
-        ),
-      );
-    } catch (_) {
-      // TypeError / FormatException / etc. from a malformed payload
-      // (Scenario.fromJson cast failure, missing 'data' key, wrong types).
-      // Without this catch the exception escapes the bloc and the UI
-      // hangs forever in ScenariosLoading.
-      if (shownFromCache) return;
-      emit(
-        ScenariosError(
-          code: 'MALFORMED_RESPONSE',
-          retryCount: nextRetryCount,
-        ),
-      );
+    } finally {
+      _loadInFlight = false;
     }
   }
 
@@ -106,7 +121,10 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     RefreshScenariosEvent event,
     Emitter<ScenariosState> emit,
   ) async {
-    if (state is ScenariosLoading) return;
+    // Skip while a foreground load is in flight — its cache-hit branch keeps the
+    // state at Loaded (not Loading), so without `_loadInFlight` a refresh could
+    // race a concurrent fetch (Story 9.1).
+    if (_loadInFlight || state is ScenariosLoading) return;
     try {
       final result = await _repository.fetchScenarios();
       await _writeCacheSafely(result);

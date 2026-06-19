@@ -184,6 +184,17 @@ claude-opus-4-8 (Claude Code `/bmad-dev-story`, 2026-06-19)
 - **`bootstrap()` opens the DB fail-soft** (mirrors the `RiveNative.init()` pattern): on an open failure the app runs network-only rather than crashing on boot.
 - **No server/DB/deploy footprint** — client-only story, server Smoke Test Gate intentionally omitted. The on-device validation (airplane-mode offline render + cross-user cache wipe) is the Pixel 9 gate, script to be handed to Walid at smoke-gate time.
 
+#### Post-dev hardening — Pixel 9 smoke gate + adversarial pre-review (2026-06-19)
+
+- ✅ **Pixel 9 smoke gate PASSED** — Walid validated on-device ("tout va bien pour moi sur le Pixel 9"). The story STAYS `review`: the formal `/bmad-code-review` (run by Walid with a DIFFERENT agent) is the last owed gate; whichever clears last triggers `review → done`.
+- Ran an **adversarial pre-review workflow** (6 lenses × find→verify, 23 agents) before handing the diff to the external review. 16 raw findings → 10 confirmed → 6 distinct issues. Fixes applied this pass (gates re-green: `analyze` clean, `flutter test` **667**, +6):
+  - **M1 (medium, real logic regression) — FIXED.** The cache-first emit kept the bloc in `ScenariosLoaded` (not `ScenariosLoading`) for the whole network window, so the `state is ScenariosLoading` in-flight guard no longer fired on the cache-hit branch → a re-entrant `LoadScenariosEvent` (bloc's default concurrent transformer) could start a SECOND parallel `/scenarios` fetch + out-of-order `usage` overwrite. Added a state-independent `bool _loadInFlight` guard (set at the top of `_onLoad`, cleared in `finally`; `_onRefresh` also respects it) + a regression test (cache-hit + delayed repo + second load → `fetchScenarios()` called once).
+  - **L1 (low, real gap) — FIXED.** A debrief resolving AFTER the 10s hard-cap exit (`_exited == true`) was never cached (the `_cacheDebrief` call sat after the `if (!mounted || _exited) return;` guard) → report icon later showed "no saved report" for a call the user saw. Moved the fire-and-forget cache-write BEFORE the exit guard (safe post-exit — touches no widget tree).
+  - **M2 (medium, coverage gap) — CLOSED.** Added `app_test.dart` tests that construct `App(appDatabase: mockDb)`, fire the wired 401 handler, and `verify(clearAll).called(1)` + a throwing-`clearAll` best-effort case (auth reset still dispatches `ResetAuthEvent`). The Task 6b privacy WIRE is now regression-guarded, not just `clearAll()` in isolation.
+  - **M3 (medium, coverage gap) — CLOSED.** Added `call_ended_screen_test.dart` tests injecting a `MockDebriefCacheStore`: write-on-fetch called with `(callId, scenarioId, payload)`; null-store (tutorial) → no write; a failing write never blocks the exit or surfaces. The sole AC2 debrief write is now covered.
+- **L2 (low) — DEFERRED with a note for the external reviewer.** No router-level test asserts `/debrief/:scenarioId` threads `debriefCacheStore` into `CachedDebriefScreen` (the direct widget tests use the `debugResolve` seam). The production wiring is one line (`router.dart`), and a regression there yields a VISIBLE always-empty "no saved report" state (not a silent data/privacy issue), so it is low-risk; a full `createRouter`+auth-redirect test was judged too fragile to add here.
+- Pre-review note for the external reviewer: the store internals (`app_database.dart`, `scenario_cache_store.dart`, `debrief_cache_store.dart`) and `main.dart` were not read by the pre-review finders (they were written this story and are unit-tested) — worth a fresh read, plus confirm `main.dart` passes a non-null `AppDatabase` into `App` (it does — verified).
+
 ### File List
 
 **New (lib):**
@@ -215,11 +226,14 @@ claude-opus-4-8 (Claude Code `/bmad-dev-story`, 2026-06-19)
 - `client/test/features/debrief/views/cached_debrief_screen_test.dart`
 
 **Modified (test):**
-- `client/test/features/scenarios/bloc/scenarios_bloc_test.dart` (mocked `ScenarioCacheStore` retrofit + cache-first group)
+- `client/test/features/scenarios/bloc/scenarios_bloc_test.dart` (mocked `ScenarioCacheStore` retrofit + cache-first group + M1 re-entrant-load guard test)
 - `client/test/features/scenarios/repositories/scenarios_repository_test.dart` (raw-map assertions)
+- `client/test/features/call/views/call_ended_screen_test.dart` (M3 — debrief write-on-fetch coverage)
+- `client/test/app_test.dart` (M2 — Task 6b auth-reset cache-wipe wire coverage)
 
 ## Change Log
 
 | Date | Change |
 | --- | --- |
 | 2026-06-19 | Story 9.1 dev-story complete — offline sqflite cache for scenarios + debriefs (cache-first hub load, silent refresh + write-through, cache-only report-icon route, auth-reset wipe). 4 new lib files + 11 modified + 1 deleted; 6 test files (4 new). `flutter analyze` clean, `flutter test` 661 green (+22). Status `in-progress → review`. |
+| 2026-06-19 | Pixel 9 smoke gate PASSED (Walid). Adversarial pre-review pass: FIXED M1 (cache-first in-flight-guard regression → `_loadInFlight`) + L1 (post-cap debrief not cached); CLOSED coverage gaps M2 (Task 6b privacy-wipe wire) + M3 (debrief write-on-fetch). `flutter analyze` clean, `flutter test` 667 green (+6). Stays `review` — only the formal code review (different agent) remains for `review → done`. |

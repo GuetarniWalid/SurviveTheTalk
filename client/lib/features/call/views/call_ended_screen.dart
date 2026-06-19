@@ -310,13 +310,16 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
     }
     try {
       final payload = await widget.callRepository.fetchDebrief(callId: callId);
+      // Story 9.1 (Task 4) — cache the debrief offline BEFORE the exit guard, so
+      // a debrief that resolves AFTER the 10s hard-cap exit (`_exited == true`)
+      // is still persisted (otherwise the report icon would later show "no saved
+      // report" for a call whose debrief the user actually saw). Fire-and-forget;
+      // touches no widget tree, safe post-exit. This is the ONLY debrief write
+      // in 9.1.
+      _cacheDebrief(callId, payload);
       if (!mounted || _exited) return;
       _debriefPayload = payload;
       _debriefSettled = true;
-      // Story 9.1 (Task 4) — cache the debrief offline (fire-and-forget; a write
-      // fault must never block the transition or surface in the UI). This is the
-      // ONLY debrief write in 9.1.
-      _cacheDebrief(callId, payload);
       // Broad catch is deliberate: the overlay must never surface an error
       // (UX-DR6) and a post-call fetch failure must never crash the exit
       // flow — anything that isn't "still generating" is terminal and the
