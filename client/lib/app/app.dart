@@ -7,6 +7,9 @@ import 'package:go_router/go_router.dart';
 import '../core/api/api_client.dart';
 import '../core/api/auth_interceptor.dart';
 import '../core/auth/token_storage.dart';
+import '../core/local_cache/app_database.dart';
+import '../core/local_cache/debrief_cache_store.dart';
+import '../core/local_cache/scenario_cache_store.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/permission_service.dart';
@@ -34,6 +37,13 @@ class App extends StatefulWidget {
   final DifficultyStorage? difficultyStorage;
   // Story 8.3 (Task 6) — app-lifetime purchase listener (bootstrap-owned).
   final PurchaseSyncService? purchaseSyncService;
+  // Story 9.1 — offline cache (bootstrap-opened). `appDatabase` backs the
+  // auth-reset wipe (Task 6b); the two stores are threaded to the router (hub
+  // bloc + debrief route) and the call flow. All null in tests / when the DB
+  // isn't wired — the feature degrades to network-only.
+  final AppDatabase? appDatabase;
+  final ScenarioCacheStore? scenarioCacheStore;
+  final DebriefCacheStore? debriefCacheStore;
 
   const App({
     super.key,
@@ -45,6 +55,9 @@ class App extends StatefulWidget {
     this.endCallRetryService,
     this.difficultyStorage,
     this.purchaseSyncService,
+    this.appDatabase,
+    this.scenarioCacheStore,
+    this.debriefCacheStore,
   });
 
   @override
@@ -118,6 +131,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       consentStorage: _consentStorage,
       difficultyStorage: _difficultyStorage,
       scenariosBloc: _scenariosBloc,
+      // Story 9.1 — feed the cache stores so the PRODUCTION inline hub bloc and
+      // the debrief route get them (App.scenariosBloc is null in prod).
+      scenarioCacheStore: widget.scenarioCacheStore,
+      debriefCacheStore: widget.debriefCacheStore,
     );
 
     // Story 6.13 AC4 — wire the cross-cutting 401 handler. When ANY
@@ -146,6 +163,17 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         await _tokenStorage.deleteToken();
       } catch (_) {
         // Swallow — the bloc reset below is the load-bearing step.
+      }
+      // Story 9.1 (Task 6b — privacy) — wipe the offline cache on auth reset so
+      // a DIFFERENT account signing in on the same device never inherits the
+      // previous user's cached scenarios/progression/budget OR their debriefs
+      // (which quote their spoken transcript). Best-effort, like the token
+      // delete above — the bloc reset stays the load-bearing step.
+      try {
+        await widget.appDatabase?.clearAll();
+      } catch (_) {
+        // Swallow — a failed wipe must not block the auth reset; a stale cache
+        // is overwritten on the next account's network refresh.
       }
       if (!mounted) return;
       // Avoid double-dispatch: if the bloc is already in AuthInitial

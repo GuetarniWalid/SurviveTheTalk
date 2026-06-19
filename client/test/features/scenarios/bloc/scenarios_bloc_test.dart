@@ -1,5 +1,6 @@
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/api/api_exception.dart';
+import 'package:client/core/local_cache/scenario_cache_store.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
@@ -12,6 +13,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockScenariosRepository extends Mock implements ScenariosRepository {}
+
+// Story 9.1 — a MOCKED cache store keeps these bloc tests off sqflite (a real
+// ScenarioCacheStore would hit the platform channel → MissingPluginException,
+// Gotcha A). `readScenarios()` is stubbed to null (empty cache) by default so
+// every pre-existing `[Loading, ...]` expectation stays valid.
+class MockScenarioCacheStore extends Mock implements ScenarioCacheStore {}
 
 const _waiter = Scenario(
   id: 'waiter_easy_01',
@@ -50,21 +57,36 @@ ScenariosFetchResult _result(
   List<Scenario> scenarios, {
   CallUsage usage = _kFreshUsage,
 }) =>
-    ScenariosFetchResult(scenarios: scenarios, usage: usage);
+    ScenariosFetchResult(
+      scenarios: scenarios,
+      usage: usage,
+      // Story 9.1 — the bloc only reads `.scenarios`/`.usage`; the raw maps are
+      // consumed by the (mocked) cache store, so empties suffice here.
+      rawScenarios: const <Map<String, dynamic>>[],
+      rawMeta: const <String, dynamic>{},
+    );
 
 void main() {
   late MockScenariosRepository mockRepo;
+  late MockScenarioCacheStore mockStore;
 
   setUpAll(() {
     registerFallbackValue(const LoadScenariosEvent());
+    // Story 9.1 — fallback for `writeScenarios(any())`.
+    registerFallbackValue(_result(const <Scenario>[]));
   });
 
   setUp(() {
     FlutterSecureStorage.setMockInitialValues({});
     mockRepo = MockScenariosRepository();
+    mockStore = MockScenarioCacheStore();
+    // Default: empty cache (so existing expectations that begin with Loading
+    // stay valid) + a no-op write-through.
+    when(() => mockStore.readScenarios()).thenAnswer((_) async => null);
+    when(() => mockStore.writeScenarios(any())).thenAnswer((_) async {});
   });
 
-  ScenariosBloc buildBloc() => ScenariosBloc(mockRepo);
+  ScenariosBloc buildBloc() => ScenariosBloc(mockRepo, cacheStore: mockStore);
 
   group('LoadScenariosEvent', () {
     blocTest<ScenariosBloc, ScenariosState>(
@@ -451,6 +473,119 @@ void main() {
       act: (bloc) => bloc.add(const RefreshScenariosEvent()),
       expect: () => const <ScenariosState>[],
       verify: (_) => verifyNever(() => mockRepo.fetchScenarios()),
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'Story 9.1 — RefreshScenariosEvent writes through to the cache on success',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+      },
+      build: buildBloc,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (bloc) => bloc.add(const RefreshScenariosEvent()),
+      expect: () => [isA<ScenariosLoaded>()],
+      verify: (_) => verify(() => mockStore.writeScenarios(any())).called(1),
+    );
+  });
+
+  group('Story 9.1 — cache-first load', () {
+    const refreshedUsage = CallUsage(
+      tier: 'free',
+      callsRemaining: 2, // was 3 — proves the fresh emission replaced the cache
+      callsPerPeriod: 3,
+      period: 'lifetime',
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'cache-hit then successful refresh emits '
+      '[Loaded(fromCache:true), Loaded(fresh)] and writes through',
+      setUp: () {
+        when(() => mockStore.readScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+        when(() => mockRepo.fetchScenarios()).thenAnswer(
+          (_) async => _result(_fiveScenarios, usage: refreshedUsage),
+        );
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(const LoadScenariosEvent()),
+      expect: () => [
+        isA<ScenariosLoaded>()
+            .having((s) => s.fromCache, 'fromCache', true)
+            .having((s) => s.scenarios.length, 'scenarios.length', 5),
+        isA<ScenariosLoaded>()
+            .having((s) => s.fromCache, 'fromCache', false)
+            .having((s) => s.usage.callsRemaining, 'fresh usage', 2),
+      ],
+      verify: (_) {
+        verify(() => mockStore.writeScenarios(any())).called(1);
+      },
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'cache-hit + network failure stays SILENT — '
+      'emits Loaded(fromCache) only, NO ScenariosError',
+      setUp: () {
+        when(() => mockStore.readScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+        when(() => mockRepo.fetchScenarios()).thenThrow(
+          const ApiException(code: 'NETWORK_ERROR', message: 'down'),
+        );
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(const LoadScenariosEvent()),
+      expect: () => [
+        isA<ScenariosLoaded>().having((s) => s.fromCache, 'fromCache', true),
+      ],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'no cache + network failure emits [Loading, ScenariosError] (unchanged)',
+      setUp: () {
+        when(() => mockStore.readScenarios()).thenAnswer((_) async => null);
+        when(() => mockRepo.fetchScenarios()).thenThrow(
+          const ApiException(code: 'NETWORK_ERROR', message: 'down'),
+        );
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(const LoadScenariosEvent()),
+      expect: () => [
+        isA<ScenariosLoading>(),
+        isA<ScenariosError>().having((s) => s.code, 'code', 'NETWORK_ERROR'),
+      ],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'a cache-WRITE failure never downgrades a successful fetch',
+      setUp: () {
+        when(() => mockStore.readScenarios()).thenAnswer((_) async => null);
+        when(() => mockRepo.fetchScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+        when(() => mockStore.writeScenarios(any()))
+            .thenThrow(Exception('disk full'));
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(const LoadScenariosEvent()),
+      expect: () => [
+        isA<ScenariosLoading>(),
+        isA<ScenariosLoaded>()
+            .having((s) => s.scenarios.length, 'scenarios.length', 5),
+      ],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'a null cacheStore is tolerated — network-only behaviour preserved',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+      },
+      build: () => ScenariosBloc(mockRepo), // no cacheStore
+      act: (bloc) => bloc.add(const LoadScenariosEvent()),
+      expect: () => [
+        isA<ScenariosLoading>(),
+        isA<ScenariosLoaded>().having((s) => s.fromCache, 'fromCache', false),
+      ],
     );
   });
 }

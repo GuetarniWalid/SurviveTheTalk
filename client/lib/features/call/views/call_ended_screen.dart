@@ -28,6 +28,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/router.dart';
 import '../../../core/api/api_exception.dart';
+import '../../../core/local_cache/debrief_cache_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/theme/call_colors.dart';
@@ -154,6 +155,12 @@ class CallEndedScreen extends StatefulWidget {
 
   final CallRepository callRepository;
 
+  /// Story 9.1 (Task 4) — when set, the fetched debrief is cached locally
+  /// (keyed by `scenario.id` + `callId`) so the report icon can re-open it
+  /// offline. Null skips the write (the onboarding tutorial call, or any caller
+  /// without the store wired). The ONLY debrief write in 9.1.
+  final DebriefCacheStore? debriefCacheStore;
+
   /// Story 8.2 (AC3 / FR29) — when true, the debrief this overlay hands off to
   /// auto-presents the paywall on load (the user's 3rd/last free scenario).
   final bool presentPaywallOnDebrief;
@@ -182,6 +189,7 @@ class CallEndedScreen extends StatefulWidget {
     required this.checkpointsPassed,
     required this.totalCheckpoints,
     required this.callRepository,
+    this.debriefCacheStore,
     this.presentPaywallOnDebrief = false,
     this.entryDuration = kEntryDuration,
     this.minHold = kMinHold,
@@ -206,6 +214,7 @@ class CallEndedScreen extends StatefulWidget {
     required int checkpointsPassed,
     required int totalCheckpoints,
     required CallRepository callRepository,
+    DebriefCacheStore? debriefCacheStore,
     bool presentPaywallOnDebrief = false,
   }) {
     return PageRouteBuilder<void>(
@@ -218,6 +227,7 @@ class CallEndedScreen extends StatefulWidget {
         checkpointsPassed: checkpointsPassed,
         totalCheckpoints: totalCheckpoints,
         callRepository: callRepository,
+        debriefCacheStore: debriefCacheStore,
         presentPaywallOnDebrief: presentPaywallOnDebrief,
       ),
       transitionsBuilder: (_, animation, secondaryAnimation, child) {
@@ -303,6 +313,10 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
       if (!mounted || _exited) return;
       _debriefPayload = payload;
       _debriefSettled = true;
+      // Story 9.1 (Task 4) — cache the debrief offline (fire-and-forget; a write
+      // fault must never block the transition or surface in the UI). This is the
+      // ONLY debrief write in 9.1.
+      _cacheDebrief(callId, payload);
       // Broad catch is deliberate: the overlay must never surface an error
       // (UX-DR6) and a post-call fetch failure must never crash the exit
       // flow — anything that isn't "still generating" is terminal and the
@@ -321,6 +335,23 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
       _debriefSettled = true;
     }
     _maybeExit();
+  }
+
+  /// Story 9.1 (Task 4) — persist the fetched debrief offline, fire-and-forget.
+  /// Keyed by the scenario in scope + the callId. A cache-write failure is
+  /// swallowed: it must never block the exit transition or surface in the UI.
+  void _cacheDebrief(int callId, Map<String, dynamic> payload) {
+    final store = widget.debriefCacheStore;
+    if (store == null) return;
+    unawaited(
+      store
+          .write(
+            callId: callId,
+            scenarioId: widget.scenario.id,
+            payload: payload,
+          )
+          .catchError((Object _) {}),
+    );
   }
 
   /// AC-C9 — exit on the LAST of (min hold elapsed, debrief settled).

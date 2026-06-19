@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/router.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/api/api_exception.dart';
+import '../../../core/local_cache/debrief_cache_store.dart';
 import '../../../core/onboarding/difficulty_storage.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -58,11 +59,17 @@ class ScenarioListScreen extends StatelessWidget {
   /// non-preloaded instance defaults to `easy`).
   final DifficultyStorage? difficultyStorage;
 
+  /// Story 9.1 — the offline debrief cache (bootstrap-opened, threaded via the
+  /// router). Forwarded to the CallScreen so a completed call's debrief is
+  /// cached at call-end (Task 4). Null in tests / when the DB isn't wired.
+  final DebriefCacheStore? debriefCacheStore;
+
   const ScenarioListScreen({
     super.key,
     this.callRepository,
     this.callScreenBuilder,
     this.difficultyStorage,
+    this.debriefCacheStore,
   });
 
   @override
@@ -100,6 +107,7 @@ class ScenarioListScreen extends StatelessWidget {
                         callRepository: callRepository,
                         callScreenBuilder: callScreenBuilder,
                         difficultyStorage: difficultyStorage,
+                        debriefCacheStore: debriefCacheStore,
                       ),
                     ),
                   );
@@ -167,6 +175,7 @@ class _List extends StatefulWidget {
   final CallRepository? callRepository;
   final CallScreenBuilder? callScreenBuilder;
   final DifficultyStorage? difficultyStorage;
+  final DebriefCacheStore? debriefCacheStore;
 
   const _List({
     required this.scenarios,
@@ -174,6 +183,7 @@ class _List extends StatefulWidget {
     this.callRepository,
     this.callScreenBuilder,
     this.difficultyStorage,
+    this.debriefCacheStore,
   });
 
   @override
@@ -417,6 +427,7 @@ class _ListState extends State<_List> {
                   scenario: scenario,
                   callSession: session,
                   presentPaywallOnDebrief: isFinalFreeScenario,
+                  debriefCacheStore: widget.debriefCacheStore,
                 ),
           fullscreenDialog: true,
         ),

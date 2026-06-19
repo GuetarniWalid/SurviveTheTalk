@@ -6,6 +6,9 @@ import 'package:rive/rive.dart';
 import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/auth/token_storage.dart';
+import 'core/local_cache/app_database.dart';
+import 'core/local_cache/debrief_cache_store.dart';
+import 'core/local_cache/scenario_cache_store.dart';
 import 'core/onboarding/consent_storage.dart';
 import 'core/onboarding/difficulty_storage.dart';
 import 'core/services/connectivity_service.dart';
@@ -80,6 +83,30 @@ Future<void> bootstrap() async {
     difficultyStorage.preload(),
   ]);
 
+  // Story 9.1 — open the offline cache DB once and build its two stores.
+  // Fail-soft (mirrors RiveNative.init above): if the DB can't open the app
+  // runs network-only rather than crashing on boot.
+  AppDatabase? appDatabase;
+  ScenarioCacheStore? scenarioCacheStore;
+  DebriefCacheStore? debriefCacheStore;
+  try {
+    appDatabase = await AppDatabase.open();
+    scenarioCacheStore = ScenarioCacheStore(appDatabase);
+    debriefCacheStore = DebriefCacheStore(appDatabase);
+  } catch (error, stack) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stack,
+        library: 'bootstrap',
+        context: ErrorDescription(
+          'AppDatabase.open() failed — offline cache disabled, continuing '
+          'network-only.',
+        ),
+      ),
+    );
+  }
+
   // Story 6.5 Option B (post-deploy fix) — app-level singleton that
   // replays any `/end` POSTs that failed while offline. Constructed
   // here so its connectivity listener lives for the app lifetime
@@ -117,6 +144,9 @@ Future<void> bootstrap() async {
       difficultyStorage: difficultyStorage,
       endCallRetryService: endCallRetryService,
       purchaseSyncService: purchaseSyncService,
+      appDatabase: appDatabase,
+      scenarioCacheStore: scenarioCacheStore,
+      debriefCacheStore: debriefCacheStore,
     ),
   );
 }

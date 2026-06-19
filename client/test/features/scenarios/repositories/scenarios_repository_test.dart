@@ -93,6 +93,14 @@ void main() {
       expect(result.usage.callsRemaining, 3);
       expect(result.usage.callsPerPeriod, 3);
       expect(result.usage.period, 'lifetime');
+
+      // Story 9.1 — the RAW maps are retained (server order) for the offline
+      // cache to persist losslessly, alongside the parsed models.
+      expect(result.rawScenarios, hasLength(5));
+      expect(result.rawScenarios.first['id'], 'waiter_easy_01');
+      expect(result.rawScenarios.last['id'], 'landlord_hard_01');
+      expect(result.rawMeta['tier'], 'free');
+      expect(result.rawMeta['calls_per_period'], 3);
     });
 
     test('propagates ApiException from ApiClient.get', () async {

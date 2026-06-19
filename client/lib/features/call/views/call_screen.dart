@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import '../../../core/local_cache/debrief_cache_store.dart';
 import '../../../core/services/connectivity_service.dart';
 import '../../../core/services/end_call_retry_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -174,6 +175,7 @@ class CallScreen extends StatefulWidget {
     this.callRepository,
     this.connectivityService,
     this.endCallRetryService,
+    this.debriefCacheStore,
   });
 
   /// Story 6.4 test seam. When non-null, overrides the bloc's
@@ -221,6 +223,11 @@ class CallScreen extends StatefulWidget {
   /// requests rather than dropping them.
   @visibleForTesting
   final EndCallRetryService? endCallRetryService;
+
+  /// Story 9.1 (Task 4) — the offline debrief cache, forwarded to the Call
+  /// Ended overlay so a completed call's debrief is cached at the call-end
+  /// fetch. Null (onboarding tutorial call, or tests) skips the write.
+  final DebriefCacheStore? debriefCacheStore;
 
   @override
   State<CallScreen> createState() => _CallScreenState();
@@ -964,6 +971,9 @@ class _CallScreenState extends State<CallScreen> {
                   checkpointsPassed: snapshot?.metCount ?? 0,
                   totalCheckpoints: snapshot?.total ?? 0,
                   callRepository: _callRepository,
+                  // Story 9.1 (Task 4) — cache the debrief at call-end so the
+                  // report icon can re-open it offline.
+                  debriefCacheStore: widget.debriefCacheStore,
                   // Story 8.2 (FR29) — thread the "last free call" flag through
                   // to the debrief so the paywall auto-presents at the peak.
                   presentPaywallOnDebrief: widget.presentPaywallOnDebrief,

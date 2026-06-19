@@ -18,11 +18,23 @@ final class ScenariosLoaded extends ScenariosState {
   final List<Scenario> scenarios;
   final CallUsage usage;
 
+  /// Story 9.1 — true when this emission was served from the local sqflite
+  /// cache (the instant cache-first render) rather than a fresh network fetch.
+  /// A subsequent successful refresh emits a fresh `ScenariosLoaded` with
+  /// `fromCache: false`. Differentiates the two emissions by VALUE so a
+  /// `BlocListener`/`BlocBuilder` never dedups the fresh one (Gotcha C) — and
+  /// lets the UI optionally show a subtle "saved data" affordance.
+  final bool fromCache;
+
   /// Named parameters chosen over positional so future widening (e.g.
   /// `lastSyncedAt` in Story 9.x cache work, or per-scenario lock state)
   /// doesn't shift call sites. Mirrors the pattern Story 5.2 retro flagged
   /// as a velocity multiplier.
-  const ScenariosLoaded({required this.scenarios, required this.usage});
+  const ScenariosLoaded({
+    required this.scenarios,
+    required this.usage,
+    this.fromCache = false,
+  });
 }
 
 final class ScenariosError extends ScenariosState {

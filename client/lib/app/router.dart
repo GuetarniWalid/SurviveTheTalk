@@ -5,6 +5,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api/api_client.dart';
+import '../core/local_cache/debrief_cache_store.dart';
+import '../core/local_cache/scenario_cache_store.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/vibration_service.dart';
@@ -16,7 +18,7 @@ import '../features/briefing/views/briefing_screen.dart';
 import '../features/call/bloc/incoming_call_bloc.dart';
 import '../features/call/repositories/call_repository.dart';
 import '../features/call/views/incoming_call_screen.dart';
-import '../features/debrief/views/debrief_placeholder_screen.dart';
+import '../features/debrief/views/cached_debrief_screen.dart';
 import '../features/onboarding/presentation/consent_screen.dart';
 import '../features/onboarding/presentation/mic_permission_screen.dart';
 import '../features/scenarios/bloc/scenarios_bloc.dart';
@@ -50,6 +52,13 @@ class AppRouter {
     // outgoing call reflect the persisted choice.
     required DifficultyStorage difficultyStorage,
     ScenariosBloc? scenariosBloc,
+    // Story 9.1 — the offline cache stores (bootstrap-opened). NULLABLE on
+    // purpose: app.dart cannot synchronously default a DB-backed store and the
+    // many App-constructing widget tests pass none. Production always supplies
+    // them; null falls back to today's network-only behaviour (the bloc + the
+    // debrief route are both null-tolerant).
+    ScenarioCacheStore? scenarioCacheStore,
+    DebriefCacheStore? debriefCacheStore,
   }) {
     return GoRouter(
       initialLocation: AppRoutes.root,
@@ -113,14 +122,21 @@ class AppRouter {
                     value: scenariosBloc,
                     child: ScenarioListScreen(
                       difficultyStorage: difficultyStorage,
+                      debriefCacheStore: debriefCacheStore,
                     ),
                   )
+                // Story 9.1 — the PRODUCTION hub bloc is THIS inline fallback
+                // (App.scenariosBloc is null in prod). Feed it the cache store
+                // here too, or the offline feature silently no-ops while every
+                // injected-bloc test stays green.
                 : BlocProvider<ScenariosBloc>(
-                    create: (_) =>
-                        ScenariosBloc(ScenariosRepository(ApiClient()))
-                          ..add(const LoadScenariosEvent()),
+                    create: (_) => ScenariosBloc(
+                      ScenariosRepository(ApiClient()),
+                      cacheStore: scenarioCacheStore,
+                    )..add(const LoadScenariosEvent()),
                     child: ScenarioListScreen(
                       difficultyStorage: difficultyStorage,
+                      debriefCacheStore: debriefCacheStore,
                     ),
                   ),
           ),
@@ -183,10 +199,14 @@ class AppRouter {
         ),
         GoRoute(
           path: '${AppRoutes.debrief}/:scenarioId',
+          // Story 9.1 (Task 5) — resolve the cached debrief for this scenario;
+          // render the real DebriefScreen on a hit, an empathetic "no saved
+          // report" state on a miss (cache-only, no server backfill).
           pageBuilder: (context, state) => _fadePage(
             key: state.pageKey,
-            child: DebriefPlaceholderScreen(
+            child: CachedDebriefScreen(
               scenarioId: state.pathParameters['scenarioId'] ?? 'unknown',
+              cacheStore: debriefCacheStore,
             ),
           ),
         ),

@@ -1,6 +1,8 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_exception.dart';
+import '../../../core/local_cache/scenario_cache_store.dart';
+import '../repositories/scenarios_fetch_result.dart';
 import '../repositories/scenarios_repository.dart';
 import 'scenarios_event.dart';
 import 'scenarios_state.dart';
@@ -8,7 +10,16 @@ import 'scenarios_state.dart';
 class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
   final ScenariosRepository _repository;
 
-  ScenariosBloc(this._repository) : super(const ScenariosInitial()) {
+  /// Story 9.1 — optional offline cache. Null-tolerant on purpose: when null
+  /// (no store wired, e.g. existing bloc tests / a future flavor without the
+  /// DB) every cache read/write is skipped and the bloc keeps today's
+  /// network-only behaviour. Mirrors the optional-with-test-default pattern
+  /// already used for `difficultyStorage` / `purchaseSyncService`.
+  final ScenarioCacheStore? _cacheStore;
+
+  ScenariosBloc(this._repository, {ScenarioCacheStore? cacheStore})
+    : _cacheStore = cacheStore,
+      super(const ScenariosInitial()) {
     on<LoadScenariosEvent>(_onLoad);
     on<RefreshScenariosEvent>(_onRefresh);
   }
@@ -29,11 +40,36 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     final nextRetryCount =
         previous is ScenariosError ? previous.retryCount + 1 : 0;
 
-    emit(ScenariosLoading());
+    // Story 9.1 — cache-first: render last-known data instantly when a cache
+    // exists, then refresh from the network below. A null cache (empty,
+    // corrupt, or no store wired) falls through to today's Loading→fetch path.
+    var shownFromCache = false;
+    final cacheStore = _cacheStore;
+    if (cacheStore != null) {
+      final cached = await cacheStore.readScenarios();
+      if (cached != null) {
+        shownFromCache = true;
+        emit(
+          ScenariosLoaded(
+            scenarios: cached.scenarios,
+            usage: cached.usage,
+            fromCache: true,
+          ),
+        );
+      }
+    }
+
+    if (!shownFromCache) emit(ScenariosLoading());
+
     try {
       final result = await _repository.fetchScenarios();
+      await _writeCacheSafely(result);
       emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
     } on ApiException catch (e) {
+      // Story 9.1 — a failed refresh while a cache is already on screen is
+      // SILENT (keep last-known data, never the error screen). Only
+      // error-screen when there was no cache to fall back to.
+      if (shownFromCache) return;
       emit(
         ScenariosError(
           code: _classifyApiException(e),
@@ -45,6 +81,7 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
       // (Scenario.fromJson cast failure, missing 'data' key, wrong types).
       // Without this catch the exception escapes the bloc and the UI
       // hangs forever in ScenariosLoading.
+      if (shownFromCache) return;
       emit(
         ScenariosError(
           code: 'MALFORMED_RESPONSE',
@@ -62,6 +99,9 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
   /// at that tree position is unchanged, preserves the list State (the 7.4
   /// `_initiatedThisSession` mark) while updating `usage`/`scenarios`. Skips
   /// while a foreground load is in flight so it can't race it.
+  ///
+  /// Story 9.1 — a successful refresh also writes through to the cache, keeping
+  /// the offline copy progression-fresh after every call.
   Future<void> _onRefresh(
     RefreshScenariosEvent event,
     Emitter<ScenariosState> emit,
@@ -69,10 +109,25 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     if (state is ScenariosLoading) return;
     try {
       final result = await _repository.fetchScenarios();
+      await _writeCacheSafely(result);
       emit(ScenariosLoaded(scenarios: result.scenarios, usage: result.usage));
     } catch (_) {
       // Background refresh — swallow any failure and keep the current state.
       // Stale usage for one more call beats an error screen after a call.
+    }
+  }
+
+  /// Persists a freshly-fetched result to the cache. A cache-write failure must
+  /// NEVER downgrade a successful fetch (the user still sees fresh data), so
+  /// any error here is swallowed.
+  Future<void> _writeCacheSafely(ScenariosFetchResult result) async {
+    final cacheStore = _cacheStore;
+    if (cacheStore == null) return;
+    try {
+      await cacheStore.writeScenarios(result);
+      // ignore: avoid_catches_without_on_clauses
+    } catch (_) {
+      // Swallow — a successful fetch must not error out on a cache-write fault.
     }
   }
 
