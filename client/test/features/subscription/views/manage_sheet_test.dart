@@ -235,23 +235,20 @@ void main() {
     expect(find.byType(BottomSheet), findsOneWidget);
   });
 
-  testWidgets('Manage row is one labeled button to assistive tech (cancel cue'
-      ' included)', (tester) async {
-    final handle = tester.ensureSemantics();
+  testWidgets('Manage is a clear OUTLINED button + a cancel-cue caption below',
+      (tester) async {
     seed(const UserProfileLoaded(_paidFuture));
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
 
-    // MergeSemantics folds the InkWell action + the two-line label into ONE
-    // node whose label literally carries "cancel" (the honest-exit guarantee).
+    // A real, clearly-tappable outlined pill (not a bare text row) — exposes
+    // proper button+label semantics on its own.
     expect(
-      find.bySemanticsLabel(
-        RegExp(r'Manage subscription\. Update or cancel'),
-      ),
+      find.widgetWithText(OutlinedButton, 'Manage subscription'),
       findsOneWidget,
     );
-    // Dispose inside the body — the end-of-test check runs before tearDowns.
-    handle.dispose();
+    // The honest "cancel" cue sits in the caption centered directly below it.
+    expect(find.textContaining('cancel'), findsOneWidget);
   });
 
   // ---- iPhone-SE / large-text overflow ----

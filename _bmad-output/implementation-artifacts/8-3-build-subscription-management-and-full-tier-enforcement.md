@@ -440,3 +440,10 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   identical fixed height (`_kRestoreSlotHeight`) — no reflow of the CTA/legal;
   it resets to the tappable button when the sheet is reopened (fresh bloc).
   analyze clean, flutter test 638.
+- 2026-06-19 — Walid manage-drawer tweak: "Manage subscription" became a
+  clearly-tappable OUTLINED pill (same StadiumBorder / 64h shape as the paywall
+  CTA, border-only — no accent fill, two-ink intact) with its "Update or cancel
+  in the {store}." caption centered directly BELOW it (the CTA→legal pattern,
+  replacing the borderless left-aligned text row); "Premium" enlarged 18→24 for
+  hero presence. OutlinedButton carries its own button+label semantics. analyze
+  clean, flutter test 638.

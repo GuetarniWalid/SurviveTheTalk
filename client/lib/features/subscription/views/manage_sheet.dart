@@ -100,6 +100,25 @@ const double _kBenefitIconSize = 20.0;
 const double _kBenefitIconGap = 12.0;
 const double _kSkeletonBarWidth = 200.0;
 const double _kSkeletonBarHeight = 14.0;
+// Manage button geometry — same shape/height as the paywall "Let's go" CTA
+// (StadiumBorder, 64h) but OUTLINED (border only, no accent fill) so it reads
+// as clearly tappable without being a loud conversion CTA (two-ink intact).
+const double _kManageButtonHeight = 64.0;
+
+// "Premium" hero label — a touch larger than `headline` (18) so the plan name
+// has presence; a one-screen local style (the 7.4/7.5 local-const precedent).
+const TextStyle _kPlanLabelStyle = TextStyle(
+  fontFamily: AppTypography.fontFamily,
+  fontSize: 24,
+  fontWeight: FontWeight.w600,
+);
+
+// Manage button label — Inter 14 SemiBold (matches the paywall CTA recipe).
+const TextStyle _kManageButtonTextStyle = TextStyle(
+  fontFamily: AppTypography.fontFamily,
+  fontSize: 14,
+  fontWeight: FontWeight.w600,
+);
 
 class _ManageSheetBody extends StatefulWidget {
   final StoreLinks storeLinks;
@@ -159,7 +178,7 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                     textAlign: TextAlign.center,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: AppTypography.headline.copyWith(
+                    style: _kPlanLabelStyle.copyWith(
                       color: AppColors.background,
                     ),
                   ),
@@ -187,7 +206,7 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                   ],
                   const SizedBox(height: 24),
                   // Profile-dependent slot — the ONLY thing the fetch gates.
-                  // The value block + manage row always render (a member must
+                  // The value block + manage button always render (a member must
                   // always reach Manage, even if the profile fetch fails).
                   _RenewalSlot(state: state),
                   if (_storeOpenFailed) ...[
@@ -203,8 +222,19 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 16),
-                  _ManageRow(caption: manageCaption, onTap: _onManage),
+                  const SizedBox(height: 24),
+                  // The exit — a clearly-tappable OUTLINED pill (same shape as
+                  // the paywall CTA), with the "cancel" cue caption centered
+                  // directly below it (the paywall CTA→legal pattern).
+                  _ManageButton(onTap: _onManage),
+                  const SizedBox(height: 8),
+                  Text(
+                    manageCaption,
+                    textAlign: TextAlign.center,
+                    style: AppTypography.caption.copyWith(
+                      color: AppColors.overlaySubtitle,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -340,60 +370,34 @@ class _BenefitRow extends StatelessWidget {
   }
 }
 
-/// The de-emphasized exit — a borderless full-width text row (NOT a button-
-/// shaped control). Body-weight primary-readable label + a caption that
-/// literally says "cancel": present, findable, honest, but demoted by weight +
-/// position (no fill, no accent, no border; last in reading order). ≥48dp.
-class _ManageRow extends StatelessWidget {
-  final String caption;
+/// The exit — a clearly-tappable OUTLINED pill, same shape/height as the paywall
+/// "Let's go" CTA but border-only (no accent fill, two-ink intact) so it reads
+/// as a button without being a loud conversion CTA. The "Update or cancel …"
+/// caption sits centered directly BELOW it (the paywall CTA→legal pattern),
+/// keeping the honest "cancel" cue present and findable. `OutlinedButton`
+/// already exposes proper button+label semantics to assistive tech.
+class _ManageButton extends StatelessWidget {
   final VoidCallback onTap;
 
-  const _ManageRow({required this.caption, required this.onTap});
+  const _ManageButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    // One merged, labeled button for assistive tech: `MergeSemantics` folds the
-    // InkWell's tap action together with this `Semantics(button, label)` so a
-    // screen reader hears a single actionable "Manage subscription. Update or
-    // cancel …" node — the label literally carries "cancel" (the honest-exit
-    // guarantee). The two visual Text lines are `ExcludeSemantics`'d so they
-    // don't read back as duplicate, non-actionable fragments.
-    return MergeSemantics(
-      child: Semantics(
-        button: true,
-        label: '$_kCtaManage. $caption',
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(8),
-          child: ExcludeSemantics(
-            child: Container(
-              constraints: const BoxConstraints(
-                minHeight: AppSpacing.touchTargetComfortable,
-              ),
-              alignment: Alignment.centerLeft,
-              padding: const EdgeInsets.symmetric(vertical: AppSpacing.base),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _kCtaManage,
-                    style: AppTypography.body.copyWith(
-                      color: AppColors.background,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    caption,
-                    style: AppTypography.caption.copyWith(
-                      color: AppColors.overlaySubtitle,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+    return SizedBox(
+      width: double.infinity,
+      height: _kManageButtonHeight,
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          backgroundColor: Colors.transparent,
+          foregroundColor: AppColors.background,
+          // `side` set explicitly so Material never recolors it to a theme
+          // default (this is a LIGHT sheet — the border must be the dark ink).
+          side: const BorderSide(color: AppColors.background, width: 1),
+          shape: const StadiumBorder(),
+          textStyle: _kManageButtonTextStyle,
         ),
+        child: const Text(_kCtaManage),
       ),
     );
   }
