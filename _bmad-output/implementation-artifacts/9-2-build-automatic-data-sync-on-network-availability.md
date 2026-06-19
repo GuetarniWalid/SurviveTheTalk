@@ -1,6 +1,6 @@
 # Story 9.2: Build Automatic Data Sync on Network Availability
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -144,7 +144,9 @@ Airplane-mode toggling is the only honest test of regain sync. The behaviors tha
 
 A ready-to-run device script will be handed to Walid at smoke-gate time per the project rule.
 
-> ✅ **Pixel 9 smoke gate — PASSED (Walid, 2026-06-19).** Airplane-mode regain validated on-device. This is the on-device gate for this client-only story (no server gate). **Story still in `review`**: the `review → done` flip is owed ONLY on the formal `/bmad-code-review` (to be run by a DIFFERENT LLM) per the flip-discipline rule — whichever gate clears last triggers the flip, and that is the code review here.
+> ✅ **Pixel 9 smoke gate — PASSED (Walid, 2026-06-19).** Airplane-mode regain validated on-device. This is the on-device gate for this client-only story (no server gate).
+>
+> ✅ **Code review — COMPLETE & CLEAN (2026-06-19).** Adversarial 3-layer panel (Blind Hunter + Edge Case Hunter + Acceptance Auditor) run on **Sonnet 4.6** — a DIFFERENT LLM from the Opus 4.8 dev agent. All findings triaged to dismiss (see "## Code Review" below). Reviewer re-verified gates: `flutter analyze` clean + full suite **675 green**. **BOTH gates now cleared → REVIEWER flipped `review → done` (this is the gate that cleared last).**
 
 ### References
 - [Source: `_bmad-output/planning-artifacts/epics.md`#Story-9.2] — the five epic ACs (app-launch sync, new scenarios, same-device update, NFR20 60s, no-jank).
@@ -207,3 +209,22 @@ Modified:
 | --- | --- |
 | 2026-06-19 | Story 9.2 created (create-story). Scope clarified: 4 of 5 epic ACs already delivered by 9.1/8.2 (regression-locked); the one new behavior is connectivity-regain → silent hub refresh via the seam 9.1 reserved. Decisions D1 (regain-only, no app-resume trigger) + D2 (fully silent, no offline badge — closes 9.1's open badge question) + D3 (reuse `RefreshScenariosEvent`) CONFIRMED by Walid. Status `backlog → ready-for-dev`. |
 | 2026-06-19 | Story 9.2 implemented (dev-story). `ScenariosBloc` subscribes to `onConnectivityRegained` → silent `RefreshScenariosEvent`; `close()` cancels the subscription. Threaded the bootstrap `ConnectivityService` through `main → App → createRouter →` the inline production hub bloc (null-in-prod trap wired). 6 new bloc tests (regain silent refresh + write-through, error-screen self-heal, failed-regain silence, in-flight drop, close-cancel, null-tolerance). `flutter analyze` clean; full suite 675 green (+6). Optional `createRouter` wiring test skipped (documented). Status `in-progress → review`. Owed for `review → done`: `/bmad-code-review` (different LLM) + Pixel 9 airplane-mode smoke gate. |
+| 2026-06-19 | Code review (`/bmad-code-review`) — adversarial 3-layer panel on **Sonnet 4.6** (different LLM from the Opus 4.8 dev). **CLEAN** — all findings dismissed with rationale (see "## Code Review"). Reviewer re-verified gates: `flutter analyze` clean + full suite 675 green. Both gates cleared (smoke gate + code review) → reviewer flipped `review → done` (story file + `sprint-status.yaml`). |
+
+## Code Review (2026-06-19)
+
+**Reviewer:** `/bmad-code-review` orchestrated by Opus 4.8; three parallel adversarial layers run on **Sonnet 4.6** (a DIFFERENT LLM from the Opus 4.8 dev agent, per the flip-discipline "different LLM" requirement). Diff reviewed: `git diff bc130fc..HEAD -- client/` (4 lib files + 1 test file; +285/−33).
+
+**Outcome: CLEAN — 0 decision-needed, 0 patch, 0 defer, all findings dismissed.** Automated gates re-verified by the reviewer (not just trusting the dev report): `flutter analyze` → "No issues found!"; `flutter test` (full suite) → "All tests passed!" (675).
+
+The panel raised ~13 findings; every one was triaged to **dismiss** after grounding against the actual source. Recorded here for transparency (per the "surface trade-offs/limitations as explicit decisions" rule) rather than buried:
+
+- **BH-2 — `_loadInFlight` could stay stuck after a thrown fetch (Blind Hunter, "Medium").** Refuted: both `_onLoad` and `_onRefresh` reset `_loadInFlight = false` in a `finally` block ([scenarios_bloc.dart:143-145](../../client/lib/features/scenarios/bloc/scenarios_bloc.dart#L143), [184-186](../../client/lib/features/scenarios/bloc/scenarios_bloc.dart#L184)); `_onRefresh` additionally swallows everything in a bare `catch (_)`. The flag can never be left set. (Blind Hunter had no source access — guess.)
+- **BH-1 — `cancel()` not awaited before `super.close()` → post-close `add()` `StateError` ("High").** Refuted: in Dart's single-threaded event loop `StreamSubscription.cancel()` synchronously stops further `onData` delivery (queued-but-undelivered events are dropped), and `close()` cannot run mid-`onData`. Test (e) empirically proves close-then-`regain.add(null)` neither throws nor fetches. Mirrors the proven `EndCallRetryService.dispose()` idiom.
+- **BH-3 / "feature silently no-ops in prod" (Blind Hunter "Medium" + Edge Case Hunter discussion).** Refuted: the wiring is traced and present (`main.dart` → `App` → `createRouter` → inline hub bloc receives a non-null service), and the **Pixel 9 airplane-mode smoke gate passed on-device** — direct empirical proof the production wire fires. The optional/null-tolerant param is an intentional, spec-locked design mirroring `cacheStore`.
+- **EC-1 / EC-7 — regain from `ScenariosInitial` bypasses cache-first / untested (Edge Case Hunter "Medium").** Dismissed as **unreachable in production**: the inline bloc dispatches `LoadScenariosEvent` at construction (transitioning out of `Initial`), and `onConnectivityRegained` suppresses the first-online event and only fires on a true offline→online transition — by which time the bloc is `Loaded`/`Error`, never `Initial`. The spec also explicitly froze `_onRefresh`. *Optional future hardening if ever wanted: add `state is ScenariosInitial` to the `_onRefresh` guard — but it changes a spec-frozen, currently-unreachable path, so deliberately NOT applied.*
+- **BH-4 / EC-5 — nav-churn lifecycle / zombie subscriptions.** Refuted: Dart is single-threaded (no concurrent two-bloc window), `BlocProvider(create:)` owns and `close()`s each route-scoped bloc, and each bloc cancels its own `_regainSub`. EC-5 itself concluded the current wiring is safe.
+- **EC-2 (no debounce on a flapping link), EC-4 (`onConnectivityRegained` getter double-listen footgun), EC-6 (stale `fromCache` flash — depends on the unreachable EC-1).** Dismissed: not correctness bugs; idempotent write-through fetch; mirror the existing `EndCallRetryService` pattern; out of scope for this change.
+- **Acceptance Auditor F1/F2/F4 (test-strictness on "no intermediate `ScenariosLoading`").** Dismissed: `blocTest`'s exact-list `expect:` already fails a `[Loading, Loaded]` regression (length/order mismatch), so the guarantee is effectively asserted; the auditor concurred. **F3** (comment-placement nit), **F5** (NFR20 timing not unit-testable — on-device gate covers it), **F6/F7** (documented, accepted skips) — all non-defects.
+
+No bug, regression, or AC/decision violation survived grounding. D1 (regain-only trigger), D2 (fully silent), D3 (reuse `RefreshScenariosEvent`) all honored; File List matches; gotchas A–E satisfied.
