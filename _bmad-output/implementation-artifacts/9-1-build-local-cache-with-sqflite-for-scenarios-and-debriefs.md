@@ -1,6 +1,6 @@
 # Story 9.1: Build Local Cache with sqflite for Scenarios and Debriefs
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -238,6 +238,7 @@ claude-opus-4-8 (Claude Code `/bmad-dev-story`, 2026-06-19)
 | 2026-06-19 | Story 9.1 dev-story complete — offline sqflite cache for scenarios + debriefs (cache-first hub load, silent refresh + write-through, cache-only report-icon route, auth-reset wipe). 4 new lib files + 11 modified + 1 deleted; 6 test files (4 new). `flutter analyze` clean, `flutter test` 661 green (+22). Status `in-progress → review`. |
 | 2026-06-19 | Pixel 9 smoke gate PASSED (Walid). Adversarial pre-review pass: FIXED M1 (cache-first in-flight-guard regression → `_loadInFlight`) + L1 (post-cap debrief not cached); CLOSED coverage gaps M2 (Task 6b privacy-wipe wire) + M3 (debrief write-on-fetch). `flutter analyze` clean, `flutter test` 667 green (+6). Stays `review` — only the formal code review (different agent) remains for `review → done`. |
 | 2026-06-19 | Formal `/bmad-code-review` (Opus 4.8, 6-lens adversarial workflow: 31 agents, 12 raw → 8 distinct → 7 confirmed). Gates independently re-verified GREEN (`flutter analyze` No issues found! / `flutter test` 667 passed). 1 HIGH decision-needed (F1 cross-user cache leak via natural token expiry), 2 patch (F3 refresh-guard asymmetry, F8 cache-miss CTA icon), 4 defer, 1 dismissed (F6 unreachable). Story STAYS `review` (HIGH privacy finding unresolved). See Review Findings below. |
+| 2026-06-19 | Status `review → done`. Code review complete (all 3 actionable findings fixed, 4 deferred, 1 dismissed); gates green (analyze clean / test 669); prior Pixel 9 smoke gate PASSED. Walid authorized the flip, accepting the new automated coverage of the F1 wire in lieu of an on-device de-auth re-test (impractical: no Sign Out button + 30-day token expiry). Epic 9 remains in-progress (9-2 backlog). |
 | 2026-06-19 | Code-review fixes applied (Walid chose F1 option 1). F1: centralized cache wipe on every AuthBloc→`AuthInitial` transition in `app.dart` (covers natural 30-day expiry + 401 + future logout; closes F2/F7), removed the 401-only wipe, rewrote 2 `app_test` cases. F3: symmetric `_loadInFlight` in `_onRefresh` + 2 bloc tests. F8: `EmpatheticErrorScreen.ctaIcon` param + back-arrow on cache-miss + icon test. Gates re-green: `flutter analyze` clean, `flutter test` **669** (+2). Stays `review` — F1 changed privacy-critical wiring post-smoke-gate; recommend a quick on-device cross-account re-confirm before the `review → done` flip. |
 
 ## Review Findings (code-review 2026-06-19)

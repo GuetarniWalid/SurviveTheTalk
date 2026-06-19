@@ -140,7 +140,7 @@ development_status:
 
   # Epic 9: Offline Access & Data Sync
   epic-9: in-progress  # 2026-06-19: opened by create-story for 9-1 (first story of the epic)
-  9-1-build-local-cache-with-sqflite-for-scenarios-and-debriefs: review
+  9-1-build-local-cache-with-sqflite-for-scenarios-and-debriefs: done  # 2026-06-19: code review complete (Opus 4.8, 7 confirmed findings) — F1 HIGH cross-user cache leak via the token-expiry path, F3, F8 all fixed + gates green (analyze clean / test 669); prior Pixel 9 smoke gate + Walid-authorized flip (automated coverage accepted in lieu of an impractical on-device de-auth re-test)
   9-2-build-automatic-data-sync-on-network-availability: backlog
   epic-9-retrospective: optional
 
