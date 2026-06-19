@@ -146,7 +146,7 @@ development_status:
 
   # Epic 10: App Publication & Launch Readiness
   epic-10: in-progress  # 2026-06-19: opened by create-story for 10-1 (first story of the epic)
-  10-1-create-privacy-policy-terms-of-service-and-legal-compliance-pages: ready-for-dev  # 2026-06-19: create-story (legal pages — privacy policy + ToS HTML, public /legal/* hosting, in-app links). Grounded in REAL data-handling, not stale PRD/epics. 5 decisions defaulted+flagged for Walid (D1 FastAPI route, D2 domain=10.2, D3 agent drafts, D4 manual-email deletion MVP, D5 controller identity pending).
+  10-1-create-privacy-policy-terms-of-service-and-legal-compliance-pages: ready-for-dev  # 2026-06-19: create-story (legal pages — privacy policy + ToS HTML, public /legal/* hosting, in-app links). Grounded in REAL data-handling, not stale PRD/epics. 5 decisions RESOLVED w/ Walid 2026-06-19: D1 clean FastAPI /legal/* HTML route, D2 HTTPS domain=Story 10.2, D3 agent drafts the legal text, D4 BUILD self-serve DELETE /user/me + data-export NOW (Walid chose build-now over manual-email), D5 contact=guetarni.walid@gmail.com. Adds a destructive deletion endpoint -> DB smoke boxes active.
   10-2-provision-domain-dns-ssl-and-server-infrastructure: backlog
   10-3-configure-app-store-and-play-store-listings: backlog
   10-4-set-up-beta-testing-pipeline-and-analytics: backlog
