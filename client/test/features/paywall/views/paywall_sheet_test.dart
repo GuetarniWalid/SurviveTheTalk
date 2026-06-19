@@ -281,10 +281,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Nothing to restore.'), findsOneWidget);
-    // Not a success, and the offer (CTA + Restore) is still there to retry.
     expect(find.text("You're in"), findsNothing);
     expect(find.text("Let's go"), findsOneWidget);
-    expect(find.text('Restore purchases'), findsOneWidget);
+    // The Restore button is REPLACED by the info line (not shown alongside),
+    // and the info line is NOT a button — no longer tappable until the sheet is
+    // reopened (a fresh bloc restores the "Restore purchases" button).
+    expect(find.text('Restore purchases'), findsNothing);
+    expect(
+      find.widgetWithText(TextButton, 'Nothing to restore.'),
+      findsNothing,
+    );
   });
 
   testWidgets('PendingApproval (F17) shows the waiting copy + stays dismissible',

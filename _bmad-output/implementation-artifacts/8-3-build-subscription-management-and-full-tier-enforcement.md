@@ -433,3 +433,10 @@ services/purchase_sync_service_test, views/manage_subscription_screen_test}.dart
   3-dimension adversarial review. Server side untouched. Gates re-green: analyze
   clean, flutter test 636. Net tests: −25 (old screen) +11 (drawer) +3 (hub) +2
   (paywall Restore) −2 (obsolete paywall).
+- 2026-06-18 — Walid paywall tweak: Restore moved ABOVE the "Let's go" CTA;
+  "Restore purchases" typography shrunk to caption (small/quiet) and the primary
+  CTA height raised 48→64 (prominent). The empty-restore state now swaps the
+  Restore button IN PLACE for a NON-tappable "Nothing to restore." info line of
+  identical fixed height (`_kRestoreSlotHeight`) — no reflow of the CTA/legal;
+  it resets to the tappable button when the sheet is reopened (fresh bloc).
+  analyze clean, flutter test 638.

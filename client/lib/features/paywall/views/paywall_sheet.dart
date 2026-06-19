@@ -106,7 +106,14 @@ const String _kSuccessSemantics = "Subscription confirmed. You're in.";
 // ---- Local layout / timing constants ----
 const double _kHandleWidth = 40.0;
 const double _kHandleHeight = 4.0;
-const double _kCtaHeight = 48.0;
+// Story 8.3 (2026-06-18) — the primary CTA is the prominent action; height
+// raised 48 → 64 (the app's big-CTA size, `hangUpButtonSize` / briefing "Pick
+// up") so it reads as THE action above the small Restore line.
+const double _kCtaHeight = 64.0;
+// Fixed height for the Restore slot so the tappable "Restore purchases" button
+// and the non-tappable "Nothing to restore." info line occupy the SAME space —
+// the empty-state swap never reflows the CTA / legal below it.
+const double _kRestoreSlotHeight = 48.0;
 const double _kSpinnerSize = 24.0;
 const double _kBenefitIconSize = 20.0;
 const double _kBenefitIconGap = 12.0;
@@ -309,6 +316,18 @@ class _OfferView extends StatelessWidget {
           _BenefitRow(text: _kBenefits[i]),
         ],
         const SizedBox(height: 32),
+        // Story 8.3 (2026-06-18) — Restore sits ABOVE the primary CTA as a
+        // small, quiet line. On an empty restore it becomes a NON-tappable info
+        // line ("Nothing to restore.") of the SAME fixed height, so the swap
+        // never reflows the CTA / legal below. Reopening the sheet (swipe /
+        // scrim) builds a fresh bloc → it resets to a tappable "Restore
+        // purchases".
+        _RestoreControl(
+          restoreEmpty: restoreEmpty,
+          disabled: actionsDisabled,
+          onRestore: onRestore,
+        ),
+        const SizedBox(height: 12),
         _CtaButton(
           loading: loading,
           onPressed: actionsDisabled ? null : onSubscribe,
@@ -339,36 +358,6 @@ class _OfferView extends StatelessWidget {
             ),
           ),
         ],
-        if (restoreEmpty) ...[
-          const SizedBox(height: 8),
-          Semantics(
-            liveRegion: true,
-            child: Text(
-              _kNothingToRestore,
-              textAlign: TextAlign.center,
-              style: AppTypography.caption.copyWith(
-                color: AppColors.overlaySubtitle,
-              ),
-            ),
-          ),
-        ],
-        const SizedBox(height: 16),
-        // Story 8.3 — Restore occupies the old "Not now" slot (quiet secondary
-        // text button). Disabled while a purchase/restore is in flight or
-        // pending approval (no double-fire). A genuine restore flips to
-        // Purchased → "You're in"; an empty one shows the caption above.
-        TextButton(
-          onPressed: actionsDisabled ? null : onRestore,
-          style: TextButton.styleFrom(
-            foregroundColor: AppColors.overlaySubtitle,
-            disabledForegroundColor: AppColors.overlaySubtitle.withValues(
-              alpha: 0.4,
-            ),
-            minimumSize: const Size.fromHeight(48),
-            textStyle: AppTypography.body,
-          ),
-          child: const Text(_kRestore),
-        ),
         const SizedBox(height: 24),
         Text(
           _kLegal,
@@ -410,6 +399,60 @@ class _BenefitRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Story 8.3 — the Restore affordance: a SMALL, quiet line ABOVE the CTA. Both
+/// renderings share one fixed height ([_kRestoreSlotHeight]) so swapping between
+/// them never reflows the CTA / legal below:
+///  - normal: a tappable caption-sized "Restore purchases" text button (greyed +
+///    inert while a purchase/restore is in flight or pending — no double-fire);
+///  - empty-restore (F16): a NON-tappable "Nothing to restore." info line (no
+///    fake success). It is no longer a button — to retry, reopen the sheet
+///    (a fresh bloc resets it to the tappable "Restore purchases").
+class _RestoreControl extends StatelessWidget {
+  final bool restoreEmpty;
+  final bool disabled;
+  final VoidCallback onRestore;
+
+  const _RestoreControl({
+    required this.restoreEmpty,
+    required this.disabled,
+    required this.onRestore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: _kRestoreSlotHeight,
+      child: Center(
+        child: restoreEmpty
+            ? Semantics(
+                liveRegion: true,
+                child: Text(
+                  _kNothingToRestore,
+                  textAlign: TextAlign.center,
+                  style: AppTypography.caption.copyWith(
+                    color: AppColors.overlaySubtitle,
+                  ),
+                ),
+              )
+            : TextButton(
+                onPressed: disabled ? null : onRestore,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.overlaySubtitle,
+                  disabledForegroundColor: AppColors.overlaySubtitle.withValues(
+                    alpha: 0.4,
+                  ),
+                  minimumSize: const Size(0, _kRestoreSlotHeight),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  textStyle: AppTypography.caption,
+                ),
+                child: const Text(_kRestore),
+              ),
+      ),
     );
   }
 }
