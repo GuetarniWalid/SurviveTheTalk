@@ -144,6 +144,8 @@ Airplane-mode toggling is the only honest test of regain sync. The behaviors tha
 
 A ready-to-run device script will be handed to Walid at smoke-gate time per the project rule.
 
+> ✅ **Pixel 9 smoke gate — PASSED (Walid, 2026-06-19).** Airplane-mode regain validated on-device. This is the on-device gate for this client-only story (no server gate). **Story still in `review`**: the `review → done` flip is owed ONLY on the formal `/bmad-code-review` (to be run by a DIFFERENT LLM) per the flip-discipline rule — whichever gate clears last triggers the flip, and that is the code review here.
+
 ### References
 - [Source: `_bmad-output/planning-artifacts/epics.md`#Story-9.2] — the five epic ACs (app-launch sync, new scenarios, same-device update, NFR20 60s, no-jank).
 - [Source: `_bmad-output/planning-artifacts/prd.md` "Data sync reliability"] — NFR20: "Eventually consistent within 60s … Local-first with background sync."

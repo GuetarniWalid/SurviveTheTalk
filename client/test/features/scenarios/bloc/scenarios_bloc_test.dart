@@ -822,7 +822,8 @@ void main() {
     );
 
     blocTest<ScenariosBloc, ScenariosState>(
-      'a null connectivityService is tolerated — no subscription, no refresh',
+      'a null connectivityService is tolerated — bloc constructs with no regain '
+      'subscription and does not auto-fetch',
       setUp: () {
         when(() => mockRepo.fetchScenarios())
             .thenAnswer((_) async => _result(_fiveScenarios));
@@ -830,9 +831,13 @@ void main() {
       build: () => ScenariosBloc(mockRepo, cacheStore: mockStore),
       seed: () =>
           const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      // Belt-and-braces: firing the group's `regain` controller proves nothing
+      // on its own here (a null-service bloc never subscribed to it), but it
+      // makes explicit that NO global/implicit regain path exists — the only
+      // way this bloc EVER refreshes on regain is via an injected
+      // ConnectivityService. The load-bearing assertions are that constructing
+      // with a null service creates no subscription and triggers no auto-fetch.
       act: (_) => regain.add(null),
-      // No connectivity wired → the controller has no bloc listener → nothing
-      // happens. (`regain` is closed by tearDown.)
       expect: () => const <ScenariosState>[],
       verify: (_) => verifyNever(() => mockRepo.fetchScenarios()),
     );
