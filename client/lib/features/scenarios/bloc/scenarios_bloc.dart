@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_exception.dart';
 import '../../../core/local_cache/scenario_cache_store.dart';
+import '../../../core/services/connectivity_service.dart';
 import '../repositories/scenarios_fetch_result.dart';
 import '../repositories/scenarios_repository.dart';
 import 'scenarios_event.dart';
@@ -17,6 +20,15 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
   /// already used for `difficultyStorage` / `purchaseSyncService`.
   final ScenarioCacheStore? _cacheStore;
 
+  /// Story 9.2 — optional connectivity-regain trigger. Null-tolerant on purpose
+  /// (same rationale as `_cacheStore`): existing bloc tests and the router's
+  /// `.value`-injected path construct the bloc without a `ConnectivityService`,
+  /// in which case no regain subscription is created and the bloc keeps today's
+  /// behaviour. When supplied (the production inline hub bloc), an offline→online
+  /// transition re-dispatches the existing silent [RefreshScenariosEvent] so the
+  /// hub auto-syncs mid-session with no app relaunch and no user tap.
+  StreamSubscription<void>? _regainSub;
+
   /// In-flight guard, independent of the emitted state. The cache-first path
   /// (Story 9.1) emits `ScenariosLoaded` (NOT `ScenariosLoading`) for the whole
   /// network window, so the old `state is ScenariosLoading` check alone would
@@ -26,11 +38,38 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
   /// restores the pre-9.1 single-fetch invariant on the cache-hit branch too.
   bool _loadInFlight = false;
 
-  ScenariosBloc(this._repository, {ScenarioCacheStore? cacheStore})
-    : _cacheStore = cacheStore,
-      super(const ScenariosInitial()) {
+  ScenariosBloc(
+    this._repository, {
+    ScenarioCacheStore? cacheStore,
+    ConnectivityService? connectivityService,
+  }) : _cacheStore = cacheStore,
+       super(const ScenariosInitial()) {
     on<LoadScenariosEvent>(_onLoad);
     on<RefreshScenariosEvent>(_onRefresh);
+
+    // Story 9.2 — when the device transitions offline→online while the hub is
+    // alive, re-fetch silently through the existing refresh path. Reuses
+    // `RefreshScenariosEvent` (no `ScenariosLoading`, no `ScenariosError` flip,
+    // write-through on success, swallow on failure) — exactly the silent-sync
+    // semantics AC1/AC6 require (Decision D3). The `_loadInFlight` guard already
+    // serializes this against a concurrent load/refresh, and from a
+    // `ScenariosError` cold-launch-offline state `_onRefresh` proceeds and
+    // self-heals to `ScenariosLoaded` on success (AC1). The subscription is
+    // cancelled in [close] so no event is `add()`-ed after the bloc closes.
+    _regainSub = connectivityService?.onConnectivityRegained.listen((_) {
+      add(const RefreshScenariosEvent());
+    });
+  }
+
+  /// Story 9.2 — cancel the regain subscription BEFORE `super.close()`, so a
+  /// connectivity-regain landing after the bloc closes never calls
+  /// `add(RefreshScenariosEvent())` on a closed bloc (post-close `add()` throws
+  /// `StateError`). Mirrors `EndCallRetryService.dispose()`'s `_regainSub?
+  /// .cancel()` idiom.
+  @override
+  Future<void> close() {
+    _regainSub?.cancel();
+    return super.close();
   }
 
   Future<void> _onLoad(

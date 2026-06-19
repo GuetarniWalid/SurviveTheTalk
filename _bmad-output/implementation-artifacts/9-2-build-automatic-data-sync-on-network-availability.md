@@ -1,6 +1,6 @@
 # Story 9.2: Build Automatic Data Sync on Network Availability
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -53,16 +53,16 @@ Story 9.1 deliberately left this seam open and named it: *"Connectivity awarenes
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Inject `ConnectivityService` into `ScenariosBloc` + subscribe to regain (AC: #1, #6, #7)**
-  - [ ] Add an **OPTIONAL named** constructor param: `ScenariosBloc(this._repository, {ScenarioCacheStore? cacheStore, ConnectivityService? connectivityService})`. Store it; do **not** make it required (a required param would force every existing bloc test + the router fallback to construct a `ConnectivityService` — keep the null-tolerant, optional-with-test-default pattern already used for `cacheStore` / `difficultyStorage` / `purchaseSyncService`).
-  - [ ] In the constructor body, after registering the two existing handlers, subscribe to regain and re-dispatch the **existing** silent refresh:
+- [x] **Task 1 — Inject `ConnectivityService` into `ScenariosBloc` + subscribe to regain (AC: #1, #6, #7)**
+  - [x] Add an **OPTIONAL named** constructor param: `ScenariosBloc(this._repository, {ScenarioCacheStore? cacheStore, ConnectivityService? connectivityService})`. Store it; do **not** make it required (a required param would force every existing bloc test + the router fallback to construct a `ConnectivityService` — keep the null-tolerant, optional-with-test-default pattern already used for `cacheStore` / `difficultyStorage` / `purchaseSyncService`).
+  - [x] In the constructor body, after registering the two existing handlers, subscribe to regain and re-dispatch the **existing** silent refresh:
     ```dart
     _regainSub = connectivityService?.onConnectivityRegained.listen((_) {
       add(const RefreshScenariosEvent());
     });
     ```
     Store the subscription in a `StreamSubscription<void>? _regainSub;` field. **Reuse `RefreshScenariosEvent` — do NOT invent a new event/state.** Its semantics are exactly what AC1/AC6 need: no `ScenariosLoading`, no `ScenariosError` flip, write-through to cache on success, swallow on failure. (See Decision D3.)
-  - [ ] Override `close()` to cancel the subscription **before** `super.close()`, so no `RefreshScenariosEvent` is ever `add()`-ed after the bloc closes (post-close `add()` throws `StateError`). Mirror `EndCallRetryService.dispose()`'s `_regainSub?.cancel()` idiom:
+  - [x] Override `close()` to cancel the subscription **before** `super.close()`, so no `RefreshScenariosEvent` is ever `add()`-ed after the bloc closes (post-close `add()` throws `StateError`). Mirror `EndCallRetryService.dispose()`'s `_regainSub?.cancel()` idiom:
     ```dart
     @override
     Future<void> close() {
@@ -70,28 +70,29 @@ Story 9.1 deliberately left this seam open and named it: *"Connectivity awarenes
       return super.close();
     }
     ```
-  - [ ] **Do NOT touch `_onLoad` / `_onRefresh` logic.** The existing `_loadInFlight` guard already serializes a regain-triggered refresh against a concurrent foreground load or post-call refresh (M1 / F3 fixes from 9.1) — a regain landing mid-fetch is dropped, not stacked. From `ScenariosError` (cold-launch-offline, no cache), `_onRefresh`'s guard (`_loadInFlight || state is ScenariosLoading`) is false, so it proceeds and recovers to `ScenariosLoaded` on success (AC1's error-screen self-heal). Verify this path in tests rather than adding new branching.
+  - [x] **Do NOT touch `_onLoad` / `_onRefresh` logic.** The existing `_loadInFlight` guard already serializes a regain-triggered refresh against a concurrent foreground load or post-call refresh (M1 / F3 fixes from 9.1) — a regain landing mid-fetch is dropped, not stacked. From `ScenariosError` (cold-launch-offline, no cache), `_onRefresh`'s guard (`_loadInFlight || state is ScenariosLoading`) is false, so it proceeds and recovers to `ScenariosLoaded` on success (AC1's error-screen self-heal). Verify this path in tests rather than adding new branching. *(Confirmed: `_onLoad`/`_onRefresh` bodies untouched; test (b) drives the `ScenariosError` → `ScenariosLoaded` self-heal and test (d) the in-flight-drop.)*
 
-- [ ] **Task 2 — Thread `ConnectivityService` to the PRODUCTION inline bloc (AC: #1, #7)**
-  - [ ] **CRITICAL — same trap as 9.1's cache-store wiring.** `App.scenariosBloc` is **null in production**; the real hub bloc is the **inline** `ScenariosBloc(ScenariosRepository(ApiClient()), cacheStore: scenarioCacheStore)..add(const LoadScenariosEvent())` at [router.dart:132-141](client/lib/app/router.dart). If you only wire an injected/`.value` path, the offline-regain feature silently no-ops in prod while every injected-bloc test stays green.
-  - [ ] `bootstrap()` already constructs the app-lifetime `ConnectivityService` at [main.dart:117](client/lib/main.dart) (`final connectivityService = ConnectivityService();`, currently passed only to `EndCallRetryService.attach`). **Reuse that same instance** — pass it into `App(...)`. Do not construct a second one (it would be a second broadcast subscriber, harmless but wasteful and confusing).
-  - [ ] Add `final ConnectivityService? connectivityService;` to `App` (optional, with the other bootstrap-owned services) and forward it through `AppRouter.createRouter(...)`.
-  - [ ] In `createRouter`, add an optional `ConnectivityService? connectivityService` param (nullable, same rationale as `scenarioCacheStore`) and pass it into the inline bloc: `ScenariosBloc(ScenariosRepository(ApiClient()), cacheStore: scenarioCacheStore, connectivityService: connectivityService)`. Also pass it to the injected `.value` branch's bloc if/when one is supplied (the `App.scenariosBloc` test path constructs its own bloc, so that path injects its own `ConnectivityService` in tests — no change needed to the `.value` wrapper itself).
-  - [ ] Sharing one `ConnectivityService` across `EndCallRetryService` **and** `ScenariosBloc` is safe: `onConnectivityChanged` is a `connectivity_plus` broadcast stream, and `onConnectivityRegained` returns a fresh per-call closure (independent `hasBeenOffline` state per subscriber). [Source: [connectivity_service.dart:77-90](client/lib/core/services/connectivity_service.dart).]
+- [x] **Task 2 — Thread `ConnectivityService` to the PRODUCTION inline bloc (AC: #1, #7)**
+  - [x] **CRITICAL — same trap as 9.1's cache-store wiring.** `App.scenariosBloc` is **null in production**; the real hub bloc is the **inline** `ScenariosBloc(ScenariosRepository(ApiClient()), cacheStore: scenarioCacheStore)..add(const LoadScenariosEvent())` at [router.dart:132-141](client/lib/app/router.dart). If you only wire an injected/`.value` path, the offline-regain feature silently no-ops in prod while every injected-bloc test stays green. *(Wired the inline `create:` branch.)*
+  - [x] `bootstrap()` already constructs the app-lifetime `ConnectivityService` at [main.dart:117](client/lib/main.dart) (`final connectivityService = ConnectivityService();`, currently passed only to `EndCallRetryService.attach`). **Reuse that same instance** — pass it into `App(...)`. Do not construct a second one (it would be a second broadcast subscriber, harmless but wasteful and confusing). *(Reused the same instance — no second construction.)*
+  - [x] Add `final ConnectivityService? connectivityService;` to `App` (optional, with the other bootstrap-owned services) and forward it through `AppRouter.createRouter(...)`.
+  - [x] In `createRouter`, add an optional `ConnectivityService? connectivityService` param (nullable, same rationale as `scenarioCacheStore`) and pass it into the inline bloc: `ScenariosBloc(ScenariosRepository(ApiClient()), cacheStore: scenarioCacheStore, connectivityService: connectivityService)`. Also pass it to the injected `.value` branch's bloc if/when one is supplied (the `App.scenariosBloc` test path constructs its own bloc, so that path injects its own `ConnectivityService` in tests — no change needed to the `.value` wrapper itself). *(`.value` wrapper unchanged, as specified.)*
+  - [x] Sharing one `ConnectivityService` across `EndCallRetryService` **and** `ScenariosBloc` is safe: `onConnectivityChanged` is a `connectivity_plus` broadcast stream, and `onConnectivityRegained` returns a fresh per-call closure (independent `hasBeenOffline` state per subscriber). [Source: [connectivity_service.dart:77-90](client/lib/core/services/connectivity_service.dart).]
 
-- [ ] **Task 3 — Tests (AC: #1, #4, #6, #7)**
-  - [ ] **Retrofit the existing bloc suite to stay green.** Task 1 adds the `connectivityService` param. The existing `buildBloc()` helper ([scenarios_bloc_test.dart:89](client/test/features/scenarios/bloc/scenarios_bloc_test.dart)) passes none → `connectivityService` is null → no subscription → every pre-existing `[Loading, ...]` / Refresh expectation is unchanged. Confirm the full suite passes with the param added.
-  - [ ] **New regain group** (`bloc_test` + `mocktail`). Add `class MockConnectivityService extends Mock implements ConnectivityService {}` (mirrors [end_call_retry_service_test.dart:15](client/test/core/services/end_call_retry_service_test.dart)). Drive a controllable regain stream:
-    - Helper: a `StreamController<void> regain` (non-broadcast is fine — the bloc subscribes once); `when(() => mockConn.onConnectivityRegained).thenAnswer((_) => regain.stream);` Build the bloc with `connectivityService: mockConn`. `tearDown` closes the controller.
-    - (a) **Regain from a cache-shown state triggers a silent refresh:** seed a `ScenariosLoaded`, `regain.add(null)`, expect a single fresh `ScenariosLoaded` (no `ScenariosLoading`, no `ScenariosError`), and `verify(() => mockRepo.fetchScenarios()).called(...)` + `verify(() => mockStore.writeScenarios(any())).called(1)` (write-through).
-    - (b) **Regain recovers from the offline error screen:** put the bloc in `ScenariosError` (no-cache + failed load), then `regain.add(null)` with the repo now succeeding → expect `[ScenariosLoaded(fresh)]`, no intermediate `ScenariosLoading`. (AC1 self-heal.)
-    - (c) **Failed regain refresh stays silent:** in `ScenariosLoaded`, `regain.add(null)` with the repo throwing `ApiException` → expect **no** new emission (state unchanged, no `ScenariosError`). (AC6.)
-    - (d) **Regain refresh is dropped while a load is in flight:** start a `LoadScenariosEvent` with a delayed repo, fire `regain.add(null)` during the window → assert `fetchScenarios()` is called exactly once (the `_loadInFlight` guard holds). (Reuses the M1/F3 invariant.)
-    - (e) **`close()` cancels the subscription:** after `bloc.close()`, `regain.add(null)` must NOT throw and must NOT call the repo (no post-close `add()`).
-  - [ ] Use the existing `registerFallbackValue(const LoadScenariosEvent())` (already in `setUpAll`); no new fallback needed (`RefreshScenariosEvent` is const-constructed in the bloc, not passed through a mock).
-  - [ ] **Do NOT inject a real `ConnectivityService` that hits `connectivity_plus`** in unit tests — mock it (the platform channel would fail in the VM runner, same class of trap as sqflite Gotcha A). A real `Connectivity()` is only exercised on-device.
-  - [ ] (Optional, low-value) A wiring test that `createRouter(..., connectivityService: mockConn)` builds the inline hub bloc with the service — but the production wire is one line and a regression yields a visible "hub doesn't auto-refresh on regain" smoke-gate failure, so a full `createRouter` widget test may be judged too fragile (mirror 9.1's L2 defer rationale). Dev's call; document if skipped.
-  - [ ] `flutter analyze` clean + full `flutter test` green.
+- [x] **Task 3 — Tests (AC: #1, #4, #6, #7)**
+  - [x] **Retrofit the existing bloc suite to stay green.** Task 1 adds the `connectivityService` param. The existing `buildBloc()` helper ([scenarios_bloc_test.dart:89](client/test/features/scenarios/bloc/scenarios_bloc_test.dart)) passes none → `connectivityService` is null → no subscription → every pre-existing `[Loading, ...]` / Refresh expectation is unchanged. Confirm the full suite passes with the param added. *(All pre-existing tests green, param defaults null.)*
+  - [x] **New regain group** (`bloc_test` + `mocktail`). Add `class MockConnectivityService extends Mock implements ConnectivityService {}` (mirrors [end_call_retry_service_test.dart:15](client/test/core/services/end_call_retry_service_test.dart)). Drive a controllable regain stream:
+    - [x] Helper: a `StreamController<void> regain` (used broadcast, matching `end_call_retry_service_test`); `when(() => mockConn.onConnectivityRegained).thenAnswer((_) => regain.stream);` Build the bloc with `connectivityService: mockConn`. `tearDown` closes the controller.
+    - [x] (a) **Regain from a cache-shown state triggers a silent refresh:** seed a `ScenariosLoaded`, `regain.add(null)`, expect a single fresh `ScenariosLoaded` (no `ScenariosLoading`, no `ScenariosError`), and `verify(() => mockRepo.fetchScenarios()).called(1)` + `verify(() => mockStore.writeScenarios(any())).called(1)` (write-through).
+    - [x] (b) **Regain recovers from the offline error screen:** put the bloc in `ScenariosError` (no-cache + failed load), then `regain.add(null)` with the repo now succeeding → expect `[ScenariosLoaded(fresh)]`, no intermediate `ScenariosLoading`. (AC1 self-heal.)
+    - [x] (c) **Failed regain refresh stays silent:** in `ScenariosLoaded`, `regain.add(null)` with the repo throwing `ApiException` → expect **no** new emission (state unchanged, no `ScenariosError`). (AC6.)
+    - [x] (d) **Regain refresh is dropped while a load is in flight:** start a `LoadScenariosEvent` with a delayed repo, fire `regain.add(null)` during the window → assert `fetchScenarios()` is called exactly once (the `_loadInFlight` guard holds). (Reuses the M1/F3 invariant.)
+    - [x] (e) **`close()` cancels the subscription:** after `bloc.close()`, `regain.add(null)` must NOT throw and must NOT call the repo (no post-close `add()`).
+    - [x] (bonus) **Null `connectivityService` tolerated:** with no service wired, a regain on the test controller produces no subscription, no emission, no fetch (mirrors 9.1's null-cacheStore test).
+  - [x] Use the existing `registerFallbackValue(const LoadScenariosEvent())` (already in `setUpAll`); no new fallback needed (`RefreshScenariosEvent` is const-constructed in the bloc, not passed through a mock).
+  - [x] **Do NOT inject a real `ConnectivityService` that hits `connectivity_plus`** in unit tests — mock it (the platform channel would fail in the VM runner, same class of trap as sqflite Gotcha A). A real `Connectivity()` is only exercised on-device.
+  - [x] (Optional, low-value) A wiring test that `createRouter(..., connectivityService: mockConn)` builds the inline hub bloc with the service — **SKIPPED** (mirror 9.1's L2 defer rationale). The production wire is one line; a regression yields a visible "hub doesn't auto-refresh on regain" smoke-gate failure (device validation #1), and a full `createRouter` widget test would be fragile for near-zero added confidence over the bloc-level regain coverage above.
+  - [x] `flutter analyze` clean + full `flutter test` green. *(analyze: "No issues found!"; test: "All tests passed!" — 675 tests, +6 from 669.)*
 
 ## Dev Notes
 
@@ -171,18 +172,36 @@ The regain trigger dispatches the existing silent `RefreshScenariosEvent`. No `S
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-8 (Opus 4.8)
 
 ### Debug Log References
 
+- `flutter analyze` (client/) → "No issues found!" (54.3s).
+- `flutter test test/features/scenarios/bloc/scenarios_bloc_test.dart` → 35 passed (29 pre-existing + 6 new Story 9.2).
+- `flutter test` (full client suite) → "All tests passed!" — 675 tests (669 pre-existing + 6 new).
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed — comprehensive developer guide created.
+- **The ONE new behavior shipped:** `ScenariosBloc` now subscribes to `ConnectivityService.onConnectivityRegained` and re-dispatches the existing silent `RefreshScenariosEvent` on every offline→online transition while the hub is alive — so the scenario list auto-syncs mid-session with no app relaunch and no user tap (AC1). Everything else (launch sync AC2, new-scenarios AC3, same-device post-call AC4, no-jank AC6 machinery) was already shipped by 9.1/8.2 and is now regression-locked by a fully-green suite.
+- **Decision compliance:** D1 (regain-only trigger; no `didChangeAppLifecycleState(resumed)` hub trigger added), D2 (fully silent — reused `RefreshScenariosEvent`, added NO `ScenariosLoading`, NO toast, NO offline badge), D3 (no new event/state) all honored exactly as locked.
+- **Null-tolerant wiring:** `connectivityService` is an OPTIONAL named param on `ScenariosBloc` (mirrors `cacheStore`). Null → no subscription → today's behavior; every pre-existing bloc test compiles & passes unchanged. Production threads the SAME bootstrap-owned `ConnectivityService` (shared with `EndCallRetryService`) through `App → createRouter →` the inline production hub bloc — the null-in-prod `App.scenariosBloc` trap from 9.1 was wired correctly (inline `create:` branch).
+- **Lifecycle safety:** `close()` cancels `_regainSub` before `super.close()`, so a regain landing after the bloc closes never calls `add()` on a closed bloc (post-close `add()` → `StateError`). Test (e) guards it.
+- **Tests added (6):** regain-from-cache silent refresh + write-through (a); error-screen self-heal (b); failed-regain stays silent (c); dropped-while-load-in-flight via the inherited `_loadInFlight` guard (d); `close()` cancels subscription (e); plus a null-`connectivityService` tolerance test (bonus). All driven by a mocked `ConnectivityService` + a test-owned `StreamController` — zero `connectivity_plus` platform-channel contact (Gotcha B).
+- **Skipped (documented):** the optional `createRouter` wiring widget-test — fragile for near-zero added confidence over the bloc-level regain coverage; a prod regression surfaces as device-validation #1 (mid-session regain). Mirrors 9.1's L2 defer rationale.
+- **Owed before `review → done`:** (1) `/bmad-code-review` by a DIFFERENT LLM, and (2) the Pixel 9 airplane-mode smoke gate (5 device checks in Dev Notes "Manual on-device validation"). No server gate (client-only, zero server changes).
 
 ### File List
+
+Modified:
+- `client/lib/features/scenarios/bloc/scenarios_bloc.dart` — `dart:async` + `connectivity_service` imports; optional `connectivityService` ctor param; `_regainSub` field + subscription in ctor body; `close()` override cancelling the subscription before `super.close()`.
+- `client/lib/main.dart` — pass the existing bootstrap `connectivityService` into `App(...)`.
+- `client/lib/app/app.dart` — `connectivity_service` import; optional `connectivityService` field + ctor param; forward it into `AppRouter.createRouter(...)`.
+- `client/lib/app/router.dart` — `connectivity_service` import; optional `connectivityService` param on `createRouter`; feed it into the inline production hub bloc.
+- `client/test/features/scenarios/bloc/scenarios_bloc_test.dart` — `dart:async` + `connectivity_service` imports; `MockConnectivityService`; new "Story 9.2 — connectivity-regain auto-sync" group (6 tests).
 
 ## Change Log
 
 | Date | Change |
 | --- | --- |
 | 2026-06-19 | Story 9.2 created (create-story). Scope clarified: 4 of 5 epic ACs already delivered by 9.1/8.2 (regression-locked); the one new behavior is connectivity-regain → silent hub refresh via the seam 9.1 reserved. Decisions D1 (regain-only, no app-resume trigger) + D2 (fully silent, no offline badge — closes 9.1's open badge question) + D3 (reuse `RefreshScenariosEvent`) CONFIRMED by Walid. Status `backlog → ready-for-dev`. |
+| 2026-06-19 | Story 9.2 implemented (dev-story). `ScenariosBloc` subscribes to `onConnectivityRegained` → silent `RefreshScenariosEvent`; `close()` cancels the subscription. Threaded the bootstrap `ConnectivityService` through `main → App → createRouter →` the inline production hub bloc (null-in-prod trap wired). 6 new bloc tests (regain silent refresh + write-through, error-screen self-heal, failed-regain silence, in-flight drop, close-cancel, null-tolerance). `flutter analyze` clean; full suite 675 green (+6). Optional `createRouter` wiring test skipped (documented). Status `in-progress → review`. Owed for `review → done`: `/bmad-code-review` (different LLM) + Pixel 9 airplane-mode smoke gate. |

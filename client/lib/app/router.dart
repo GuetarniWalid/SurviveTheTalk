@@ -10,6 +10,7 @@ import '../core/local_cache/scenario_cache_store.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/vibration_service.dart';
+import '../core/services/connectivity_service.dart';
 import '../features/auth/bloc/auth_bloc.dart';
 import '../features/auth/bloc/auth_state.dart';
 import '../features/auth/presentation/code_verification_screen.dart';
@@ -59,6 +60,11 @@ class AppRouter {
     // debrief route are both null-tolerant).
     ScenarioCacheStore? scenarioCacheStore,
     DebriefCacheStore? debriefCacheStore,
+    // Story 9.2 — the bootstrap-owned ConnectivityService. NULLABLE (same
+    // rationale as `scenarioCacheStore`): App-constructing widget tests pass
+    // none; production always supplies it. Fed into the inline hub bloc so an
+    // offline→online regain triggers a silent refresh.
+    ConnectivityService? connectivityService,
   }) {
     return GoRouter(
       initialLocation: AppRoutes.root,
@@ -133,6 +139,10 @@ class AppRouter {
                     create: (_) => ScenariosBloc(
                       ScenariosRepository(ApiClient()),
                       cacheStore: scenarioCacheStore,
+                      // Story 9.2 — feed connectivity to the PRODUCTION inline
+                      // bloc; without this the regain auto-sync silently no-ops
+                      // in prod (App.scenariosBloc is null) while tests pass.
+                      connectivityService: connectivityService,
                     )..add(const LoadScenariosEvent()),
                     child: ScenarioListScreen(
                       difficultyStorage: difficultyStorage,

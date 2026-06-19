@@ -13,6 +13,7 @@ import '../core/local_cache/scenario_cache_store.dart';
 import '../core/onboarding/consent_storage.dart';
 import '../core/onboarding/difficulty_storage.dart';
 import '../core/onboarding/permission_service.dart';
+import '../core/services/connectivity_service.dart';
 import '../core/services/end_call_retry_service.dart';
 import '../core/theme/app_theme.dart';
 import '../core/widgets/app_toast.dart';
@@ -44,6 +45,11 @@ class App extends StatefulWidget {
   final AppDatabase? appDatabase;
   final ScenarioCacheStore? scenarioCacheStore;
   final DebriefCacheStore? debriefCacheStore;
+  // Story 9.2 — app-lifetime ConnectivityService (bootstrap-owned, shared with
+  // EndCallRetryService). Threaded to the production inline hub bloc so an
+  // offline→online regain auto-refreshes the scenario list. Null in tests /
+  // when not wired — the bloc's regain subscription is simply not created.
+  final ConnectivityService? connectivityService;
 
   const App({
     super.key,
@@ -58,6 +64,7 @@ class App extends StatefulWidget {
     this.appDatabase,
     this.scenarioCacheStore,
     this.debriefCacheStore,
+    this.connectivityService,
   });
 
   @override
@@ -155,6 +162,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       // the debrief route get them (App.scenariosBloc is null in prod).
       scenarioCacheStore: widget.scenarioCacheStore,
       debriefCacheStore: widget.debriefCacheStore,
+      // Story 9.2 — feed the ConnectivityService to the same inline hub bloc so
+      // it auto-syncs on an offline→online regain (same null-in-prod trap as
+      // the cache store — wiring the inline fallback is what makes it work).
+      connectivityService: widget.connectivityService,
     );
 
     // Story 6.13 AC4 — wire the cross-cutting 401 handler. When ANY

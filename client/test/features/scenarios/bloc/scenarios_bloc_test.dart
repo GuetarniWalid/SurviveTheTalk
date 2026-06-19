@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/api/api_exception.dart';
 import 'package:client/core/local_cache/scenario_cache_store.dart';
+import 'package:client/core/services/connectivity_service.dart';
 import 'package:client/features/scenarios/bloc/scenarios_bloc.dart';
 import 'package:client/features/scenarios/bloc/scenarios_event.dart';
 import 'package:client/features/scenarios/bloc/scenarios_state.dart';
@@ -19,6 +22,12 @@ class MockScenariosRepository extends Mock implements ScenariosRepository {}
 // Gotcha A). `readScenarios()` is stubbed to null (empty cache) by default so
 // every pre-existing `[Loading, ...]` expectation stays valid.
 class MockScenarioCacheStore extends Mock implements ScenarioCacheStore {}
+
+// Story 9.2 — a MOCKED connectivity service keeps these tests off the
+// `connectivity_plus` platform channel (a real one fails in the VM runner,
+// Gotcha B). `onConnectivityRegained` is driven by a test-owned StreamController
+// so the regain transition can be fired on demand.
+class MockConnectivityService extends Mock implements ConnectivityService {}
 
 const _waiter = Scenario(
   id: 'waiter_easy_01',
@@ -675,6 +684,157 @@ void main() {
         // (no stacked parallel requests / out-of-order overwrite).
         verify(() => mockRepo.fetchScenarios()).called(1);
       },
+    );
+  });
+
+  group('Story 9.2 — connectivity-regain auto-sync', () {
+    late MockConnectivityService mockConn;
+    late StreamController<void> regain;
+
+    // The fresh usage proves the regain refresh actually swapped in new data
+    // (callsRemaining 3 → 2), not just re-emitted the seeded state.
+    const refreshedUsage = CallUsage(
+      tier: 'free',
+      callsRemaining: 2,
+      callsPerPeriod: 3,
+      period: 'lifetime',
+    );
+
+    setUp(() {
+      mockConn = MockConnectivityService();
+      // Broadcast (matches end_call_retry_service_test) — the bloc subscribes
+      // once in its constructor; the stub MUST be in place before the bloc is
+      // built, hence here in setUp rather than inside `build`.
+      regain = StreamController<void>.broadcast();
+      when(() => mockConn.onConnectivityRegained)
+          .thenAnswer((_) => regain.stream);
+    });
+
+    tearDown(() async {
+      await regain.close();
+    });
+
+    ScenariosBloc buildBlocWithConn() => ScenariosBloc(
+          mockRepo,
+          cacheStore: mockStore,
+          connectivityService: mockConn,
+        );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      '(a) regain from a cache-shown Loaded state triggers a SILENT refresh — '
+      'fresh Loaded only (no Loading), with write-through',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenAnswer(
+          (_) async => _result(_fiveScenarios, usage: refreshedUsage),
+        );
+      },
+      build: buildBlocWithConn,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (_) => regain.add(null),
+      expect: () => [
+        isA<ScenariosLoaded>()
+            .having((s) => s.fromCache, 'fromCache', false)
+            .having((s) => s.usage.callsRemaining, 'fresh usage', 2)
+            .having((s) => s.scenarios.length, 'scenarios.length', 5),
+      ],
+      verify: (_) {
+        verify(() => mockRepo.fetchScenarios()).called(1);
+        verify(() => mockStore.writeScenarios(any())).called(1);
+      },
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      '(b) regain recovers from the offline error screen — '
+      'emits a fresh Loaded with NO intermediate Loading (AC1 self-heal)',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+      },
+      build: buildBlocWithConn,
+      seed: () => const ScenariosError(code: 'NETWORK_ERROR', retryCount: 0),
+      act: (_) => regain.add(null),
+      expect: () => [
+        isA<ScenariosLoaded>()
+            .having((s) => s.fromCache, 'fromCache', false)
+            .having((s) => s.scenarios.length, 'scenarios.length', 5),
+      ],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      '(c) a FAILED regain refresh stays silent — '
+      'no emission, no ScenariosError flip (AC6)',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenThrow(
+          const ApiException(code: 'NETWORK_ERROR', message: 'down'),
+        );
+      },
+      build: buildBlocWithConn,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (_) => regain.add(null),
+      expect: () => const <ScenariosState>[],
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      '(d) a regain refresh is DROPPED while a foreground load is in flight '
+      '(exactly one /scenarios fetch — the _loadInFlight guard holds)',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenAnswer((_) async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          return _result(_fiveScenarios);
+        });
+      },
+      build: buildBlocWithConn,
+      act: (bloc) async {
+        bloc.add(const LoadScenariosEvent());
+        // Yield so the load emits Loading and parks on the delayed fetch with
+        // `_loadInFlight == true`, THEN fire the regain.
+        await pumpEventQueue();
+        regain.add(null); // the resulting RefreshScenariosEvent must be dropped
+      },
+      wait: const Duration(milliseconds: 200),
+      expect: () => [
+        isA<ScenariosLoading>(),
+        isA<ScenariosLoaded>().having(
+          (s) => s.scenarios.length,
+          'scenarios.length',
+          5,
+        ),
+      ],
+      verify: (_) => verify(() => mockRepo.fetchScenarios()).called(1),
+    );
+
+    test(
+      '(e) close() cancels the regain subscription — a later regain neither '
+      'throws (post-close add) nor calls the repo',
+      () async {
+        final bloc = buildBlocWithConn();
+        await bloc.close();
+
+        // A regain landing after the bloc closed must NOT reach the listener:
+        // no add() on the closed bloc (would throw StateError) and no fetch.
+        regain.add(null);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        verifyNever(() => mockRepo.fetchScenarios());
+      },
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'a null connectivityService is tolerated — no subscription, no refresh',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios())
+            .thenAnswer((_) async => _result(_fiveScenarios));
+      },
+      build: () => ScenariosBloc(mockRepo, cacheStore: mockStore),
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (_) => regain.add(null),
+      // No connectivity wired → the controller has no bloc listener → nothing
+      // happens. (`regain` is closed by tearDown.)
+      expect: () => const <ScenariosState>[],
+      verify: (_) => verifyNever(() => mockRepo.fetchScenarios()),
     );
   });
 }

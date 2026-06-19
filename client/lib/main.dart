@@ -147,6 +147,12 @@ Future<void> bootstrap() async {
       appDatabase: appDatabase,
       scenarioCacheStore: scenarioCacheStore,
       debriefCacheStore: debriefCacheStore,
+      // Story 9.2 — reuse the SAME app-lifetime ConnectivityService already
+      // built above (it also feeds EndCallRetryService). Threaded to the
+      // production inline hub bloc so an offline→online regain auto-refreshes
+      // the scenario list. Sharing one instance is safe: onConnectivityRegained
+      // returns a fresh per-subscriber closure.
+      connectivityService: connectivityService,
     ),
   );
 }
