@@ -184,12 +184,19 @@ def test_validate_apple_production_without_app_id_is_config_error() -> None:
 
 class _FakePayload:
     def __init__(
-        self, productId, expiresDate=None, revocationDate=None, transactionId="TX1"
+        self,
+        productId,
+        expiresDate=None,
+        revocationDate=None,
+        transactionId="TX1",
+        originalTransactionId="ORIG1",
     ):
         self.productId = productId
         self.expiresDate = expiresDate
         self.revocationDate = revocationDate
         self.transactionId = transactionId
+        # F3 — the renewal-stable id the validator now propagates.
+        self.originalTransactionId = originalTransactionId
 
 
 def _patch_apple_verifier(monkeypatch, payload: _FakePayload) -> None:
@@ -218,12 +225,19 @@ def _past_ms() -> int:
 def test_validate_apple_production_valid(monkeypatch) -> None:
     _patch_apple_verifier(
         monkeypatch,
-        _FakePayload("stt_weekly_199", expiresDate=_future_ms(), transactionId="TX9"),
+        _FakePayload(
+            "stt_weekly_199",
+            expiresDate=_future_ms(),
+            transactionId="TX9",
+            originalTransactionId="ORIG9",
+        ),
     )
     result = _run_apple(_forged_jws("Production"), app_apple_id=123)
     assert result.valid is True
     assert result.status == "valid"
     assert result.transaction_id == "TX9"
+    # F3 — the renewal-stable id propagates so the webhook can resolve renewals.
+    assert result.original_transaction_id == "ORIG9"
 
 
 def test_validate_apple_product_mismatch_is_invalid(monkeypatch) -> None:
@@ -575,3 +589,78 @@ def test_validate_google_tolerates_nanosecond_expiry(monkeypatch) -> None:
     assert result.valid is True
     assert result.status == "valid"
     assert result.expires_at == "2099-01-01T00:00:00.123456789Z"
+
+
+# ---------- Story 8.3 code-review (F5) — CANCELED keeps paid until expiry ------
+
+
+def test_validate_google_canceled_with_future_expiry_is_valid(monkeypatch) -> None:
+    """F5 — a user who turns OFF auto-renew shows up as SUBSCRIPTION_STATE_CANCELED
+    while still inside the paid window (future expiryTime). They remain entitled
+    until that date (mirrors the Apple DID_CHANGE_RENEWAL_STATUS path + AC6),
+    rather than being cut off immediately."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_CANCELED",
+                "latestOrderId": "GPA.cancel",
+                "lineItems": [
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2099-01-01T00:00:00Z",  # still in the future
+                    }
+                ],
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is True
+    assert result.status == "valid"
+    assert result.expires_at == "2099-01-01T00:00:00Z"
+
+
+def test_validate_google_canceled_past_expiry_is_invalid(monkeypatch) -> None:
+    """F5 — a CANCELED sub PAST its period is correctly 'invalid' (expired): the
+    same F11 expiry guard applies, so cancellation does not grant access forever."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_CANCELED",
+                "latestOrderId": "GPA.cancel-past",
+                "lineItems": [
+                    {
+                        "productId": "stt_weekly_199",
+                        "expiryTime": "2020-01-01T00:00:00Z",  # long past
+                    }
+                ],
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is False
+    assert result.status == "invalid"
+    assert result.reason == "expired"
+
+
+def test_validate_google_canceled_without_expiry_is_invalid(monkeypatch) -> None:
+    """F5 — a CANCELED state with no parseable expiry can't be confirmed as still
+    inside a paid window → reject (don't grant open-ended access off a cancel)."""
+    fake = _FakeClient(
+        token_resp=_FakeResp(200, {"access_token": "ya29.abc"}),
+        api_resp=_FakeResp(
+            200,
+            {
+                "subscriptionState": "SUBSCRIPTION_STATE_CANCELED",
+                "latestOrderId": "GPA.cancel-noexp",
+                "lineItems": [{"productId": "stt_weekly_199"}],  # no expiryTime
+            },
+        ),
+    )
+    result = _run_google(monkeypatch, fake)
+    assert result.valid is False
+    assert result.status == "invalid"
+    assert result.reason == "canceled_no_expiry"

@@ -15,10 +15,14 @@ These routes are NOT on the app-JWT router — Apple/Google POST to them. Securi
     `purchaseToken` to get the AUTHORITATIVE state rather than trusting the
     notification body.
 
-Both endpoints are IDEMPOTENT (dedup via `subscription_events`) and return 200
-quickly on any HANDLED processing error so Apple/Pub/Sub don't retry-storm on
-an internal hiccup. (A verification/security failure is the exception — that is
-a reject, 400/403, not a "handled" internal error.)
+Both endpoints are IDEMPOTENT (dedup via `subscription_events`). Recovery model
+(F1): the dedup row records on receipt but `processed_at` is the source of truth
+for "the side effect landed". A genuine PROCESSING failure returns 500 (NOT a
+swallowed 200) so the store retries on its bounded back-off; the retry hits the
+already-recorded-but-UNPROCESSED row and RE-DRIVES the action, while a row whose
+processing succeeded short-circuits as a benign replay. This recovers the
+renewal/refund/revoke events the old always-200-on-error posture dropped forever.
+(A verification/security failure stays a reject — 400/403, not a 500.)
 """
 
 from __future__ import annotations
@@ -44,11 +48,13 @@ from db.database import get_connection
 from db.queries import (
     count_user_valid_purchases,
     get_latest_purchase_by_token,
+    get_purchase_by_original_transaction_id,
     get_purchase_by_transaction_id,
     mark_subscription_event_processed,
     record_subscription_event,
     update_purchase_validation,
     update_user_tier,
+    user_has_active_entitlement,
 )
 from models.schemas import AppleWebhookIn, GoogleWebhookIn
 
@@ -71,41 +77,97 @@ _APPLE_DOWNGRADE_TYPES = frozenset(
 async def _process_apple_notification(db, notif: AppleNotification) -> None:
     """Act on a verified Apple notification (resolve user, flip tier/expiry).
 
-    Resolves the user via the stored Apple `transactionId`; an unknown txn is
-    ACKed + logged (the expiry sweep still covers it). DID_RENEW re-stamps the
-    expiry + keeps paid; EXPIRED/GRACE_PERIOD_EXPIRED/REFUND/REVOKE downgrade to
-    free; DID_CHANGE_RENEWAL_STATUS (cancel intent) keeps paid until expiry.
+    Resolves the user by the renewal-STABLE `originalTransactionId` (F3) — a
+    DID_RENEW carries a NEW per-period `transactionId`, so resolving by it would
+    miss every renewal; falls back to `transactionId` only for legacy rows
+    predating the column. An unknown subscription is ACKed + logged. DID_RENEW
+    re-stamps the expiry + keeps paid (atomically, F14); EXPIRED/
+    GRACE_PERIOD_EXPIRED/REFUND/REVOKE downgrade to free CONDITIONALLY (F4 — not
+    if the user is still entitled via another valid+future purchase);
+    DID_CHANGE_RENEWAL_STATUS (cancel intent) keeps paid until expiry.
     """
-    purchase = (
-        await get_purchase_by_transaction_id(db, notif.transaction_id)
-        if notif.transaction_id
-        else None
-    )
+    purchase = None
+    if notif.original_transaction_id:
+        purchase = await get_purchase_by_original_transaction_id(
+            db, notif.original_transaction_id
+        )
+    if purchase is None and notif.transaction_id:
+        purchase = await get_purchase_by_transaction_id(db, notif.transaction_id)
     if purchase is None:
         logger.info(
-            f"apple webhook: no purchase row for txn={notif.transaction_id} "
-            f"type={notif.notification_type}"
+            f"apple webhook: no purchase row for "
+            f"original_txn={notif.original_transaction_id} "
+            f"txn={notif.transaction_id} type={notif.notification_type}"
         )
         return
     user_id = purchase["user_id"]
     ntype = notif.notification_type
 
     if ntype == "DID_RENEW":
-        await update_purchase_validation(
-            db,
-            purchase["id"],
-            validation_status="valid",
-            transaction_id=notif.transaction_id,
-            expires_at=notif.expires_at,
-            validated_at=now_iso(),
-        )
-        await update_user_tier(db, user_id, "paid", tier_changed_at=now_iso())
+        # F14 — re-stamp expiry + keep paid in ONE BEGIN IMMEDIATE so a crash
+        # can't leave the purchase refreshed while the tier stays stale.
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await update_purchase_validation(
+                db,
+                purchase["id"],
+                validation_status="valid",
+                transaction_id=notif.transaction_id,
+                original_transaction_id=notif.original_transaction_id,
+                expires_at=notif.expires_at,
+                validated_at=now_iso(),
+                commit=False,
+            )
+            await update_user_tier(
+                db, user_id, "paid", tier_changed_at=now_iso(), commit=False
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         logger.info(
             f"apple webhook: DID_RENEW user={user_id} -> paid, expiry refreshed"
         )
     elif ntype in _APPLE_DOWNGRADE_TYPES:
-        await update_user_tier(db, user_id, "free", tier_changed_at=now_iso())
-        logger.warning(f"apple webhook: {ntype} user={user_id} -> free")
+        # F4 — downgrade CONDITIONALLY (mirror the Google webhook + expiry sweep):
+        # a lapsing/refunded purchase must not clobber a user still entitled via a
+        # SEPARATE valid+future purchase (e.g. a new-device re-subscribe). REFUND/
+        # REVOKE void the entitlement outright → mark the row invalid so it stops
+        # counting; EXPIRED/GRACE_PERIOD_EXPIRED merely lapsed it (the expiry-aware
+        # check excludes a past-dated row WITHOUT rewriting its status, so a later
+        # DID_RENEW can still re-grant). One BEGIN IMMEDIATE (F14).
+        now = now_iso()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if ntype in ("REFUND", "REVOKE"):
+                await update_purchase_validation(
+                    db,
+                    purchase["id"],
+                    validation_status="invalid",
+                    transaction_id=notif.transaction_id,
+                    original_transaction_id=notif.original_transaction_id,
+                    expires_at=notif.expires_at,
+                    validated_at=now,
+                    commit=False,
+                )
+            still_entitled = await user_has_active_entitlement(
+                db, user_id, now, exclude_purchase_id=purchase["id"]
+            )
+            if not still_entitled:
+                await update_user_tier(
+                    db, user_id, "free", tier_changed_at=now, commit=False
+                )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+        if still_entitled:
+            logger.info(
+                f"apple webhook: {ntype} user={user_id} lapsed but keeps paid "
+                "via another valid purchase"
+            )
+        else:
+            logger.warning(f"apple webhook: {ntype} user={user_id} -> free")
     elif ntype == "DID_CHANGE_RENEWAL_STATUS":
         # Cancellation intent — keep paid until expiry (correct subscription
         # behaviour). The eventual EXPIRED notification / sweep does the revert.
@@ -123,7 +185,9 @@ async def apple_webhook(payload: AppleWebhookIn) -> dict:
 
     503 SUBSCRIPTION_UNAVAILABLE when Apple config is absent (pre-store-setup;
     Apple retries later). 400 WEBHOOK_INVALID on a forged/untrusted payload.
-    200 (idempotent) once verified — even on a downstream processing error.
+    200 (idempotent) once verified + processed. 500 WEBHOOK_PROCESSING_FAILED on
+    a transient processing error so Apple retries and the event is re-driven (F1)
+    — the dedup row keeps a successful replay idempotent.
     """
     try:
         notif = await verify_apple_notification(
@@ -157,25 +221,38 @@ async def apple_webhook(payload: AppleWebhookIn) -> dict:
         return ok({"received": True})
 
     async with get_connection() as db:
-        inserted = await record_subscription_event(
+        status = await record_subscription_event(
             db,
             provider="apple",
             notification_id=notif.notification_uuid,
             notification_type=notif.notification_type,
             received_at=now_iso(),
         )
-        if not inserted:
-            # Replay of a notificationUUID we already processed — no-op.
+        if status == "replay_processed":
+            # Genuine replay of an already-applied notification — no-op.
             return ok({"received": True})
+        # "new" or "replay_unprocessed" (a prior delivery failed mid-processing,
+        # F1) → (re-)process so a transiently-dropped lifecycle action recovers.
         try:
             await _process_apple_notification(db, notif)
             await mark_subscription_event_processed(
                 db, notif.notification_uuid, now_iso()
             )
-        except Exception:
-            # Handled internal error → still 200 so Apple doesn't retry-storm on
-            # OUR bug; the event row stays unmarked (processed_at NULL) for audit.
+        except Exception as exc:
+            # F1 — a genuine processing failure. Do NOT mark processed and do NOT
+            # ack 200: return 500 so Apple RETRIES (its bounded back-off schedule),
+            # and the retry hits "replay_unprocessed" above and re-drives. The
+            # dedup row persists (processed_at NULL) so a SUCCESSFUL replay stays
+            # idempotent. This reverses the prior always-200-on-processing-error
+            # posture, which permanently dropped renewal/refund/revoke events.
             logger.exception("apple webhook processing error")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "WEBHOOK_PROCESSING_FAILED",
+                    "message": "Notification processing failed; will retry.",
+                },
+            ) from exc
     return ok({"received": True})
 
 
@@ -218,15 +295,27 @@ async def _process_google_body(db, body: dict) -> None:
         return
 
     if result.status == "valid":
-        await update_purchase_validation(
-            db,
-            purchase["id"],
-            validation_status="valid",
-            transaction_id=result.transaction_id,
-            expires_at=result.expires_at,
-            validated_at=now_iso(),
-        )
-        await update_user_tier(db, user_id, "paid", tier_changed_at=now_iso())
+        # F14 — re-stamp expiry + keep paid in ONE BEGIN IMMEDIATE (mirror the
+        # verify route's TX2 + the invalid branch below) so a crash can't leave
+        # the purchase refreshed while the tier stays stale.
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await update_purchase_validation(
+                db,
+                purchase["id"],
+                validation_status="valid",
+                transaction_id=result.transaction_id,
+                expires_at=result.expires_at,
+                validated_at=now_iso(),
+                commit=False,
+            )
+            await update_user_tier(
+                db, user_id, "paid", tier_changed_at=now_iso(), commit=False
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         logger.info(f"google webhook: user={user_id} -> paid, expiry refreshed")
     elif result.status == "invalid":
         await db.execute("BEGIN IMMEDIATE")
@@ -305,18 +394,30 @@ async def google_webhook(payload: GoogleWebhookIn, token: str | None = None) -> 
     ntype = str(sub.get("notificationType")) if isinstance(sub, dict) else None
 
     async with get_connection() as db:
-        inserted = await record_subscription_event(
+        status = await record_subscription_event(
             db,
             provider="google",
             notification_id=msg.messageId,
             notification_type=ntype,
             received_at=now_iso(),
         )
-        if not inserted:
-            return ok({"received": True})  # replay of this messageId — no-op
+        if status == "replay_processed":
+            return ok({"received": True})  # replay of a handled messageId — no-op
+        # "new" or "replay_unprocessed" (a prior delivery failed, F1) → (re-)process.
         try:
             await _process_google_body(db, body)
             await mark_subscription_event_processed(db, msg.messageId, now_iso())
-        except Exception:
+        except Exception as exc:
+            # F1 — genuine processing failure → 500 so Pub/Sub retries (bounded by
+            # its ack-deadline/retention back-off); the retry hits
+            # "replay_unprocessed" and re-drives. Dedup row persists so a
+            # successful replay stays idempotent.
             logger.exception("google webhook processing error")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "WEBHOOK_PROCESSING_FAILED",
+                    "message": "Notification processing failed; will retry.",
+                },
+            ) from exc
     return ok({"received": True})

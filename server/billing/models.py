@@ -30,6 +30,13 @@ class ValidationResult:
     transaction_id: str | None = None
     expires_at: str | None = None
     reason: str | None = None
+    # Story 8.3 (F3) — the renewal-STABLE id. Apple mints a fresh
+    # `transaction_id` for every auto-renewal period; only
+    # `original_transaction_id` is constant across the subscription lifecycle,
+    # so the webhook must resolve the user by it (a DID_RENEW carries a NEW
+    # transaction_id that would otherwise match no purchase row). Google's
+    # `purchaseToken` is already renewal-stable, so this stays None there.
+    original_transaction_id: str | None = None
 
 
 class BillingConfigError(Exception):

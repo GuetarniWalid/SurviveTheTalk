@@ -526,30 +526,42 @@ class _AccountHubLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: AppSpacing.minTouchTarget),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.account_circle_outlined,
-              size: 15,
-              color: AppColors.textSecondary,
+    // F6 (8.3 review) — a bare GestureDetector exposes a tap action but no
+    // button ROLE, so TalkBack/VoiceOver announce 'Account' as plain text with
+    // no "button / double-tap to activate" affordance. Merge the icon+text into
+    // one node and flag it a button (the project's scenario_card pattern), so
+    // the Manage-subscription entry point is a discoverable control for
+    // screen-reader users.
+    return MergeSemantics(
+      child: Semantics(
+        button: true,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints:
+                const BoxConstraints(minHeight: AppSpacing.minTouchTarget),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.account_circle_outlined,
+                  size: 15,
+                  color: AppColors.textSecondary,
+                ),
+                SizedBox(width: 6),
+                Text(
+                  'Account',
+                  style: TextStyle(
+                    fontFamily: AppTypography.fontFamily,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
             ),
-            SizedBox(width: 6),
-            Text(
-              'Account',
-              style: TextStyle(
-                fontFamily: AppTypography.fontFamily,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

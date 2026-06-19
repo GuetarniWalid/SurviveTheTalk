@@ -646,6 +646,7 @@ async def update_purchase_validation(
     transaction_id: str | None,
     expires_at: str | None,
     validated_at: str,
+    original_transaction_id: str | None = None,
     commit: bool = True,
 ) -> None:
     """Record the outcome of validating a purchase against Apple/Google.
@@ -654,13 +655,29 @@ async def update_purchase_validation(
     the D2 optimistic-fallback path left un-flipped stays `'pending'` until
     the background re-check resolves it — see `routes_subscription`).
 
+    Story 8.3 (F3) — `original_transaction_id` is the Apple renewal-stable key
+    (None for Google / legacy callers). It is written via
+    `COALESCE(?, original_transaction_id)` so passing None PRESERVES an
+    already-stored value (the id is constant for a subscription's lifetime — a
+    later re-validation/renew stamp must never wipe it), while a non-None value
+    sets it.
+
     `commit=False` lets a caller fold the stamp into a surrounding
     `BEGIN IMMEDIATE` alongside the tier flip (code-review 8.1 F2/F3).
     """
     await db.execute(
         "UPDATE purchases SET validation_status = ?, transaction_id = ?, "
-        "expires_at = ?, validated_at = ? WHERE id = ?",
-        (validation_status, transaction_id, expires_at, validated_at, purchase_id),
+        "expires_at = ?, validated_at = ?, "
+        "original_transaction_id = COALESCE(?, original_transaction_id) "
+        "WHERE id = ?",
+        (
+            validation_status,
+            transaction_id,
+            expires_at,
+            validated_at,
+            original_transaction_id,
+            purchase_id,
+        ),
     )
     if commit:
         await db.commit()
@@ -683,6 +700,46 @@ async def count_user_valid_purchases(db: aiosqlite.Connection, user_id: int) -> 
     ) as cursor:
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+
+async def user_has_active_entitlement(
+    db: aiosqlite.Connection,
+    user_id: int,
+    now_iso: str,
+    *,
+    exclude_purchase_id: int | None = None,
+) -> bool:
+    """True when the user holds a `'valid'` purchase still entitling them now.
+
+    Story 8.3 (code-review F4) — the EXPIRY-AWARE sibling of
+    `count_user_valid_purchases` (which ignores `expires_at`). Mirrors the
+    `NOT EXISTS` clause in `get_users_with_expired_entitlement`: a `'valid'`
+    purchase with NULL expiry (defensive non-expiring), or `expires_at` strictly
+    after `now_iso`, still entitles. `expires_at` is a `Z`-suffixed ISO string so
+    the `> ?` compare is temporal.
+
+    `exclude_purchase_id` skips one row — the Apple downgrade webhook passes the
+    LAPSING purchase's id so the question becomes "is the user entitled via
+    ANOTHER purchase?" (a new-device re-subscribe). This is robust even when the
+    lapsing row's own stored `expires_at` is stale/future (an EXPIRED signal is
+    authoritative regardless of what our row says), and it can't be clobbered by
+    the lapsing row counting itself.
+    """
+    if exclude_purchase_id is None:
+        async with db.execute(
+            "SELECT 1 FROM purchases "
+            "WHERE user_id = ? AND validation_status = 'valid' "
+            "AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
+            (user_id, now_iso),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+    async with db.execute(
+        "SELECT 1 FROM purchases "
+        "WHERE user_id = ? AND id != ? AND validation_status = 'valid' "
+        "AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
+        (user_id, exclude_purchase_id, now_iso),
+    ) as cursor:
+        return await cursor.fetchone() is not None
 
 
 async def get_latest_purchase_by_token(
@@ -756,16 +813,38 @@ async def get_purchase_by_transaction_id(
 ) -> aiosqlite.Row | None:
     """Return the most-recent purchases row for `transaction_id`, or None.
 
-    Story 8.3 (Task 5) — the Apple webhook resolves a notification back to a
-    user via the stored Apple `transactionId`. Most-recent (`id DESC`) so a
-    re-verified subscription's latest audit row wins. A notification for an
-    unknown transaction (e.g. a renewal whose new transactionId we never
-    stored) returns None → the webhook ACKs 200 + logs (the expiry-sweep
-    backstop still covers it).
+    Story 8.3 (Task 5) — the LEGACY/fallback resolver for the Apple webhook.
+    Most-recent (`id DESC`) so a re-verified subscription's latest audit row
+    wins. NOTE (F3): Apple mints a NEW `transactionId` per auto-renewal, so this
+    lookup MISSES a renewal — the webhook now resolves by the renewal-stable
+    `original_transaction_id` first (`get_purchase_by_original_transaction_id`)
+    and only falls back here for legacy rows predating that column. The expiry
+    sweep does NOT cover a missed renewal (it only DOWNGRADES, never re-grants),
+    which is exactly why the original-id resolver was added.
     """
     async with db.execute(
         "SELECT * FROM purchases WHERE transaction_id = ? ORDER BY id DESC LIMIT 1",
         (transaction_id,),
+    ) as cursor:
+        return await cursor.fetchone()
+
+
+async def get_purchase_by_original_transaction_id(
+    db: aiosqlite.Connection, original_transaction_id: str
+) -> aiosqlite.Row | None:
+    """Return the most-recent purchases row for an Apple `originalTransactionId`.
+
+    Story 8.3 (code-review F3) — the renewal-STABLE resolver. A DID_RENEW /
+    EXPIRED / REFUND / REVOKE notification carries a per-period `transactionId`
+    that changes every auto-renewal, but the SAME `originalTransactionId`, so the
+    webhook resolves the user by THIS key (falling back to `transaction_id` only
+    for legacy rows that predate the column). Most-recent (`id DESC`) so the
+    latest audit row for the subscription wins.
+    """
+    async with db.execute(
+        "SELECT * FROM purchases WHERE original_transaction_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (original_transaction_id,),
     ) as cursor:
         return await cursor.fetchone()
 
@@ -777,14 +856,25 @@ async def record_subscription_event(
     notification_id: str,
     notification_type: str | None,
     received_at: str,
-) -> bool:
+) -> str:
     """Insert a webhook event into `subscription_events`; dedup on UNIQUE.
 
-    Story 8.3 (Task 5/D3) — the idempotency ledger behind "return 200 quickly +
-    no-op on replay". Returns True when the row was NEWLY inserted (process the
-    event), False when the `notification_id` (Apple notificationUUID / Google
-    Pub/Sub messageId) was already recorded (a replay → no-op). Commits on the
-    happy path; rolls back + returns False on the UNIQUE collision.
+    Story 8.3 (Task 5/D3) — the idempotency ledger behind "ack + dedup on
+    replay". Returns one of:
+
+    - ``"new"``                — the row was NEWLY inserted; process the event.
+    - ``"replay_unprocessed"`` — the `notification_id` was already recorded but
+      its `processed_at` is still NULL (a PRIOR delivery failed mid-processing,
+      code-review F1); the caller must RE-PROCESS so the dropped lifecycle action
+      is recovered on the store's retry.
+    - ``"replay_processed"``   — already recorded AND processed; a genuine replay
+      → no-op.
+
+    Recording on receipt (not after processing) keeps the dedup row durable for
+    audit, but `processed_at` is the source of truth for "did the side effect
+    actually land" — so a failed event stays re-deliverable rather than being
+    permanently suppressed by the UNIQUE collision (the F1 hole). Commits the
+    fresh insert; rolls back the collision before the processed_at read.
     """
     try:
         await db.execute(
@@ -794,10 +884,17 @@ async def record_subscription_event(
             (provider, notification_id, notification_type, received_at),
         )
         await db.commit()
-        return True
+        return "new"
     except aiosqlite.IntegrityError:
         await db.rollback()
-        return False
+        async with db.execute(
+            "SELECT processed_at FROM subscription_events WHERE notification_id = ?",
+            (notification_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is not None and row["processed_at"] is not None:
+            return "replay_processed"
+        return "replay_unprocessed"
 
 
 async def mark_subscription_event_processed(

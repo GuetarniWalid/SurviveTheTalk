@@ -363,6 +363,28 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("google_pubsub_verification_token")
+    @classmethod
+    def _validate_pubsub_token(cls, value: str, info) -> str:
+        """Reject a weak Google RTDN webhook secret in production (Story 8.3 F13).
+
+        This token is the ENTIRE authz boundary for `POST /subscription/webhook/
+        google` (and it travels in the URL query string), so a short/guessable
+        value is a real footgun — mirror `jwt_secret`'s production length floor.
+        Only enforced when NON-EMPTY: an empty value is the pre-store-config
+        posture (the webhook returns 503, accepting no unauthenticated push), so
+        the server must still boot without it. Generate with: openssl rand -hex 32
+        """
+        if not value:
+            return value  # unset = pre-store-config; webhook 503s, no boot block
+        environment = (info.data.get("environment") or "development").strip().lower()
+        if environment == "production" and len(value) < 24:
+            raise ValueError(
+                "GOOGLE_PUBSUB_VERIFICATION_TOKEN must be at least 24 chars in "
+                "production (generate with: openssl rand -hex 32)"
+            )
+        return value
+
     @field_validator("livekit_min_playout_delay_ms")
     @classmethod
     def _validate_min_playout_delay(cls, value: int) -> int:

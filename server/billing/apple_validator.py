@@ -140,6 +140,7 @@ def _verify_sync(
             valid=False,
             status="invalid",
             transaction_id=payload.transactionId,
+            original_transaction_id=payload.originalTransactionId,
             reason="revoked",
         )
 
@@ -150,6 +151,7 @@ def _verify_sync(
             valid=False,
             status="invalid",
             transaction_id=payload.transactionId,
+            original_transaction_id=payload.originalTransactionId,
             expires_at=_ms_to_iso(payload.expiresDate),
             reason="expired",
         )
@@ -158,6 +160,10 @@ def _verify_sync(
         valid=True,
         status="valid",
         transaction_id=payload.transactionId,
+        # F3 — persist the renewal-stable id so the webhook can resolve future
+        # auto-renewal notifications (which carry a NEW transactionId) back to
+        # this purchase row.
+        original_transaction_id=payload.originalTransactionId,
         expires_at=_ms_to_iso(payload.expiresDate),
     )
 
@@ -225,6 +231,9 @@ class AppleNotification:
     subtype: str | None
     notification_uuid: str | None
     transaction_id: str | None
+    # F3 — the renewal-stable id the webhook resolves the user by (the per-period
+    # `transaction_id` above changes on every auto-renewal; this does not).
+    original_transaction_id: str | None
     product_id: str | None
     expires_at: str | None
     environment: str | None
@@ -288,6 +297,7 @@ def _verify_notification_sync(
         raise AppleNotificationError("verification_failed") from exc
 
     txn_id: str | None = None
+    original_txn_id: str | None = None
     product_id: str | None = None
     expires_at: str | None = None
     data_obj = decoded.data
@@ -297,6 +307,9 @@ def _verify_notification_sync(
                 data_obj.signedTransactionInfo
             )
             txn_id = txn.transactionId
+            # F3 — the renewal-stable key; a DID_RENEW's signedTransactionInfo
+            # carries a NEW transactionId but the SAME originalTransactionId.
+            original_txn_id = txn.originalTransactionId
             product_id = txn.productId
             expires_at = _ms_to_iso(txn.expiresDate)
         except VerificationException as exc:
@@ -309,6 +322,7 @@ def _verify_notification_sync(
         subtype=decoded.rawSubtype,
         notification_uuid=decoded.notificationUUID,
         transaction_id=txn_id,
+        original_transaction_id=original_txn_id,
         product_id=product_id,
         expires_at=expires_at,
         environment=raw_env,

@@ -506,3 +506,43 @@ def test_migration_015_tier_at_call_and_subscription_events(test_db_path):
             pass
     finally:
         conn.close()
+
+
+def test_migration_016_purchase_original_transaction_id(test_db_path):
+    """Story 8.3 code-review (F3) — migration 016 adds the nullable
+    `purchases.original_transaction_id` column (the Apple renewal-stable
+    resolution key). ADD-only: legacy rows take NULL. Asserted against a
+    freshly-migrated empty DB; the prod-snapshot replay above covers the
+    populated-DB case.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        purchase_cols = {
+            r[1]: r for r in conn.execute("PRAGMA table_info(purchases)").fetchall()
+        }
+        assert "original_transaction_id" in purchase_cols, (
+            f"purchases missing original_transaction_id: {set(purchase_cols)}"
+        )
+        assert purchase_cols["original_transaction_id"][2] == "TEXT"
+        assert purchase_cols["original_transaction_id"][3] == 0, (
+            "original_transaction_id must be nullable (legacy rows take NULL)"
+        )
+
+        # A row may be inserted with the column absent (NULL) — ADD-only safe.
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users(email, tier, created_at) VALUES (?, 'free', ?)",
+            ("buyer16@example.invalid", "2026-06-19T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO purchases(user_id, platform, product_id, "
+            "verification_token, created_at) VALUES (1, 'ios', 'x', 't16', 'now')"
+        )
+        row = conn.execute(
+            "SELECT original_transaction_id FROM purchases WHERE verification_token = 't16'"
+        ).fetchone()
+        assert row[0] is None
+    finally:
+        conn.close()

@@ -206,6 +206,10 @@ async def verify_subscription(request: Request, payload: SubscriptionVerifyIn) -
                     purchase_id,
                     validation_status="valid",
                     transaction_id=result.transaction_id,
+                    # F3 — stamp the Apple renewal-stable id at first verify so
+                    # later auto-renewal webhooks (new transaction_id) resolve
+                    # back to this row. None for Google (purchaseToken-stable).
+                    original_transaction_id=result.original_transaction_id,
                     expires_at=result.expires_at,
                     validated_at=now_iso(),
                     commit=False,
@@ -251,6 +255,7 @@ async def verify_subscription(request: Request, payload: SubscriptionVerifyIn) -
             purchase_id,
             validation_status="invalid",
             transaction_id=result.transaction_id,
+            original_transaction_id=result.original_transaction_id,
             expires_at=result.expires_at,
             validated_at=now_iso(),
         )

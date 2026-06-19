@@ -37,6 +37,7 @@ def _seed_paid_user_with_purchase(
     transaction_id: str = "txn-1",
     verification_token: str = "gtok-1",
     expires_at: str = "2099-01-01T00:00:00Z",
+    original_transaction_id: str | None = None,
 ) -> int:
     conn = sqlite3.connect(db_path)
     cur = conn.execute(
@@ -47,14 +48,64 @@ def _seed_paid_user_with_purchase(
     user_id = cur.lastrowid
     conn.execute(
         "INSERT INTO purchases(user_id, platform, product_id, verification_token, "
-        "transaction_id, validation_status, expires_at, created_at) "
-        "VALUES (?, 'ios', 'stt_weekly_199', ?, ?, 'valid', ?, '2026-06-18T00:00:00Z')",
-        (user_id, verification_token, transaction_id, expires_at),
+        "transaction_id, original_transaction_id, validation_status, expires_at, "
+        "created_at) "
+        "VALUES (?, 'ios', 'stt_weekly_199', ?, ?, ?, 'valid', ?, "
+        "'2026-06-18T00:00:00Z')",
+        (
+            user_id,
+            verification_token,
+            transaction_id,
+            original_transaction_id,
+            expires_at,
+        ),
     )
     conn.commit()
     conn.close()
     assert user_id is not None
     return user_id
+
+
+def _add_purchase(
+    db_path: str,
+    *,
+    user_id: int,
+    transaction_id: str,
+    verification_token: str,
+    expires_at: str,
+    original_transaction_id: str | None = None,
+    validation_status: str = "valid",
+) -> None:
+    """Add a SECOND purchase row to an existing user (multi-purchase F4 cases)."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO purchases(user_id, platform, product_id, verification_token, "
+        "transaction_id, original_transaction_id, validation_status, expires_at, "
+        "created_at) "
+        "VALUES (?, 'ios', 'stt_weekly_199', ?, ?, ?, ?, ?, '2026-06-18T00:00:00Z')",
+        (
+            user_id,
+            verification_token,
+            transaction_id,
+            original_transaction_id,
+            validation_status,
+            expires_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _event_processed_at(db_path: str, notification_id: str) -> str | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT processed_at FROM subscription_events WHERE notification_id = ?",
+            (notification_id,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def _purchase_expiry(db_path: str, verification_token: str) -> str | None:
@@ -86,6 +137,7 @@ def _apple_notif(**kw) -> AppleNotification:
         subtype=None,
         notification_uuid="uuid-1",
         transaction_id="txn-1",
+        original_transaction_id=None,
         product_id="stt_weekly_199",
         expires_at=None,
         environment="Production",
@@ -412,20 +464,176 @@ def test_google_unknown_token_acks_without_validating(
 
 
 @patch("api.routes_subscription_webhooks.validate_google", new_callable=AsyncMock)
-def test_google_processing_error_still_acks_200(
+def test_google_processing_error_retries_and_redrives(
     mock_validate: AsyncMock, client: TestClient, test_db_path, google_secret
 ) -> None:
-    """Always-200-on-handled-error: a crash in validate_google is caught and the
-    webhook still ACKs 200 (so Pub/Sub doesn't retry-storm on our bug)."""
+    """F1 — a transient processing failure must NOT be permanently swallowed.
+
+    First delivery raises mid-processing → the route returns 500 (so Pub/Sub
+    retries) and the dedup row is left UNPROCESSED (processed_at NULL), tier
+    unchanged. A retry of the SAME messageId then RE-PROCESSES (re-drives) and
+    applies the downgrade — proving the failed event is recoverable, not lost.
+    """
     user_id = _seed_paid_user_with_purchase(
         test_db_path, email="gerr@example.invalid", verification_token="gtok-err"
     )
     mock_validate.side_effect = RuntimeError("boom")
 
-    resp = client.post(
+    first = client.post(
         f"/subscription/webhook/google?token={_GOOGLE_SECRET}",
         json=_google_envelope(13, "gtok-err", "msg-err"),
     )
+    assert first.status_code == 500
+    assert first.json()["error"]["code"] == "WEBHOOK_PROCESSING_FAILED"
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"  # unchanged
+    assert _event_count(test_db_path, "msg-err") == 1  # recorded for audit
+    assert _event_processed_at(test_db_path, "msg-err") is None  # NOT processed
+
+    # Pub/Sub retries the SAME messageId; this time validation succeeds.
+    mock_validate.side_effect = None
+    mock_validate.return_value = ValidationResult(
+        valid=False, status="invalid", reason="expired"
+    )
+    second = client.post(
+        f"/subscription/webhook/google?token={_GOOGLE_SECRET}",
+        json=_google_envelope(13, "gtok-err", "msg-err"),
+    )
+    assert second.status_code == 200
+    # Re-drive happened: the downgrade was applied and the event is now processed.
+    assert _user_row(test_db_path, user_id)["tier"] == "free"
+    assert _event_processed_at(test_db_path, "msg-err") is not None
+
+
+@patch(
+    "api.routes_subscription_webhooks.verify_apple_notification", new_callable=AsyncMock
+)
+def test_apple_processing_error_returns_500_and_leaves_event_unprocessed(
+    mock_verify: AsyncMock, client: TestClient, test_db_path
+) -> None:
+    """F1 (Apple side) — a processing failure returns 500 (store retries) and the
+    dedup row stays unprocessed so a retry can re-drive it."""
+    user_id = _seed_paid_user_with_purchase(test_db_path, email="aerr@example.invalid")
+    mock_verify.return_value = _apple_notif(
+        notification_type="DID_RENEW",
+        notification_uuid="uuid-aerr",
+        transaction_id="txn-1",
+        expires_at="2099-12-31T00:00:00Z",
+    )
+
+    with patch(
+        "api.routes_subscription_webhooks.update_user_tier",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("db hiccup"),
+    ):
+        resp = client.post("/subscription/webhook/apple", json={"signedPayload": "x"})
+
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "WEBHOOK_PROCESSING_FAILED"
+    assert _event_count(test_db_path, "uuid-aerr") == 1
+    assert _event_processed_at(test_db_path, "uuid-aerr") is None
+    # user untouched (the BEGIN IMMEDIATE rolled back)
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"
+
+
+# --- F3: Apple resolves renewals by the renewal-STABLE originalTransactionId ---
+
+
+@patch(
+    "api.routes_subscription_webhooks.verify_apple_notification", new_callable=AsyncMock
+)
+def test_apple_did_renew_resolves_by_original_txn_id(
+    mock_verify: AsyncMock, client: TestClient, test_db_path
+) -> None:
+    """A real auto-renewal carries a NEW transactionId but the SAME
+    originalTransactionId. Resolving by the stable id must find the purchase,
+    refresh the expiry, and keep the user paid (without it, the sweep would later
+    downgrade a paying subscriber)."""
+    user_id = _seed_paid_user_with_purchase(
+        test_db_path,
+        email="renewstable@example.invalid",
+        transaction_id="txn-orig",
+        original_transaction_id="orig-1",
+        expires_at="2026-01-01T00:00:00Z",
+    )
+    mock_verify.return_value = _apple_notif(
+        notification_type="DID_RENEW",
+        notification_uuid="uuid-renew-new",
+        transaction_id="txn-RENEWAL-2",  # NEW per-period id, not in the DB
+        original_transaction_id="orig-1",  # stable across renewals
+        expires_at="2099-07-18T00:00:00Z",
+    )
+
+    resp = client.post("/subscription/webhook/apple", json={"signedPayload": "x"})
 
     assert resp.status_code == 200
-    assert _user_row(test_db_path, user_id)["tier"] == "paid"  # unchanged
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"
+    assert _purchase_expiry(test_db_path, "gtok-1") == "2099-07-18T00:00:00Z"
+
+
+@patch(
+    "api.routes_subscription_webhooks.verify_apple_notification", new_callable=AsyncMock
+)
+def test_apple_refund_on_renewed_sub_resolves_by_original_txn_id(
+    mock_verify: AsyncMock, client: TestClient, test_db_path
+) -> None:
+    """A REFUND/REVOKE on a renewed sub carries the renewal's NEW transactionId;
+    resolving by originalTransactionId must still find + downgrade the user."""
+    user_id = _seed_paid_user_with_purchase(
+        test_db_path,
+        email="refundstable@example.invalid",
+        transaction_id="txn-orig",
+        original_transaction_id="orig-2",
+    )
+    mock_verify.return_value = _apple_notif(
+        notification_type="REVOKE",
+        notification_uuid="uuid-revoke-new",
+        transaction_id="txn-RENEWAL-9",
+        original_transaction_id="orig-2",
+    )
+
+    resp = client.post("/subscription/webhook/apple", json={"signedPayload": "x"})
+
+    assert resp.status_code == 200
+    assert _user_row(test_db_path, user_id)["tier"] == "free"
+
+
+# --- F4: a downgrade must not clobber a user entitled via ANOTHER purchase -----
+
+
+@patch(
+    "api.routes_subscription_webhooks.verify_apple_notification", new_callable=AsyncMock
+)
+def test_apple_expired_keeps_paid_when_other_valid_purchase_exists(
+    mock_verify: AsyncMock, client: TestClient, test_db_path
+) -> None:
+    """A user who re-subscribed on a new device holds a SECOND valid+future
+    purchase. An EXPIRED notification for the OLD subscription must NOT downgrade
+    them — they are still entitled via the new one (mirror the Google path)."""
+    user_id = _seed_paid_user_with_purchase(
+        test_db_path,
+        email="multi@example.invalid",
+        transaction_id="txn-old",
+        verification_token="gtok-old",
+        original_transaction_id="orig-old",
+        expires_at="2026-01-01T00:00:00Z",  # the lapsing one
+    )
+    _add_purchase(
+        test_db_path,
+        user_id=user_id,
+        transaction_id="txn-new",
+        verification_token="gtok-new",
+        original_transaction_id="orig-new",
+        expires_at="2099-09-09T00:00:00Z",  # still active
+    )
+    mock_verify.return_value = _apple_notif(
+        notification_type="EXPIRED",
+        notification_uuid="uuid-old-exp",
+        transaction_id="txn-old",
+        original_transaction_id="orig-old",
+    )
+
+    resp = client.post("/subscription/webhook/apple", json={"signedPayload": "x"})
+
+    assert resp.status_code == 200
+    # Still entitled via the new-device purchase → stays paid.
+    assert _user_row(test_db_path, user_id)["tier"] == "paid"

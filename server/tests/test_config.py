@@ -540,3 +540,54 @@ def test_settings_apple_accept_sandbox_defaults_false_and_overrides() -> None:
     with patch.dict(os.environ, {**base, "APPLE_ACCEPT_SANDBOX": "1"}, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
         assert s.apple_accept_sandbox is True
+
+
+# ---------- Story 8.3 code-review (F13) — Pub/Sub token strength floor --------
+
+
+def test_settings_pubsub_token_empty_boots() -> None:
+    """An UNSET Google webhook token is the pre-store-config posture (the webhook
+    503s); the server must still boot, even in production."""
+    base = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32, "ENVIRONMENT": "production"}
+    with patch.dict(os.environ, base, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.google_pubsub_verification_token == ""
+
+
+def test_settings_pubsub_token_short_in_production_rejected() -> None:
+    """F13 — the Google RTDN secret is the entire webhook authz boundary (and it
+    rides in the URL query), so a short/guessable value fails loud at boot in
+    production (mirrors the jwt_secret length floor)."""
+    base = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "ENVIRONMENT": "production",
+        "GOOGLE_PUBSUB_VERIFICATION_TOKEN": "short",
+    }
+    with patch.dict(os.environ, base, clear=True):
+        with pytest.raises(ValidationError, match="GOOGLE_PUBSUB_VERIFICATION_TOKEN"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_pubsub_token_long_in_production_ok() -> None:
+    base = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "ENVIRONMENT": "production",
+        "GOOGLE_PUBSUB_VERIFICATION_TOKEN": "a" * 32,
+    }
+    with patch.dict(os.environ, base, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.google_pubsub_verification_token == "a" * 32
+
+
+def test_settings_pubsub_token_short_in_dev_ok() -> None:
+    """The length floor is production-only — a short token is fine in dev/test."""
+    base = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "GOOGLE_PUBSUB_VERIFICATION_TOKEN": "short",
+    }
+    with patch.dict(os.environ, base, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.google_pubsub_verification_token == "short"

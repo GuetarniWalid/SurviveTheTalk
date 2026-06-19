@@ -38,6 +38,14 @@ _HTTP_TIMEOUT_SECONDS = 10.0
 _ACTIVE_STATES = frozenset(
     {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"}
 )
+# F5 — a user who turns OFF auto-renew while still inside the paid window shows
+# up as SUBSCRIPTION_STATE_CANCELED with a FUTURE expiryTime; they stay entitled
+# until that date (mirrors the Apple DID_CHANGE_RENEWAL_STATUS "keep paid until
+# expiry" path + AC6 "revert at expiry, not at cancellation intent"). CANCELED is
+# routed through the SAME F11 expiry guard, so a cancelled sub PAST its period
+# resolves to 'invalid' (expired). SUBSCRIPTION_STATE_EXPIRED / ON_HOLD / PAUSED
+# stay out of this set — those are genuine, immediate losses of access.
+_ENTITLED_UNTIL_EXPIRY_STATES = _ACTIVE_STATES | {"SUBSCRIPTION_STATE_CANCELED"}
 
 # Matches the fractional-second group in an RFC3339 timestamp (NOT the offset,
 # which uses a colon). Used to trim nanosecond precision Google may emit down to
@@ -209,11 +217,12 @@ async def validate_google(
     else:
         expires_raw, expires_dt = None, None
 
-    if state in _ACTIVE_STATES:
-        # F11 — an ACTIVE / IN_GRACE_PERIOD state whose expiry is already in the
-        # past is NOT currently entitled (mirrors the Apple validator's
-        # expiresDate<=now guard). Without this a stale-but-"active" token could
-        # keep granting paid forever.
+    if state in _ENTITLED_UNTIL_EXPIRY_STATES:
+        # F11 — an ACTIVE / IN_GRACE_PERIOD / CANCELED state whose expiry is
+        # already in the past is NOT currently entitled (mirrors the Apple
+        # validator's expiresDate<=now guard). Without this a stale-but-"active"
+        # token could keep granting paid forever, and a CANCELED sub past its
+        # period would wrongly stay paid.
         if expires_dt is not None and expires_dt <= datetime.now(UTC):
             return ValidationResult(
                 valid=False,
@@ -221,6 +230,19 @@ async def validate_google(
                 transaction_id=transaction_id,
                 expires_at=expires_raw,
                 reason="expired",
+            )
+        # F5 — a CANCELED state with NO parseable expiry can't be confirmed as
+        # still inside a paid window, so reject it rather than grant open-ended
+        # access off a cancelled subscription. (ACTIVE/IN_GRACE legitimately may
+        # carry no expiry and stay valid, matching the entitlement queries that
+        # treat NULL expires_at as non-expiring.)
+        if state == "SUBSCRIPTION_STATE_CANCELED" and expires_dt is None:
+            return ValidationResult(
+                valid=False,
+                status="invalid",
+                transaction_id=transaction_id,
+                expires_at=expires_raw,
+                reason="canceled_no_expiry",
             )
         return ValidationResult(
             valid=True,

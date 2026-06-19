@@ -92,6 +92,7 @@ async def revalidate_pending_purchases(
                 row["id"],
                 validation_status="valid",
                 transaction_id=result.transaction_id,
+                original_transaction_id=result.original_transaction_id,
                 expires_at=result.expires_at,
                 validated_at=_now_iso(),
             )
@@ -110,6 +111,7 @@ async def revalidate_pending_purchases(
                     row["id"],
                     validation_status="invalid",
                     transaction_id=result.transaction_id,
+                    original_transaction_id=result.original_transaction_id,
                     expires_at=result.expires_at,
                     validated_at=_now_iso(),
                     commit=False,

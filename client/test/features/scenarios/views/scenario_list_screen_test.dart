@@ -744,6 +744,21 @@ void main() {
     expect(find.text('What your membership gives you'), findsOneWidget);
   });
 
+  testWidgets('F6: paid Account line exposes button semantics for screen readers',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    await pumpWithUsage(tester, _kPaidWithCalls);
+
+    // The Manage-subscription entry point must announce a "button" role (not
+    // plain text) so TalkBack/VoiceOver users can discover + activate it. The
+    // icon+text are merged into one node by MergeSemantics + Semantics(button).
+    expect(
+      tester.getSemantics(find.text('Account')),
+      matchesSemantics(label: 'Account', isButton: true, hasTapAction: true),
+    );
+    handle.dispose();
+  });
+
   testWidgets('paid hub row does not overflow at 320x480, textScaler 1.5', (
     tester,
   ) async {

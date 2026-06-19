@@ -1,0 +1,22 @@
+-- 016_purchase_original_transaction_id.sql
+-- Story 8.3 code review (F3) — Apple renewal-stable resolution key.
+--
+-- ADD-only, no table rebuild (so it replays cleanly against
+-- `tests/fixtures/prod_snapshot.sqlite` — every existing purchases row pre-dates
+-- the column and takes NULL; same safe posture as 014/015, no `PRAGMA
+-- foreign_keys` toggle needed).
+--
+-- WHY: the Apple App Store Server Notifications webhook (Story 8.3 Task 5)
+-- resolved the user via the stored `transaction_id`. But StoreKit 2 / ASSN V2
+-- mints a NEW `transactionId` for every auto-renewal period — only
+-- `originalTransactionId` is stable across the subscription lifecycle. So a
+-- genuine DID_RENEW (carrying the renewal's new id) matched no purchase row,
+-- the expiry was never re-stamped, and the 5-min expiry sweep later downgraded
+-- a still-paying, renewed customer to free (and a REFUND/REVOKE on a renewed
+-- sub silently no-op'd). The fix resolves notifications by this renewal-stable
+-- key, falling back to `transaction_id` for legacy rows that predate it.
+--
+-- Google's `purchaseToken` is already renewal-stable, so this column is
+-- Apple-only in practice (nullable for Android rows).
+
+ALTER TABLE purchases ADD COLUMN original_transaction_id TEXT;
