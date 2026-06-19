@@ -24,6 +24,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
        super(initialState ?? AuthInitial()) {
     on<CheckAuthStatusEvent>(_onCheckAuthStatus);
     on<ResetAuthEvent>(_onReset);
+    on<SignOutEvent>(_onSignOut);
     on<SubmitEmailEvent>(_onSubmitEmail);
     on<SubmitCodeEvent>(_onSubmitCode);
   }
@@ -48,6 +49,19 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   }
 
   void _onReset(ResetAuthEvent event, Emitter<AuthState> emit) {
+    emit(AuthInitial());
+  }
+
+  /// Explicit sign-out (Story 10.1) — delete the stored JWT, then emit
+  /// `AuthInitial`. The token delete is best-effort (a locked keystore must not
+  /// block the sign-out); the `AuthInitial` emit is the load-bearing step that
+  /// drives the GoRouter redirect + the Story 9.1 offline-cache wipe.
+  Future<void> _onSignOut(SignOutEvent event, Emitter<AuthState> emit) async {
+    try {
+      await _tokenStorage.deleteToken();
+    } catch (_) {
+      // Swallow — the AuthInitial emit below is the load-bearing step.
+    }
     emit(AuthInitial());
   }
 

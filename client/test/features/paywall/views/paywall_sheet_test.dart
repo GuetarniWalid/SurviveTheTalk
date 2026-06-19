@@ -1,21 +1,45 @@
 import 'dart:async';
 
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/legal_urls.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/theme/app_theme.dart';
 import 'package:client/features/paywall/views/paywall_sheet.dart';
 import 'package:client/features/subscription/bloc/subscription_bloc.dart';
 import 'package:client/features/subscription/bloc/subscription_event.dart';
 import 'package:client/features/subscription/bloc/subscription_state.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Drives the sheet through bloc states directly (code-review 8.1 F23 pattern).
 class MockSubscriptionBloc
     extends MockBloc<SubscriptionEvent, SubscriptionState>
     implements SubscriptionBloc {}
+
+/// Fire the [TapGestureRecognizer] on the inline span whose text == [text].
+void tapTextSpan(WidgetTester tester, String text) {
+  for (final rt in tester.widgetList<RichText>(find.byType(RichText))) {
+    TapGestureRecognizer? recognizer;
+    rt.text.visitChildren((span) {
+      if (span is TextSpan &&
+          span.text == text &&
+          span.recognizer is TapGestureRecognizer) {
+        recognizer = span.recognizer as TapGestureRecognizer;
+        return false;
+      }
+      return true;
+    });
+    if (recognizer != null) {
+      recognizer!.onTap!();
+      return;
+    }
+  }
+  fail('No tappable text span "$text" found');
+}
 
 Widget _harness(GlobalKey<NavigatorState> navigatorKey) => MaterialApp(
   theme: AppTheme.dark(),
@@ -82,6 +106,37 @@ void main() {
       find.text('Auto-renewable. 3 calls per day. Cancel anytime.'),
       findsOneWidget,
     );
+  });
+
+  // Story 10.1 (AC6) — Privacy Policy + Terms of Use links are in the binary
+  // (Apple 3.1.2) and open the configured hosted URLs.
+  testWidgets('legal links render and launch the configured URLs', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1100));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final launched = <Uri>[];
+    PaywallSheet.debugLaunch = (uri, {mode = LaunchMode.platformDefault}) async {
+      launched.add(uri);
+      return true;
+    };
+    addTearDown(() => PaywallSheet.debugLaunch = null);
+    seed(const SubscriptionInitial());
+    final key = GlobalKey<NavigatorState>();
+    await open(tester, key);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Privacy Policy'), findsOneWidget);
+    expect(find.textContaining('Terms of Use'), findsOneWidget);
+
+    tapTextSpan(tester, 'Privacy Policy');
+    tapTextSpan(tester, 'Terms of Use');
+    await tester.pump();
+
+    expect(launched, [
+      Uri.parse(LegalUrls.privacyPolicy),
+      Uri.parse(LegalUrls.termsOfService),
+    ]);
   });
 
   testWidgets('sheet surface is #F0F0F0 with a 16px top radius (D4)', (

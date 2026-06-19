@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/api_client.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/legal_links_row.dart';
 import '../../subscription/bloc/subscription_bloc.dart';
 import '../../subscription/bloc/subscription_event.dart';
 import '../../subscription/bloc/subscription_state.dart';
@@ -37,6 +39,11 @@ class PaywallSheet {
   /// CALL_LIMIT_REACHED handler) without per-call plumbing.
   @visibleForTesting
   static SubscriptionBloc Function()? debugBlocBuilder;
+
+  /// Test seam — inject the legal-links launcher (assert the Privacy / Terms
+  /// URLs without the real url_launcher plugin). Read directly by [_OfferView].
+  @visibleForTesting
+  static Future<bool> Function(Uri, {LaunchMode mode})? debugLaunch;
 
   static SubscriptionBloc _buildBloc() {
     final override = debugBlocBuilder;
@@ -365,6 +372,14 @@ class _OfferView extends StatelessWidget {
           style: AppTypography.caption.copyWith(
             color: AppColors.overlaySubtitle,
           ),
+        ),
+        const SizedBox(height: 12),
+        // Story 10.1 (AC6) — Privacy Policy + Terms of Use links, required in the
+        // binary for auto-renewable subscriptions (Apple Guideline 3.1.2). Quiet
+        // underlined caption links, two-ink with the legal caption above.
+        LegalLinksRow(
+          color: AppColors.overlaySubtitle,
+          launch: PaywallSheet.debugLaunch,
         ),
       ],
     );

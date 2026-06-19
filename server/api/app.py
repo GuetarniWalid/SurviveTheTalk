@@ -24,6 +24,7 @@ from api.routes_auth import router as auth_router
 from api.routes_calls import router as calls_router
 from api.routes_debriefs import router as debriefs_router
 from api.routes_health import router as health_router
+from api.routes_legal import router as legal_router
 from api.routes_scenarios import router as scenarios_router
 from api.routes_subscription import router as subscription_router
 from api.routes_subscription_webhooks import router as subscription_webhooks_router
@@ -243,6 +244,8 @@ app.include_router(call_router)
 app.include_router(calls_router)
 app.include_router(debriefs_router)
 app.include_router(health_router)
+# Story 10.1 — public, unauthenticated HTML legal pages (NO AUTH_DEPENDENCY).
+app.include_router(legal_router)
 app.include_router(scenarios_router)
 app.include_router(subscription_router)
 app.include_router(subscription_webhooks_router)

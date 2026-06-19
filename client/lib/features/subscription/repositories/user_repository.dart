@@ -17,4 +17,11 @@ class UserRepository {
     final data = response.data!['data'] as Map<String, dynamic>;
     return UserProfile.fromJson(data);
   }
+
+  /// Permanently delete the caller's account and all their data (Story 10.1,
+  /// GDPR Art 17 — `DELETE /user/me`). Throws `ApiException` on any non-2xx so
+  /// the caller can surface an inline failure and keep the user signed in.
+  Future<void> deleteAccount() async {
+    await _apiClient.delete<Map<String, dynamic>>('/user/me');
+  }
 }

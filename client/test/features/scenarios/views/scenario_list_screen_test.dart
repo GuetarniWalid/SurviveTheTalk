@@ -4,6 +4,9 @@ import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/api/api_exception.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/core/theme/app_theme.dart';
+import 'package:client/features/auth/bloc/auth_bloc.dart';
+import 'package:client/features/auth/bloc/auth_event.dart';
+import 'package:client/features/auth/bloc/auth_state.dart';
 import 'package:client/features/call/models/call_session.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/call/views/no_network_screen.dart';
@@ -67,6 +70,11 @@ class MockScenariosBloc extends MockBloc<ScenariosEvent, ScenariosState>
     implements ScenariosBloc {}
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Story 10.1 — the hub's `Account` line reads `context.read<AuthBloc>()` on tap
+/// (to sign out after an account deletion). The harness provides a mock so the
+/// read resolves; no AuthBloc state is read by the screen.
+class MockAuthBloc extends MockBloc<AuthEvent, AuthState> implements AuthBloc {}
 
 /// Drives the Manage drawer (opened from the paid `Account` hub line) without
 /// touching the real `GET /user/profile`.
@@ -134,13 +142,18 @@ Scenario _build({
 }
 
 GoRouter _router(Widget screen, MockScenariosBloc bloc) {
+  // Story 10.1 — the Account hub line resolves an AuthBloc on tap; provide one.
+  final authBloc = MockAuthBloc();
   return GoRouter(
     initialLocation: '/',
     routes: [
       GoRoute(
         path: '/',
-        builder: (context, state) => BlocProvider<ScenariosBloc>.value(
-          value: bloc,
+        builder: (context, state) => MultiBlocProvider(
+          providers: [
+            BlocProvider<ScenariosBloc>.value(value: bloc),
+            BlocProvider<AuthBloc>.value(value: authBloc),
+          ],
           child: screen,
         ),
       ),
@@ -714,13 +727,26 @@ void main() {
     expect(accountX, lessThan(difficultyX));
   });
 
-  testWidgets('free user: NO Account line; difficulty still present', (
+  // Story 10.1 — the Account line is now shown to ALL users (deletion is a
+  // universal GDPR right). A free user opens the minimal Account sheet.
+  testWidgets('free user: Account line shown; tapping opens the Account sheet', (
     tester,
   ) async {
     await pumpWithUsage(tester, _kFreshUsage);
 
-    expect(find.text('Account'), findsNothing);
+    expect(find.text('Account'), findsOneWidget);
     expect(find.text('Difficulty: Easy'), findsOneWidget);
+
+    await tester.tap(find.text('Account'));
+    await tester.pumpAndSettle();
+
+    // The minimal free Account sheet: the GDPR delete action + the legal links
+    // (NOT the paid Manage drawer's "What your membership gives you"). The links
+    // are one Text.rich, so match by substring.
+    expect(find.text('Delete my account'), findsOneWidget);
+    expect(find.textContaining('Privacy Policy'), findsOneWidget);
+    expect(find.textContaining('Terms of Use'), findsOneWidget);
+    expect(find.text('What your membership gives you'), findsNothing);
   });
 
   testWidgets('paid user: tapping Account opens the Manage drawer', (

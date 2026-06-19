@@ -80,7 +80,7 @@ void main() {
 
   Future<void> open(WidgetTester tester, GlobalKey<NavigatorState> key) async {
     await tester.pumpWidget(_harness(key));
-    unawaited(ManageSheet.show(key.currentContext!));
+    unawaited(ManageSheet.show(key.currentContext!, onSignOut: () {}));
     await tester.pumpAndSettle();
   }
 
@@ -138,7 +138,7 @@ void main() {
     // No pumpAndSettle (CLAUDE.md #3) — but there is no continuous animation
     // here, so an explicit pump is enough to lay out the sheet.
     await tester.pumpWidget(_harness(key));
-    unawaited(ManageSheet.show(key.currentContext!));
+    unawaited(ManageSheet.show(key.currentContext!, onSignOut: () {}));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -271,7 +271,7 @@ void main() {
         home: const Scaffold(body: Center(child: Text('ROOT_STUB'))),
       ),
     );
-    unawaited(ManageSheet.show(key.currentContext!));
+    unawaited(ManageSheet.show(key.currentContext!, onSignOut: () {}));
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);

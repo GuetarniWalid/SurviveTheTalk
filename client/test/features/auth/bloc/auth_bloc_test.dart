@@ -176,4 +176,33 @@ void main() {
       ],
     );
   });
+
+  // Story 10.1 — explicit sign-out (used after account deletion). Routes through
+  // the same AuthInitial transition as the 401 / expiry paths so the Story 9.1
+  // cache wipe + the GoRouter redirect fire unchanged.
+  group('SignOutEvent', () {
+    blocTest<AuthBloc, AuthState>(
+      'emits [AuthInitial] and deletes the stored token',
+      setUp: () {
+        when(() => mockTokenStorage.deleteToken()).thenAnswer((_) async {});
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(SignOutEvent()),
+      expect: () => [isA<AuthInitial>()],
+      verify: (_) {
+        verify(() => mockTokenStorage.deleteToken()).called(1);
+      },
+    );
+
+    blocTest<AuthBloc, AuthState>(
+      'still emits [AuthInitial] when the token delete throws (best-effort)',
+      setUp: () {
+        when(() => mockTokenStorage.deleteToken())
+            .thenThrow(Exception('keystore locked'));
+      },
+      build: buildBloc,
+      act: (bloc) => bloc.add(SignOutEvent()),
+      expect: () => [isA<AuthInitial>()],
+    );
+  });
 }

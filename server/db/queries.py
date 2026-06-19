@@ -908,6 +908,100 @@ async def mark_subscription_event_processed(
     await db.commit()
 
 
+# --- Story 10.1: GDPR account deletion (Art 17) + data export (Art 20) --------
+
+
+async def delete_user_account(
+    db: aiosqlite.Connection, user_id: int, email: str
+) -> None:
+    """Delete the user and ALL their owned rows, in FK-safe order.
+
+    The CALLER owns the transaction (`BEGIN IMMEDIATE` + `commit`) so the whole
+    deletion is one atomic unit — this function only issues the DELETEs, never
+    commits (same posture as `upsert_scenario` / `upsert_user_progress`).
+
+    FK reality (verified against `db/migrations/`, NOT assumed — Story 10.1 anti-
+    pattern):
+      - `debriefs.call_session_id → call_sessions(id)` has NO `ON DELETE CASCADE`
+        (migration 011), so debriefs MUST be deleted BEFORE call_sessions. They
+        are keyed by call_session_id (no `user_id` column), hence the subquery.
+      - `call_sessions.user_id → users(id)` has NO cascade (migration 002/005),
+        so it must be deleted explicitly BEFORE the user row (else the final
+        `DELETE FROM users` fails the FK check — `PRAGMA foreign_keys=ON` in
+        `get_connection`).
+      - `user_progress.user_id` and `purchases.user_id` DO declare
+        `ON DELETE CASCADE` (migrations 006 / 014), but we delete them
+        explicitly anyway: deterministic, and correct even if a future migration
+        drops the cascade. Belt-and-suspenders, never an orphan row.
+      - `auth_codes` has no FK and no `user_id` — it is keyed by `email`.
+      - `subscription_events` is a provider-keyed webhook idempotency ledger with
+        NO `user_id` column (migration 015) — it holds no per-user personal data,
+        so there is nothing user-scoped to delete there.
+    """
+    # Children of call_sessions first (no cascade on the debriefs FK).
+    await db.execute(
+        "DELETE FROM debriefs WHERE call_session_id IN "
+        "(SELECT id FROM call_sessions WHERE user_id = ?)",
+        (user_id,),
+    )
+    await db.execute("DELETE FROM call_sessions WHERE user_id = ?", (user_id,))
+    # CASCADE-backed, deleted explicitly for determinism.
+    await db.execute("DELETE FROM user_progress WHERE user_id = ?", (user_id,))
+    await db.execute("DELETE FROM purchases WHERE user_id = ?", (user_id,))
+    # auth_codes are keyed by email (no FK / no user_id column).
+    await db.execute("DELETE FROM auth_codes WHERE email = ?", (email,))
+    # Finally the parent row — every referencing child is gone by now.
+    await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+async def gather_user_data(db: aiosqlite.Connection, user_id: int, email: str) -> dict:
+    """Return all of the user's stored data as plain JSON-serialisable dicts.
+
+    GDPR Art 20 (data portability) — the "gather my rows" query shared by the
+    export endpoint. Deliberately OMITS internal security credentials that are
+    not user-facing personal data: `users.jwt_hash` (a session-token hash) and
+    `purchases.verification_token` (a replayable store artifact) are excluded so
+    the export can't leak a reusable credential.
+    """
+    out: dict = {}
+
+    async with db.execute(
+        "SELECT id, email, tier, tier_changed_at, created_at FROM users WHERE id = ?",
+        (user_id,),
+    ) as cursor:
+        user_row = await cursor.fetchone()
+    out["account"] = dict(user_row) if user_row is not None else None
+
+    async with db.execute(
+        "SELECT * FROM call_sessions WHERE user_id = ? ORDER BY id", (user_id,)
+    ) as cursor:
+        out["call_sessions"] = [dict(r) for r in await cursor.fetchall()]
+
+    async with db.execute(
+        "SELECT d.* FROM debriefs d "
+        "JOIN call_sessions c ON d.call_session_id = c.id "
+        "WHERE c.user_id = ? ORDER BY d.id",
+        (user_id,),
+    ) as cursor:
+        out["debriefs"] = [dict(r) for r in await cursor.fetchall()]
+
+    async with db.execute(
+        "SELECT * FROM user_progress WHERE user_id = ? ORDER BY scenario_id",
+        (user_id,),
+    ) as cursor:
+        out["progress"] = [dict(r) for r in await cursor.fetchall()]
+
+    async with db.execute(
+        "SELECT id, platform, product_id, transaction_id, original_transaction_id, "
+        "validation_status, expires_at, created_at, validated_at "
+        "FROM purchases WHERE user_id = ? ORDER BY id",
+        (user_id,),
+    ) as cursor:
+        out["purchases"] = [dict(r) for r in await cursor.fetchall()]
+
+    return out
+
+
 async def get_pending_purchases(
     db: aiosqlite.Connection, limit: int = 100
 ) -> list[aiosqlite.Row]:

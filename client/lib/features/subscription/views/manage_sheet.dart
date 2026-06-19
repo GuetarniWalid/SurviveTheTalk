@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/api_client.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/legal_links_row.dart';
+import '../../account/widgets/delete_account_tile.dart';
 import '../bloc/user_profile_cubit.dart';
 import '../models/user_profile.dart';
 import '../repositories/user_repository.dart';
@@ -44,16 +47,38 @@ class ManageSheet {
   @visibleForTesting
   static StoreLinks? debugStoreLinks;
 
+  /// Test seam — build the [UserRepository] that backs the "Delete my account"
+  /// tile's `DELETE /user/me` call. Production wires `UserRepository(ApiClient())`.
+  @visibleForTesting
+  static UserRepository Function()? debugRepositoryBuilder;
+
+  /// Test seam — inject the legal-links launcher (assert the Privacy / Terms
+  /// URLs without the real url_launcher plugin).
+  @visibleForTesting
+  static Future<bool> Function(Uri, {LaunchMode mode})? debugLaunch;
+
   static UserProfileCubit _buildCubit() {
     final override = debugCubitBuilder;
     if (override != null) return override();
     return UserProfileCubit(UserRepository(ApiClient()))..load();
   }
 
-  /// Open the drawer. Resolves when the sheet dismisses (swipe / scrim / back —
-  /// there is no in-sheet dismiss button by design).
-  static Future<void> show(BuildContext context) {
+  static UserRepository _buildRepository() {
+    final override = debugRepositoryBuilder;
+    if (override != null) return override();
+    return UserRepository(ApiClient());
+  }
+
+  /// Open the drawer. [onSignOut] is invoked after a successful "Delete my
+  /// account" (the caller dispatches `SignOutEvent` to the AuthBloc). Resolves
+  /// when the sheet dismisses (swipe / scrim / back — there is no in-sheet
+  /// dismiss button by design).
+  static Future<void> show(
+    BuildContext context, {
+    required VoidCallback onSignOut,
+  }) {
     final storeLinks = debugStoreLinks ?? StoreLinks();
+    final repository = _buildRepository();
     return showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.textPrimary,
@@ -67,7 +92,12 @@ class ManageSheet {
       ),
       builder: (_) => BlocProvider<UserProfileCubit>(
         create: (_) => _buildCubit(),
-        child: _ManageSheetBody(storeLinks: storeLinks),
+        child: _ManageSheetBody(
+          storeLinks: storeLinks,
+          repository: repository,
+          onSignOut: onSignOut,
+          launch: debugLaunch,
+        ),
       ),
     );
   }
@@ -122,8 +152,16 @@ const TextStyle _kManageButtonTextStyle = TextStyle(
 
 class _ManageSheetBody extends StatefulWidget {
   final StoreLinks storeLinks;
+  final UserRepository repository;
+  final VoidCallback onSignOut;
+  final Future<bool> Function(Uri, {LaunchMode mode})? launch;
 
-  const _ManageSheetBody({required this.storeLinks});
+  const _ManageSheetBody({
+    required this.storeLinks,
+    required this.repository,
+    required this.onSignOut,
+    required this.launch,
+  });
 
   @override
   State<_ManageSheetBody> createState() => _ManageSheetBodyState();
@@ -234,6 +272,24 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                     style: AppTypography.caption.copyWith(
                       color: AppColors.overlaySubtitle,
                     ),
+                  ),
+                  // Story 10.1 — universal account actions below the manage
+                  // handoff: legal links (AC6) + the GDPR "Delete my account"
+                  // (AC8). On a confirmed delete the sheet closes and signs out
+                  // via the AuthBloc → AuthInitial path.
+                  const SizedBox(height: 24),
+                  LegalLinksRow(
+                    color: AppColors.overlaySubtitle,
+                    launch: widget.launch,
+                  ),
+                  const SizedBox(height: 8),
+                  DeleteAccountTile(
+                    onDelete: widget.repository.deleteAccount,
+                    onDeleted: () {
+                      final navigator = Navigator.of(context);
+                      if (navigator.canPop()) navigator.pop();
+                      widget.onSignOut();
+                    },
                   ),
                 ],
               ),

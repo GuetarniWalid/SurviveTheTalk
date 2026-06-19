@@ -1,18 +1,43 @@
 import 'dart:async';
 
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/legal_urls.dart';
 import 'package:client/features/onboarding/bloc/onboarding_bloc.dart';
 import 'package:client/features/onboarding/bloc/onboarding_event.dart';
 import 'package:client/features/onboarding/bloc/onboarding_state.dart';
 import 'package:client/features/onboarding/presentation/consent_screen.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class MockOnboardingBloc
     extends MockBloc<OnboardingEvent, OnboardingState>
     implements OnboardingBloc {}
+
+/// Fire the [TapGestureRecognizer] on the inline span whose text == [text]
+/// (tapping a sub-span of a Text.rich can't be done by coordinate).
+void tapTextSpan(WidgetTester tester, String text) {
+  for (final rt in tester.widgetList<RichText>(find.byType(RichText))) {
+    TapGestureRecognizer? recognizer;
+    rt.text.visitChildren((span) {
+      if (span is TextSpan &&
+          span.text == text &&
+          span.recognizer is TapGestureRecognizer) {
+        recognizer = span.recognizer as TapGestureRecognizer;
+        return false;
+      }
+      return true;
+    });
+    if (recognizer != null) {
+      recognizer!.onTap!();
+      return;
+    }
+  }
+  fail('No tappable text span "$text" found');
+}
 
 void main() {
   late MockOnboardingBloc mockBloc;
@@ -95,6 +120,33 @@ void main() {
       await tester.pump();
 
       expect(find.textContaining('privacy policy'), findsOneWidget);
+    });
+
+    // Story 10.1 (AC6) — the privacy link opens the configurable hosted URL
+    // (no longer the dead `https://survivethe.talk/privacy` literal).
+    testWidgets('tapping privacy policy launches the configured privacy URL',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(393, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      Uri? launched;
+      ConsentScreen.debugLaunch = (uri, {mode = LaunchMode.platformDefault}) async {
+        launched = uri;
+        return true;
+      };
+      addTearDown(() => ConsentScreen.debugLaunch = null);
+
+      when(() => mockBloc.state).thenReturn(const ConsentRequired());
+      whenListen(mockBloc, const Stream<OnboardingState>.empty(),
+          initialState: const ConsentRequired());
+
+      await tester.pumpWidget(buildSubject());
+      await tester.pump();
+
+      tapTextSpan(tester, 'privacy policy');
+      await tester.pump();
+
+      expect(launched, Uri.parse(LegalUrls.privacyPolicy));
     });
 
     testWidgets('button tap dispatches AcceptConsentEvent', (tester) async {

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Privacy Policy — surviveTheTalk</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem 1rem 4rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: #1a1a1a;
+      background: #ffffff;
+    }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 0.25rem; }
+    h2 { font-size: 1.25rem; margin: 2.25rem 0 0.5rem; }
+    h3 { font-size: 1.05rem; margin: 1.5rem 0 0.35rem; }
+    p, li { font-size: 1rem; }
+    ul { padding-left: 1.25rem; }
+    li { margin: 0.3rem 0; }
+    a { color: #0b5; }
+    .meta { color: #555; font-size: 0.95rem; margin: 0 0 1.5rem; }
+    .callout {
+      border-left: 4px solid #0b5;
+      background: #f4faf6;
+      padding: 0.75rem 1rem;
+      margin: 1.25rem 0;
+      border-radius: 0 6px 6px 0;
+    }
+    footer { margin-top: 3rem; color: #777; font-size: 0.85rem; border-top: 1px solid #eee; padding-top: 1rem; }
+    table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
+    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #eee; vertical-align: top; font-size: 0.95rem; }
+    th { background: #fafafa; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="meta">surviveTheTalk &middot; Effective date: 19 June 2026</p>
+
+  <p>
+    surviveTheTalk is a language-practice app where you hold spoken conversations
+    with simulated characters to rehearse difficult real-life situations in English.
+    This Privacy Policy explains, in plain language, exactly what data the app
+    collects, how your voice is handled, who we share data with, and the rights you
+    have over your data. It is written to describe what the running software
+    actually does.
+  </p>
+
+  <div class="callout">
+    <strong>You are talking to AI, not people.</strong> Every character you speak
+    with, and every voice you hear, is <strong>AI-generated</strong> &mdash; not a
+    real human. Your speech is processed in real time so the app can respond, but
+    your voice audio is <strong>never stored</strong>.
+  </div>
+
+  <h2>Who is responsible for your data</h2>
+  <p>
+    The data controller is Walid Guetarni, the individual operator of
+    surviveTheTalk. For any privacy question or request, contact:
+    <a href="mailto:guetarni.walid@gmail.com">guetarni.walid@gmail.com</a>.
+  </p>
+
+  <h2>What data we collect</h2>
+  <ul>
+    <li><strong>Email address</strong> &mdash; used to sign you in and to send your one-time login codes.</li>
+    <li><strong>Call metadata</strong> &mdash; for each practice call: the scenario you chose, start time and duration, how many checkpoints you passed, your survival percentage, and the subscription tier you held at the time of the call.</li>
+    <li><strong>Debrief summary</strong> &mdash; after a call, an AI generates a short written summary of how the conversation went (corrections, hesitations, areas to work on). This distilled summary is stored. The full word-for-word conversation transcript is <strong>not</strong> stored.</li>
+    <li><strong>Progress</strong> &mdash; per scenario, your best score and the number of attempts.</li>
+    <li><strong>Subscription records</strong> &mdash; if you subscribe, a store verification artifact (a signed receipt / purchase token from Apple or Google), the product, the validation status, and the expiry date.</li>
+  </ul>
+  <p>
+    We do <strong>not</strong> run any third-party analytics or crash-reporting
+    service today, and we do <strong>not</strong> collect advertising identifiers.
+  </p>
+
+  <h2>How your voice is handled</h2>
+  <p>
+    During a call, your microphone audio is streamed in real time to a
+    speech-to-text provider so your words can be transcribed and the character can
+    respond. This audio is <strong>processed and discarded</strong>:
+  </p>
+  <ul>
+    <li>No recording of your voice (no <code>.wav</code>, no <code>.mp3</code>) is ever written to disk or to our database.</li>
+    <li>No voiceprint, voice signature, or other biometric identifier is derived from your voice or retained.</li>
+    <li>The text transcript of a call exists only temporarily while the call is in progress; it is used once to generate your debrief summary and is then discarded. Only the distilled debrief summary is kept.</li>
+  </ul>
+
+  <h2>How sign-in works</h2>
+  <p>
+    Sign-in is passwordless. You enter your email, we send a 6-digit code, and you
+    enter it to receive a session token. We do <strong>not</strong> store passwords.
+  </p>
+
+  <h2>Third parties we share data with (sub-processors)</h2>
+  <p>To run the service, we send the minimum necessary data to these providers:</p>
+  <table>
+    <tr><th>Provider</th><th>Purpose</th><th>What they receive</th></tr>
+    <tr><td>Soniox</td><td>Speech-to-text (transcription)</td><td>Your live voice audio during a call</td></tr>
+    <tr><td>Groq</td><td>Character replies, checkpoint judging, debrief generation</td><td>Conversation <em>text</em> (no audio)</td></tr>
+    <tr><td>Cartesia <span style="color:#777">(ElevenLabs as a configurable fallback)</span></td><td>Text-to-speech (the character's voice)</td><td>The character's reply <em>text</em> (no audio of you)</td></tr>
+    <tr><td>LiveKit</td><td>Real-time audio transport (WebRTC)</td><td>The live audio stream between your device and the server</td></tr>
+    <tr><td>Resend</td><td>Sending login-code emails</td><td>Your email address and the 6-digit code</td></tr>
+    <tr><td>Apple App Store / Google Play</td><td>Subscription purchase &amp; validation</td><td>The purchase token / receipt (they, not we, handle card &amp; payment data)</td></tr>
+  </table>
+
+  <h2>Where your data is stored and how it is protected</h2>
+  <p>
+    Your data is stored in a database on a server located in the European Union
+    (Hetzner, Germany &mdash; Falkenstein / Nuremberg). Access to the server is
+    restricted. Data is encrypted <strong>in transit</strong> (TLS) between your
+    device and our server, and between our server and the providers above.
+  </p>
+
+  <h2>Your rights</h2>
+  <p>
+    You can <strong>delete your account</strong> at any time from inside the app
+    (Account &rarr; Delete my account). Deleting your account permanently removes
+    your email, your call history, your debrief summaries, your progress, and your
+    subscription records from our database, in one operation. You can also request
+    a copy of the data we hold about you (data export).
+  </p>
+  <div class="callout">
+    <strong>Deleting your account does not cancel a paid subscription.</strong>
+    Apple and Google manage subscriptions, not us. To stop auto-renewal, cancel the
+    subscription in your device's store settings (Apple: Settings &rarr;
+    Subscriptions; Google: Play Store &rarr; Subscriptions) <em>in addition to</em>
+    deleting your account.
+  </div>
+  <p>
+    If you are in the EU/EEA, you have rights under the GDPR to access, correct,
+    export, and erase your personal data. The in-app deletion and export cover
+    erasure (Article 17) and portability (Article 20); for anything else, email
+    <a href="mailto:guetarni.walid@gmail.com">guetarni.walid@gmail.com</a>.
+  </p>
+
+  <h2>Children</h2>
+  <p>
+    surviveTheTalk is intended for users aged 13 and over (Apple) / PEGI 12
+    (Google). It is not directed at children below those ages.
+  </p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If this policy changes materially, we will update the effective date above and
+    publish the revised version at this URL.
+  </p>
+
+  <footer>
+    Questions about your privacy? Email
+    <a href="mailto:guetarni.walid@gmail.com">guetarni.walid@gmail.com</a>.
+  </footer>
+</main>
+</body>
+</html>

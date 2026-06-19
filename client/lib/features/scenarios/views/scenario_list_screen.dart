@@ -16,6 +16,9 @@ import '../../../core/widgets/app_toast.dart';
 import '../../../core/widgets/empathetic_error_screen.dart';
 import '../../call/models/call_session.dart';
 import '../../call/repositories/call_repository.dart';
+import '../../account/views/account_sheet.dart';
+import '../../auth/bloc/auth_bloc.dart';
+import '../../auth/bloc/auth_event.dart';
 import '../../call/views/call_screen.dart';
 import '../../call/views/no_network_screen.dart';
 import '../../paywall/views/paywall_sheet.dart';
@@ -259,16 +262,15 @@ class _ListState extends State<_List> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Story 8.3 (2026-06-18 pivot, AC1, UX-DR16) — the hub's two quiet
-        // setting lines share ONE row: `Account` LEADS (left) for PAID users
-        // only (it opens the paid-only Manage drawer — a free user has nothing
-        // to manage; their surface is the paywall), the global difficulty line
-        // TRAILS (right). For a free user the `Spacer` keeps difficulty
-        // right-aligned exactly as before — the row is visually identical.
+        // Story 10.1 (2026-06-19) — the `Account` line now LEADS (left) for
+        // ALL users (it was paid-only in 8.3). Account deletion is a universal
+        // GDPR right, so a free user needs an account surface too: paid users
+        // open the Manage drawer, free users open the minimal Account sheet
+        // (legal links + Delete my account). The global difficulty line TRAILS
+        // (right).
         Row(
           children: [
-            if (!widget.usage.isFree)
-              _AccountHubLine(onTap: () => ManageSheet.show(context)),
+            _AccountHubLine(onTap: () => _onAccountTap(context)),
             // Story 6.19 — discreet GLOBAL difficulty line (set once, applies
             // to every call); tapping it opens the difficulty bottom sheet.
             // `Expanded` so it right-aligns AND its label ellipsizes under large
@@ -304,6 +306,22 @@ class _ListState extends State<_List> {
         ),
       ],
     );
+  }
+
+  // Story 10.1 — open the account surface. Paid users get the Manage drawer;
+  // free users get the minimal Account sheet. Both expose "Delete my account",
+  // which on success signs out via the AuthBloc → AuthInitial path (deletes the
+  // token, fires the Story 9.1 cache wipe, and redirects to /login). The
+  // AuthBloc handle is captured BEFORE the sheet so the callback never reads a
+  // stale context after the sheet pops.
+  void _onAccountTap(BuildContext context) {
+    final authBloc = context.read<AuthBloc>();
+    void onSignOut() => authBloc.add(SignOutEvent());
+    if (widget.usage.isFree) {
+      AccountSheet.show(context, onSignOut: onSignOut);
+    } else {
+      ManageSheet.show(context, onSignOut: onSignOut);
+    }
   }
 
   // Story 6.19 — open the difficulty bottom sheet, persist the pick, and

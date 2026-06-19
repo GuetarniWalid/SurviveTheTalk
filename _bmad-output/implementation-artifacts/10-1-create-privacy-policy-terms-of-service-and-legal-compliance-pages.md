@@ -1,6 +1,6 @@
 # Story 10.1: Create Privacy Policy, Terms of Service, and Legal Compliance Pages
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -56,39 +56,41 @@ Two hosting/scope facts shape everything:
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Author the Privacy Policy HTML** (AC: 2, 3, 5)
-  - [ ] Write `server/static/legal/privacy.html` (or the route-served equivalent per D1) as a self-contained, styled-but-minimal HTML page (one `<style>` block, no external assets — must render standalone in a browser).
-  - [ ] Source EVERY factual claim from the **Content Source of Truth** table in Dev Notes. Do not copy stale PRD/epics wording.
-  - [ ] Include: effective date, data-controller identity + contact (D5), the AI disclosure paragraph (AC3), the sub-processor list (AC2), the rights/deletion section (D4).
-  - [ ] Add a short "not legal advice / review recommended before public launch" internal note in the story record (NOT on the public page).
+- [x] **Task 1 — Author the Privacy Policy HTML** (AC: 2, 3, 5)
+  - [x] Write `server/static/legal/privacy.html` (or the route-served equivalent per D1) as a self-contained, styled-but-minimal HTML page (one `<style>` block, no external assets — must render standalone in a browser).
+  - [x] Source EVERY factual claim from the **Content Source of Truth** table in Dev Notes. Do not copy stale PRD/epics wording.
+  - [x] Include: effective date, data-controller identity + contact (D5), the AI disclosure paragraph (AC3), the sub-processor list (AC2), the rights/deletion section (D4).
+  - [x] Add a short "not legal advice / review recommended before public launch" internal note in the story record (NOT on the public page). — see Completion Notes.
 
-- [ ] **Task 2 — Author the Terms of Service HTML** (AC: 4)
-  - [ ] Write `server/static/legal/terms.html` mirroring the privacy page's structure/styling.
-  - [ ] Subscription terms verbatim-accurate: `$1.99/week`, auto-renewable, `stt_weekly_199`, 3 free (lifetime) / 3 per day (paid), store-managed cancellation, no card data stored, content disclaimer, 13+/PEGI 12.
+- [x] **Task 2 — Author the Terms of Service HTML** (AC: 4)
+  - [x] Write `server/static/legal/terms.html` mirroring the privacy page's structure/styling.
+  - [x] Subscription terms verbatim-accurate: `$1.99/week`, auto-renewable, `stt_weekly_199`, 3 free (lifetime) / 3 per day (paid), store-managed cancellation, no card data stored, content disclaimer, 13+/PEGI 12.
 
-- [ ] **Task 3 — Serve the pages publicly from the backend** (AC: 1) — see D1 for the mechanism choice
-  - [ ] Add a new **unauthenticated** router `server/api/routes_legal.py` exposing `GET /legal/privacy` and `GET /legal/terms` returning `HTMLResponse` (these are the ONLY HTML/browser-facing routes — they intentionally bypass the `{data, meta}` JSON envelope; document that in a module docstring).
-  - [ ] Register it in `server/api/app.py` alongside the other routers — **without** `AUTH_DEPENDENCY` (mirror `routes_health`/`routes_auth` which are public; do NOT mirror the auth-gated routers).
-  - [ ] Confirm the HTML still also resolves via Caddy's existing `/static/*` mount (belt-and-suspenders) since the files live under `server/static/`.
+- [x] **Task 3 — Serve the pages publicly from the backend** (AC: 1) — see D1 for the mechanism choice
+  - [x] Add a new **unauthenticated** router `server/api/routes_legal.py` exposing `GET /legal/privacy` and `GET /legal/terms` returning `HTMLResponse` (these are the ONLY HTML/browser-facing routes — they intentionally bypass the `{data, meta}` JSON envelope; document that in a module docstring).
+  - [x] Register it in `server/api/app.py` alongside the other routers — **without** `AUTH_DEPENDENCY` (mirror `routes_health`/`routes_auth` which are public; do NOT mirror the auth-gated routers).
+  - [x] Confirm the HTML still also resolves via Caddy's existing `/static/*` mount (belt-and-suspenders) since the files live under `server/static/`. — files live under `server/static/legal/`; Caddy `/static/*` mount (`deploy/Caddyfile:2-6`) serves them at `/static/legal/*.html` on the eventual domain (Story 10.2). The clean `/legal/*` route is the primary contract on the current IP.
 
-- [ ] **Task 4 — Configurable base + wire the in-app links** (AC: 6)
-  - [ ] Add a single legal-URL source (e.g. `kPrivacyPolicyUrl` / `kTermsOfServiceUrl` derived from one base constant) in the client, co-located with / derived from `ApiClient.baseUrl` so 10.2 flips it in one place. Remove the dead `https://survivethe.talk/privacy` literal.
-  - [ ] Point the Consent screen privacy link at `kPrivacyPolicyUrl` (`consent_screen.dart:24`, `_launchPrivacyPolicy`).
-  - [ ] Add **Privacy Policy** + **Terms of Use** tappable links to the paywall (`paywall_sheet.dart`), near the existing `_kLegal` caption — reuse the `TapGestureRecognizer` + `launchUrl(externalApplication)` pattern from the consent screen. Keep the two-ink, low-furniture paywall styling (see "The Handler's Brief" rulebook).
-  - [ ] (Optional, low cost) Add the same two links to the manage drawer (`features/subscription/views/manage_sheet.dart`) for parity.
+- [x] **Task 4 — Configurable base + wire the in-app links** (AC: 6)
+  - [x] Add a single legal-URL source (`LegalUrls.privacyPolicy` / `LegalUrls.termsOfService`) derived from `ApiClient.baseUrl` (`client/lib/core/legal_urls.dart`) so 10.2 flips it in one place. Removed the dead `https://survivethe.talk/privacy` literal.
+  - [x] Point the Consent screen privacy link at `LegalUrls.privacyPolicy` (`consent_screen.dart`, `_launchPrivacyPolicy`).
+  - [x] Add **Privacy Policy** + **Terms of Use** tappable links to the paywall (`paywall_sheet.dart`), near the existing `_kLegal` caption — extracted a shared `LegalLinksRow` (`core/widgets/legal_links_row.dart`) reusing the `TapGestureRecognizer` + `launchUrl(externalApplication)` pattern. Kept the two-ink, low-furniture paywall styling.
+  - [x] (Optional, low cost) Add the same two links to the manage drawer (`features/subscription/views/manage_sheet.dart`) for parity. — done (also on the new free Account sheet).
 
-- [ ] **Task 5 — Build self-serve account deletion + export** (AC: 8) — D4, Walid chose to build it now
-  - [ ] Add auth-gated `DELETE /user/me` to `server/api/routes_user.py` (already auth-gated — reuse `AUTH_DEPENDENCY`; the caller's id comes from `request.state.user_id`). Delete all of the user's rows in **one transaction**, in FK-safe order. First **verify the actual FK `ON DELETE` behavior** in the migrations — do NOT assume cascade; if absent, delete children explicitly (`debriefs`→`call_sessions`, `user_progress`, `purchases`, `subscription_events` if user-scoped, `auth_codes` by email, then `users`). Mind the SQLite FK discipline (`server/CLAUDE.md` / project DB-migration rule) and keep `test_migrations` green (no schema change, but the deletion path needs realistic-data tests).
-  - [ ] Add `GET /user/data-export` returning the caller's stored data as JSON (Art 20) — reuse the same "gather my rows" query.
-  - [ ] Return the canonical `{data, meta}` / `{error}` envelope (these are API routes, unlike the HTML legal routes).
-  - [ ] Client: add a **"Delete my account"** action in the account/manage surface (`features/subscription/views/manage_sheet.dart` or the account hub). Confirm-then-delete; on success, **trigger the existing log-out / `AuthBloc → AuthInitial` path** so the Story 9.1 cache-wipe fires (do not roll a new wipe). Surface failure inline (Epic 4 error convention).
+- [x] **Task 5 — Build self-serve account deletion + export** (AC: 8) — D4, Walid chose to build it now
+  - [x] Add auth-gated `DELETE /user/me` to `server/api/routes_user.py` (reuse `AUTH_DEPENDENCY`; caller id from `request.state.user_id`). Deletes all of the user's rows in **one transaction** (`BEGIN IMMEDIATE`), FK-safe order. **Verified the actual FK `ON DELETE` behavior** in the migrations: `call_sessions→users` and `debriefs→call_sessions` have NO cascade (deleted explicitly, debriefs before call_sessions); `user_progress`/`purchases` DO declare cascade but are deleted explicitly anyway; `auth_codes` keyed by email; `subscription_events` has no `user_id` (idempotency ledger, nothing to delete). No schema change — `test_migrations` stays green.
+  - [x] Add `GET /user/data-export` returning the caller's stored data as JSON (Art 20) — shared `gather_user_data` query (excludes `jwt_hash` / `verification_token` credentials).
+  - [x] Return the canonical `{data, meta}` / `{error}` envelope (these are API routes, unlike the HTML legal routes).
+  - [x] Client: add a **"Delete my account"** action in the account/manage surface. Per the 2026-06-19 decision (Walid: "Account visible pour tous"), the `Account` hub line is now shown to ALL users — paid → Manage drawer (+ Delete), free → new minimal `AccountSheet` (legal links + Delete). Confirm-then-delete via shared `DeleteAccountTile`; on success it **dispatches the new `SignOutEvent` → `AuthInitial`** (reuses the Story 9.1 cache-wipe + GoRouter redirect; no new wipe path). Failure shows inline (Epic 4 convention).
 
-- [ ] **Task 6 — Tests** (AC: 1, 6, 8)
-  - [ ] Server: pytest that `GET /legal/privacy` and `GET /legal/terms` return `200`, `content-type: text/html`, are reachable **without** an `Authorization` header, and that the body contains the load-bearing strings (e.g. "AI-generated", a sub-processor name, "$1.99", "auto-renew", "13+"). One negative test: an unknown `/legal/<x>` returns `404`.
-  - [ ] Server: pytest for `DELETE /user/me` against a seeded user with rows in every owned table — assert all rows gone, no FK/integrity error, and a second delete / unauth delete behaves correctly; pytest for `GET /user/data-export` shape.
-  - [ ] Client: widget/unit tests that the consent link and the two new paywall links invoke `launchUrl` with the expected `kPrivacyPolicyUrl` / `kTermsOfServiceUrl` (inject the launcher — follow the `StoreLinks` injectable `_launch` pattern so tests don't touch the real plugin); and a test that "Delete my account" → confirm → triggers the de-auth/log-out path.
+- [x] **Task 6 — Tests** (AC: 1, 6, 8)
+  - [x] Server: pytest that `GET /legal/privacy` and `GET /legal/terms` return `200`, `content-type: text/html`, are reachable **without** an `Authorization` header, and the body contains load-bearing strings ("AI-generated", "Soniox"/"Groq", "$1.99", "auto-renew", "stt_weekly_199", "13"). Negative test: unknown `/legal/<x>` → `404` (`tests/test_routes_legal.py`).
+  - [x] Server: pytest for `DELETE /user/me` against a seeded user with rows in every owned table — all rows gone, no FK/integrity error, second-delete → 401, unauth-delete → 401, does-not-touch-other-users; `GET /user/data-export` shape (`tests/test_account_deletion.py`).
+  - [x] Client: widget/unit tests that the consent link + the two paywall links + the shared `LegalLinksRow` invoke the launcher with the expected URLs (injected launcher seams); `DeleteAccountTile` confirm → `onDelete` → `onDeleted` (success) / inline error (failure); `AuthBloc` `SignOutEvent` → deletes token + emits `AuthInitial`; `UserRepository.deleteAccount` → `DELETE /user/me`; scenario-list free-user Account-line opens the Account sheet.
 
 - [ ] **Task 7 — Deploy + Smoke Test Gate** (AC: 1, 7, 8) — see the gate section below.
+  - [x] Automated gates green: `flutter analyze` clean, `flutter test` (686 passed), `ruff check`/`ruff format` clean, `pytest` (1018 passed).
+  - [ ] Deploy + the server-side Smoke Test Gate boxes below (run against the deployed build).
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -217,10 +219,60 @@ Two hosting/scope facts shape everything:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-8 (dev-story, 2026-06-19)
 
 ### Debug Log References
 
+- Automated gates: `flutter analyze` → No issues found; `flutter test` → 686 passed; `ruff check .` / `ruff format --check .` → clean; `pytest` → 1018 passed.
+
 ### Completion Notes List
 
+- **Legal text is a functional DRAFT (D3).** The dev agent authored both pages in plain English, every claim sourced from the Content Source of Truth (NOT the stale PRD/epics). **Professional legal review is recommended before public launch** — this is a recommendation, not a dev blocker. Controller name = Walid Guetarni (individual operator, swappable for a business entity pre-launch); contact = guetarni.walid@gmail.com; effective date = 19 June 2026.
+- **Accuracy guardrails honored (anti-pattern list):** no AES-256-at-rest claim, no transcript-storage claim, Cartesia named as default TTS with ElevenLabs as a configurable fallback, Groq named as the LLM, real sub-processor list (Soniox/Groq/Cartesia/LiveKit/Resend/Apple/Google), no hardcoded domain (configurable base on the current IP).
+- **FK behavior verified, not assumed (Story 10.1 anti-pattern).** `delete_user_account` deletes debriefs→call_sessions explicitly (no cascade on either FK), then user_progress/purchases (cascade-backed but deleted explicitly for determinism), auth_codes by email, then users. `subscription_events` has no `user_id` column → nothing user-scoped to delete. No migration / no schema change → `test_migrations` unaffected.
+- **DECISION surfaced + resolved with Walid (per `feedback_surface_behavioral_tradeoffs_as_decisions`):** account deletion is a universal GDPR right but the only `Account` entry point was paid-only. Walid chose "Account visible to all" — paid opens the existing Manage drawer (+ a Delete line), free opens a new minimal `AccountSheet` (legal links + Delete). The export endpoint exists server-side (Art 20) but is not surfaced in the UI (AC8 only requires the Delete action client-side).
+- **De-auth reuse:** added an explicit `SignOutEvent` to `AuthBloc` (deletes the token, emits `AuthInitial`) so deletion routes through the SAME `AuthInitial` transition the 401/expiry paths use — the Story 9.1 cache wipe + the GoRouter redirect fire unchanged (no new wipe path). [[feedback_cache_wipe_keys_on_auth_transition]]
+- **Smoke gate scope:** this story's gate is server-side (public routes + a destructive deletion endpoint) and agent-runnable (curl + SSH/sqlite); recorded in the boxes below against the deployed build. The on-device IAP/UI gate stays DEFERRED (iOS blocked until Story 10-4), consistent with 8.1/8.2/8.3.
+
 ### File List
+
+**Server (new):**
+- `server/static/legal/privacy.html`
+- `server/static/legal/terms.html`
+- `server/api/routes_legal.py`
+- `server/tests/test_routes_legal.py`
+- `server/tests/test_account_deletion.py`
+
+**Server (modified):**
+- `server/api/app.py` (register the public legal router)
+- `server/api/routes_user.py` (+ `DELETE /user/me`, `GET /user/data-export`)
+- `server/db/queries.py` (+ `delete_user_account`, `gather_user_data`)
+- `server/models/schemas.py` (+ `AccountDeletionOut`)
+
+**Client (new):**
+- `client/lib/core/legal_urls.dart`
+- `client/lib/core/widgets/legal_links_row.dart`
+- `client/lib/features/account/views/account_sheet.dart`
+- `client/lib/features/account/widgets/delete_account_tile.dart`
+- `client/test/core/widgets/legal_links_row_test.dart`
+- `client/test/features/account/widgets/delete_account_tile_test.dart`
+- `client/test/features/subscription/repositories/user_repository_test.dart`
+
+**Client (modified):**
+- `client/lib/core/api/api_client.dart` (+ `delete<T>`)
+- `client/lib/features/subscription/repositories/user_repository.dart` (+ `deleteAccount`)
+- `client/lib/features/auth/bloc/auth_event.dart` (+ `SignOutEvent`)
+- `client/lib/features/auth/bloc/auth_bloc.dart` (+ `_onSignOut`)
+- `client/lib/features/onboarding/presentation/consent_screen.dart` (configurable URL + launcher seam)
+- `client/lib/features/paywall/views/paywall_sheet.dart` (+ legal links)
+- `client/lib/features/subscription/views/manage_sheet.dart` (+ legal links + Delete; `onSignOut` param)
+- `client/lib/features/scenarios/views/scenario_list_screen.dart` (Account line shown to all; routes free→AccountSheet, paid→ManageSheet; de-auth wiring)
+- `client/test/features/auth/bloc/auth_bloc_test.dart` (+ SignOutEvent group)
+- `client/test/features/onboarding/presentation/consent_screen_test.dart` (+ privacy-link launch test)
+- `client/test/features/paywall/views/paywall_sheet_test.dart` (+ legal-links test)
+- `client/test/features/subscription/views/manage_sheet_test.dart` (`onSignOut` arg)
+- `client/test/features/scenarios/views/scenario_list_screen_test.dart` (AuthBloc harness; free-user Account test)
+
+### Change Log
+
+- 2026-06-19 — dev-story: legal pages (privacy + ToS HTML) served at public `GET /legal/{privacy,terms}`; configurable in-app legal URLs wired into consent + paywall + manage/account sheets; self-serve GDPR `DELETE /user/me` + `GET /user/data-export` with a universal in-app "Delete my account" surface. Status → review.

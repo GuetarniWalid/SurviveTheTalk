@@ -431,3 +431,18 @@ class GoogleWebhookIn(BaseModel):
     """Google RTDN Pub/Sub push envelope: `{ "message": { "data", "messageId" } }`."""
 
     message: GooglePubSubMessage
+
+
+# --- Story 10.1: GDPR account deletion (Art 17) ----------------------------
+
+
+class AccountDeletionOut(BaseModel):
+    """Response body for `DELETE /user/me`.
+
+    A minimal acknowledgement — `deleted` is always `True` on a 200 (the route
+    only reaches the success envelope after the deletion transaction commits).
+    The client uses the 200 itself as the signal to sign out + wipe local cache;
+    this body just keeps the endpoint on the canonical `{data, meta}` envelope.
+    """
+
+    deleted: bool
