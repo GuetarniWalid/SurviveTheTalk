@@ -506,16 +506,22 @@ void main() {
     },
   );
 
-  // Story 9.1 (Task 6b — PRIVACY) — the wired 401 handler must ALSO wipe the
-  // offline cache so a different account on the same device never inherits the
-  // previous user's cached scenarios/progression/budget OR debriefs (which
-  // quote their spoken transcript). These lock the WIRE (handler → clearAll),
-  // not just clearAll() in isolation (app_database_test.dart covers that).
-  Future<void> pumpAuthedApp(WidgetTester tester, App app) async {
+  // Story 9.1 (Task 6b — PRIVACY) — a different account on the same device must
+  // never inherit the previous user's cached scenarios/progression/budget OR
+  // debriefs (which quote their spoken transcript). F1 fix (code-review
+  // 2026-06-19): the wipe is keyed to the AuthBloc-state listener in
+  // App.initState — it fires on EVERY transition to AuthInitial (natural 30-day
+  // token expiry, the 401, and any future Sign Out), NOT the 401 handler alone
+  // (which the most common de-auth path — client-side expiry — never triggers,
+  // since it makes no network request). These lock the WIRE (auth →
+  // unauthenticated → clearAll); app_database_test.dart covers clearAll() alone.
+  Future<void> pumpAppWithDeauthStream(WidgetTester tester, App app) async {
     when(() => mockAuthBloc.state).thenReturn(AuthAuthenticated());
+    // Authenticated → Initial: stands in for ANY de-auth path (expiry / 401 /
+    // reset all funnel through AuthInitial, which the listener keys on).
     whenListen(
       mockAuthBloc,
-      Stream<AuthState>.value(AuthAuthenticated()),
+      Stream<AuthState>.fromIterable([AuthAuthenticated(), AuthInitial()]),
       initialState: AuthAuthenticated(),
     );
     when(() => mockOnboardingBloc.state).thenReturn(const OnboardingComplete());
@@ -529,73 +535,51 @@ void main() {
   }
 
   testWidgets(
-    'Story 9.1 (Task 6b) — the wired 401 handler wipes the offline cache '
-    '(AppDatabase.clearAll)',
+    'Story 9.1 (Task 6b / F1 fix) — a transition to unauthenticated (token '
+    'expiry, 401, or reset) wipes the offline cache (AppDatabase.clearAll)',
     (tester) async {
-      final mockTokenStorage = MockTokenStorage();
-      when(() => mockTokenStorage.deleteToken()).thenAnswer((_) async {});
       final mockDb = MockAppDatabase();
       when(() => mockDb.clearAll()).thenAnswer((_) async {});
 
-      await pumpAuthedApp(
+      await pumpAppWithDeauthStream(
         tester,
         App(
           authBloc: mockAuthBloc,
           onboardingBloc: mockOnboardingBloc,
           consentStorage: mockConsentStorage,
           scenariosBloc: mockScenariosBloc,
-          tokenStorage: mockTokenStorage,
           appDatabase: mockDb,
         ),
       );
 
-      expect(AuthInterceptor.globalHandler, isNotNull);
-      await AuthInterceptor.globalHandler!();
-      await tester.pump();
-
-      // The privacy wipe fired.
+      // The AuthAuthenticated → AuthInitial transition fired the central wipe —
+      // exactly the path the prior 401-only wipe MISSED (natural token expiry
+      // de-auths client-side with no network call, so it never 401s).
       verify(() => mockDb.clearAll()).called(1);
-      // … alongside the existing token-clear + reset effects.
-      verify(() => mockTokenStorage.deleteToken()).called(1);
-      verify(() => mockAuthBloc.add(any(that: isA<ResetAuthEvent>()))).called(1);
-
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump(const Duration(seconds: 10));
-      await tester.pumpAndSettle();
     },
   );
 
   testWidgets(
-    'Story 9.1 (Task 6b) — a failing cache wipe is best-effort: the auth reset '
-    'still dispatches ResetAuthEvent',
+    'Story 9.1 (Task 6b / F1 fix) — a failing cache wipe on de-auth is '
+    'best-effort and never throws into the app',
     (tester) async {
-      final mockTokenStorage = MockTokenStorage();
-      when(() => mockTokenStorage.deleteToken()).thenAnswer((_) async {});
       final mockDb = MockAppDatabase();
       when(() => mockDb.clearAll()).thenThrow(Exception('db locked'));
 
-      await pumpAuthedApp(
+      await pumpAppWithDeauthStream(
         tester,
         App(
           authBloc: mockAuthBloc,
           onboardingBloc: mockOnboardingBloc,
           consentStorage: mockConsentStorage,
           scenariosBloc: mockScenariosBloc,
-          tokenStorage: mockTokenStorage,
           appDatabase: mockDb,
         ),
       );
 
-      await AuthInterceptor.globalHandler!();
-      await tester.pump();
-
-      // The swallowed wipe failure must NOT block the load-bearing reset.
-      verify(() => mockAuthBloc.add(any(that: isA<ResetAuthEvent>()))).called(1);
+      // The wipe was attempted; the swallowed failure never surfaced.
+      verify(() => mockDb.clearAll()).called(1);
       expect(tester.takeException(), isNull);
-
-      await tester.pump(const Duration(milliseconds: 600));
-      await tester.pump(const Duration(seconds: 10));
-      await tester.pumpAndSettle();
     },
   );
 }

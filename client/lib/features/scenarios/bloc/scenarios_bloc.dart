@@ -125,6 +125,16 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     // state at Loaded (not Loading), so without `_loadInFlight` a refresh could
     // race a concurrent fetch (Story 9.1).
     if (_loadInFlight || state is ScenariosLoading) return;
+    // Story 9.1 (F3 fix — code-review 2026-06-19) — also SET `_loadInFlight`
+    // here, symmetric with `_onLoad`. A refresh emits no `ScenariosLoading` and
+    // stays `ScenariosLoaded` for the whole fetch window, so reading the guard
+    // without setting it left two windows open: a `LoadScenariosEvent` (e.g. the
+    // post-purchase budget reflow) OR a second `RefreshScenariosEvent` dispatched
+    // mid-refresh would pass their guards and start a SECOND concurrent
+    // `/scenarios` fetch whose out-of-order response overwrites `usage` with
+    // stale call-budget — the exact race the M1 guard was added to kill. Setting
+    // the flag here makes the single-fetch invariant hold in BOTH directions.
+    _loadInFlight = true;
     try {
       final result = await _repository.fetchScenarios();
       await _writeCacheSafely(result);
@@ -132,6 +142,8 @@ class ScenariosBloc extends Bloc<ScenariosEvent, ScenariosState> {
     } catch (_) {
       // Background refresh — swallow any failure and keep the current state.
       // Stale usage for one more call beats an error screen after a call.
+    } finally {
+      _loadInFlight = false;
     }
   }
 

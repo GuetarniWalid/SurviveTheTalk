@@ -53,6 +53,13 @@ class EmpatheticErrorScreen extends StatelessWidget {
   final String? titleOverride;
   final String? semanticsLabel;
 
+  /// Leading glyph on the CTA. Defaults to `Icons.refresh` (the retry-flavored
+  /// callers). Story 9.1 (F8 fix — code-review 2026-06-19): the cache-only
+  /// "no saved report" surface passes `Icons.arrow_back` so the icon matches a
+  /// CTA that goes back rather than re-fetches (Decision 3 — no backfill); a
+  /// refresh glyph beside the word "Back" wrongly implied a reload.
+  final IconData ctaIcon;
+
   const EmpatheticErrorScreen({
     super.key,
     required this.code,
@@ -62,6 +69,7 @@ class EmpatheticErrorScreen extends StatelessWidget {
     this.bodyOverride,
     this.titleOverride,
     this.semanticsLabel,
+    this.ctaIcon = Icons.refresh,
   });
 
   @override
@@ -152,8 +160,8 @@ class EmpatheticErrorScreen extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(
-                            Icons.refresh,
+                          Icon(
+                            ctaIcon,
                             color: AppColors.background,
                             size: 24,
                           ),

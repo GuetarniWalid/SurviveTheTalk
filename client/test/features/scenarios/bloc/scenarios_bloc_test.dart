@@ -488,6 +488,61 @@ void main() {
       expect: () => [isA<ScenariosLoaded>()],
       verify: (_) => verify(() => mockStore.writeScenarios(any())).called(1),
     );
+
+    // Story 9.1 (F3 fix — code-review 2026-06-19) — `_onRefresh` now SETS
+    // `_loadInFlight`, so the single-fetch invariant holds in BOTH directions.
+    // Before the fix a Load (or a second Refresh) dispatched mid-refresh started
+    // a SECOND concurrent /scenarios fetch whose out-of-order response could
+    // overwrite `usage` with stale call-budget — the M1 race, in reverse.
+    blocTest<ScenariosBloc, ScenariosState>(
+      'F3 — a Load dispatched DURING an in-flight refresh is dropped '
+      '(exactly one /scenarios fetch, no out-of-order usage overwrite)',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenAnswer((_) async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          return _result(_fiveScenarios);
+        });
+      },
+      build: buildBloc,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (bloc) async {
+        bloc.add(const RefreshScenariosEvent());
+        // Yield so the refresh parks on the delayed fetch with
+        // `_loadInFlight == true`.
+        await pumpEventQueue();
+        bloc.add(const LoadScenariosEvent()); // must be dropped by the guard
+      },
+      wait: const Duration(milliseconds: 200),
+      expect: () => [isA<ScenariosLoaded>()],
+      verify: (_) {
+        verify(() => mockRepo.fetchScenarios()).called(1);
+        // The dropped Load returned before its cache read.
+        verifyNever(() => mockStore.readScenarios());
+      },
+    );
+
+    blocTest<ScenariosBloc, ScenariosState>(
+      'F3 — a second Refresh dispatched DURING an in-flight refresh is dropped '
+      '(exactly one /scenarios fetch)',
+      setUp: () {
+        when(() => mockRepo.fetchScenarios()).thenAnswer((_) async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          return _result(_fiveScenarios);
+        });
+      },
+      build: buildBloc,
+      seed: () =>
+          const ScenariosLoaded(scenarios: <Scenario>[], usage: _kFreshUsage),
+      act: (bloc) async {
+        bloc.add(const RefreshScenariosEvent());
+        await pumpEventQueue();
+        bloc.add(const RefreshScenariosEvent()); // must be dropped by the guard
+      },
+      wait: const Duration(milliseconds: 200),
+      expect: () => [isA<ScenariosLoaded>()],
+      verify: (_) => verify(() => mockRepo.fetchScenarios()).called(1),
+    );
   });
 
   group('Story 9.1 — cache-first load', () {

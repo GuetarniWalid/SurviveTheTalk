@@ -114,6 +114,10 @@ class _DebriefMissState extends StatelessWidget {
             'Reconnect and complete this scenario to see its report here.',
         retryLabel: 'Back',
         semanticsLabel: 'Back',
+        // Story 9.1 (F8 fix) — back-arrow glyph: this CTA pops back, it does NOT
+        // re-fetch (cache-only, no backfill — Decision 3). The default refresh
+        // glyph would contradict the "Back" label and the no-backfill intent.
+        ctaIcon: Icons.arrow_back,
         onRetry: () =>
             context.canPop() ? context.pop() : context.go(AppRoutes.root),
       ),

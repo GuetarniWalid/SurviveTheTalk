@@ -64,6 +64,12 @@ void main() {
       expect(find.byType(DebriefScreen), findsNothing);
       expect(find.text('No saved report yet.'), findsOneWidget);
       expect(tester.takeException(), isNull);
+      // Story 9.1 (F8 fix) — the CTA goes back (cache-only, no backfill), so it
+      // shows a back-arrow, NOT the default refresh glyph that would imply a
+      // reload the button never performs.
+      expect(find.text('Back'), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      expect(find.byIcon(Icons.refresh), findsNothing);
     },
   );
 

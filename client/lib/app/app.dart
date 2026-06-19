@@ -73,6 +73,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   ScenariosBloc? _scenariosBloc;
   late final GoRouter _router;
 
+  /// Story 9.1 (F1 fix — code-review 2026-06-19) — subscription that wipes the
+  /// offline cache on every transition to unauthenticated. Cancelled in dispose.
+  StreamSubscription<AuthState>? _cacheWipeSub;
+
   @override
   void initState() {
     super.initState();
@@ -126,6 +130,22 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 
     _scenariosBloc = widget.scenariosBloc;
 
+    // Story 9.1 (F1 fix — code-review 2026-06-19) — wipe the offline cache on
+    // EVERY transition to unauthenticated, not just the 401 path. The primary
+    // MVP de-auth mechanism is natural 30-day token expiry (Story 4.3), which
+    // `AuthBloc._onCheckAuthStatus` detects entirely client-side (no network
+    // call → no 401), so the old globalHandler-only wipe never fired on it —
+    // leaving the previous user's cached scenarios/progression and their
+    // cache-only (never-refreshed) debriefs readable by a DIFFERENT account on
+    // a shared device. Keying the wipe on `AuthInitial` covers expiry, the 401
+    // (which dispatches ResetAuthEvent → AuthInitial), and any future Sign Out /
+    // Switch Account — one central enforcement point for the privacy invariant.
+    _cacheWipeSub = _authBloc.stream.listen((authState) {
+      if (authState is AuthInitial) {
+        unawaited(_wipeOfflineCacheBestEffort());
+      }
+    });
+
     _router = AppRouter.createRouter(
       _authBloc,
       consentStorage: _consentStorage,
@@ -164,17 +184,12 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       } catch (_) {
         // Swallow — the bloc reset below is the load-bearing step.
       }
-      // Story 9.1 (Task 6b — privacy) — wipe the offline cache on auth reset so
-      // a DIFFERENT account signing in on the same device never inherits the
-      // previous user's cached scenarios/progression/budget OR their debriefs
-      // (which quote their spoken transcript). Best-effort, like the token
-      // delete above — the bloc reset stays the load-bearing step.
-      try {
-        await widget.appDatabase?.clearAll();
-      } catch (_) {
-        // Swallow — a failed wipe must not block the auth reset; a stale cache
-        // is overwritten on the next account's network refresh.
-      }
+      // Story 9.1 (Task 6b — privacy) — the offline-cache wipe is NOT performed
+      // here anymore. It is centralized in the AuthBloc-state listener wired in
+      // initState, which fires on EVERY transition to AuthInitial: this 401 path
+      // dispatches ResetAuthEvent → AuthInitial below, AND natural 30-day token
+      // expiry / any future Sign Out also land on AuthInitial — so no de-auth
+      // path is missed (the prior 401-only wipe leaked across the expiry path).
       if (!mounted) return;
       // Avoid double-dispatch: if the bloc is already in AuthInitial
       // (the redirect already fired), skip re-emitting (BlocListener
@@ -206,9 +221,26 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     };
   }
 
+  /// Story 9.1 (F1 fix) — best-effort offline-cache wipe on de-auth. A failed
+  /// wipe must never break the auth reset (mirrors the best-effort token
+  /// delete); the next account's network refresh overwrites the scenario cache.
+  /// The residual cache-only-debrief window on a wipe failure is the documented
+  /// trade-off of the targeted fix (review F1 option 1); a per-user-scoped cache
+  /// (option 2) would close it entirely if Walid later wants belt-and-braces.
+  Future<void> _wipeOfflineCacheBestEffort() async {
+    try {
+      await widget.appDatabase?.clearAll();
+    } catch (_) {
+      // Swallow — privacy wipe is best-effort, like the token delete.
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Story 9.1 (F1 fix) — stop the auth-state cache-wipe listener before the
+    // owned bloc closes its stream.
+    _cacheWipeSub?.cancel();
     // Story 6.13 AC4 — clear the global 401 handler so a recreated
     // App (e.g. hot restart, integration-test tear-down) doesn't
     // race with a stale handler closure that references the
