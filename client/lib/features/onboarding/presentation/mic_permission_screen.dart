@@ -7,6 +7,7 @@ import 'package:rive/rive.dart' as rive;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/router.dart';
+import '../../../core/legal_urls.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../bloc/onboarding_bloc.dart';
@@ -16,6 +17,13 @@ import '../bloc/onboarding_state.dart';
 class MicPermissionScreen extends StatefulWidget {
   const MicPermissionScreen({super.key});
 
+  /// Test seam — inject a launcher so the privacy-link test asserts the opened
+  /// URL without the real `url_launcher` plugin (the `StoreLinks._launch`
+  /// pattern, mirrored from [ConsentScreen]). Production leaves it null and
+  /// uses `launchUrl`.
+  @visibleForTesting
+  static Future<bool> Function(Uri, {LaunchMode mode})? debugLaunch;
+
   @override
   State<MicPermissionScreen> createState() => _MicPermissionScreenState();
 }
@@ -24,7 +32,6 @@ class _MicPermissionScreenState extends State<MicPermissionScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _fadeController;
 
-  static const String _privacyPolicyUrl = 'https://survivethe.talk/privacy';
   static const String _riveAssetPath = 'assets/rive/mic_consent.riv';
 
   // Rive state
@@ -92,8 +99,9 @@ class _MicPermissionScreenState extends State<MicPermissionScreen>
   }
 
   Future<void> _launchPrivacyPolicy() async {
-    final uri = Uri.parse(_privacyPolicyUrl);
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final uri = Uri.parse(LegalUrls.privacyPolicy);
+    final launch = MicPermissionScreen.debugLaunch ?? launchUrl;
+    await launch(uri, mode: LaunchMode.externalApplication);
   }
 
   void _showMicDeniedSheet() {

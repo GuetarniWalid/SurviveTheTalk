@@ -972,13 +972,23 @@ async def gather_user_data(db: aiosqlite.Connection, user_id: int, email: str) -
         user_row = await cursor.fetchone()
     out["account"] = dict(user_row) if user_row is not None else None
 
+    # Explicit column lists (not SELECT *) so the export contract is auditable
+    # and a future migration adding an internal/credential column to either
+    # table can't silently auto-leak into the user's data dump. These two tables
+    # hold no credentials today — every column below is the user's own call data
+    # (Art 20). Add a column here when a migration adds a user-facing one.
     async with db.execute(
-        "SELECT * FROM call_sessions WHERE user_id = ? ORDER BY id", (user_id,)
+        "SELECT id, user_id, scenario_id, started_at, duration_sec, cost_cents, "
+        "status, checkpoints_passed, total_checkpoints, gifted, tier_at_call "
+        "FROM call_sessions WHERE user_id = ? ORDER BY id",
+        (user_id,),
     ) as cursor:
         out["call_sessions"] = [dict(r) for r in await cursor.fetchall()]
 
     async with db.execute(
-        "SELECT d.* FROM debriefs d "
+        "SELECT d.id, d.call_session_id, d.survival_pct, d.checkpoints_passed, "
+        "d.total_checkpoints, d.debrief_json, d.prompt_version, d.created_at "
+        "FROM debriefs d "
         "JOIN call_sessions c ON d.call_session_id = c.id "
         "WHERE c.user_id = ? ORDER BY d.id",
         (user_id,),

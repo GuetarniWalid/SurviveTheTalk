@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:bloc_test/bloc_test.dart';
+import 'package:client/core/legal_urls.dart';
 import 'package:client/features/onboarding/bloc/onboarding_bloc.dart';
 import 'package:client/features/onboarding/bloc/onboarding_event.dart';
 import 'package:client/features/onboarding/bloc/onboarding_state.dart';
@@ -9,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class MockOnboardingBloc
     extends MockBloc<OnboardingEvent, OnboardingState>
@@ -57,6 +59,35 @@ void main() {
         find.textContaining('What we do with your voice'),
         findsOneWidget,
       );
+    });
+
+    // Story 10.1 (AC6) — the "What we do with your voice" link opens the
+    // configurable hosted privacy URL (no longer the dead
+    // `https://survivethe.talk/privacy` literal this screen used to hardcode).
+    testWidgets('tapping the privacy link launches the configured privacy URL',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(393, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      Uri? launched;
+      MicPermissionScreen.debugLaunch =
+          (uri, {mode = LaunchMode.platformDefault}) async {
+        launched = uri;
+        return true;
+      };
+      addTearDown(() => MicPermissionScreen.debugLaunch = null);
+
+      when(() => mockBloc.state).thenReturn(const MicRequired());
+      whenListen(mockBloc, const Stream<OnboardingState>.empty(),
+          initialState: const MicRequired());
+
+      await tester.pumpWidget(buildSubject());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.textContaining('What we do with your voice'));
+      await tester.pump();
+
+      expect(launched, Uri.parse(LegalUrls.privacyPolicy));
     });
 
     testWidgets('shows loading spinner in CTA when MicPermissionRequested',

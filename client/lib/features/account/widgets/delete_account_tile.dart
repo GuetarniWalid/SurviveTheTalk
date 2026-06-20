@@ -34,6 +34,11 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
   bool _failed = false;
 
   Future<void> _onTap() async {
+    // Synchronous re-entry guard: the `_deleting` latch below is only set after
+    // the await, so without this two rapid taps could stack two confirm dialogs
+    // → two `DELETE /user/me` calls (the second 401s and could flip `_failed`
+    // after a successful delete).
+    if (_deleting) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(

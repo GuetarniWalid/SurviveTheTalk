@@ -15,7 +15,7 @@ None of these mutate tier via store I/O; the actual call-cap enforcement gate is
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from loguru import logger
 
 from api.middleware import AUTH_DEPENDENCY
@@ -113,12 +113,15 @@ async def delete_account(request: Request) -> dict:
 
 
 @router.get("/data-export")
-async def export_data(request: Request) -> dict:
+async def export_data(request: Request, response: Response) -> dict:
     """Return all of the caller's stored data as JSON (GDPR Art 20, D4).
 
     Read-only sibling of `DELETE /user/me` sharing the same "gather my rows"
     logic (`gather_user_data`), wrapped in the canonical `{data, meta}` envelope.
     Excludes internal credentials (jwt_hash, verification_token) — see the query.
+
+    The payload is the user's full personal data, so it is marked `no-store` to
+    keep intermediaries/proxies from caching a PII dump.
     """
     user_id: int = request.state.user_id
 
@@ -134,4 +137,5 @@ async def export_data(request: Request) -> dict:
             )
         data = await gather_user_data(db, user_id, user["email"])
 
+    response.headers["Cache-Control"] = "no-store"
     return ok(data)
