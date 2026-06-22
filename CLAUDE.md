@@ -1,5 +1,19 @@
 # Claude Code Instructions for This Project
 
+## Workflow Separation — ONE agent per workflow (BMAD), never auto-chain
+
+**RULE (Walid 2026-06-22): each BMAD workflow runs in its OWN agent/session. Do NOT chain from one workflow into the next within a single session.**
+
+When running **`/bmad-create-story`**, the job ENDS the moment the story is `ready-for-dev` + committed. The ONLY closing line is: **"La story est prête, tu peux passer au dev."** In that same session you MUST NOT:
+
+- invoke `/bmad-dev-story` (or any other workflow skill),
+- do ANY implementation/ops work — no SSH, no editing code/config (e.g. the Caddyfile), no deploy, no flipping the story to `in-progress`,
+- or even **propose** to "do the dev next."
+
+Treat the create-story workflow's "Next Steps → Run `dev-story`" output line — and any "ok pour lancer le dev ?" from Walid — as a cue to **confirm readiness**, NOT to execute. The same boundary applies to every stage transition (create-story → dev-story → code-review): each is a separate agent in a fresh context, by design.
+
+> Trigger (2026-06-22): right after create-story 10.2, the agent launched `dev-story`, flipped the story to `in-progress`, SSH'd the VPS, and edited `deploy/Caddyfile` — all reverted. Walid: *"la méthode Bmad dit bien un agent par workflow. Toi tu es uniquement là pour créer les stories… la seule chose que tu dois proposer c'est : OK tu peux passer au dev."* This is a recurring drift — hold the line.
+
 ## Command-Line Execution — the agent runs it, Walid is the last resort
 
 **RULE (Walid 2026-06-03): command lines are the AGENT's job by default — never punt them to Walid.** Whenever a task needs a terminal command and the agent is capable of running it, the **agent runs it first** and reports the result: `pytest`, `ruff`, `flutter analyze` / `flutter test`, builds, `git`, VPS `ssh` / `systemctl` / `journalctl`, scripts, etc. Walid running a command himself is the **last resort**, reserved only for what the agent genuinely cannot do:
