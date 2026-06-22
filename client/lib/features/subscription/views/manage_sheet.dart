@@ -237,11 +237,11 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                     if (i > 0) const SizedBox(height: 8),
                     _BenefitRow(text: _kBenefits[i]),
                   ],
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 48),
                   // Profile-dependent slot — the ONLY thing the fetch gates.
                   // The value block + manage button always render (a member must
                   // always reach Manage, even if the profile fetch fails).
-                  // 40px above = the SAME gap as Delete→legal below, so the
+                  // 48px above = the SAME gap as Delete→legal below, so the
                   // [renewal + Manage + Delete] block is framed by equal air top
                   // and bottom and reads as centered (Walid 2026-06-22).
                   _RenewalSlot(state: state),
@@ -281,7 +281,7 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                       widget.onSignOut();
                     },
                   ),
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 48),
                   LegalLinksRow(
                     color: AppColors.overlaySubtitle,
                     launch: widget.launch,
