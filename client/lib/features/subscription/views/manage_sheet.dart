@@ -242,11 +242,29 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                     if (i > 0) const SizedBox(height: 8),
                     _BenefitRow(text: _kBenefits[i]),
                   ],
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 32),
                   // Profile-dependent slot — the ONLY thing the fetch gates.
                   // The value block + manage button always render (a member must
                   // always reach Manage, even if the profile fetch fails).
+                  // 32px above = the VALUE→(billing+action) group break, on the
+                  // same rhythm as every other boundary in the sheet (2026-06-22).
                   _RenewalSlot(state: state),
+                  const SizedBox(height: 8),
+                  // The store "cancel" cue sits ABOVE the Manage button (Walid
+                  // 2026-06-22) so no caption is wedged between the two action
+                  // buttons below — the billing line + this cue are the button's
+                  // quiet two-line label.
+                  Text(
+                    manageCaption,
+                    textAlign: TextAlign.center,
+                    style: AppTypography.caption.copyWith(
+                      color: AppColors.overlaySubtitle,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // The exit — a clearly-tappable OUTLINED pill (same shape as
+                  // the paywall CTA).
+                  _ManageButton(onTap: _onManage),
                   if (_storeOpenFailed) ...[
                     const SizedBox(height: 8),
                     Semantics(
@@ -260,36 +278,29 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 24),
-                  // The exit — a clearly-tappable OUTLINED pill (same shape as
-                  // the paywall CTA), with the "cancel" cue caption centered
-                  // directly below it (the paywall CTA→legal pattern).
-                  _ManageButton(onTap: _onManage),
-                  const SizedBox(height: 8),
-                  Text(
-                    manageCaption,
-                    textAlign: TextAlign.center,
-                    style: AppTypography.caption.copyWith(
-                      color: AppColors.overlaySubtitle,
-                    ),
-                  ),
-                  // Story 10.1 — universal account actions below the manage
-                  // handoff: legal links (AC6) + the GDPR "Delete my account"
-                  // (AC8). On a confirmed delete the sheet closes and signs out
-                  // via the AuthBloc → AuthInitial path.
-                  const SizedBox(height: 24),
-                  LegalLinksRow(
-                    color: AppColors.overlaySubtitle,
-                    launch: widget.launch,
-                  ),
-                  const SizedBox(height: 8),
+                  // Story 10.1 / 2026-06-22 layout — the two account actions form
+                  // ONE cluster: Delete sits directly below Manage, separated by a
+                  // 32px "moat" (the largest interior gap) + a different silhouette
+                  // (naked red text vs the wide outlined pill) so it is never
+                  // fat-fingered. On a confirmed delete the sheet closes and signs
+                  // out via the AuthBloc → AuthInitial path.
+                  const SizedBox(height: 32),
                   DeleteAccountTile(
+                    color: AppColors.paywallError,
                     onDelete: widget.repository.deleteAccount,
                     onDeleted: () {
                       final navigator = Navigator.of(context);
                       if (navigator.canPop()) navigator.pop();
                       widget.onSignOut();
                     },
+                  ),
+                  // Legal links (AC6) = quiet fine print, the ABSOLUTE last
+                  // element, pushed to the bottom (Walid 2026-06-22: users
+                  // essentially never tap them; they exist for store compliance).
+                  const SizedBox(height: 32),
+                  LegalLinksRow(
+                    color: AppColors.overlaySubtitle,
+                    launch: widget.launch,
                   ),
                 ],
               ),
@@ -428,10 +439,11 @@ class _BenefitRow extends StatelessWidget {
 
 /// The exit — a clearly-tappable OUTLINED pill, same shape/height as the paywall
 /// "Let's go" CTA but border-only (no accent fill, two-ink intact) so it reads
-/// as a button without being a loud conversion CTA. The "Update or cancel …"
-/// caption sits centered directly BELOW it (the paywall CTA→legal pattern),
-/// keeping the honest "cancel" cue present and findable. `OutlinedButton`
-/// already exposes proper button+label semantics to assistive tech.
+/// as a button without being a loud conversion CTA. The billing line + the
+/// "Update or cancel …" cue sit centered ABOVE it (Walid 2026-06-22 — keeps the
+/// two action buttons, Manage then Delete, as one uninterrupted cluster below).
+/// `OutlinedButton` already exposes proper button+label semantics to assistive
+/// tech.
 class _ManageButton extends StatelessWidget {
   final VoidCallback onTap;
 

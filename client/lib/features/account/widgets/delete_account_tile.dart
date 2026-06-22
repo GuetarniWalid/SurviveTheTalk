@@ -19,10 +19,17 @@ class DeleteAccountTile extends StatefulWidget {
   /// triggers the sign-out / offline-cache-wipe path.
   final VoidCallback onDeleted;
 
+  /// Ink for the destructive label / spinner / inline error. Defaults to
+  /// [AppColors.destructive] (dark-host callers untouched); the light account &
+  /// manage sheets pass [AppColors.paywallError], a darker red that meets WCAG
+  /// AA on their light background (the default red is sub-AA on light).
+  final Color color;
+
   const DeleteAccountTile({
     super.key,
     required this.onDelete,
     required this.onDeleted,
+    this.color = AppColors.destructive,
   });
 
   @override
@@ -84,20 +91,20 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
         SizedBox(
           height: _kTileHeight,
           child: _deleting
-              ? const Center(
+              ? Center(
                   child: SizedBox(
                     width: _kSpinnerSize,
                     height: _kSpinnerSize,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: AppColors.destructive,
+                      color: widget.color,
                     ),
                   ),
                 )
               : TextButton(
                   onPressed: _onTap,
                   style: TextButton.styleFrom(
-                    foregroundColor: AppColors.destructive,
+                    foregroundColor: widget.color,
                     textStyle: AppTypography.caption,
                   ),
                   child: const Text(_kDelete),
@@ -112,7 +119,7 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
                 _kError,
                 textAlign: TextAlign.center,
                 style: AppTypography.caption.copyWith(
-                  color: AppColors.destructive,
+                  color: widget.color,
                 ),
               ),
             ),

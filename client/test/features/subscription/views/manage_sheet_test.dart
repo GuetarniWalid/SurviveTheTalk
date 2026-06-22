@@ -235,20 +235,31 @@ void main() {
     expect(find.byType(BottomSheet), findsOneWidget);
   });
 
-  testWidgets('Manage is a clear OUTLINED button + a cancel-cue caption below',
-      (tester) async {
+  testWidgets(
+      'layout (Walid 2026-06-22): cancel cue ABOVE Manage; Delete directly '
+      'below; legal links at the very bottom', (tester) async {
     seed(const UserProfileLoaded(_paidFuture));
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
 
     // A real, clearly-tappable outlined pill (not a bare text row) — exposes
     // proper button+label semantics on its own.
-    expect(
-      find.widgetWithText(OutlinedButton, 'Manage subscription'),
-      findsOneWidget,
-    );
-    // The honest "cancel" cue sits in the caption centered directly below it.
+    final manage = find.widgetWithText(OutlinedButton, 'Manage subscription');
+    expect(manage, findsOneWidget);
+    // The honest "cancel" cue is still present and findable.
     expect(find.textContaining('cancel'), findsOneWidget);
+
+    // Vertical order: the billing/cancel cue sits ABOVE the button, the two
+    // account actions (Manage then Delete) form one uninterrupted cluster, and
+    // the legal links are the ABSOLUTE last element (quiet compliance fine
+    // print the user essentially never taps).
+    final cueDy = tester.getTopLeft(find.textContaining('cancel')).dy;
+    final manageDy = tester.getTopLeft(manage).dy;
+    final deleteDy = tester.getTopLeft(find.text('Delete my account')).dy;
+    final legalDy = tester.getTopLeft(find.textContaining('Privacy Policy')).dy;
+    expect(cueDy, lessThan(manageDy));
+    expect(manageDy, lessThan(deleteDy));
+    expect(deleteDy, lessThan(legalDy));
   });
 
   // ---- iPhone-SE / large-text overflow ----

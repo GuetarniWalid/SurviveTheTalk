@@ -96,19 +96,24 @@ class _AccountSheetBody extends StatelessWidget {
                   color: AppColors.background,
                 ),
               ),
-              const SizedBox(height: 24),
-              LegalLinksRow(
-                color: AppColors.overlaySubtitle,
-                launch: launch,
-              ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 32),
+              // Delete is the only action — directly under the title (Walid
+              // 2026-06-22: matches the Manage drawer; the legal links are quiet
+              // fine print at the VERY bottom, separated by a 32px moat, never
+              // burying the action beneath them as the old order did).
               DeleteAccountTile(
+                color: AppColors.paywallError,
                 onDelete: repository.deleteAccount,
                 onDeleted: () {
                   final navigator = Navigator.of(context);
                   if (navigator.canPop()) navigator.pop();
                   onSignOut();
                 },
+              ),
+              const SizedBox(height: 32),
+              LegalLinksRow(
+                color: AppColors.overlaySubtitle,
+                launch: launch,
               ),
             ],
           ),
