@@ -237,12 +237,13 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                     if (i > 0) const SizedBox(height: 8),
                     _BenefitRow(text: _kBenefits[i]),
                   ],
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 40),
                   // Profile-dependent slot — the ONLY thing the fetch gates.
                   // The value block + manage button always render (a member must
                   // always reach Manage, even if the profile fetch fails).
-                  // 32px above = the VALUE→(billing+action) group break, on the
-                  // same rhythm as every other boundary in the sheet (2026-06-22).
+                  // 40px above = the SAME gap as Delete→legal below, so the
+                  // [renewal + Manage + Delete] block is framed by equal air top
+                  // and bottom and reads as centered (Walid 2026-06-22).
                   _RenewalSlot(state: state),
                   const SizedBox(height: 16),
                   // The exit — a clearly-tappable OUTLINED pill (same shape as
