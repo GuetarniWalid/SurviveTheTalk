@@ -1,6 +1,6 @@
 # Story 10.2: Provision Domain, DNS, SSL, and Server Infrastructure
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -289,6 +289,22 @@ _Docs/ops only so far (DNS cutover done in the GoDaddy UI; Caddy + client change
 - 2026-06-22 — dev-story session 2: DNS hand-off escalated to an account-access problem. Domain = GoDaddy registrar (reg. 2026-04-16) + Cloudflare DNS/Email-Routing; neither account under the personal Gmail. Walid to recover the Cloudflare account (or GoDaddy, with NS-repoint fallback) before Task 1 can complete. Story stays in-progress.
 - 2026-06-22 — dev-story session 1: Tasks 2 (pre-flight) + 5 (infra verify) done read-only off the live VPS. `:443` already open at the firewall; confirmed single `pipecat.service`+`caddy.service` (no `fastapi.service`); all `.env` keys present (Groq/Cartesia+ElevenLabs/Soniox/Resend/LiveKit/JWT). Discovered the VPS has public IPv6 → AAAA record now required (AC1/DEC-4). Cutover (Tasks 3/4/6) blocked on the Cloudflare A+AAAA record (Task 1, Walid's hand-off). Status ready-for-dev → in-progress.
 - 2026-06-22 — create-story: domain/DNS/SSL cutover story authored after live VPS inspection. Status → ready-for-dev.
+
+### Review Findings
+
+**2026-06-22 — formal `/bmad-code-review` COMPLETE → CLEAN (0 findings).** Reviewer model `claude-opus-4-8` in a fresh multi-agent review context independent of the dev-story session. Method: **5 parallel adversarial finder lenses** over the 6-file / ~32-line reviewable diff (`197df0c..HEAD`, code/config only — story/ops-notes docs excluded), each emitting structured findings, followed by a per-finding adversarial verification pass (2 skeptics each). All five lenses returned clean; with zero findings there was nothing to verify, deduplicate, or triage.
+
+- **Blind Hunter** (diff only) — clean.
+- **Edge Case Hunter** (diff + repo read) — clean. Probed the `legal_urls.dart` `const`→getter switch (every call site is a runtime `Uri.parse(...)` / `..onTap` — compile-safe; the 689-test suite proves it), the trailing-slash normalization, and whether any client code still needs cleartext.
+- **Acceptance Auditor** (diff + this spec) — clean. AC1–AC8, Tasks 1–6, and DEC-1..DEC-5 are all satisfied by the diff; no anti-pattern from Dev Notes is present.
+- **Transport-Security Hunter** — clean. Verified Android `usesCleartextTraffic="false"` has **no** `network_security_config` nor a debug/profile-manifest cleartext override behind it; the iOS removal of the entire `NSAppTransportSecurity` dict restores the **strict ATS default** with no lingering exception keys; the transitional `http://167.235.63.129` Caddy block is the explicitly-accepted **DEC-2** cleartext (flagged for removal in 10.5), not a new exposure; WebRTC uses `wss://` to LiveKit Cloud directly.
+- **Caddy/Infra Hunter** — clean. The domain site block triggers Caddy auto-HTTPS + the automatic HTTP→HTTPS redirect (AC2/AC3); `/static/*` `strip_prefix`+`root`+`file_server` is correct with the fixed `/opt/survive-the-talk/current/server/static` root (AC4); no Host-routing collision between the domain `:80` redirect handler and the transitional IP block; no Caddyfile syntax error.
+
+Reviewer cross-checks (independent of the finders): all `LegalUrls.*` usages are runtime contexts; the only `http://` in client `lib/` is the SVG XML namespace (`http://www.w3.org/2000/svg`), not a network call. Gates re-run green at HEAD: `flutter analyze` → *No issues found!*; `flutter test` → *All tests passed!* (689). No server Python / migration in this story → `ruff`/`pytest` unaffected (AC8).
+
+**Triage:** 0 decision-needed, 0 patch, 0 defer, 0 dismissed. **✅ Clean review — all layers passed.**
+
+**Both flip-gates are now clear** — Pixel 9 Android smoke gate signed by Walid 2026-06-22 + this clean formal code review (the last gate to clear). Per the root-CLAUDE.md flip-discipline this triggers `review → done`.
 
 ## Questions for Walid (raised at create-story; none block writing the spec)
 
