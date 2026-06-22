@@ -96,14 +96,15 @@ class _AccountSheetBody extends StatelessWidget {
                   color: AppColors.background,
                 ),
               ),
-              const SizedBox(height: 24),
-              // Delete is the only action — under the title, kept QUIET (Walid
-              // 2026-06-22 + UX margin agent): 24px above (no Manage button here
-              // to subordinate it, so a touch more air than the Manage drawer's
-              // 16px keeps it from reading as the title's payload) and 40px below
-              // (white space casting the legal links out as detached fine print).
+              const SizedBox(height: 40),
+              // This sheet is sparse (a free user has no subscription to show),
+              // so Delete here is a full-width RED OUTLINED pill (Manage-button
+              // shape) to give the sheet presence, centered by equal 40px air
+              // above and below (Walid 2026-06-22). The Manage drawer keeps
+              // Delete as quiet text — there it must NOT be spotlighted.
               DeleteAccountTile(
                 color: AppColors.paywallError,
+                outlined: true,
                 onDelete: repository.deleteAccount,
                 onDeleted: () {
                   final navigator = Navigator.of(context);

@@ -25,11 +25,20 @@ class DeleteAccountTile extends StatefulWidget {
   /// AA on their light background (the default red is sub-AA on light).
   final Color color;
 
+  /// When true (the FREE Account sheet, which is otherwise sparse), render
+  /// Delete as a full-width OUTLINED pill — the same shape as the Manage button
+  /// but with a RED border + red label ([color]) — to give that empty sheet
+  /// presence (Walid 2026-06-22). The Manage drawer leaves this false: there
+  /// Delete stays a quiet red text appendage so it is not spotlighted next to
+  /// the Manage button.
+  final bool outlined;
+
   const DeleteAccountTile({
     super.key,
     required this.onDelete,
     required this.onDeleted,
     this.color = AppColors.destructive,
+    this.outlined = false,
   });
 
   @override
@@ -92,7 +101,8 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
       mainAxisSize: MainAxisSize.min,
       children: [
         SizedBox(
-          height: _kTileHeight,
+          width: widget.outlined ? double.infinity : null,
+          height: widget.outlined ? _kOutlinedHeight : _kTileHeight,
           child: _deleting
               ? Center(
                   child: SizedBox(
@@ -104,14 +114,28 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
                     ),
                   ),
                 )
-              : TextButton(
-                  onPressed: _onTap,
-                  style: TextButton.styleFrom(
-                    foregroundColor: widget.color,
-                    textStyle: AppTypography.caption,
-                  ),
-                  child: const Text(_kDelete),
-                ),
+              : widget.outlined
+                  // Free Account sheet — a full-width red OUTLINED pill (Manage
+                  // button shape, red border + label) to fill the sparse sheet.
+                  ? OutlinedButton(
+                      onPressed: _onTap,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: widget.color,
+                        side: BorderSide(color: widget.color, width: 1),
+                        shape: const StadiumBorder(),
+                        textStyle: _kOutlinedTextStyle,
+                      ),
+                      child: const Text(_kDelete),
+                    )
+                  // Manage drawer — quiet red text appendage (not spotlighted).
+                  : TextButton(
+                      onPressed: _onTap,
+                      style: TextButton.styleFrom(
+                        foregroundColor: widget.color,
+                        textStyle: AppTypography.caption,
+                      ),
+                      child: const Text(_kDelete),
+                    ),
         ),
         if (_failed)
           Padding(
@@ -142,4 +166,11 @@ const String _kCancel = 'Cancel';
 const String _kConfirmDelete = 'Delete';
 const String _kError = "Couldn't delete your account. Try again.";
 const double _kTileHeight = 48.0;
+// Outlined variant — matches the Manage button (64h, Inter 14/w600 label).
+const double _kOutlinedHeight = 64.0;
 const double _kSpinnerSize = 20.0;
+const TextStyle _kOutlinedTextStyle = TextStyle(
+  fontFamily: AppTypography.fontFamily,
+  fontSize: 14,
+  fontWeight: FontWeight.w600,
+);

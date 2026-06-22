@@ -78,6 +78,30 @@ void main() {
     expect(fg('Delete'), AppColors.destructive);
   });
 
+  testWidgets('outlined: true → a red-bordered pill (free Account sheet)',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DeleteAccountTile(
+            outlined: true,
+            color: AppColors.paywallError,
+            onDelete: () async {},
+            onDeleted: () {},
+          ),
+        ),
+      ),
+    );
+
+    // Walid 2026-06-22: the sparse free sheet gets a full-width OUTLINED pill
+    // (Manage-button shape) with a RED border + red label, not the quiet text.
+    final btn = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Delete my account'),
+    );
+    expect(btn.style?.side?.resolve({})?.color, AppColors.paywallError);
+    expect(btn.style?.foregroundColor?.resolve({}), AppColors.paywallError);
+  });
+
   testWidgets('server failure → inline error, no sign-out', (tester) async {
     var signedOut = false;
     await tester.pumpWidget(
