@@ -12,6 +12,13 @@ import 'api/api_client.dart';
 class LegalUrls {
   const LegalUrls._();
 
-  static const String privacyPolicy = '${ApiClient.baseUrl}/legal/privacy';
-  static const String termsOfService = '${ApiClient.baseUrl}/legal/terms';
+  /// [ApiClient.baseUrl] with any trailing slash stripped, so a future base
+  /// that ends in `/` can't yield a double slash (`//legal/...`) — the deferred
+  /// Story 10.1 review item. Kept as the single derived source.
+  static String get _base => ApiClient.baseUrl.endsWith('/')
+      ? ApiClient.baseUrl.substring(0, ApiClient.baseUrl.length - 1)
+      : ApiClient.baseUrl;
+
+  static String get privacyPolicy => '$_base/legal/privacy';
+  static String get termsOfService => '$_base/legal/terms';
 }

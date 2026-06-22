@@ -1,6 +1,6 @@
 # Story 10.2: Provision Domain, DNS, SSL, and Server Infrastructure
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -43,19 +43,19 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — DNS: point `api.survivethetalk.com` at the VPS** (AC: 1) — **Walid's one manual step** (or hand the agent a Cloudflare API token)
-  - [ ] In the **Cloudflare** dashboard for `survivethetalk.com` → **DNS → Records → Add record**:
+- [x] **Task 1 — DNS: point `api.survivethetalk.com` at the VPS** (AC: 1) — ⚠️ DONE via GoDaddy DNS migration (Cloudflare account unrecoverable), not the Cloudflare path below; see Completion Notes session 3 + `ops-notes/godaddy-dns-cutover-2026-06-22.md` — **Walid's one manual step** (or hand the agent a Cloudflare API token)
+  - [x] ~~In the **Cloudflare** dashboard~~ → done in **GoDaddy DNS** instead (A `api`→`167.235.63.129` + AAAA `api`→`2a01:4f8:1c18:fbfd::1`):
     - Type `A`, Name `api`, IPv4 `167.235.63.129`, **Proxy status = DNS only (grey cloud)**, TTL Auto.
-  - [ ] On the VPS, check for a public IPv6 (`ip -6 addr show scope global`). If one exists, add a matching `AAAA` record (Name `api`, that IPv6, DNS-only). If none, skip — A-only is fine.
-  - [ ] Agent verifies propagation before touching Caddy: `dig +short api.survivethetalk.com @1.1.1.1` returns `167.235.63.129`. Do NOT proceed to Task 3 until this resolves publicly.
-  - [ ] ⚠️ **Why DNS-only, not proxied:** the orange-cloud proxy would make Cloudflare terminate TLS at its edge and break Caddy's Let's Encrypt issuance / the architecture's "Caddy auto Let's Encrypt" contract. If Walid prefers Cloudflare-proxied later, that's a separate hardening decision (Full-Strict + a CF origin cert) — out of scope here.
+  - [x] On the VPS, check for a public IPv6 (`ip -6 addr show scope global`). If one exists, add a matching `AAAA` record (Name `api`, that IPv6, DNS-only). If none, skip — A-only is fine.
+  - [x] Agent verifies propagation before touching Caddy: `dig +short api.survivethetalk.com @1.1.1.1` returns `167.235.63.129`. Do NOT proceed to Task 3 until this resolves publicly.
+  - [x] ⚠️ **Why DNS-only, not proxied:** the orange-cloud proxy would make Cloudflare terminate TLS at its edge and break Caddy's Let's Encrypt issuance / the architecture's "Caddy auto Let's Encrypt" contract. If Walid prefers Cloudflare-proxied later, that's a separate hardening decision (Full-Strict + a CF origin cert) — out of scope here.
 
 - [x] **Task 2 — Pre-flight: confirm 443 is reachable and capture the baseline** (AC: 2) — agent, read-only
   - [x] Confirm inbound `:443` is open (Hetzner Cloud firewall + host `ufw`/`iptables`). Port `:80` is already open (Caddy listens there now) so the Let's Encrypt HTTP-01 challenge can complete; clients need `:443` open to connect over HTTPS. If `:443` is blocked, open it (this is the agent's job) and record the change.
   - [x] Snapshot the live Caddyfile and service state before editing, so the change is reversible: `cat /etc/caddy/Caddyfile`, `systemctl is-active caddy pipecat.service`.
 
-- [ ] **Task 3 — Caddy: cut over to the domain (HTTPS) while keeping the IP alive** (AC: 2, 3, 4, 5) — agent, **manual deploy** (CI does NOT ship the Caddyfile)
-  - [ ] Update `deploy/Caddyfile` to the domain config below (this is also the repo source-of-truth fix — corrects the stale static `root` and drops the vestigial `/auth/*` + `/api/*` handles, which all just proxied to `:8000` anyway):
+- [x] **Task 3 — Caddy: cut over to the domain (HTTPS) while keeping the IP alive** (AC: 2, 3, 4, 5) — agent, **manual deploy** (CI does NOT ship the Caddyfile)
+  - [x] Update `deploy/Caddyfile` to the domain config below (this is also the repo source-of-truth fix — corrects the stale static `root` and drops the vestigial `/auth/*` + `/api/*` handles, which all just proxied to `:8000` anyway):
     ```
     api.survivethetalk.com {
         handle /static/* {
@@ -76,26 +76,26 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
         reverse_proxy localhost:8000
     }
     ```
-  - [ ] Deploy it to the VPS manually and reload (NOT via the GitHub Actions deploy — that workflow's `paths:` deliberately exclude the Caddyfile):
+  - [x] Deploy it to the VPS manually and reload (NOT via the GitHub Actions deploy — that workflow's `paths:` deliberately exclude the Caddyfile):
     `scp deploy/Caddyfile root@167.235.63.129:/etc/caddy/Caddyfile`, then `ssh root@167.235.63.129 'caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy'`.
-  - [ ] Watch Caddy obtain the cert on first reload: `journalctl -u caddy -n 50 --no-pager` should show a successful Let's Encrypt issuance for `api.survivethetalk.com` (no rate-limit / challenge failures). Confirm Caddy now listens on `:443` (`ss -tlnp | grep ':443'`).
+  - [x] Watch Caddy obtain the cert on first reload: `journalctl -u caddy -n 50 --no-pager` should show a successful Let's Encrypt issuance for `api.survivethetalk.com` (no rate-limit / challenge failures). Confirm Caddy now listens on `:443` (`ss -tlnp | grep ':443'`).
 
-- [ ] **Task 4 — Client: flip the base URL to the domain + tighten cleartext** (AC: 6) — agent. **Only after Task 3 verifies HTTPS is live**, so the build is never pointed at a dead domain.
-  - [ ] `client/lib/core/api/api_client.dart:8` — `baseUrl = 'https://api.survivethetalk.com'`.
-  - [ ] `client/test/core/api/api_client_test.dart:99` — update the assertion to the new HTTPS base URL.
-  - [ ] `client/lib/core/legal_urls.dart` — harden the concat so a future trailing slash on `baseUrl` can't yield `//legal/...` (the deferred Story 10.1 review item). Keep it a single derived source.
-  - [ ] `client/android/app/src/main/AndroidManifest.xml:20` — set `android:usesCleartextTraffic="false"` (or remove the attribute). The new build talks HTTPS-only; the kept-alive IP block is for OLD installs / CI, which the new build never uses.
-  - [ ] `client/ios/Runner/Info.plist:5-9` — remove `NSAllowsArbitraryLoads` (HTTPS-only ATS posture). iOS can't be device-verified until Story 10.4, but make the code change now so the store build is correct; note it in Completion Notes.
-  - [ ] Run `flutter analyze` + `flutter test` and fix any fallout (the baseURL test, any test hardcoding the IP).
+- [x] **Task 4 — Client: flip the base URL to the domain + tighten cleartext** (AC: 6) — agent. **Only after Task 3 verifies HTTPS is live**, so the build is never pointed at a dead domain.
+  - [x] `client/lib/core/api/api_client.dart:8` — `baseUrl = 'https://api.survivethetalk.com'`.
+  - [x] `client/test/core/api/api_client_test.dart:99` — update the assertion to the new HTTPS base URL.
+  - [x] `client/lib/core/legal_urls.dart` — harden the concat so a future trailing slash on `baseUrl` can't yield `//legal/...` (the deferred Story 10.1 review item). Keep it a single derived source.
+  - [x] `client/android/app/src/main/AndroidManifest.xml:20` — set `android:usesCleartextTraffic="false"` (or remove the attribute). The new build talks HTTPS-only; the kept-alive IP block is for OLD installs / CI, which the new build never uses.
+  - [x] `client/ios/Runner/Info.plist:5-9` — remove `NSAllowsArbitraryLoads` (HTTPS-only ATS posture). iOS can't be device-verified until Story 10.4, but make the code change now so the store build is correct; note it in Completion Notes.
+  - [x] Run `flutter analyze` + `flutter test` and fix any fallout (the baseURL test, any test hardcoding the IP).
 
 - [x] **Task 5 — Verify the already-provisioned infra (don't re-create it)** (AC: 7) — agent, read-only; record evidence in the story
   - [x] OS: `Ubuntu 24.04` (`/etc/os-release`).
   - [x] Services: `pipecat.service` + `caddy.service` both `active`; **no** `fastapi.service` exists (`systemctl list-unit-files | grep -E 'fastapi|pipecat|caddy'`).
   - [x] `.env` key NAMES present (do not print values): `SONIOX_API_KEY`, `GROQ_API_KEY`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`, `JWT_SECRET`. Note `OPENROUTER_API_KEY` is present but legacy/optional (migrated to Groq).
 
-- [ ] **Task 6 — Reconcile repo source-of-truth + commit** (AC: 8)
-  - [ ] Ensure `deploy/Caddyfile` in the repo matches exactly what was deployed.
-  - [ ] All gates green; complete the Smoke Test Gate boxes with pasted evidence.
+- [x] **Task 6 — Reconcile repo source-of-truth + commit** (AC: 8)
+  - [x] Ensure `deploy/Caddyfile` in the repo matches exactly what was deployed.
+  - [x] All gates green; complete the Smoke Test Gate boxes with pasted evidence.
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -103,34 +103,34 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
 >
 > **Transition rule:** Every unchecked box is a stop-ship for `in-progress → review`. Paste the actual command + output as proof.
 
-- [ ] **Deployed.** `systemctl is-active caddy.service pipecat.service` → both `active`; Caddy reloaded with the domain config and is listening on `:443`.
-  - _Proof:_ <!-- paste systemctl + `ss -tlnp | grep ':443'` -->
+- [x] **Deployed.** `systemctl is-active caddy.service pipecat.service` → both `active`; Caddy reloaded with the domain config and is listening on `:443`.
+  - _Proof:_ `caddy validate` → `Valid configuration`; `systemctl reload caddy` → OK; `systemctl is-active caddy.service pipecat.service` → `active` / `active`; `ss -tlnp | grep ':443'` → `LISTEN 0 4096 *:443 *:* users:(("caddy",pid=4150,fd=12))`. (2026-06-22)
 
-- [ ] **HTTPS happy-path round-trip (valid cert).** `curl https://api.survivethetalk.com/health` → `200` + `{data, meta}` envelope; `data.git_sha` == deployed HEAD; cert issued by Let's Encrypt and valid.
+- [x] **HTTPS happy-path round-trip (valid cert).** `curl https://api.survivethetalk.com/health` → `200` + `{data, meta}` envelope; `data.git_sha` == deployed HEAD; cert issued by Let's Encrypt and valid.
   - _Command:_ `curl -sS https://api.survivethetalk.com/health` and `echo | openssl s_client -connect api.survivethetalk.com:443 -servername api.survivethetalk.com 2>/dev/null | openssl x509 -noout -issuer -dates`
   - _Expected:_ `200` + git_sha match; issuer `C=US, O=Let's Encrypt, ...`; `notAfter` in the future
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ ✅ `200` → `{"data":{"status":"ok","db":"ok","git_sha":"bfb4773d48e4c01c776e36ec672f497b3f3e3ef3"},"meta":{"timestamp":"2026-06-22T13:28:04Z"}}` (git_sha == deployed HEAD `bfb4773`). Cert: `issuer=C=US, O=Let's Encrypt, CN=YE1`; `notBefore=Jun 22 12:28:55 2026 GMT`; `notAfter=Sep 20 12:28:54 2026 GMT`; `subject=CN=api.survivethetalk.com`. Caddy log: `certificate obtained successfully` (HTTP-01, multi-perspective valid).
 
-- [ ] **HTTP→HTTPS redirect on the domain.** `curl -sS -I http://api.survivethetalk.com/health` → a `308`/`301` `Location: https://...` (not a cleartext `200`).
+- [x] **HTTP→HTTPS redirect on the domain.** `curl -sS -I http://api.survivethetalk.com/health` → a `308`/`301` `Location: https://...` (not a cleartext `200`).
   - _Command:_ `curl -sS -I http://api.survivethetalk.com/health`
   - _Expected:_ `30x` + `Location: https://api.survivethetalk.com/...`
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ ✅ `HTTP/1.1 308 Permanent Redirect` + `Location: https://api.survivethetalk.com/health`.
 
-- [ ] **Legal pages reachable over HTTPS (Story 10.1 contract holds on the domain).** `GET https://api.survivethetalk.com/legal/privacy` → `200` HTML; and the Caddy static mount `GET https://api.survivethetalk.com/static/legal/privacy.html` → `200` HTML.
+- [x] **Legal pages reachable over HTTPS (Story 10.1 contract holds on the domain).** `GET https://api.survivethetalk.com/legal/privacy` → `200` HTML; and the Caddy static mount `GET https://api.survivethetalk.com/static/legal/privacy.html` → `200` HTML.
   - _Command:_ `curl -sS -o /dev/null -w "%{http_code}\n" https://api.survivethetalk.com/legal/privacy` and `.../static/legal/privacy.html`
   - _Expected:_ `200` and `200`
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ ✅ `/legal/privacy` → `200` (FastAPI route); `/static/legal/privacy.html` → `200` (Caddy static mount, root `/opt/survive-the-talk/current/server/static`).
 
-- [ ] **Raw-IP endpoint still alive (transition non-regression, AC5).** `curl http://167.235.63.129/health` → `200`.
+- [x] **Raw-IP endpoint still alive (transition non-regression, AC5).** `curl http://167.235.63.129/health` → `200`.
   - _Command:_ `curl -sS -o /dev/null -w "%{http_code}\n" http://167.235.63.129/health`
   - _Expected:_ `200`
-  - _Actual:_ <!-- paste -->
+  - _Actual:_ ✅ `http://167.235.63.129/health` → `200` (transitional `http://167.235.63.129` Caddy block intact; currently-installed app + CI healthcheck not bricked).
 
-- [ ] **DB side-effect — N/A.** This story is a reverse-proxy/TLS config reload; it writes no rows and adds no migration.
-- [ ] **DB backup before deploy — N/A.** No DB schema change; no destructive operation against SQLite.
+- [x] **DB side-effect — N/A.** This story is a reverse-proxy/TLS config reload; it writes no rows and adds no migration.
+- [x] **DB backup before deploy — N/A.** No DB schema change; no destructive operation against SQLite.
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u caddy -u pipecat.service -n 80 --since "5 min ago"` shows the successful Let's Encrypt issuance and no ERROR/Traceback for the requests above.
-  - _Proof:_ <!-- paste tail or "no errors in window" + timestamp -->
+- [x] **Server logs clean on the happy path.** `journalctl -u caddy -u pipecat.service -n 80 --since "5 min ago"` shows the successful Let's Encrypt issuance and no ERROR/Traceback for the requests above.
+  - _Proof:_ ✅ `journalctl -u caddy -u pipecat.service --since "6 min ago"` (2026-06-22 ~13:28): shows `new ACME account registered: valid` → `certificate obtained successfully`. No ERROR/Traceback/exception. The only lines containing "error" are benign INFO logs (`creating new account because no account ... default.json: no such file or directory`) — the expected first-time ACME account bootstrap, immediately followed by successful registration + issuance.
 
 **On-device gate (Walid, Pixel 9 — Android only; iOS deferred to 10.4):** a new Android build with `baseUrl = https://api.survivethetalk.com` (a) launches and loads the scenario list, (b) completes one short call (proves the API initiate/end + token path works over HTTPS — note WebRTC itself is unaffected, it uses LiveKit Cloud directly), (c) the paywall/consent legal links open the HTTPS pages. A ready-to-play script will be handed over before the gate per the project's voice-smoke-test rule.
 
@@ -256,13 +256,27 @@ claude-opus-4-8 (dev-story, 2026-06-22)
 - **Dropped** Cloudflare Email-Routing (`contact@`/`hello@` forwarding) — accepted trade-off (published contact = `guetarni.walid@gmail.com`).
 - **Now waiting on NS-delegation propagation** (public resolvers still cache `conrad`/`keira`). A background poll watches `1.1.1.1`+`8.8.8.8` for `api`→VPS; on success the agent runs Task 3 (deploy domain Caddyfile → Let's Encrypt) then Task 4 (client base-URL flip). ACME is deliberately NOT triggered until propagation completes (avoids LE failed-validation rate limits).
 
+**2026-06-22 — dev-story session 3 COMPLETE (cutover live + client flipped → review).** Propagation hit in ~2 min (1.1.1.1 + 8.8.8.8 both `api`→`167.235.63.129`). Then:
+- **Caddy:** deployed the domain `deploy/Caddyfile` to `/etc/caddy/Caddyfile` (backup `Caddyfile.bak.pre-10.2` kept; `scp` + `caddy validate` → *Valid configuration* + `systemctl reload caddy`). Let's Encrypt cert issued for `api.survivethetalk.com` (HTTP-01 multi-perspective, valid 2026-06-22 → 2026-09-20); `:443` listener up; raw-IP `:80` block kept alive.
+- **Client:** `ApiClient.baseUrl='https://api.survivethetalk.com'`; `api_client_test.dart` assertion updated; `legal_urls.dart` hardened to trailing-slash-safe normalizing getters (single derived source); Android `usesCleartextTraffic="false"`; iOS `NSAppTransportSecurity`/`NSAllowsArbitraryLoads` removed (HTTPS-only ATS — code change now, device-verifiable only at Story 10.4).
+- **Gates GREEN:** `flutter analyze` → *No issues found!*; `flutter test` → *All tests passed!* (689). No server Python / migration touched → `ruff`/`pytest` unaffected (per AC8). All Smoke Test Gate boxes above pass.
+- **Outbound email preserved:** Resend DKIM/SPF/DMARC recreated identically on GoDaddy (verified authoritatively). Recommend Walid confirm a login code still arrives on his next fresh login.
+- **Remaining for `review → done`:** the formal `/bmad-code-review` (different LLM) + the Pixel 9 Android on-device gate.
+
 ### File List
 
 _Docs/ops only so far (DNS cutover done in the GoDaddy UI; Caddy + client changes pending propagation):_
 - `_bmad-output/implementation-artifacts/10-2-provision-domain-dns-ssl-and-server-infrastructure.md` (status → in-progress, Tasks 1/2/5 done, Dev Agent Record)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (10-2 → in-progress)
 - `_bmad-output/implementation-artifacts/ops-notes/godaddy-dns-cutover-2026-06-22.md` (NEW — full GoDaddy record set + cutover procedure)
-- _Pending (after propagation):_ `deploy/Caddyfile`, `client/lib/core/api/api_client.dart`, `client/test/core/api/api_client_test.dart`, `client/lib/core/legal_urls.dart`, `client/android/app/src/main/AndroidManifest.xml`, `client/ios/Runner/Info.plist`
+- **Changed (session 3 — Caddy + client flip):**
+  - `deploy/Caddyfile` (domain block + corrected static root + transitional IP block)
+  - `client/lib/core/api/api_client.dart` (baseUrl → HTTPS domain)
+  - `client/test/core/api/api_client_test.dart` (baseURL assertion)
+  - `client/lib/core/legal_urls.dart` (trailing-slash-safe normalizing getters)
+  - `client/android/app/src/main/AndroidManifest.xml` (usesCleartextTraffic="false")
+  - `client/ios/Runner/Info.plist` (removed NSAppTransportSecurity/NSAllowsArbitraryLoads)
+  - _On the VPS (not in repo):_ `/etc/caddy/Caddyfile` (deployed copy) + `/etc/caddy/Caddyfile.bak.pre-10.2` (rollback backup)
 
 ### Change Log
 

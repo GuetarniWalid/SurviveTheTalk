@@ -1,10 +1,18 @@
 api.survivethetalk.com {
     handle /static/* {
         uri strip_prefix /static
-        root * /opt/survive-the-talk/server/static
+        root * /opt/survive-the-talk/current/server/static
         file_server
     }
     handle {
         reverse_proxy localhost:8000
     }
+}
+
+# Transitional backward-compat (DEC-2): the currently-installed app and the
+# CI /health check still hit the raw IP over HTTP. Caddy cannot get a
+# Let's Encrypt cert for a bare IP, so this stays plain HTTP. REMOVE before
+# public launch (Story 10.5) once every install points at the domain.
+http://167.235.63.129 {
+    reverse_proxy localhost:8000
 }

@@ -5,7 +5,7 @@ import 'api_exception.dart';
 import 'auth_interceptor.dart';
 
 class ApiClient {
-  static const String baseUrl = 'http://167.235.63.129';
+  static const String baseUrl = 'https://api.survivethetalk.com';
 
   final Dio _dio;
   final TokenStorage _tokenStorage;

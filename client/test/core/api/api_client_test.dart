@@ -96,7 +96,7 @@ void main() {
 
   group('ApiClient configuration', () {
     test('uses correct base URL', () {
-      expect(ApiClient.baseUrl, 'http://167.235.63.129');
+      expect(ApiClient.baseUrl, 'https://api.survivethetalk.com');
     });
   });
 }
