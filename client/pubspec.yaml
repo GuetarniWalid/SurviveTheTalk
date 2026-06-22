@@ -72,6 +72,27 @@ dev_dependencies:
   mocktail: ^1.0.5
   sqflite_common_ffi: ^2.4.0+3
 
+  # Story 10.3 — build-time launcher-icon generator. Regenerates the iOS
+  # AppIcon.appiconset AND the Android adaptive icons (mipmap-anydpi-v26)
+  # from the single 1024 source so every density/target derives from one
+  # asset. Dev-only tool, not shipped in the app. Run after changing the
+  # source art: `dart run flutter_launcher_icons`.
+  flutter_launcher_icons: ^0.14.0
+
+# Story 10.3 — launcher-icon config. `image_path` (the full 1024 icon, dark
+# swirl + mouth) drives the iOS appiconset + the Android legacy square icon
+# (API 24-25). On API 26+ Android uses the adaptive icon: the mouth-only
+# `app_icon_foreground.png` over a solid `#120F0F` background sampled from the
+# source art's own corner, so the masked look matches the existing icon.
+flutter_launcher_icons:
+  image_path: "assets/images/icon/app_icon.png"
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  min_sdk_android: 24
+  adaptive_icon_background: "#120F0F"
+  adaptive_icon_foreground: "assets/images/icon/app_icon_foreground.png"
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

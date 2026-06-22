@@ -1,8 +1,24 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Story 10.3 — release signing credentials are loaded from a git-ignored
+// `android/key.properties` (never committed; see android/.gitignore). The
+// file is absent on dev machines that don't hold the upload keystore, in
+// which case release builds fall back to debug signing below so a plain
+// `flutter run --release` still works locally. The real upload keystore is
+// owned + backed up by Walid (DEC-5) and lives off-repo.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -34,11 +50,30 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            // Populated only when key.properties is present; otherwise the
+            // release build falls back to the debug config below so the
+            // empty release config is never actually referenced.
+            if (hasReleaseKeystore) {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use the real upload key when key.properties exists (CI / release
+            // machine); fall back to debug signing locally so `flutter run
+            // --release` still works without the keystore (Story 10.3 / DEC-5).
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

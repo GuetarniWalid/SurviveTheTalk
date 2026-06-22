@@ -1,6 +1,6 @@
 # Story 10.3: Configure App Store and Play Store Listings
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -58,51 +58,53 @@ Per the standing autonomy rule, the agent does **everything it can**: the identi
 
 ### Part A — Agent (codeable now)
 
-- [ ] **Task 1 — Rename the app identity to "Survive the Talk"** (AC: 1) — agent
-  - [ ] `client/ios/Runner/Info.plist:9-10` — `CFBundleDisplayName` → `Survive the Talk` (this is the home-screen / App Store name). Leave `CFBundleName` (line 17-18) short or set it to `Survive the Talk` too; do **not** touch `CFBundleIdentifier` (it's `$(PRODUCT_BUNDLE_IDENTIFIER)`).
-  - [ ] `client/android/app/src/main/AndroidManifest.xml:17` — `android:label="Survive the Talk"`.
-  - [ ] **Do NOT change** `applicationId` / `PRODUCT_BUNDLE_IDENTIFIER` (`com.surviveTheTalk.client`) — see Anti-patterns (it's permanent and tied to the IAP product).
-  - [ ] Run `flutter analyze` + `flutter test`; fix any test that asserts the old label (unlikely — the label isn't user-facing in widget tests).
+- [x] **Task 1 — Rename the app identity to "Survive the Talk"** (AC: 1) — agent ✓ DONE
+  - [x] `client/ios/Runner/Info.plist:9-10` — `CFBundleDisplayName` → `Survive the Talk`; also set `CFBundleName` (line 17-18) to `Survive the Talk`. `CFBundleIdentifier` untouched.
+  - [x] `client/android/app/src/main/AndroidManifest.xml:17` — `android:label="Survive the Talk"`.
+  - [x] **Did NOT change** `applicationId` / `PRODUCT_BUNDLE_IDENTIFIER` (`com.surviveTheTalk.client`) — left permanent/IAP-tied id intact.
+  - [x] `flutter analyze` clean + `flutter test` 689 pass — no test asserted the old label.
 
-- [ ] **Task 2 — Set up the launcher-icon pipeline + export store icons** (AC: 2) — agent
-  - [ ] Add `flutter_launcher_icons` to `dev_dependencies` in `client/pubspec.yaml` and add a `flutter_launcher_icons:` config block pointing at `assets/images/icon/app_icon.png` (1024) with `adaptive_icon_foreground: assets/images/icon/app_icon_foreground.png` and an `adaptive_icon_background` (solid brand color or the existing background) so **Android adaptive icons are generated** (`mipmap-anydpi-v26/ic_launcher.xml`). Set `image_path` for iOS too so the appiconset (incl. 1024) regenerates from the same source.
-  - [ ] Run the generator (`dart run flutter_launcher_icons`); confirm `mipmap-anydpi-v26/ic_launcher.xml` + foreground/background drawables now exist and the iOS appiconset still has all sizes incl. `Icon-App-1024x1024@1x.png`.
-  - [ ] Export the **512×512 Play hi-res icon** and confirm a **1024×1024 App Store icon** are available (both derivable from `app_icon.png`); reference their paths in the content artifact (Task 5). Do not over-pad — the Play hi-res icon is a full-bleed 512 square (Play applies its own mask).
-  - [ ] **Preserve the current visual.** If regeneration would change the look of the existing iOS icon, prefer matching the current design; the Android adaptive icon is the only genuinely-missing piece. Final visual check is on the Pixel 9 (Task 10). (See DEC-6 for the lighter-touch alternative.)
-  - [ ] `flutter analyze` + `flutter test` green (icon assets shouldn't affect tests; confirm).
+- [x] **Task 2 — Set up the launcher-icon pipeline + export store icons** (AC: 2) — agent ✓ DONE
+  - [x] Added `flutter_launcher_icons: ^0.14.0` (resolved 0.14.4) to `dev_dependencies` + a config block: `image_path: app_icon.png` (drives iOS + Android legacy), `adaptive_icon_foreground: app_icon_foreground.png`, `adaptive_icon_background: "#120F0F"` (sampled from the source art's own corner so the masked look matches), `remove_alpha_ios: true`, `min_sdk_android: 24`.
+  - [x] Ran `dart run flutter_launcher_icons` → `mipmap-anydpi-v26/ic_launcher.xml` + `drawable-*/ic_launcher_foreground.png` (5 densities) + `values/colors.xml` now exist; iOS appiconset still has all 21 PNGs incl. `Icon-App-1024x1024@1x.png`.
+  - [x] Exported `play-hi-res-icon-512.png` (512, full-bleed) + `app-store-icon-1024.png` (1024, no alpha) → `_bmad-output/planning-artifacts/store-assets/`; referenced in the content artifact §8.
+  - [x] **Preserved the visual** — iOS regenerates from the same `app_icon.png` source (identical); Android adaptive (the only missing piece) = mouth foreground over the `#120F0F` ground. On-device visual check is Walid's Task 10.
+  - [x] `flutter analyze` clean + `flutter test` 689 pass — icon assets did not affect tests.
 
-- [ ] **Task 3 — Align the microphone usage description** (AC: 3) — agent
-  - [ ] `client/ios/Runner/Info.plist:62-63` — `NSMicrophoneUsageDescription` → `Used for real-time English conversation practice with AI characters` (Epics AC4 verbatim). Android needs no manifest rationale string (runtime dialog only; the Data-Safety form covers audio).
+- [x] **Task 3 — Align the microphone usage description** (AC: 3) — agent ✓ DONE
+  - [x] `client/ios/Runner/Info.plist:62-63` — `NSMicrophoneUsageDescription` → `Used for real-time English conversation practice with AI characters` (Epics AC4 verbatim). Android needs no manifest rationale string.
 
-- [ ] **Task 4 — Wire Android release signing (Walid owns the keystore)** (AC: 4) — agent + Walid (DEC-5)
-  - [ ] In `client/android/app/build.gradle.kts`: load `android/key.properties` if present, add `signingConfigs { create("release") { … } }` reading `storeFile/storePassword/keyAlias/keyPassword`, and switch `buildTypes.release.signingConfig` from `signingConfigs.getByName("debug")` to the release config (with a graceful fallback to debug when `key.properties` is absent, so `flutter run --release` still works for devs without the keystore).
-  - [ ] Add `**/key.properties` and `**/*.jks` / `**/*.keystore` to `client/android/.gitignore` (and the root `.gitignore` if appropriate); **never commit the keystore or passwords**.
-  - [ ] Provide Walid the exact `keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload` command + the `key.properties` template. Walid generates + **backs up** the keystore (DEC-5). The agent verifies the wiring with a throwaway keystore (or Walid's, if provided): `flutter build appbundle --release` produces a signed `.aab`.
-  - [ ] `flutter analyze` + `flutter test` green.
+- [x] **Task 4 — Wire Android release signing (Walid owns the keystore)** (AC: 4) — agent ✓ DONE / Walid owns the real keystore (DEC-5)
+  - [x] `client/android/app/build.gradle.kts`: loads `rootProject.file("key.properties")` if present, adds `signingConfigs.create("release")` reading `storeFile/storePassword/keyAlias/keyPassword`, and `buildTypes.release.signingConfig` switches to the release config when `key.properties` exists, **falling back to debug** when absent (so `flutter run --release` still works for devs without the keystore).
+  - [x] `**/key.properties`, `**/*.jks`, `**/*.keystore` were **already** in `client/android/.gitignore` — confirmed git-ignored (`git check-ignore` ✓). Nothing secret is committed.
+  - [x] **Verified the wiring with a throwaway keystore** (generated in the OS temp dir, never in-repo): `flutter build appbundle --release` produced a signed `app-release.aab` (78.6MB); `jarsigner -verify` → `jar verified`, signer `CN=Throwaway` (the upload key), **not** the Android Debug key. Throwaway keystore + `key.properties` + AAB deleted after. The exact `keytool` command + `key.properties` template handed to Walid (see Completion Notes) — Walid generates + backs up the REAL upload keystore.
+  - [x] `flutter analyze` clean + `flutter test` 689 pass.
 
-- [ ] **Task 5 — Draft the store-listing content artifact** (AC: 5) — agent drafts, Walid approves the copy
-  - [ ] Create `_bmad-output/planning-artifacts/store-listings-content.md` from the raw material in Dev Notes (§Store-Listing Content): app name, Apple subtitle + Google short description, full description, Apple keyword string, category (Education), age rating (13+/PEGI 12), the **content-rating questionnaire answer guidance**, the **Data-Safety / privacy-label mapping table**, the **subscription product sheet**, and the **per-frame screenshot spec** (5 frames). Follow the "Handler's Brief" copy discipline ([project_design_rulebook_handlers_brief.md]) — no exclamation/hype where the app's own voice shows.
-  - [ ] Present the drafted name/subtitle/keywords/description to Walid for approval (like the Story 7.1 debrief-title pattern: dev proposes, Walid approves) before he pastes them into the consoles.
+- [x] **Task 5 — Draft the store-listing content artifact** (AC: 5) — agent drafts ✓ DONE / Walid approves the copy (pending)
+  - [x] Created `_bmad-output/planning-artifacts/store-listings-content.md` — pinned IDs/URLs, app name + Apple subtitle (27 chars) + Google short description (76 chars), full description, Apple keyword string (91 chars), category Education, age rating 13+/PEGI 12 with **both** age-questionnaire answer tables (Apple + Google IARC), the Data-Safety / privacy-label mapping (Soniox / Groq / Cartesia+ElevenLabs / LiveKit / Resend / IAP), the `stt_weekly_199` subscription sheet, the 5-frame screenshot spec, the asset inventory, and a field-by-field console checklist. Handler's-Brief copy discipline (no hype/exclamations).
+  - [ ] ⏳ **Present the drafted name/subtitle/keywords/description to Walid for sign-off** before he pastes them into the consoles (dev proposes, Walid approves — Story 7.1 pattern). **Surfaced in the dev-story hand-off; awaiting Walid's OK.**
 
 ### Part B — Walid (manual console work; agent guides + verifies)
 
-- [ ] **Task 6 — Create the Google Play Developer account** (AC: 7 prerequisite; DEC-1) — **Walid, start FIRST**
+> **Part B status (human gates — NOT agent dev work).** Task 9 (URL check) is agent-done below. Tasks 6, 7, 8, 10 are Walid-only (no agent credentials / on-device only) and remain **open** — they are the story's human gates, the same way a smoke gate is. They do **not** block the dev→review flip (the agent's Part A is complete + gated green), but they DO gate `review → done`. Task 6 (Google Play account) is the launch long pole — start it first.
+
+- [ ] **Task 6 — Create the Google Play Developer account** (AC: 7 prerequisite; DEC-1) — **Walid, start FIRST** ⏳ PENDING
   - [ ] Register at `play.google.com/console` (25 USD one-time + identity verification, ~48h). This is the **launch long pole** — nothing in Task 8 can start until it clears. Same account flagged in Story 8.1.
 
-- [ ] **Task 7 — Configure the App Store Connect listing** (AC: 6, 8) — Walid (Apple account active), agent-guided
+- [ ] **Task 7 — Configure the App Store Connect listing** (AC: 6, 8) — Walid (Apple account active), agent-guided ⏳ PENDING
   - [ ] Create/register the app under bundle id `com.surviveTheTalk.client`; enter name/subtitle/keywords/description/category(Education)/age-rating(13+) from the artifact; set Privacy Policy URL `https://api.survivethetalk.com/legal/privacy`.
   - [ ] Create the **`stt_weekly_199`** weekly auto-renewable subscription ($1.99/week, no free trial) in a subscription group; confirm the product id matches the client/server. (Apple "Paid Applications" agreement + tax/banking must be **Active** — #1 cause of un-buyable subs; see 8.1 gotchas.)
   - [ ] **Defer to Story 10.4:** iOS screenshots (need an iOS build) + the final submission-ready listing state. Record the deferral in the story.
 
-- [ ] **Task 8 — Configure the Google Play Console listing** (AC: 7, 8) — Walid (after Task 6), agent-guided
+- [ ] **Task 8 — Configure the Google Play Console listing** (AC: 7, 8) — Walid (after Task 6), agent-guided ⏳ PENDING (blocked on Task 6)
   - [ ] Main store listing: title, short + full description, category, upload **feature graphic 1024×500**, **512×512 hi-res icon**, and **phone screenshots** (captured on the Pixel 9 — Task 10); set Privacy Policy URL.
   - [ ] Complete the **content-rating questionnaire** and the **Data Safety form** from the artifact's mapping.
   - [ ] Create the **`stt_weekly_199`** weekly subscription ($1.99/week) — subscription **and** its base plan both `Active`; grant the service account the "View financial data" permission (per 8.1). A **signed AAB** (Task 4) on the Internal testing track is required before purchases are testable.
 
-- [ ] **Task 9 — Confirm the store privacy/terms URLs resolve** (AC: 8) — agent
-  - [ ] Verify `https://api.survivethetalk.com/legal/privacy` and `/legal/terms` both return `200` (they did in the Story 10.2 smoke gate) so the store-entered URLs are valid at submission time.
+- [x] **Task 9 — Confirm the store privacy/terms URLs resolve** (AC: 8) — agent ✓ DONE
+  - [x] Verified `https://api.survivethetalk.com/legal/privacy` → **200** and `/legal/terms` → **200** over HTTPS (2026-06-22) — the store-entered URLs are valid at submission time.
 
-- [ ] **Task 10 — Pixel 9 identity + icon check** (AC: 1, 2) — Walid, on-device
+- [ ] **Task 10 — Pixel 9 identity + icon check** (AC: 1, 2) — Walid, on-device ⏳ PENDING (the Pixel 9 human gate)
   - [ ] Install a fresh Android build; confirm the home-screen label reads **"Survive the Talk"** and the launcher icon (incl. the new adaptive form) renders correctly. Capture the listing screenshots while here (Task 8).
 
 ## Dev Notes
@@ -222,16 +224,78 @@ No advertising, no tracking/ATT, no data sold. (BIPA/GDPR: process-and-discard a
 
 ### Agent Model Used
 
-_TBD by dev-story_
+claude-opus-4-8 (dev-story, 2026-06-22)
 
 ### Debug Log References
 
+- `flutter pub get` → resolved `flutter_launcher_icons` 0.14.4 (`Changed 6 dependencies!`).
+- `dart run flutter_launcher_icons` → generated Android adaptive icons + `colors.xml` + `mipmap-anydpi-v26/ic_launcher.xml`; regenerated iOS appiconset.
+- Throwaway-keystore release build: `flutter build appbundle --release` → `√ Built app-release.aab (78.6MB)` in 318s; `jarsigner -verify` → `jar verified`, signer `CN=Throwaway` (upload key, NOT Android Debug). Throwaway artifacts deleted after.
+- `flutter analyze` → `No issues found!`; `flutter test` → `All tests passed!` (689 tests).
+- Legal URL check: `/legal/privacy` → 200, `/legal/terms` → 200 (HTTPS, 2026-06-22).
+
 ### Completion Notes List
+
+**Agent Part A — COMPLETE + gated green (flutter analyze clean, 689 tests pass):**
+- ✅ **Task 1 — identity rename.** iOS `CFBundleDisplayName` + `CFBundleName` and Android `android:label` → **"Survive the Talk"**. Bundle id `com.surviveTheTalk.client` left untouched (permanent / IAP-tied).
+- ✅ **Task 2 — icon pipeline.** `flutter_launcher_icons` 0.14.4 (dev-dep) generates Android **adaptive icons** (mouth foreground over `#120F0F`, sampled from the source art's own corner so the masked look matches) + regenerates the iOS appiconset from the same `app_icon.png`. Exported `play-hi-res-icon-512.png` + `app-store-icon-1024.png` to `planning-artifacts/store-assets/`.
+- ✅ **Task 3 — mic string.** `NSMicrophoneUsageDescription` → "Used for real-time English conversation practice with AI characters" (Epics AC4 verbatim).
+- ✅ **Task 4 — release signing.** `build.gradle.kts` reads a git-ignored `key.properties` → `signingConfigs.release`, with a debug fallback when absent. Verified with a throwaway keystore (signed AAB, `CN=Throwaway`). `.gitignore` already covered `key.properties`/`*.jks`/`*.keystore`.
+- ✅ **Task 5 — content artifact** at `planning-artifacts/store-listings-content.md` (copy is DRAFT pending Walid's sign-off).
+- ✅ **Task 9 — legal URLs** both return 200.
+
+**⚠️ flutter_launcher_icons side-effect REVERTED:** the generator also flipped the Xcode build setting `ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS` from `YES` to `AppIcon` in `project.pbxproj` — a spurious mutation of a boolean Swift-symbol setting, unrelated to the icon assets (which live in the appiconset, independent of it). Reverted `project.pbxproj` to keep the Xcode project pristine; the icon regeneration (Contents.json + PNGs) is preserved and consistent. iOS isn't buildable until Story 10.4 anyway.
+
+**Walid — Task 4 keystore command (run yourself; it's a permanent secret the agent must not hold — DEC-5):**
+```
+keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+Then create `client/android/key.properties` (git-ignored — never commit it):
+```
+storePassword=<the store password you chose>
+keyPassword=<the key password you chose>
+keyAlias=upload
+storeFile=C:/absolute/path/to/upload-keystore.jks   # forward slashes; absolute path recommended
+```
+**Back the keystore up off-machine** — losing it blocks all future Play updates.
+
+**Pending human gates (Part B — NOT agent dev work; gate `review → done`):**
+- Task 5b — Walid signs off the listing copy (name / subtitle / keywords / description).
+- Task 6 — Walid creates the Google Play Developer account (the launch long pole; start first).
+- Task 7 — Walid configures App Store Connect (iOS text + subscription now; iOS screenshots + final submission DEFER to Story 10.4 — DEC-2).
+- Task 8 — Walid configures Google Play Console (after Task 6).
+- Task 10 — Walid's Pixel 9 identity + icon check (home-screen label "Survive the Talk" + adaptive icon renders).
+- Plus the formal `/bmad-code-review` (use a different LLM).
 
 ### File List
 
+**Client — modified (agent):**
+- `client/ios/Runner/Info.plist` — `CFBundleDisplayName`, `CFBundleName`, `NSMicrophoneUsageDescription`
+- `client/android/app/src/main/AndroidManifest.xml` — `android:label`
+- `client/android/app/build.gradle.kts` — release `signingConfigs` + `buildTypes.release` (key.properties + debug fallback)
+- `client/pubspec.yaml` — `flutter_launcher_icons` dev-dep + config block
+- `client/pubspec.lock` — resolved deps
+- `client/android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` — regenerated legacy square icons (5)
+- `client/ios/Runner/Assets.xcassets/AppIcon.appiconset/Contents.json` + the 19 existing `Icon-App-*.png` — regenerated from the same source
+
+**Client — new (agent, generated):**
+- `client/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` — adaptive icon definition
+- `client/android/app/src/main/res/values/colors.xml` — `ic_launcher_background = #120F0F`
+- `client/android/app/src/main/res/drawable-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher_foreground.png` — adaptive foreground (5)
+- `client/ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-{50x50,57x57,72x72}@{1x,2x}.png` — added iOS sizes (6)
+
+**Planning artifacts — new (agent):**
+- `_bmad-output/planning-artifacts/store-listings-content.md` — the binding store-copy doc
+- `_bmad-output/planning-artifacts/store-assets/play-hi-res-icon-512.png`
+- `_bmad-output/planning-artifacts/store-assets/app-store-icon-1024.png`
+
+**Story tracking:**
+- `_bmad-output/implementation-artifacts/10-3-configure-app-store-and-play-store-listings.md` (this file)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — status flips
+
 ### Change Log
 
+- 2026-06-22 — dev-story (Part A): renamed the app identity to "Survive the Talk" (iOS + Android), set up the `flutter_launcher_icons` pipeline and generated the missing Android adaptive launcher icon (+ regenerated iOS appiconset, + exported 512/1024 store icons), aligned the iOS mic usage string to the Epics AC4 wording, and wired Android `release` signing to a git-ignored `key.properties` (verified a signed AAB with a throwaway keystore). Drafted the binding `store-listings-content.md`. Reverted a spurious `flutter_launcher_icons` Xcode-build-setting mutation. Gates green (analyze clean, 689 tests). Status → review. Part B (Walid console work + Pixel 9 check + iOS-screenshots-to-10.4) remains as the human gates; `/bmad-code-review` still owed.
 - 2026-06-22 — create-story: store-listings story authored after a live repo audit. Found the app still under the Flutter scaffold identity (`client`/`Client`), Android `release` debug-signing, and no adaptive launcher icon → folded those agent-codeable gaps into the story alongside the manual console work. Reconciled the epics' stale age rating (→13+/PEGI 12) + privacy URL (→ live HTTPS), and merged AC3's subscription config with Story 8.1's pending store setup. Status → ready-for-dev.
 
 ## Questions for Walid (raised at create-story; none block writing the spec)
