@@ -134,6 +134,10 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
 
 **On-device gate (Walid, Pixel 9 — Android only; iOS deferred to 10.4):** a new Android build with `baseUrl = https://api.survivethetalk.com` (a) launches and loads the scenario list, (b) completes one short call (proves the API initiate/end + token path works over HTTPS — note WebRTC itself is unaffected, it uses LiveKit Cloud directly), (c) the paywall/consent legal links open the HTTPS pages. A ready-to-play script will be handed over before the gate per the project's voice-smoke-test rule.
 
+✅ **Pixel 9 smoke gate PASSED — Walid, 2026-06-22.** New Android build (HTTPS `baseUrl`): app launched + scenario list loaded over HTTPS; legal links opened the HTTPS pages; a short call started and ended cleanly. "tout marche parfaitement." Walid also removed the optional GoDaddy parked-`A @` + `www` CNAME afterward — no impact (app uses the `api` subdomain; smoke test passed after the deletion).
+
+> **Status stays `review`.** Per the project's flip-discipline, `review → done` needs BOTH gates. Smoke gate ✅ done; the **formal `/bmad-code-review` (different LLM) is still owed** — that is the ONLY remaining gate. Whichever clears last triggers the flip → it's now the code review.
+
 ## Dev Notes
 
 ### 🚨 Stale-Doc Overrides — the epics/PRD/architecture are WRONG on these; the live server wins
@@ -280,6 +284,7 @@ _Docs/ops only so far (DNS cutover done in the GoDaddy UI; Caddy + client change
 
 ### Change Log
 
+- 2026-06-22 — Pixel 9 Android on-device smoke gate PASSED (Walid): HTTPS scenario list + legal links + short call start/end all OK; Walid removed the optional GoDaddy parked-A + www-CNAME (no impact). Story stays `review` pending the formal `/bmad-code-review` (different LLM) — the last gate before `done`.
 - 2026-06-22 — dev-story session 3: GoDaddy DNS cutover executed (Cloudflare account unrecoverable). NS switched to GoDaddy (ns19/ns20.domaincontrol.com); api A+AAAA + 5 Resend/DMARC records recreated and verified authoritatively; Cloudflare Email-Routing dropped (accepted). Awaiting NS propagation before Caddy/ACME. See ops-notes/godaddy-dns-cutover-2026-06-22.md.
 - 2026-06-22 — dev-story session 2: DNS hand-off escalated to an account-access problem. Domain = GoDaddy registrar (reg. 2026-04-16) + Cloudflare DNS/Email-Routing; neither account under the personal Gmail. Walid to recover the Cloudflare account (or GoDaddy, with NS-repoint fallback) before Task 1 can complete. Story stays in-progress.
 - 2026-06-22 — dev-story session 1: Tasks 2 (pre-flight) + 5 (infra verify) done read-only off the live VPS. `:443` already open at the firewall; confirmed single `pipecat.service`+`caddy.service` (no `fastapi.service`); all `.env` keys present (Groq/Cartesia+ElevenLabs/Soniox/Resend/LiveKit/JWT). Discovered the VPS has public IPv6 → AAAA record now required (AC1/DEC-4). Cutover (Tasks 3/4/6) blocked on the Cloudflare A+AAAA record (Task 1, Walid's hand-off). Status ready-for-dev → in-progress.
