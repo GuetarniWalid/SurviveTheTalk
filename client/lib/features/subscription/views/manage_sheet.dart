@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/api_client.dart';
@@ -9,6 +10,7 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/legal_links_row.dart';
 import '../../account/widgets/delete_account_tile.dart';
 import '../bloc/user_profile_cubit.dart';
+import '../models/user_profile.dart';
 import '../repositories/user_repository.dart';
 import '../services/store_links.dart';
 
@@ -306,10 +308,8 @@ class _RenewalSlot extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = this.state;
     if (state is UserProfileLoaded) {
-      // Just the price — no renewal/expiry date (Walid 2026-06-22). The profile
-      // fetch still gates the defensive non-paid drop + the loading/error UX.
       return Text(
-        _kPriceWeekly,
+        _renewalLine(state.profile),
         textAlign: TextAlign.center,
         style: AppTypography.caption.copyWith(color: AppColors.overlaySubtitle),
       );
@@ -349,6 +349,21 @@ class _RenewalSlot extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Renewal line copy (design §2a) — present+future → "Renews {date} for $1.99
+/// per week."; null expiry → "$1.99 per week." (never fabricate a date);
+/// present+past (auto-renew off) → "Active until {date}.".
+String _renewalLine(UserProfile profile) {
+  final iso = profile.subscriptionExpiresAt;
+  if (iso == null) return _kPriceWeekly;
+  final dt = DateTime.tryParse(iso)?.toLocal();
+  if (dt == null) return _kPriceWeekly;
+  final date = DateFormat('d MMM yyyy').format(dt);
+  if (dt.isAfter(DateTime.now())) {
+    return 'Renews $date for $_kPriceWeekly';
+  }
+  return 'Active until $date.';
 }
 
 /// Material 3 drag indicator — a visual "swipe to dismiss" affordance (cloned
