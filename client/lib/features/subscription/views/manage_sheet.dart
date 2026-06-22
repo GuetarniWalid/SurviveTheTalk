@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/api/api_client.dart';
@@ -10,7 +9,6 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/legal_links_row.dart';
 import '../../account/widgets/delete_account_tile.dart';
 import '../bloc/user_profile_cubit.dart';
-import '../models/user_profile.dart';
 import '../repositories/user_repository.dart';
 import '../services/store_links.dart';
 
@@ -114,8 +112,6 @@ const List<String> _kBenefits = <String>[
   'Clear feedback on what to fix.',
 ];
 const String _kCtaManage = 'Manage subscription';
-const String _kManageCaptionApple = 'Update or cancel in the App Store.';
-const String _kManageCaptionGoogle = 'Update or cancel in the Play Store.';
 const String _kProfileError = "Couldn't load your details.";
 const String _kRetry = 'Try again';
 const String _kStoreOpenFailed = 'Store did not open. Try again.';
@@ -183,9 +179,6 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
-    final manageCaption = widget.storeLinks.isApplePlatform
-        ? _kManageCaptionApple
-        : _kManageCaptionGoogle;
 
     return BlocBuilder<UserProfileCubit, UserProfileState>(
       builder: (context, state) {
@@ -249,21 +242,11 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                   // 32px above = the VALUE→(billing+action) group break, on the
                   // same rhythm as every other boundary in the sheet (2026-06-22).
                   _RenewalSlot(state: state),
-                  const SizedBox(height: 8),
-                  // The store "cancel" cue sits ABOVE the Manage button (Walid
-                  // 2026-06-22) so no caption is wedged between the two action
-                  // buttons below — the billing line + this cue are the button's
-                  // quiet two-line label.
-                  Text(
-                    manageCaption,
-                    textAlign: TextAlign.center,
-                    style: AppTypography.caption.copyWith(
-                      color: AppColors.overlaySubtitle,
-                    ),
-                  ),
                   const SizedBox(height: 16),
                   // The exit — a clearly-tappable OUTLINED pill (same shape as
-                  // the paywall CTA).
+                  // the paywall CTA). The "Manage subscription" label already
+                  // says what it does, so the old "update or cancel" caption is
+                  // gone (Walid 2026-06-22).
                   _ManageButton(onTap: _onManage),
                   if (_storeOpenFailed) ...[
                     const SizedBox(height: 8),
@@ -278,13 +261,14 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                       ),
                     ),
                   ],
-                  // Story 10.1 / 2026-06-22 layout — the two account actions form
-                  // ONE cluster: Delete sits directly below Manage, separated by a
-                  // 32px "moat" (the largest interior gap) + a different silhouette
-                  // (naked red text vs the wide outlined pill) so it is never
-                  // fat-fingered. On a confirmed delete the sheet closes and signs
-                  // out via the AuthBloc → AuthInitial path.
-                  const SizedBox(height: 32),
+                  // Delete is a QUIET appendage tucked under Manage — 16px above
+                  // (bound to the Manage cluster, not floating/spotlighted) and
+                  // 40px below (white space casting the legal links out as
+                  // detached fine print). Asymmetric on purpose: we do NOT want
+                  // the eye drawn to deletion (Walid 2026-06-22 + UX margin agent).
+                  // On a confirmed delete the sheet closes and signs out via the
+                  // AuthBloc → AuthInitial path.
+                  const SizedBox(height: 16),
                   DeleteAccountTile(
                     color: AppColors.paywallError,
                     onDelete: widget.repository.deleteAccount,
@@ -294,10 +278,7 @@ class _ManageSheetBodyState extends State<_ManageSheetBody> {
                       widget.onSignOut();
                     },
                   ),
-                  // Legal links (AC6) = quiet fine print, the ABSOLUTE last
-                  // element, pushed to the bottom (Walid 2026-06-22: users
-                  // essentially never tap them; they exist for store compliance).
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 40),
                   LegalLinksRow(
                     color: AppColors.overlaySubtitle,
                     launch: widget.launch,
@@ -325,8 +306,10 @@ class _RenewalSlot extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = this.state;
     if (state is UserProfileLoaded) {
+      // Just the price — no renewal/expiry date (Walid 2026-06-22). The profile
+      // fetch still gates the defensive non-paid drop + the loading/error UX.
       return Text(
-        _renewalLine(state.profile),
+        _kPriceWeekly,
         textAlign: TextAlign.center,
         style: AppTypography.caption.copyWith(color: AppColors.overlaySubtitle),
       );
@@ -366,21 +349,6 @@ class _RenewalSlot extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Renewal line copy (design §2a) — present+future → "Renews {date} for $1.99
-/// per week."; null expiry → "$1.99 per week." (never fabricate a date);
-/// present+past (auto-renew off) → "Active until {date}.".
-String _renewalLine(UserProfile profile) {
-  final iso = profile.subscriptionExpiresAt;
-  if (iso == null) return _kPriceWeekly;
-  final dt = DateTime.tryParse(iso)?.toLocal();
-  if (dt == null) return _kPriceWeekly;
-  final date = DateFormat('d MMM yyyy').format(dt);
-  if (dt.isAfter(DateTime.now())) {
-    return 'Renews $date for $_kPriceWeekly';
-  }
-  return 'Active until $date.';
 }
 
 /// Material 3 drag indicator — a visual "swipe to dismiss" affordance (cloned

@@ -101,10 +101,11 @@ void main() {
     expect(find.text('Every scenario, unlocked.'), findsOneWidget);
     expect(find.text('Three calls a day, every day.'), findsOneWidget);
     expect(find.text('Clear feedback on what to fix.'), findsOneWidget);
-    // Renewal line: "Renews 18 Jul 2026 for $1.99 per week." (single Text).
-    expect(find.textContaining('Renews'), findsOneWidget);
-    expect(find.textContaining('Jul 2026'), findsOneWidget);
-    expect(find.textContaining('\$1.99 per week.'), findsOneWidget);
+    // Price line — just "$1.99 per week.", no renewal/expiry date (Walid
+    // 2026-06-22: the date was removed).
+    expect(find.text('\$1.99 per week.'), findsOneWidget);
+    expect(find.textContaining('Renews'), findsNothing);
+    expect(find.textContaining('2026'), findsNothing);
   });
 
   testWidgets('Loaded paid, null expiry → "\$1.99 per week." (no fabricated'
@@ -117,15 +118,17 @@ void main() {
     expect(find.textContaining('Renews'), findsNothing);
   });
 
-  testWidgets('Loaded paid, past expiry → "Active until {date}." (auto-renew'
-      ' off)', (tester) async {
+  testWidgets('Loaded paid, past expiry → "\$1.99 per week." (no date leaks)',
+      (tester) async {
     seed(const UserProfileLoaded(_paidPastExpiry));
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
 
-    expect(find.textContaining('Active until'), findsOneWidget);
-    expect(find.textContaining('2020'), findsOneWidget);
-    expect(find.textContaining('Renews'), findsNothing);
+    // Date removed everywhere (Walid 2026-06-22) — even the old "Active until
+    // {date}." auto-renew-off line is now just the flat price.
+    expect(find.text('\$1.99 per week.'), findsOneWidget);
+    expect(find.textContaining('Active until'), findsNothing);
+    expect(find.textContaining('2020'), findsNothing);
   });
 
   // ---- Loading: short skeleton, no ring, no spinner-hang ----
@@ -201,25 +204,9 @@ void main() {
     );
   });
 
-  testWidgets('Manage caption is App Store on iOS', (tester) async {
-    ManageSheet.debugStoreLinks = _store(platform: TargetPlatform.iOS);
-    seed(const UserProfileLoaded(_paidFuture));
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-
-    expect(find.text('Update or cancel in the App Store.'), findsOneWidget);
-    expect(find.text('Update or cancel in the Play Store.'), findsNothing);
-  });
-
-  testWidgets('Manage caption is Play Store on Android', (tester) async {
-    ManageSheet.debugStoreLinks = _store(platform: TargetPlatform.android);
-    seed(const UserProfileLoaded(_paidFuture));
-    final key = GlobalKey<NavigatorState>();
-    await open(tester, key);
-
-    expect(find.text('Update or cancel in the Play Store.'), findsOneWidget);
-    expect(find.text('Update or cancel in the App Store.'), findsNothing);
-  });
+  // (Removed: the "Update or cancel in the {store}." caption tests — Walid
+  // 2026-06-22 dropped that caption entirely; the "Manage subscription" button
+  // label already conveys it.)
 
   // ---- Short-sheet guards (no full-page furniture ported over) ----
 
@@ -236,8 +223,8 @@ void main() {
   });
 
   testWidgets(
-      'layout (Walid 2026-06-22): cancel cue ABOVE Manage; Delete directly '
-      'below; legal links at the very bottom', (tester) async {
+      'layout (Walid 2026-06-22): price ABOVE Manage; Delete directly below; '
+      'legal links at the very bottom', (tester) async {
     seed(const UserProfileLoaded(_paidFuture));
     final key = GlobalKey<NavigatorState>();
     await open(tester, key);
@@ -246,18 +233,18 @@ void main() {
     // proper button+label semantics on its own.
     final manage = find.widgetWithText(OutlinedButton, 'Manage subscription');
     expect(manage, findsOneWidget);
-    // The honest "cancel" cue is still present and findable.
-    expect(find.textContaining('cancel'), findsOneWidget);
+    // The old "update or cancel" caption is gone — the button label says it.
+    expect(find.textContaining('cancel'), findsNothing);
 
-    // Vertical order: the billing/cancel cue sits ABOVE the button, the two
-    // account actions (Manage then Delete) form one uninterrupted cluster, and
-    // the legal links are the ABSOLUTE last element (quiet compliance fine
-    // print the user essentially never taps).
-    final cueDy = tester.getTopLeft(find.textContaining('cancel')).dy;
+    // Vertical order: the quiet price line sits ABOVE the button, the two
+    // account actions (Manage then Delete) form one cluster, and the legal
+    // links are the ABSOLUTE last element (quiet compliance fine print the user
+    // essentially never taps).
+    final priceDy = tester.getTopLeft(find.text('\$1.99 per week.')).dy;
     final manageDy = tester.getTopLeft(manage).dy;
     final deleteDy = tester.getTopLeft(find.text('Delete my account')).dy;
     final legalDy = tester.getTopLeft(find.textContaining('Privacy Policy')).dy;
-    expect(cueDy, lessThan(manageDy));
+    expect(priceDy, lessThan(manageDy));
     expect(manageDy, lessThan(deleteDy));
     expect(deleteDy, lessThan(legalDy));
   });
