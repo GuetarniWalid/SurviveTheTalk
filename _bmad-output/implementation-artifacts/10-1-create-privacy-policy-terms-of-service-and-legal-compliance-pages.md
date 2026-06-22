@@ -1,6 +1,6 @@
 # Story 10.1: Create Privacy Policy, Terms of Service, and Legal Compliance Pages
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -303,3 +303,14 @@ _Formal adversarial `/bmad-code-review` (Opus 4.8, 3 parallel layers: Blind Hunt
 - [x] [Review][Defer] [Low] `gather_user_data` is unbounded (no streaming/pagination) — a heavy account materializes its entire history into one in-memory dict; the sibling `get_pending_purchases` uses `LIMIT` for exactly this reason (a GDPR export legitimately wants all rows, so the real fix is streaming, not a cap). [`server/db/queries.py:957`] — deferred, MVP-scale, post-MVP streaming
 
 **Dismissed as noise (9):** inverted-TTS-provider claim (FALSE POSITIVE — Cartesia IS the default, `config.py:62`); JWT-valid-after-deletion (handled — `require_auth` DB-lookup + deleted `jwt_hash`, test-confirmed); `except BaseException` rollback (intentional/correct); import-time HTML read crashes boot (intentional, documented fail-loud, deploy health-gated); `-> dict` annotation (cosmetic); dead `else None` branch (harmless); export torn-snapshot (negligible best-effort artifact); `subscription_events` not deleted (no `user_id` — justified); `auth_codes` not in export (transient login codes — justified; deletion DOES remove them).
+
+### Review → Done (2026-06-22)
+
+**Status flipped `review → done` by the reviewer** on Walid's conditional sign-off ("si tout est OK pour toi, on peut passer en done") after a clean final verification. Both gates cleared:
+
+- **Code review:** complete (above) — decision resolved, all 4 patches FIXED, gates green.
+- **Smoke gate:** server-side 7/7 PASS (recorded in the Smoke Test Gate section). **On-device Pixel 9 validated by Walid:** the Account/Manage drawers and the **real account-deletion flow** (tapped Delete → server deletion → sign-out → back to login). The onboarding mic-permission privacy-link fix is locked by an automated widget test (low-risk URL swap).
+
+**Post-review UX iteration (2026-06-22, ~8 Walid-driven rounds on the Account/Manage drawers, all gate-green):** legal links pushed to the absolute bottom of both sheets; Delete moved directly under Manage; the renewal + Manage + Delete block framed as a centered block (48px equal top/bottom); Delete tucked 16px under Manage as quiet red text (paid); the store-cancel caption removed (the Manage button label conveys it; the renewal **date stays**); the delete-dialog **Cancel** is quiet grey (was confusing accent green), Delete stays red; the **free** Account sheet renders Delete as a full-width **red outlined pill** (`AppColors.paywallError`, Manage-button shape) to fill the sparse sheet, with `outlined` defaulting false so the paid drawer is unchanged. UX validated by a design panel + a UX-review workflow; a dedicated margin agent set the 16/40/48 spacing.
+
+**Final adversarial verification (workflow, 2 lenses + verdict): SHIP — 0 blockers.** All four owner constraints hold in the final code; no raw hex (theme_tokens guard green); two-ink/zero-furniture intact; `paywallError` red 4.77:1 on the light sheet (AA); tests substantively lock the layout order, dialog colors, and the outlined border. Gates: `flutter analyze` clean, `flutter test` **687**; server `ruff`/`pytest` **1018** + deployed (`/health` git_sha `bfb4773`). Two nice-to-haves noted (no dedicated `AccountSheet` widget test; optional `minimumSize` on the paid quiet-text Delete) — neither ship-blocking. **Epic 10's first story is DONE.**
