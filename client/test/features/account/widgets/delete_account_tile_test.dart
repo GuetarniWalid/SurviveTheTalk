@@ -1,3 +1,4 @@
+import 'package:client/core/theme/app_colors.dart';
 import 'package:client/features/account/widgets/delete_account_tile.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -56,6 +57,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(deleteCalled, isFalse);
+  });
+
+  testWidgets('confirm dialog: Cancel is quiet grey (not accent), Delete is red',
+      (tester) async {
+    await tester.pumpWidget(_host(onDelete: () async {}, onDeleted: () {}));
+
+    await tester.tap(find.text('Delete my account'));
+    await tester.pumpAndSettle();
+
+    Color? fg(String label) => tester
+        .widget<TextButton>(find.widgetWithText(TextButton, label))
+        .style
+        ?.foregroundColor
+        ?.resolve({});
+
+    // Walid 2026-06-22: green on the SAFE action of a destructive dialog is
+    // confusing — Cancel must read as a quiet grey, Delete stays red.
+    expect(fg('Cancel'), AppColors.textSecondary);
+    expect(fg('Delete'), AppColors.destructive);
   });
 
   testWidgets('server failure → inline error, no sign-out', (tester) async {

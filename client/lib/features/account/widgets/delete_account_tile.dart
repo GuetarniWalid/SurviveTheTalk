@@ -53,6 +53,9 @@ class _DeleteAccountTileState extends State<DeleteAccountTile> {
         content: const Text(_kConfirmBody),
         actions: [
           TextButton(
+            // Quiet grey, NOT the theme's default accent green — green on the
+            // SAFE action of a destructive dialog is confusing (Walid 2026-06-22).
+            style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
             onPressed: () => Navigator.of(dialogContext).pop(false),
             child: const Text(_kCancel),
           ),
