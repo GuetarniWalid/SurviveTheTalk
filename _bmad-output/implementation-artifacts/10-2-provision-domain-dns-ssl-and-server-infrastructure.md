@@ -242,6 +242,13 @@ claude-opus-4-8 (dev-story, 2026-06-22)
 - ⚠️ **AAAA needed (AC1 / DEC-4).** The VPS HAS a public global IPv6 — `ip -6 addr show scope global` → `2a01:4f8:1c18:fbfd::1/64`. So an `AAAA api → 2a01:4f8:1c18:fbfd::1` (DNS-only) record must be added **in addition to** the `A` record. This was unknown at create-story (create-story said "check on the box"); now confirmed.
 - 🚧 **BLOCKED — Task 1 (DNS) is the one true hand-off (DEC-1).** `api.survivethetalk.com` does not resolve yet. The agent has no Cloudflare credentials/MCP (DNS is hosted on Cloudflare, not Hostinger), so the A+AAAA records are Walid's manual step OR the agent does it if handed a scoped Cloudflare API token. Tasks 3 (Caddy cutover / Let's Encrypt — would fail/rate-limit without DNS), 4 (client flip — must not point at a dead domain), and 6 (commit) are gated until DNS resolves publicly (`dig +short api.survivethetalk.com @1.1.1.1` → `167.235.63.129`). Story stays `in-progress`.
 
+**2026-06-22 — dev-story session 2 (the DNS hand-off escalated to an account-ACCESS problem).** Walid could not find the account managing the domain (tried `guetarni.walid@gmail.com` + `team@kindopia.com`). Investigation via public DNS + RDAP + his connected Gmail:
+
+- **Registrar = GoDaddy.com, LLC** (IANA Registrar ID 146). Registered `2026-04-16`, expires `2027-04-16`; status `clientUpdateProhibited`/`clientTransferProhibited` etc. (`rdap.org/domain/survivethetalk.com`).
+- **DNS zone = Cloudflare** (NS `conrad`/`keira.ns.cloudflare.com`, SOA primary `conrad`, admin `dns.cloudflare.com`). The zone also runs **Cloudflare Email Routing** (MX `route1/2/3.mx.cloudflare.net`, SPF `v=spf1 include:_spf.mx.cloudflare.net ~all`) and DMARC `p=quarantine; rua=mailto:dmarc_rua@onsecureserver.net` (GoDaddy infra).
+- **Neither account is under the personal Gmail.** Gmail search `cloudflare newer_than:1y` → 0 threads; `godaddy OR survivethetalk` → 0 relevant. So both GoDaddy + Cloudflare were created under another email (likely `team@kindopia.com`, or a teammate's).
+- **The blocker is now: regain access to the Cloudflare account** to add the `A`+`AAAA` records. Preferred over repointing nameservers at GoDaddy — that would drop the Cloudflare-managed records (Email Routing, plus any Resend records) and risk breaking the app's login-code emails. Recovery path handed to Walid: forgot-password probe on `dash.cloudflare.com` + `godaddy.com` with each candidate email; search the `team@kindopia.com` inbox for "cloudflare"/"godaddy" receipts (~2026-04-16). Fallback if Cloudflare is unrecoverable: get into GoDaddy → repoint NS to a DNS host Walid controls → recreate the full record set (the public records are enumerable via `dig` for a clean migration).
+
 ### File List
 
 _No code/config files changed yet (cutover gated on DNS). Status/tracking only this session:_
@@ -250,6 +257,7 @@ _No code/config files changed yet (cutover gated on DNS). Status/tracking only t
 
 ### Change Log
 
+- 2026-06-22 — dev-story session 2: DNS hand-off escalated to an account-access problem. Domain = GoDaddy registrar (reg. 2026-04-16) + Cloudflare DNS/Email-Routing; neither account under the personal Gmail. Walid to recover the Cloudflare account (or GoDaddy, with NS-repoint fallback) before Task 1 can complete. Story stays in-progress.
 - 2026-06-22 — dev-story session 1: Tasks 2 (pre-flight) + 5 (infra verify) done read-only off the live VPS. `:443` already open at the firewall; confirmed single `pipecat.service`+`caddy.service` (no `fastapi.service`); all `.env` keys present (Groq/Cartesia+ElevenLabs/Soniox/Resend/LiveKit/JWT). Discovered the VPS has public IPv6 → AAAA record now required (AC1/DEC-4). Cutover (Tasks 3/4/6) blocked on the Cloudflare A+AAAA record (Task 1, Walid's hand-off). Status ready-for-dev → in-progress.
 - 2026-06-22 — create-story: domain/DNS/SSL cutover story authored after live VPS inspection. Status → ready-for-dev.
 
