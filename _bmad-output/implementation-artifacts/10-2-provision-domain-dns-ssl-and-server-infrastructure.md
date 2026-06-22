@@ -249,14 +249,24 @@ claude-opus-4-8 (dev-story, 2026-06-22)
 - **Neither account is under the personal Gmail.** Gmail search `cloudflare newer_than:1y` → 0 threads; `godaddy OR survivethetalk` → 0 relevant. So both GoDaddy + Cloudflare were created under another email (likely `team@kindopia.com`, or a teammate's).
 - **The blocker is now: regain access to the Cloudflare account** to add the `A`+`AAAA` records. Preferred over repointing nameservers at GoDaddy — that would drop the Cloudflare-managed records (Email Routing, plus any Resend records) and risk breaking the app's login-code emails. Recovery path handed to Walid: forgot-password probe on `dash.cloudflare.com` + `godaddy.com` with each candidate email; search the `team@kindopia.com` inbox for "cloudflare"/"godaddy" receipts (~2026-04-16). Fallback if Cloudflare is unrecoverable: get into GoDaddy → repoint NS to a DNS host Walid controls → recreate the full record set (the public records are enumerable via `dig` for a clean migration).
 
+**2026-06-22 — dev-story session 3 (GoDaddy DNS cutover EXECUTED; awaiting propagation).** Cloudflare account never located (NS `conrad`/`keira` = a 3rd account; Resend is under `guetarni.walid@gmail.com` but the CF zone is not). Walid chose the GoDaddy fallback. Actions taken (Walid in GoDaddy UI, agent guiding + verifying):
+- Switched nameservers **Cloudflare → GoDaddy default** (`ns19`/`ns20.domaincontrol.com`).
+- Recreated the zone: `api` A=`167.235.63.129`, `api` AAAA=`2a01:4f8:1c18:fbfd::1`, plus the 5 Resend/DMARC records (DKIM `resend._domainkey`, `send` SPF, `dc-fd741b8612._spfm.send`, `send` MX=10, `_dmarc`). Full set + procedure: `ops-notes/godaddy-dns-cutover-2026-06-22.md`.
+- **Verified authoritatively** against `ns19.domaincontrol.com` (`97.74.109.10`): all 7 records correct → **outbound login emails preserved**.
+- **Dropped** Cloudflare Email-Routing (`contact@`/`hello@` forwarding) — accepted trade-off (published contact = `guetarni.walid@gmail.com`).
+- **Now waiting on NS-delegation propagation** (public resolvers still cache `conrad`/`keira`). A background poll watches `1.1.1.1`+`8.8.8.8` for `api`→VPS; on success the agent runs Task 3 (deploy domain Caddyfile → Let's Encrypt) then Task 4 (client base-URL flip). ACME is deliberately NOT triggered until propagation completes (avoids LE failed-validation rate limits).
+
 ### File List
 
-_No code/config files changed yet (cutover gated on DNS). Status/tracking only this session:_
-- `_bmad-output/implementation-artifacts/10-2-provision-domain-dns-ssl-and-server-infrastructure.md` (status → in-progress, Tasks 2 & 5 checked, Dev Agent Record)
+_Docs/ops only so far (DNS cutover done in the GoDaddy UI; Caddy + client changes pending propagation):_
+- `_bmad-output/implementation-artifacts/10-2-provision-domain-dns-ssl-and-server-infrastructure.md` (status → in-progress, Tasks 1/2/5 done, Dev Agent Record)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (10-2 → in-progress)
+- `_bmad-output/implementation-artifacts/ops-notes/godaddy-dns-cutover-2026-06-22.md` (NEW — full GoDaddy record set + cutover procedure)
+- _Pending (after propagation):_ `deploy/Caddyfile`, `client/lib/core/api/api_client.dart`, `client/test/core/api/api_client_test.dart`, `client/lib/core/legal_urls.dart`, `client/android/app/src/main/AndroidManifest.xml`, `client/ios/Runner/Info.plist`
 
 ### Change Log
 
+- 2026-06-22 — dev-story session 3: GoDaddy DNS cutover executed (Cloudflare account unrecoverable). NS switched to GoDaddy (ns19/ns20.domaincontrol.com); api A+AAAA + 5 Resend/DMARC records recreated and verified authoritatively; Cloudflare Email-Routing dropped (accepted). Awaiting NS propagation before Caddy/ACME. See ops-notes/godaddy-dns-cutover-2026-06-22.md.
 - 2026-06-22 — dev-story session 2: DNS hand-off escalated to an account-access problem. Domain = GoDaddy registrar (reg. 2026-04-16) + Cloudflare DNS/Email-Routing; neither account under the personal Gmail. Walid to recover the Cloudflare account (or GoDaddy, with NS-repoint fallback) before Task 1 can complete. Story stays in-progress.
 - 2026-06-22 — dev-story session 1: Tasks 2 (pre-flight) + 5 (infra verify) done read-only off the live VPS. `:443` already open at the firewall; confirmed single `pipecat.service`+`caddy.service` (no `fastapi.service`); all `.env` keys present (Groq/Cartesia+ElevenLabs/Soniox/Resend/LiveKit/JWT). Discovered the VPS has public IPv6 → AAAA record now required (AC1/DEC-4). Cutover (Tasks 3/4/6) blocked on the Cloudflare A+AAAA record (Task 1, Walid's hand-off). Status ready-for-dev → in-progress.
 - 2026-06-22 — create-story: domain/DNS/SSL cutover story authored after live VPS inspection. Status → ready-for-dev.
