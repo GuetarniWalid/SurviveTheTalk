@@ -1,6 +1,6 @@
 # Story 10.2: Provision Domain, DNS, SSL, and Server Infrastructure
 
-Status: ready-for-dev
+Status: in-progress
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -50,9 +50,9 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
   - [ ] Agent verifies propagation before touching Caddy: `dig +short api.survivethetalk.com @1.1.1.1` returns `167.235.63.129`. Do NOT proceed to Task 3 until this resolves publicly.
   - [ ] ⚠️ **Why DNS-only, not proxied:** the orange-cloud proxy would make Cloudflare terminate TLS at its edge and break Caddy's Let's Encrypt issuance / the architecture's "Caddy auto Let's Encrypt" contract. If Walid prefers Cloudflare-proxied later, that's a separate hardening decision (Full-Strict + a CF origin cert) — out of scope here.
 
-- [ ] **Task 2 — Pre-flight: confirm 443 is reachable and capture the baseline** (AC: 2) — agent, read-only
-  - [ ] Confirm inbound `:443` is open (Hetzner Cloud firewall + host `ufw`/`iptables`). Port `:80` is already open (Caddy listens there now) so the Let's Encrypt HTTP-01 challenge can complete; clients need `:443` open to connect over HTTPS. If `:443` is blocked, open it (this is the agent's job) and record the change.
-  - [ ] Snapshot the live Caddyfile and service state before editing, so the change is reversible: `cat /etc/caddy/Caddyfile`, `systemctl is-active caddy pipecat.service`.
+- [x] **Task 2 — Pre-flight: confirm 443 is reachable and capture the baseline** (AC: 2) — agent, read-only
+  - [x] Confirm inbound `:443` is open (Hetzner Cloud firewall + host `ufw`/`iptables`). Port `:80` is already open (Caddy listens there now) so the Let's Encrypt HTTP-01 challenge can complete; clients need `:443` open to connect over HTTPS. If `:443` is blocked, open it (this is the agent's job) and record the change.
+  - [x] Snapshot the live Caddyfile and service state before editing, so the change is reversible: `cat /etc/caddy/Caddyfile`, `systemctl is-active caddy pipecat.service`.
 
 - [ ] **Task 3 — Caddy: cut over to the domain (HTTPS) while keeping the IP alive** (AC: 2, 3, 4, 5) — agent, **manual deploy** (CI does NOT ship the Caddyfile)
   - [ ] Update `deploy/Caddyfile` to the domain config below (this is also the repo source-of-truth fix — corrects the stale static `root` and drops the vestigial `/auth/*` + `/api/*` handles, which all just proxied to `:8000` anyway):
@@ -88,10 +88,10 @@ So the real deliverable is a **cutover + reconciliation**, in three moves:
   - [ ] `client/ios/Runner/Info.plist:5-9` — remove `NSAllowsArbitraryLoads` (HTTPS-only ATS posture). iOS can't be device-verified until Story 10.4, but make the code change now so the store build is correct; note it in Completion Notes.
   - [ ] Run `flutter analyze` + `flutter test` and fix any fallout (the baseURL test, any test hardcoding the IP).
 
-- [ ] **Task 5 — Verify the already-provisioned infra (don't re-create it)** (AC: 7) — agent, read-only; record evidence in the story
-  - [ ] OS: `Ubuntu 24.04` (`/etc/os-release`).
-  - [ ] Services: `pipecat.service` + `caddy.service` both `active`; **no** `fastapi.service` exists (`systemctl list-unit-files | grep -E 'fastapi|pipecat|caddy'`).
-  - [ ] `.env` key NAMES present (do not print values): `SONIOX_API_KEY`, `GROQ_API_KEY`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`, `JWT_SECRET`. Note `OPENROUTER_API_KEY` is present but legacy/optional (migrated to Groq).
+- [x] **Task 5 — Verify the already-provisioned infra (don't re-create it)** (AC: 7) — agent, read-only; record evidence in the story
+  - [x] OS: `Ubuntu 24.04` (`/etc/os-release`).
+  - [x] Services: `pipecat.service` + `caddy.service` both `active`; **no** `fastapi.service` exists (`systemctl list-unit-files | grep -E 'fastapi|pipecat|caddy'`).
+  - [x] `.env` key NAMES present (do not print values): `SONIOX_API_KEY`, `GROQ_API_KEY`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`, `RESEND_API_KEY`, `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`, `JWT_SECRET`. Note `OPENROUTER_API_KEY` is present but legacy/optional (migrated to Groq).
 
 - [ ] **Task 6 — Reconcile repo source-of-truth + commit** (AC: 8)
   - [ ] Ensure `deploy/Caddyfile` in the repo matches exactly what was deployed.
@@ -222,16 +222,35 @@ Flipping the client before HTTPS is live would ship a build that can't reach the
 
 ### Agent Model Used
 
-<!-- dev-story fills this -->
+claude-opus-4-8 (dev-story, 2026-06-22)
 
 ### Debug Log References
 
 ### Completion Notes List
 
+**2026-06-22 — dev-story session 1 (read-only prep done; cutover BLOCKED on the Task 1 DNS hand-off).**
+
+- ✅ **Task 2 (pre-flight) complete.** Live state captured off the VPS via SSH (read-only):
+  - Firewall: `ufw` active with `443/tcp ALLOW` (v4+v6) and iptables `-A ufw-user-input -p tcp --dport 443 -j ACCEPT`. **`:443` is already open — no firewall change needed.** Ports 22/80/443 are the public surface as expected.
+  - Caddy currently listens on `:80` only (`ss -tlnp` → `*:80 caddy pid=4150`); **no `:443` listener yet** (expected — Caddy binds `:443` once the domain Caddyfile is deployed in Task 3).
+  - Baseline snapshot of the live `/etc/caddy/Caddyfile` taken for reversibility — it is the `:80`-only block with `/auth/*`, the vestigial `/api/*`, and the catch-all, **no `/static/*` mount** (matches the story's "Current State of the World" exactly).
+  - `systemctl is-active caddy.service pipecat.service` → `active` / `active`.
+- ✅ **Task 5 (infra verification) complete.** Evidence (no secret values printed):
+  - OS: `Ubuntu 24.04.3 LTS (Noble Numbat)`.
+  - Services: `caddy.service` (enabled/active) + `pipecat.service` (enabled/active); **no `fastapi.service`** — only a disabled `caddy-api.service` leftover (ignored per Dev Notes).
+  - `.env` key NAMES present: `SONIOX_API_KEY`, `GROQ_API_KEY` + `CHARACTER_MODEL`, `CARTESIA_API_KEY`, `ELEVENLABS_API_KEY`/`ELEVENLABS_MODEL`/`ELEVENLABS_VOICE_ID`, `TTS_PROVIDER`, `RESEND_API_KEY`, `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`, `JWT_SECRET`, `DATABASE_PATH`, `ENVIRONMENT`, plus feature flags (`DTLN_ENABLED`, `HANGUP_LINE_GENERATION`, `HESITATION_DIAG`, `LATENCY_PROBE`, `CARTESIA_FRESH_CTX`, `CARTESIA_INSTRUMENT`, `TTS_AUDIO_DEBUG`). `OPENROUTER_API_KEY` present (legacy/optional). **AC5/AC4 satisfied — verified, not re-created.**
+- ⚠️ **AAAA needed (AC1 / DEC-4).** The VPS HAS a public global IPv6 — `ip -6 addr show scope global` → `2a01:4f8:1c18:fbfd::1/64`. So an `AAAA api → 2a01:4f8:1c18:fbfd::1` (DNS-only) record must be added **in addition to** the `A` record. This was unknown at create-story (create-story said "check on the box"); now confirmed.
+- 🚧 **BLOCKED — Task 1 (DNS) is the one true hand-off (DEC-1).** `api.survivethetalk.com` does not resolve yet. The agent has no Cloudflare credentials/MCP (DNS is hosted on Cloudflare, not Hostinger), so the A+AAAA records are Walid's manual step OR the agent does it if handed a scoped Cloudflare API token. Tasks 3 (Caddy cutover / Let's Encrypt — would fail/rate-limit without DNS), 4 (client flip — must not point at a dead domain), and 6 (commit) are gated until DNS resolves publicly (`dig +short api.survivethetalk.com @1.1.1.1` → `167.235.63.129`). Story stays `in-progress`.
+
 ### File List
+
+_No code/config files changed yet (cutover gated on DNS). Status/tracking only this session:_
+- `_bmad-output/implementation-artifacts/10-2-provision-domain-dns-ssl-and-server-infrastructure.md` (status → in-progress, Tasks 2 & 5 checked, Dev Agent Record)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (10-2 → in-progress)
 
 ### Change Log
 
+- 2026-06-22 — dev-story session 1: Tasks 2 (pre-flight) + 5 (infra verify) done read-only off the live VPS. `:443` already open at the firewall; confirmed single `pipecat.service`+`caddy.service` (no `fastapi.service`); all `.env` keys present (Groq/Cartesia+ElevenLabs/Soniox/Resend/LiveKit/JWT). Discovered the VPS has public IPv6 → AAAA record now required (AC1/DEC-4). Cutover (Tasks 3/4/6) blocked on the Cloudflare A+AAAA record (Task 1, Walid's hand-off). Status ready-for-dev → in-progress.
 - 2026-06-22 — create-story: domain/DNS/SSL cutover story authored after live VPS inspection. Status → ready-for-dev.
 
 ## Questions for Walid (raised at create-story; none block writing the spec)
