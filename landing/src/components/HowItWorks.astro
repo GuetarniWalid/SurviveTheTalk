@@ -1,0 +1,48 @@
+---
+// Section 3 — How it works (3 beats). Stacked rows, mono numbers, hairline
+// between. Only "hangs up on you" gets weight 500 — the signature threat.
+const beats = [
+  {
+    n: '01',
+    title: 'Pick up.',
+    body: 'Choose a scenario. The phone rings. You have no script and no pause button.',
+  },
+  {
+    n: '02',
+    title: 'Survive.',
+    body: null, // rendered inline below for the emphasis span
+  },
+  {
+    n: '03',
+    title: 'Read the damage.',
+    body: 'Get a brutal debrief: the exact mistakes you made, the slang you missed, and a survival score you will want to beat.',
+  },
+];
+---
+
+<section aria-labelledby="how-title" class="border-t border-hairline">
+  <div class="mx-0 max-w-[720px] px-6 py-16 md:pl-20 md:pr-8 md:py-24">
+    <h2 id="how-title" class="text-eyebrow uppercase text-text-secondary">How it works</h2>
+
+    <div class="mt-8">
+      {
+        beats.map((beat, i) => (
+          <div class={`flex gap-5 py-6 ${i > 0 ? 'border-t border-hairline' : ''}`}>
+            <span class="font-mono text-caption text-text-secondary">{beat.n}</span>
+            <div class="max-w-[52ch]">
+              <p class="text-headline text-text-primary">{beat.title}</p>
+              {beat.n === '02' ? (
+                <p class="mt-2 text-body text-text-primary">
+                  Talk your way through. Hesitate too long and the character{' '}
+                  <span class="font-medium">hangs up on you</span>.
+                </p>
+              ) : (
+                <p class="mt-2 text-body text-text-primary">{beat.body}</p>
+              )}
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

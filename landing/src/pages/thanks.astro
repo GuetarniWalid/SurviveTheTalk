@@ -1,0 +1,27 @@
+---
+import Base from '../layouts/Base.astro';
+// Post-submit confirmation. Formspree's `_next` redirects here after a
+// successful "notify me" submit. Deadpan, on-brand, one taunt-free line.
+---
+
+<Base title="Survive the Talk — You are on the list">
+  <main>
+    <section aria-labelledby="thanks-title">
+      <div class="mx-0 max-w-[720px] px-6 pt-20 pb-16 md:pl-20 md:pr-8 md:pt-28">
+        <h1
+          id="thanks-title"
+          class="font-display text-[clamp(28px,5vw,56px)] uppercase leading-none text-text-primary"
+        >
+          You are on the list.
+        </h1>
+        <p class="mt-5 max-w-[44ch] text-body text-text-primary">Try not to freeze.</p>
+        <a
+          href="/"
+          class="mt-9 inline-block text-caption text-text-secondary underline underline-offset-2"
+        >
+          Back to the start
+        </a>
+      </div>
+    </section>
+  </main>
+</Base>

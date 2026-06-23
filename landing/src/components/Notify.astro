@@ -1,0 +1,52 @@
+---
+// Section 8 — Email capture (the conversion anchor, id="notify"). One field.
+// The one place the accent fill carries the button. Hosted-form provider
+// (Formspree) so the page stays zero-backend: a plain HTML POST, no JS.
+//
+// TODO(Walid): create a free Formspree form and replace REPLACE_WITH_FORM_ID
+// below with the real form id (e.g. https://formspree.io/f/abcdwxyz).
+const FORM_ACTION = 'https://formspree.io/f/REPLACE_WITH_FORM_ID';
+---
+
+<section id="notify" aria-labelledby="notify-title" class="border-t border-hairline">
+  <div class="mx-0 max-w-[720px] px-6 py-16 md:pl-20 md:pr-8 md:py-24">
+    <h2 id="notify-title" class="font-display text-[clamp(28px,5vw,56px)] uppercase leading-none text-text-primary">
+      Not live yet.
+    </h2>
+    <p class="mt-5 max-w-[44ch] text-body text-text-primary">
+      It is coming. Get one message when it does.
+    </p>
+
+    <form action={FORM_ACTION} method="POST" class="mt-8 max-w-md">
+      <label for="email" class="block text-eyebrow uppercase text-text-primary">
+        Email
+      </label>
+      <div class="mt-2 flex flex-col gap-3 sm:flex-row">
+        <input
+          id="email"
+          name="email"
+          type="email"
+          required
+          autocomplete="email"
+          placeholder="you@email.com"
+          class="w-full rounded-md border border-hairline bg-transparent px-4 py-3 text-body text-text-primary placeholder:text-text-secondary focus:border-accent"
+        />
+        <button
+          type="submit"
+          class="shrink-0 rounded-md bg-accent px-6 py-3 font-sans text-[15px] font-semibold text-bg"
+        >
+          Notify me
+        </button>
+      </div>
+      <!-- Formspree honeypot: bots fill it, humans never see it. -->
+      <input type="text" name="_gotcha" tabindex="-1" autocomplete="off" class="hidden" aria-hidden="true" />
+      <!-- After a successful submit, Formspree redirects here (deadpan confirmation). -->
+      <input type="hidden" name="_next" value="https://survivethetalk.com/thanks" />
+    </form>
+
+    <p class="mt-4 max-w-[48ch] text-caption text-text-secondary">
+      One email when it launches. No spam, no drip sequence, no tips.
+    </p>
+    <p class="mt-6 text-caption text-text-secondary">iOS and Android.</p>
+  </div>
+</section>

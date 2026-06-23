@@ -1,0 +1,26 @@
+---
+// Section 9 — Footer. Carries the Google org-verification content: Kindopia
+// named, on-domain contact email, Privacy/Terms links. Quiet, low-contrast.
+// Legal links point at the apex (Caddy proxies /legal/* to FastAPI) so the
+// verification cross-check never leaves survivethetalk.com.
+---
+
+<footer class="border-t border-hairline">
+  <div class="mx-0 max-w-[720px] px-6 py-12 md:pl-20 md:pr-8 md:py-16">
+    <p class="font-sans text-[15px] font-semibold tracking-wide text-text-primary">
+      Survive the Talk
+    </p>
+    <p class="mt-3 max-w-[48ch] text-caption text-text-secondary">
+      Survive the Talk is made by Kindopia.
+    </p>
+
+    <nav class="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-caption text-text-secondary" aria-label="Legal">
+      <a href="https://survivethetalk.com/legal/privacy" class="underline-offset-2 hover:underline">Privacy Policy</a>
+      <a href="https://survivethetalk.com/legal/terms" class="underline-offset-2 hover:underline">Terms</a>
+      <a href="mailto:contact@survivethetalk.com" class="underline-offset-2 hover:underline">Contact</a>
+    </nav>
+
+    <p class="mt-6 text-caption text-text-secondary">contact@survivethetalk.com</p>
+    <p class="mt-6 text-caption text-text-secondary">© 2026 Kindopia. Survive the Talk.</p>
+  </div>
+</footer>

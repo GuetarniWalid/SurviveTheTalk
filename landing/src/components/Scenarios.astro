@@ -1,0 +1,31 @@
+---
+// Section 4 — Scenarios teaser. Plain text rows: name (weight 500) + stakes.
+const scenarios = [
+  { name: 'The landlord', stakes: 'He thinks you broke the lease. You have ninety seconds to disagree.' },
+  { name: 'The job interview', stakes: 'She is already bored. Change that.' },
+  { name: 'The cop', stakes: 'Routine stop. Do not make it less routine.' },
+];
+---
+
+<section aria-labelledby="scenarios-title" class="border-t border-hairline">
+  <div class="mx-0 max-w-[720px] px-6 py-16 md:pl-20 md:pr-8 md:py-24">
+    <h2 id="scenarios-title" class="max-w-[40ch] text-headline text-text-primary">
+      The calls you will have to survive.
+    </h2>
+
+    <ul class="mt-8 space-y-6">
+      {
+        scenarios.map((s) => (
+          <li class="max-w-[54ch]">
+            <p class="text-body font-medium text-text-primary">{s.name}</p>
+            <p class="mt-1 text-body text-text-secondary">{s.stakes}</p>
+          </li>
+        ))
+      }
+    </ul>
+
+    <p class="mt-8 text-caption text-text-secondary">
+      More scenarios at launch. New ones added regularly.
+    </p>
+  </div>
+</section>
