@@ -9,6 +9,33 @@ api.survivethetalk.com {
     }
 }
 
+# Story 10.3 follow-up — the survivethetalk.com landing page (Astro static
+# site, built from /landing, deployed to /opt/landing/public). `www`
+# redirects to the apex; /legal/* is proxied to FastAPI so the Privacy/Terms
+# links stay on the apex domain (Google org-website verification cross-check).
+survivethetalk.com, www.survivethetalk.com {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+    }
+
+    @www host www.survivethetalk.com
+    handle @www {
+        redir https://survivethetalk.com{uri} permanent
+    }
+
+    handle /legal/* {
+        reverse_proxy localhost:8000
+    }
+
+    handle {
+        root * /opt/landing/public
+        file_server
+    }
+}
+
 # Transitional backward-compat (DEC-2): the currently-installed app and the
 # CI /health check still hit the raw IP over HTTP. Caddy cannot get a
 # Let's Encrypt cert for a bare IP, so this stays plain HTTP. REMOVE before
