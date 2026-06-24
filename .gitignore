@@ -34,3 +34,7 @@ Thumbs.db
 # CI deploy — written by the workflow after rsync (see deploy/README.md).
 # Never committed; present only inside /opt/.../releases/<sha>/ on the VPS.
 server/.git_sha
+
+# Local-only notes (credentials, scratch) — NEVER committed
+*.local.md
+.local-notes/
