@@ -11,24 +11,28 @@ encouraging framing) are merged on top by `assemble_debrief` (see
 
 Two prod patterns reused verbatim (do not reinvent):
 
-  * **Structured output** — copy the request shape from
-    `pipeline.exchange_classifier.classify_multi`:
+  * **Structured output, with a non-strict fallback** — copy the request shape
+    from `pipeline.exchange_classifier.classify_multi`:
     `response_format={"type":"json_schema","json_schema":{"name":…,"strict":
-    True,"schema":…}}`. Groq validates server-side (constrained decoding), so
-    clean JSON normally arrives; the fence / first-`{...}` fallback below is
-    belt-and-suspenders for a non-strict provider. Requires a structured-
+    True,"schema":…}}`. But Groq strict mode is all-or-nothing AT THE PROVIDER:
+    one wrong-typed field 400s the WHOLE response (`json_validate_failed`)
+    before any content returns, so the fence / first-`{...}` / per-item salvage
+    below never runs. On that 400 ONLY, `_generate` retries once in json_object
+    mode (no strict schema) so the salvage CAN run — call_id=324 2026-06-24
+    (areas[0].practice_prompt came back as an object). Requires a structured-
     output-capable Groq model (`Settings.debrief_model` = Scout; 70B HTTP
     400s) — project law in server/CLAUDE.md §4.
   * **Time-boxed standalone call** — copy
     `pipeline.exit_line_generator.generate_exit_line`: an outer
-    `asyncio.wait_for` + an inner httpx POST that NEVER raises. Any failure
+    `asyncio.wait_for` + inner httpx POSTs that NEVER raise. Any failure
     (timeout, HTTP error, non-2xx, malformed body, parse failure) returns
-    `None` so the teardown caller simply skips persisting a debrief (the
-    client then sees `DEBRIEF_NOT_READY`). Only `CancelledError` propagates.
+    `None`; the teardown then persists a DEGRADED score-only debrief
+    (`degraded_core`) so the client still gets the survival % instead of a
+    never-arriving report. Only `CancelledError` propagates.
 
-The debrief is masked by Story 7.2's Call Ended overlay (3-4 s hold), so the
-≤8 s budget (AC10: <5 s target / 10 s hard ceiling) is non-blocking to the
-user's `/end` path.
+The debrief is masked by Story 7.2's Call Ended overlay, so the outer budget
+(14 s — one strict call ~2-3 s on the happy path, plus the rare non-strict
+retry) is non-blocking to the user's `/end` path.
 """
 
 from __future__ import annotations
@@ -43,10 +47,14 @@ from loguru import logger
 
 from pipeline.prompts import DEBRIEF_SYSTEM_PROMPT
 
-# AC10 — <5 s target / 10 s hard ceiling. The outer wall-clock budget sits at
-# 8 s (recommended); the inner httpx timeout sits just below it so httpx aborts
-# first with a clean HTTP error instead of an opaque `asyncio.TimeoutError`.
-_GENERATION_TIMEOUT_SECONDS = 8.0
+# AC10 — <5 s target / 10 s ceiling on the HAPPY path (one strict call, ~2-3 s).
+# The outer wall-clock budget sits ABOVE a single attempt because a strict
+# schema-validation 400 triggers ONE non-strict retry (`_generate` below) — a
+# second round-trip. The whole call is masked by the Call Ended overlay, so the
+# extra latency on the rare retry path is non-blocking. The inner httpx timeout
+# sits below a single attempt's share so httpx aborts a hung attempt first with a
+# clean HTTP error instead of an opaque `asyncio.TimeoutError`.
+_GENERATION_TIMEOUT_SECONDS = 14.0
 _HTTP_TIMEOUT_SECONDS = 7.5
 
 # The v2 debrief JSON is large: up to 5 errors (each with `explanation` + up to
@@ -560,6 +568,46 @@ def _enforce_inappropriate_behavior(core: dict, reason: str) -> dict:
     return core
 
 
+def degraded_core(reason: str) -> dict:
+    """The all-empty LLM core (every analysis section empty), with the AC7
+    `inappropriate_behavior` invariant applied for `reason`.
+
+    The teardown's never-blank fallback uses this when generation yields no core
+    even after the non-strict retry below (call_id=324, 2026-06-24): assembling +
+    persisting a score-only debrief makes `GET /debriefs/{id}` return 200 with the
+    survival % immediately, instead of a permanent `DEBRIEF_NOT_READY` the client
+    polls for ~40 s before giving up on a report that will never arrive. The
+    teardown marks the assembled blob `degraded` so the client shows 'detailed
+    analysis unavailable' rather than implying a flawless call.
+    """
+    core = {
+        "errors": [],
+        "hesitation_contexts": [],
+        "idioms": [],
+        "better_phrasings": [],
+        "areas": [],
+        "inappropriate_behavior": None,
+    }
+    return _enforce_inappropriate_behavior(core, reason)
+
+
+# On a strict schema-validation 400 we retry ONCE in json_object mode (no strict
+# schema). Groq's json_object mode requires the literal token "json" somewhere in
+# the messages; this suffix supplies it AND pins the exact failure that triggers
+# the retry — a field emitted as a nested object where a JSON string is required
+# (call_id=324, 2026-06-24: areas[0].practice_prompt came back as an object, so
+# Groq 400'd the WHOLE response and the per-item salvage never ran).
+_FALLBACK_SYSTEM_SUFFIX = (
+    "\n\n## Output format\n"
+    "Return a SINGLE JSON object with exactly these top-level keys: errors, "
+    "hesitation_contexts, idioms, better_phrasings, areas, "
+    "inappropriate_behavior. Every field value MUST be its documented scalar "
+    "type — each practice_prompt, explanation, evidence, context, correction, "
+    "and every other text field is a PLAIN JSON STRING, never a nested object or "
+    "array. Output only the JSON object: no prose, no markdown fences."
+)
+
+
 def _parse_debrief_output(content: str) -> dict | None:
     """Parse the model's response into the LLM-core dict, or `None`.
 
@@ -677,6 +725,67 @@ async def generate_debrief(
         return None
 
 
+async def _post_and_parse(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    payload: dict,
+    reason: str,
+) -> tuple[dict | None, int]:
+    """One LLM round-trip + parse. Returns `(core_or_None, status_code)`.
+
+    The status code lets `_generate` decide whether the non-strict retry is worth
+    it (only a clean schema-validation 400 is). NEVER raises for an HTTP/parse
+    failure — those return `(None, status)`; httpx transport errors propagate to
+    `generate_debrief`'s outer handler, and timeouts to its `wait_for`.
+    """
+    response = await client.post(base_url, headers=headers, json=payload)
+    status = response.status_code
+    if status >= 300:
+        body_preview = response.text[:300] if response.text else "<empty>"
+        logger.warning(
+            "debrief_generation non-2xx: {} body={!r} reason={}",
+            status,
+            body_preview,
+            reason,
+        )
+        return None, status
+    try:
+        choice = response.json()["choices"][0]
+        content = choice["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        logger.warning(
+            "debrief_generation malformed response: {} ({}) reason={}",
+            exc,
+            type(exc).__name__,
+            reason,
+        )
+        return None, status
+    if choice.get("finish_reason") == "length":
+        # Token-capped mid-document: the JSON is truncated and would fail to
+        # parse anyway. Surface it distinctly so an under-sized budget is
+        # diagnosable, then fall back to no debrief.
+        logger.warning(
+            "debrief_generation truncated (finish_reason=length) → no debrief "
+            "reason={}",
+            reason,
+        )
+        return None, status
+    if not isinstance(content, str):
+        logger.warning(
+            "debrief_generation non-string content ({}) reason={}",
+            type(content).__name__,
+            reason,
+        )
+        return None, status
+    core = _parse_debrief_output(content)
+    if core is None:
+        return None, status
+    # AC7/FR37 — backend-enforce the reason↔inappropriate_behavior invariant.
+    return _enforce_inappropriate_behavior(core, reason), status
+
+
 async def _generate(
     *,
     transcript_text: str,
@@ -697,7 +806,14 @@ async def _generate(
         transcript_text=transcript_text,
         hesitation_block=_format_hesitations(hesitations),
     )
-    payload = {
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    # STRICT structured output — Groq constrains generation to this schema
+    # (clean, exactly-keyed JSON) on the happy path. Requires a structured-
+    # output-capable model (Scout, NOT 70B). Mirrors `exchange_classifier`.
+    strict_payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": DEBRIEF_SYSTEM_PROMPT},
@@ -705,9 +821,6 @@ async def _generate(
         ],
         "temperature": _TEMPERATURE,
         "max_tokens": _MAX_TOKENS,
-        # STRICT structured output — Groq constrains generation to this schema
-        # (clean, exactly-keyed JSON). Requires a structured-output-capable
-        # model (Scout, NOT 70B). Mirrors `exchange_classifier.classify_multi`.
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -717,52 +830,48 @@ async def _generate(
             },
         },
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        response = await client.post(base_url, headers=headers, json=payload)
-
-    if response.status_code >= 300:
-        body_preview = response.text[:300] if response.text else "<empty>"
-        logger.warning(
-            "debrief_generation non-2xx: {} body={!r} reason={}",
-            response.status_code,
-            body_preview,
+        core, status = await _post_and_parse(
+            client=client,
+            base_url=base_url,
+            headers=headers,
+            payload=strict_payload,
+            reason=reason,
+        )
+        if core is not None:
+            return core
+        # Strict json_schema is all-or-nothing AT THE PROVIDER: one wrong-typed
+        # field makes Groq 400 the WHOLE response (json_validate_failed) before
+        # any content is returned, so the per-item salvage in `_normalize_core`
+        # never runs. On that 400 ONLY, retry once in json_object mode (no strict
+        # schema): Groq returns the content and `_parse_debrief_output` / the
+        # `_clamp_*` salvage drop just the malformed item, keeping the rest. A
+        # timeout / connection error / 5xx does NOT retry — re-rolling a hung or
+        # broken provider buys nothing and would burn the wall-clock budget.
+        if status != 400:
+            return None
+        logger.info(
+            "debrief_generation retrying without strict schema (json_object) reason={}",
             reason,
         )
-        return None
-    try:
-        choice = response.json()["choices"][0]
-        content = choice["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
-        logger.warning(
-            "debrief_generation malformed response: {} ({}) reason={}",
-            exc,
-            type(exc).__name__,
-            reason,
+        fallback_payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": DEBRIEF_SYSTEM_PROMPT + _FALLBACK_SYSTEM_SUFFIX,
+                },
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": _TEMPERATURE,
+            "max_tokens": _MAX_TOKENS,
+            "response_format": {"type": "json_object"},
+        }
+        core, _ = await _post_and_parse(
+            client=client,
+            base_url=base_url,
+            headers=headers,
+            payload=fallback_payload,
+            reason=reason,
         )
-        return None
-    if choice.get("finish_reason") == "length":
-        # Token-capped mid-document: the JSON is truncated and would fail to
-        # parse anyway. Surface it distinctly so an under-sized budget is
-        # diagnosable, then fall back to no debrief.
-        logger.warning(
-            "debrief_generation truncated (finish_reason=length) → no debrief "
-            "reason={}",
-            reason,
-        )
-        return None
-    if not isinstance(content, str):
-        logger.warning(
-            "debrief_generation non-string content ({}) reason={}",
-            type(content).__name__,
-            reason,
-        )
-        return None
-    core = _parse_debrief_output(content)
-    if core is None:
-        return None
-    # AC7/FR37 — backend-enforce the reason↔inappropriate_behavior invariant.
-    return _enforce_inappropriate_behavior(core, reason)
+        return core

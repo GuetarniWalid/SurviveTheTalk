@@ -264,6 +264,12 @@ class Debrief {
   /// prefers `areas` and falls back to `areasToWorkOn` when empty.
   final List<DebriefArea> areas;
 
+  /// Server never-blank fallback: a score-only debrief (empty LLM analysis)
+  /// stored when generation failed even after the non-strict retry. The screen
+  /// then shows 'detailed analysis unavailable' and hides the empty analysis
+  /// sections, rather than implying a flawless call. Absent → false.
+  final bool degraded;
+
   const Debrief({
     required this.survivalPct,
     required this.characterName,
@@ -280,6 +286,7 @@ class Debrief {
     this.checkpoints = const [],
     this.betterPhrasings = const [],
     this.areas = const [],
+    this.degraded = false,
   });
 
   static Debrief? tryParse(Map<String, dynamic>? json) {
@@ -319,6 +326,7 @@ class Debrief {
         DebriefBetterPhrasing.tryParse,
       ),
       areas: _parseItems(json['areas'], DebriefArea.tryParse),
+      degraded: _asBool(json['degraded']) ?? false,
     );
   }
 }

@@ -382,6 +382,116 @@ def test_generate_none_on_garbage_body(monkeypatch):
     assert _run(generate_debrief(**_kwargs())) is None
 
 
+# ---------- generate_debrief: non-strict retry on a schema 400 -------------
+# call_id=324 (2026-06-24): Groq strict mode 400'd the WHOLE debrief because the
+# model emitted areas[0].practice_prompt as an object, so no report was stored.
+# The fix retries once in json_object mode and salvages what parses.
+
+
+def test_generate_retries_without_strict_on_schema_400(monkeypatch):
+    calls: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        if len(calls) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "Generated JSON does not match the expected "
+                        "schema. ...practice_prompt... expected string, but got "
+                        "object",
+                        "code": "json_validate_failed",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": json.dumps(_VALID_CORE)},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(generate_debrief(**_kwargs()))
+    assert out is not None
+    assert out["errors"][0]["user_said"] == "I am agree"
+    # Exactly two round-trips: strict json_schema, then non-strict json_object.
+    assert len(calls) == 2
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    # The fallback system message carries the "json" token (json_object mode
+    # requires it) AND pins the string-not-object rule that caused the 400.
+    fallback_system = calls[1]["messages"][0]["content"]
+    assert "PLAIN JSON STRING" in fallback_system
+    assert "json" in fallback_system.lower()
+
+
+def test_generate_retry_salvages_object_typed_practice_prompt(monkeypatch):
+    # The EXACT call_id=324 shape: the retry's core still has an object-typed
+    # areas[0].practice_prompt. The non-strict salvage (_clamp_areas via
+    # _clean_str) drops that one area and keeps the rest — a usable debrief.
+    calls: list[dict] = []
+    bad_core = json.loads(json.dumps(_VALID_CORE))
+    bad_core["areas"][0]["practice_prompt"] = {"role": "coach", "focus": "x"}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        if len(calls) == 1:
+            return httpx.Response(400, json={"error": {"code": "json_validate_failed"}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": json.dumps(bad_core)},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    out = _run(generate_debrief(**_kwargs()))
+    assert out is not None
+    # The object-typed area was dropped; the valid second area survived.
+    assert [a["title"] for a in out["areas"]] == ["Articles"]
+
+
+def test_generate_no_retry_on_5xx(monkeypatch):
+    # A 5xx / connection failure is NOT a schema rejection — re-rolling a broken
+    # provider buys nothing, so there is exactly ONE round-trip and None.
+    calls: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, json={"error": "upstream"})
+
+    _mock_http(monkeypatch, handler=_handler)
+    assert _run(generate_debrief(**_kwargs())) is None
+    assert len(calls) == 1
+
+
+def test_degraded_core_is_empty_and_enforces_inappropriate():
+    core = dg_mod.degraded_core("character_hung_up")
+    assert core == {
+        "errors": [],
+        "hesitation_contexts": [],
+        "idioms": [],
+        "better_phrasings": [],
+        "areas": [],
+        "inappropriate_behavior": None,
+    }
+    # On an inappropriate end the canonical factual fallback fills the field.
+    flagged = dg_mod.degraded_core("inappropriate_content")
+    assert flagged["inappropriate_behavior"] == dg_mod._INAPPROPRIATE_FALLBACK
+
+
 def test_generate_none_on_timeout(monkeypatch):
     async def _slow(**_kwargs):
         await asyncio.sleep(10)

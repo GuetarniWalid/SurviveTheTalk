@@ -160,18 +160,9 @@ void main() {
     });
 
     test('mistyped required scalar → null', () {
-      expect(
-        Debrief.tryParse(fullPayload()..['survival_pct'] = '73'),
-        isNull,
-      );
-      expect(
-        Debrief.tryParse(fullPayload()..['character_name'] = 12),
-        isNull,
-      );
-      expect(
-        Debrief.tryParse(fullPayload()..['attempt_number'] = 1.5),
-        isNull,
-      );
+      expect(Debrief.tryParse(fullPayload()..['survival_pct'] = '73'), isNull);
+      expect(Debrief.tryParse(fullPayload()..['character_name'] = 12), isNull);
+      expect(Debrief.tryParse(fullPayload()..['attempt_number'] = 1.5), isNull);
     });
   });
 
@@ -234,10 +225,7 @@ void main() {
           {'duration_sec': 4.8, 'context': 'middle'},
         ];
       final hesitations = Debrief.tryParse(payload)!.hesitations;
-      expect(
-        hesitations.map((h) => h.durationSec).toList(),
-        [6.3, 4.8, 3.1],
-      );
+      expect(hesitations.map((h) => h.durationSec).toList(), [6.3, 4.8, 3.1]);
       expect(hesitations.first.context, 'longest');
     });
   });
@@ -306,8 +294,14 @@ void main() {
       expect(d.hesitations.first.resolved, isFalse);
       expect(d.hesitations.first.source, 'device');
       expect(d.betterPhrasings, hasLength(1));
-      expect(d.betterPhrasings.first.original, 'I will not give you the wallet');
-      expect(d.betterPhrasings.first.suggestion, "You're not getting my wallet");
+      expect(
+        d.betterPhrasings.first.original,
+        'I will not give you the wallet',
+      );
+      expect(
+        d.betterPhrasings.first.suggestion,
+        "You're not getting my wallet",
+      );
       expect(d.checkpoints, hasLength(2));
       expect(d.checkpoints.first.id, 'greet');
       expect(d.checkpoints.first.met, isTrue);
@@ -331,6 +325,14 @@ void main() {
       expect(d.hesitations.first.id, isNull);
       expect(d.hesitations.first.resolved, isTrue);
       expect(d.hesitations.first.source, 'server');
+      expect(d.degraded, isFalse);
+    });
+
+    test('parses the degraded marker (server never-blank fallback)', () {
+      // Absent key reads false (normal debrief); an explicit true is carried.
+      expect(Debrief.tryParse(v2Payload())!.degraded, isFalse);
+      final payload = v2Payload()..['degraded'] = true;
+      expect(Debrief.tryParse(payload)!.degraded, isTrue);
     });
 
     test('malformed v2 items are skipped defensively', () {

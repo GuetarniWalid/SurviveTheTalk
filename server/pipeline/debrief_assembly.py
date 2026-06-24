@@ -126,6 +126,7 @@ def assemble_debrief(
     previous_best: int | None,
     hesitations: list[dict],
     checkpoints: list[dict] | None = None,
+    degraded: bool = False,
 ) -> dict:
     """Merge the LLM core + backend fields into the client-facing debrief (v2).
 
@@ -143,6 +144,12 @@ def assemble_debrief(
     ride alongside the retained `areas_to_work_on` (DERIVED from the area
     titles so old clients keep a flat list). `encouraging_framing` stays present
     only when `survival_pct > 40` (key omitted otherwise).
+
+    `degraded=True` (the teardown's never-blank fallback — `core` is the empty
+    `debrief_generator.degraded_core`) adds the `degraded: true` marker so the
+    client renders a score-only report ('detailed analysis unavailable') instead
+    of implying a flawless call. The key is OMITTED when False so a normal
+    debrief's stored JSON is byte-identical to pre-fallback.
     """
     areas = _pin_focus(core.get("areas") or [])
     debrief: dict[str, Any] = {
@@ -165,4 +172,6 @@ def assemble_debrief(
     framing = compute_encouraging_framing(survival_pct, previous_best, character_name)
     if framing is not None:
         debrief["encouraging_framing"] = framing
+    if degraded:
+        debrief["degraded"] = True
     return debrief

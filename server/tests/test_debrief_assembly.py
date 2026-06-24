@@ -301,3 +301,19 @@ def test_assemble_empty_hesitations_yields_empty_list():
         hesitations=[],
     )
     assert out["hesitations"] == []
+
+
+def test_assemble_marks_degraded_only_when_requested():
+    # The never-blank fallback passes degraded=True → the marker rides along; a
+    # normal debrief omits the key entirely (byte-identical to pre-fallback).
+    kw = dict(
+        core=_core(),
+        survival_pct=66,
+        character_name="The Mugger",
+        scenario_title="Give me your wallet",
+        attempt_number=1,
+        previous_best=None,
+        hesitations=[],
+    )
+    assert "degraded" not in assemble_debrief(**kw)
+    assert assemble_debrief(**kw, degraded=True)["degraded"] is True

@@ -33,7 +33,7 @@ from db.queries import (
 )
 from models.schemas import DebriefOut
 from pipeline.debrief_assembly import assemble_debrief, compute_survival_pct
-from pipeline.debrief_generator import generate_debrief
+from pipeline.debrief_generator import degraded_core, generate_debrief
 from pipeline.llm_provider import resolve_llm_api_key, resolve_llm_chat_url
 from pipeline.prompts import DEBRIEF_PROMPT_VERSION
 
@@ -109,10 +109,13 @@ async def persist_debrief(
 
     On a first run: writes the server-authoritative checkpoint counts + upserts
     the user's progression (attempts / best_score are progress, independent of
-    the debrief text), then stores a `debriefs` row ONLY when the LLM core
-    generated AND the assembled blob passes the `DebriefOut` contract — a
-    malformed blob (reachable only on the non-strict-provider fallback parse
-    path) is skipped + logged so `GET` serves `DEBRIEF_NOT_READY` instead of a
+    the debrief text), then stores a `debriefs` row. When the LLM core failed to
+    generate (even after the non-strict retry) it stores a DEGRADED score-only
+    row (empty analysis + a `degraded` marker) so the client gets the survival %
+    immediately instead of polling a never-arriving report — call_id=324
+    2026-06-24. The row is skipped ONLY when the assembled blob fails the
+    `DebriefOut` contract (reachable on the non-strict-provider fallback parse
+    path) — skipped + logged so `GET` serves `DEBRIEF_NOT_READY` instead of a
     permanent 500. Never persists the full transcript.
     """
     survival_pct = compute_survival_pct(checkpoints_passed, total_checkpoints)
@@ -185,13 +188,21 @@ async def persist_debrief(
             await db.rollback()
             raise
 
-        if core is None:
+        # Never-blank fallback (call_id=324, 2026-06-24): generation yielded no
+        # core even after the non-strict retry. Rather than leave NO debrief row
+        # (a permanent `DEBRIEF_NOT_READY` the client polls ~40 s before giving up
+        # on a report that will never arrive), persist a DEGRADED score-only
+        # debrief: the survival %, attempt, checkpoint breakdown — everything the
+        # backend already owns — with empty LLM analysis and a `degraded` marker
+        # so the client shows 'detailed analysis unavailable', not a flawless call.
+        degraded = core is None
+        if degraded:
             logger.warning(
-                "debrief: generation returned None for call_id={} "
-                "(counts + progress persisted, no debrief row)",
+                "debrief: generation returned None for call_id={} — storing a "
+                "degraded (score-only) debrief (counts + progress persisted)",
                 call_id,
             )
-            return
+            core = degraded_core(reason)
 
         debrief = assemble_debrief(
             core=core,
@@ -202,6 +213,7 @@ async def persist_debrief(
             previous_best=previous_best,
             hesitations=hesitations,
             checkpoints=checkpoints,
+            degraded=degraded,
         )
         # Validate at WRITE time against the same contract the GET route enforces.
         # On the non-strict fallback parse path a structurally-wrong item could

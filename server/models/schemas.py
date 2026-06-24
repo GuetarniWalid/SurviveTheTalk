@@ -342,6 +342,10 @@ class DebriefOut(BaseModel):
     checkpoints: list[DebriefCheckpoint] = Field(default_factory=list)
     better_phrasings: list[DebriefBetterPhrasing] = Field(default_factory=list)
     areas: list[DebriefArea] = Field(default_factory=list)
+    # The teardown's never-blank fallback marks a score-only debrief (empty LLM
+    # analysis) so the client shows 'detailed analysis unavailable' rather than
+    # implying a flawless call. Absent (the normal case) reads False.
+    degraded: bool = False
 
 
 # --- Story 8.1: subscription verification ----------------------------------

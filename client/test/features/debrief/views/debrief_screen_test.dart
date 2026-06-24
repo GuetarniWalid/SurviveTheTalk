@@ -33,7 +33,8 @@ const String kAboutText =
     'The character ended the call because the conversation included '
     'inappropriate language.';
 
-const String kFocusPrompt = 'You are an English coach. Drill negative sentences.';
+const String kFocusPrompt =
+    'You are an English coach. Drill negative sentences.';
 const String kArticlesPrompt = 'You are an English coach. Drill articles.';
 
 /// Full v2 payload — every section populated.
@@ -131,6 +132,35 @@ Map<String, dynamic> v1Payload({int survivalPct = 30}) {
     'idioms': <Object?>[],
     'areas_to_work_on': ['Articles (a/an/the)'],
     'inappropriate_behavior': null,
+  };
+}
+
+/// Server never-blank fallback — a DEGRADED score-only debrief (`degraded:
+/// true`, empty LLM analysis). The backend still threads the score +
+/// checkpoints; `inappropriate_behavior` is set only on an inappropriate end.
+Map<String, dynamic> degradedPayload({
+  int survivalPct = 66,
+  String? inappropriateBehavior,
+}) {
+  return <String, dynamic>{
+    'debrief_version': 2,
+    'survival_pct': survivalPct,
+    'character_name': 'The Mugger',
+    'scenario_title': 'Give me your wallet',
+    'attempt_number': 2,
+    'previous_best': null,
+    'checkpoints': [
+      {'id': 'greet', 'hint': 'Greet the mugger', 'met': true},
+      {'id': 'refuse', 'hint': 'Refuse to comply', 'met': false},
+    ],
+    'errors': <Object?>[],
+    'hesitations': <Object?>[],
+    'idioms': <Object?>[],
+    'better_phrasings': <Object?>[],
+    'areas': <Object?>[],
+    'areas_to_work_on': <Object?>[],
+    'inappropriate_behavior': inappropriateBehavior,
+    'degraded': true,
   };
 }
 
@@ -295,7 +325,10 @@ void main() {
       );
 
       await tester.pumpWidget(const SizedBox());
-      await pumpScreen(tester, buildScreen(payload: fullPayload(survivalPct: 30)));
+      await pumpScreen(
+        tester,
+        buildScreen(payload: fullPayload(survivalPct: 30)),
+      );
       expect(
         tester.widget<Text>(find.text('30%')).style?.color,
         AppColors.destructive,
@@ -373,6 +406,59 @@ void main() {
     });
   });
 
+  group('degraded debrief (server never-blank fallback)', () {
+    testWidgets(
+      'shows score + checkpoints + honest note, hides empty analysis',
+      (tester) async {
+        await pumpScreen(tester, buildScreen(payload: degradedPayload()));
+
+        // Score + checkpoints (backend-factual) still render.
+        expect(find.text('66%'), findsOneWidget);
+        expect(find.text('The Mugger — Give me your wallet'), findsOneWidget);
+        expect(find.text('CHECKPOINTS'), findsOneWidget);
+        expect(find.text('1 of 2 reached'), findsOneWidget);
+
+        // The one honest line replaces the analysis.
+        expect(
+          find.text('Detailed analysis is unavailable for this call.'),
+          findsOneWidget,
+        );
+
+        // The empty analysis sections are SUPPRESSED — no misleading "No errors
+        // flagged" / "No hesitations flagged" implying a flawless call.
+        expect(find.text('LANGUAGE ERRORS'), findsNothing);
+        expect(find.text('No errors flagged'), findsNothing);
+        expect(find.text('HESITATIONS'), findsNothing);
+        expect(find.text('No hesitations flagged'), findsNothing);
+        expect(find.text('AREAS TO WORK ON'), findsNothing);
+
+        verifyNever(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('an inappropriate-end degraded debrief still explains why', (
+      tester,
+    ) async {
+      await pumpScreen(
+        tester,
+        buildScreen(
+          payload: degradedPayload(inappropriateBehavior: kAboutText),
+        ),
+      );
+
+      expect(
+        find.text('Detailed analysis is unavailable for this call.'),
+        findsOneWidget,
+      );
+      // The factual "about this call" line is backend-pinned even when degraded.
+      expect(find.text('ABOUT THIS CALL'), findsOneWidget);
+      expect(find.text(kAboutText), findsOneWidget);
+    });
+  });
+
   group('area practice drawer (AC5, Walid 2026-06-15)', () {
     testWidgets('the inline copy row copies directly, WITHOUT opening the drawer', (
       tester,
@@ -420,43 +506,44 @@ void main() {
       await tester.pump(const Duration(milliseconds: 350));
     });
 
-    testWidgets('tapping the card body opens the drawer with the practice loop', (
-      tester,
-    ) async {
-      await pumpScreen(tester, buildScreen(payload: fullPayload()));
+    testWidgets(
+      'tapping the card body opens the drawer with the practice loop',
+      (tester) async {
+        await pumpScreen(tester, buildScreen(payload: fullPayload()));
 
-      expect(find.text('HOW TO PRACTICE'), findsNothing);
-      // Tap the area TITLE (not the inline copy row) → opens the drawer.
-      final areaTitle = find.text('Articles');
-      await tester.ensureVisible(areaTitle);
-      await tester.pump();
-      await tester.tap(areaTitle);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400)); // drawer opens
+        expect(find.text('HOW TO PRACTICE'), findsNothing);
+        // Tap the area TITLE (not the inline copy row) → opens the drawer.
+        final areaTitle = find.text('Articles');
+        await tester.ensureVisible(areaTitle);
+        await tester.pump();
+        await tester.tap(areaTitle);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400)); // drawer opens
 
-      // The loop is explained in A2/B1 steps BEFORE the copy action — so a
-      // first-time user understands what the copied prompt is for.
-      expect(find.text('HOW TO PRACTICE'), findsOneWidget);
-      expect(
-        find.text('Keep practicing this skill on your own, for free.'),
-        findsOneWidget,
-      );
-      expect(find.text('1. Copy the prompt below.'), findsOneWidget);
-      expect(
-        find.text(
-          '2. Paste it into any AI chat (ChatGPT, Gemini, or Claude).',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.text('3. Turn on voice mode and practice out loud.'),
-        findsOneWidget,
-      );
-      expect(find.text('Come back here when it feels easy.'), findsOneWidget);
-      // The prominent CTA is present in the drawer too — 2 inline rows on the
-      // cards behind + 1 drawer CTA = 3 "Copy the prompt".
-      expect(find.text('Copy the prompt'), findsNWidgets(3));
-    });
+        // The loop is explained in A2/B1 steps BEFORE the copy action — so a
+        // first-time user understands what the copied prompt is for.
+        expect(find.text('HOW TO PRACTICE'), findsOneWidget);
+        expect(
+          find.text('Keep practicing this skill on your own, for free.'),
+          findsOneWidget,
+        );
+        expect(find.text('1. Copy the prompt below.'), findsOneWidget);
+        expect(
+          find.text(
+            '2. Paste it into any AI chat (ChatGPT, Gemini, or Claude).',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text('3. Turn on voice mode and practice out loud.'),
+          findsOneWidget,
+        );
+        expect(find.text('Come back here when it feels easy.'), findsOneWidget);
+        // The prominent CTA is present in the drawer too — 2 inline rows on the
+        // cards behind + 1 drawer CTA = 3 "Copy the prompt".
+        expect(find.text('Copy the prompt'), findsNWidgets(3));
+      },
+    );
 
     testWidgets('the prominent drawer CTA copies the prompt + toast', (
       tester,
@@ -577,7 +664,12 @@ void main() {
         expect(text.contains('!'), isFalse, reason: 'no "!" in "$text"');
       }
       final lower = rendered.map((t) => t.toLowerCase()).toList();
-      for (final praise in ['great job', 'congratulations', 'well done', 'nice']) {
+      for (final praise in [
+        'great job',
+        'congratulations',
+        'well done',
+        'nice',
+      ]) {
         expect(
           lower.any((t) => t.contains(praise)),
           isFalse,
@@ -639,24 +731,25 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('an in-flight fetch when the budget fires still lands content', (
-      tester,
-    ) async {
-      final completer = Completer<Map<String, dynamic>>();
-      when(
-        () => repository.fetchDebrief(callId: 7),
-      ).thenAnswer((_) => completer.future);
+    testWidgets(
+      'an in-flight fetch when the budget fires still lands content',
+      (tester) async {
+        final completer = Completer<Map<String, dynamic>>();
+        when(
+          () => repository.fetchDebrief(callId: 7),
+        ).thenAnswer((_) => completer.future);
 
-      await pumpScreen(tester, buildScreen(payload: null));
-      expect(find.text('Analyzing your conversation...'), findsOneWidget);
-      await tester.pump(const Duration(milliseconds: 450));
-      expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
-      completer.complete(fullPayload());
-      await tester.pump();
-      expect(find.text('73%'), findsOneWidget);
-      await tester.pump(const Duration(milliseconds: 310));
-      expect(find.text('Debrief unavailable for this call.'), findsNothing);
-    });
+        await pumpScreen(tester, buildScreen(payload: null));
+        expect(find.text('Analyzing your conversation...'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 450));
+        expect(find.text('Debrief unavailable for this call.'), findsOneWidget);
+        completer.complete(fullPayload());
+        await tester.pump();
+        expect(find.text('73%'), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 310));
+        expect(find.text('Debrief unavailable for this call.'), findsNothing);
+      },
+    );
 
     testWidgets('null payload + null callId is unavailable immediately', (
       tester,
@@ -698,7 +791,9 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(320, 568));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: Center(child: Text('HOME')))),
+        const MaterialApp(
+          home: Scaffold(body: Center(child: Text('HOME'))),
+        ),
       );
       final navigator = tester.state<NavigatorState>(find.byType(Navigator));
       unawaited(

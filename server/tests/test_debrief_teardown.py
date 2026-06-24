@@ -168,12 +168,21 @@ def test_persist_writes_debrief_counts_and_progress(seeded, monkeypatch):
     assert progress["attempts"] == 1
 
 
-def test_persist_no_debrief_row_when_generation_fails(seeded, monkeypatch):
+def test_persist_stores_degraded_debrief_when_generation_fails(seeded, monkeypatch):
+    """Never-blank fallback (call_id=324): generation returned None (even after
+    the non-strict retry) → a DEGRADED score-only debrief is stored so the client
+    gets the survival % at once instead of polling a never-arriving report. Empty
+    LLM analysis, `degraded` marker, but the backend-owned fields (score, attempt,
+    checkpoint breakdown) all land. Counts + progress persist as before."""
     user_id, call_id = seeded
     monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_none)
+    breakdown = [
+        {"id": "greet", "hint": "Greet the mugger", "met": True},
+        {"id": "refuse", "hint": "Refuse to comply", "met": False},
+    ]
 
     async def _go():
-        await persist_debrief(**_kwargs(call_id))
+        await persist_debrief(**_kwargs(call_id, checkpoints=breakdown))
         async with get_connection() as db:
             debrief = await get_debrief_by_call_id(db, call_id)
             async with db.execute(
@@ -192,10 +201,38 @@ def test_persist_no_debrief_row_when_generation_fails(seeded, monkeypatch):
 
     debrief, counts, progress = asyncio.run(_go())
 
-    # No debrief row, but counts + progress still persisted (Option A).
-    assert debrief is None
+    # A degraded row IS stored (score-only), and counts + progress still land.
+    assert debrief is not None
+    assert debrief["survival_pct"] == 66  # floor(2/3*100)
+    stored = json.loads(debrief["debrief_json"])
+    assert stored["degraded"] is True
+    # LLM analysis is empty (nothing was generated)...
+    assert stored["errors"] == []
+    assert stored["areas"] == []
+    assert stored["areas_to_work_on"] == []
+    assert stored["idioms"] == []
+    # ...but the backend-owned fields still ground the report.
+    assert stored["character_name"] == "The Mugger"
+    assert stored["attempt_number"] == 1
+    assert stored["checkpoints"] == breakdown
     assert counts["checkpoints_passed"] == 2
     assert progress["attempts"] == 1
+
+
+def test_persist_normal_debrief_is_not_marked_degraded(seeded, monkeypatch):
+    """A successful generation stores NO `degraded` key (byte-identical to the
+    pre-fallback happy path — the client defaults absent → False)."""
+    _user_id, call_id = seeded
+    monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_core)
+
+    async def _go():
+        await persist_debrief(**_kwargs(call_id))
+        async with get_connection() as db:
+            return await get_debrief_by_call_id(db, call_id)
+
+    debrief = asyncio.run(_go())
+    stored = json.loads(debrief["debrief_json"])
+    assert "degraded" not in stored
 
 
 def test_persist_missing_call_row_is_noop(seeded, monkeypatch):

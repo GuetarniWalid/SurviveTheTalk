@@ -64,7 +64,8 @@ const String _kHesFreezeNote = 'The character had to speak first.';
 // A2/B1 steps before the copy action. Copy is still areas-only. Strings here are
 // app-owned chrome → bound by the COPY LINT above (no praise/exclaim/emoji/tips).
 const String _kHdrHowToPractice = 'HOW TO PRACTICE';
-const String _kPracticeLead = 'Keep practicing this skill on your own, for free.';
+const String _kPracticeLead =
+    'Keep practicing this skill on your own, for free.';
 const List<String> _kPracticeSteps = <String>[
   'Copy the prompt below.',
   'Paste it into any AI chat (ChatGPT, Gemini, or Claude).',
@@ -77,6 +78,12 @@ const String _kDetailHint = 'Show detail';
 const String _kBackSemantics = 'Back to scenarios';
 const String _kLoading = 'Analyzing your conversation...';
 const String _kUnavailable = 'Debrief unavailable for this call.';
+// Server never-blank fallback (degraded debrief): generation failed, so the
+// analysis sections are suppressed and this one honest line shows instead. The
+// score + checkpoints above stay (backend-factual). COPY LINT: factual, present
+// tense, no praise / exclaim / emoji / tips.
+const String _kDegradedAnalysis =
+    'Detailed analysis is unavailable for this call.';
 
 // Layout constants (local consts per the Story 7.2/7.3 precedent).
 const double _kArrowInset = 8.0;
@@ -536,66 +543,90 @@ class _DebriefContent extends StatelessWidget {
                     checkpoints: d.checkpoints,
                   ),
                 ],
-                // LANGUAGE ERRORS — always visible (count line).
-                const SizedBox(height: _kSectionGap),
-                const _SectionHeader(_kHdrErrors),
-                const SizedBox(height: _kCountLineGap),
-                Text(errorCountLine(d.errors.length), style: mutedCaption),
-                for (final error in d.errors) ...[
-                  const SizedBox(height: _kCardGap),
-                  _ErrorCard(error: error),
-                ],
-                // HESITATIONS — always visible (count line).
-                const SizedBox(height: _kSectionGap),
-                const _SectionHeader(_kHdrHesitations),
-                const SizedBox(height: _kCountLineGap),
-                Text(
-                  hesitationCountLine(d.hesitations.length),
-                  style: mutedCaption,
-                ),
-                for (final hesitation in d.hesitations) ...[
-                  const SizedBox(height: _kCardGap),
-                  _HesitationCard(hesitation: hesitation),
-                ],
-                // IDIOMS & SLANG — absence IS the design (no empty state).
-                if (d.idioms.isNotEmpty) ...[
+                // The LLM analysis sections (errors / hesitations / idioms /
+                // better phrasings / areas). SUPPRESSED on a DEGRADED debrief:
+                // generation failed, so empty sections ("No errors flagged")
+                // would falsely imply a flawless call. The score + checkpoints
+                // above are backend-factual and stay; one honest line replaces
+                // the analysis.
+                if (d.degraded) ...[
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrIdioms),
-                  for (final idiom in d.idioms) ...[
+                  Text(
+                    _kDegradedAnalysis,
+                    style: AppTypography.body.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  // An inappropriate-content end still explains itself — the
+                  // backend pins this factual line even on a degraded debrief.
+                  if (about != null) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrAbout),
                     const SizedBox(height: _kCardGap),
-                    _IdiomCard(idiom: idiom),
+                    _AboutThisCallCard(explanation: about),
                   ],
-                ],
-                // SAID MORE NATURALLY (B2) — hidden when empty (often is).
-                if (d.betterPhrasings.isNotEmpty) ...[
+                ] else ...[
+                  // LANGUAGE ERRORS — always visible (count line).
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrBetterPhrasing),
-                  for (final phrasing in d.betterPhrasings) ...[
+                  const _SectionHeader(_kHdrErrors),
+                  const SizedBox(height: _kCountLineGap),
+                  Text(errorCountLine(d.errors.length), style: mutedCaption),
+                  for (final error in d.errors) ...[
                     const SizedBox(height: _kCardGap),
-                    _BetterPhrasingCard(phrasing: phrasing),
+                    _ErrorCard(error: error),
                   ],
-                ],
-                // ABOUT THIS CALL (FR37) — hidden when null.
-                if (about != null) ...[
+                  // HESITATIONS — always visible (count line).
                   const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrAbout),
-                  const SizedBox(height: _kCardGap),
-                  _AboutThisCallCard(explanation: about),
-                ],
-                // AREAS TO WORK ON — rich v2 cards when present; v1 fallback to
-                // the flat title list otherwise (AC2).
-                if (d.areas.isNotEmpty) ...[
-                  const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrAreas),
-                  for (final area in d.areas) ...[
+                  const _SectionHeader(_kHdrHesitations),
+                  const SizedBox(height: _kCountLineGap),
+                  Text(
+                    hesitationCountLine(d.hesitations.length),
+                    style: mutedCaption,
+                  ),
+                  for (final hesitation in d.hesitations) ...[
                     const SizedBox(height: _kCardGap),
-                    _AreaCard(area: area),
+                    _HesitationCard(hesitation: hesitation),
                   ],
-                ] else if (d.areasToWorkOn.isNotEmpty) ...[
-                  const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrAreas),
-                  const SizedBox(height: _kCardGap),
-                  _AreasFallbackCard(areas: d.areasToWorkOn),
+                  // IDIOMS & SLANG — absence IS the design (no empty state).
+                  if (d.idioms.isNotEmpty) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrIdioms),
+                    for (final idiom in d.idioms) ...[
+                      const SizedBox(height: _kCardGap),
+                      _IdiomCard(idiom: idiom),
+                    ],
+                  ],
+                  // SAID MORE NATURALLY (B2) — hidden when empty (often is).
+                  if (d.betterPhrasings.isNotEmpty) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrBetterPhrasing),
+                    for (final phrasing in d.betterPhrasings) ...[
+                      const SizedBox(height: _kCardGap),
+                      _BetterPhrasingCard(phrasing: phrasing),
+                    ],
+                  ],
+                  // ABOUT THIS CALL (FR37) — hidden when null.
+                  if (about != null) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrAbout),
+                    const SizedBox(height: _kCardGap),
+                    _AboutThisCallCard(explanation: about),
+                  ],
+                  // AREAS TO WORK ON — rich v2 cards when present; v1 fallback to
+                  // the flat title list otherwise (AC2).
+                  if (d.areas.isNotEmpty) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrAreas),
+                    for (final area in d.areas) ...[
+                      const SizedBox(height: _kCardGap),
+                      _AreaCard(area: area),
+                    ],
+                  ] else if (d.areasToWorkOn.isNotEmpty) ...[
+                    const SizedBox(height: _kSectionGap),
+                    const _SectionHeader(_kHdrAreas),
+                    const SizedBox(height: _kCardGap),
+                    _AreasFallbackCard(areas: d.areasToWorkOn),
+                  ],
                 ],
                 const SizedBox(height: _kBottomPadding),
               ],
@@ -985,7 +1016,9 @@ class _ErrorDetailSheet extends StatelessWidget {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.avatarBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(_kSheetRadius),
+        ),
       ),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -1089,7 +1122,9 @@ class _CheckpointsSheet extends StatelessWidget {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.avatarBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(_kSheetRadius),
+        ),
       ),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -1360,7 +1395,10 @@ class _AreaCard extends StatelessWidget {
                 ],
                 if (_hasPractice) ...[
                   const SizedBox(height: _kCopyRowTopGap),
-                  _CopyInlineRow(payload: area.practicePrompt, topic: area.title),
+                  _CopyInlineRow(
+                    payload: area.practicePrompt,
+                    topic: area.title,
+                  ),
                 ],
               ],
             ),
@@ -1416,7 +1454,9 @@ class _AreaDetailSheet extends StatelessWidget {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.avatarBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_kSheetRadius)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(_kSheetRadius),
+        ),
       ),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -1508,8 +1548,14 @@ class _CopyInlineRow extends StatelessWidget {
     // Story 7.5 review: swallow a rejected clipboard write so it never escapes as
     // an unhandled async error (the optimistic "Copied" toast still shows — a
     // platform clipboard failure on this path is vanishingly rare).
-    unawaited(Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}));
-    AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
+    unawaited(
+      Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}),
+    );
+    AppToast.show(
+      context,
+      message: _kCopiedConfirm,
+      type: AppToastType.success,
+    );
   }
 
   @override
@@ -1571,8 +1617,14 @@ class _CopyPromptCta extends StatelessWidget {
     // Story 7.5 review: swallow a rejected clipboard write so it never escapes as
     // an unhandled async error (the optimistic "Copied" toast still shows — a
     // platform clipboard failure on this path is vanishingly rare).
-    unawaited(Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}));
-    AppToast.show(context, message: _kCopiedConfirm, type: AppToastType.success);
+    unawaited(
+      Clipboard.setData(ClipboardData(text: payload)).catchError((_) {}),
+    );
+    AppToast.show(
+      context,
+      message: _kCopiedConfirm,
+      type: AppToastType.success,
+    );
   }
 
   @override
