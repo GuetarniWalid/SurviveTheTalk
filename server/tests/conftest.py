@@ -166,16 +166,45 @@ def prod_db(tmp_path, monkeypatch):
     return str(path)
 
 
+async def _noop_background_loop(stop_event) -> None:
+    """Test stub for the app's periodic background loops — does NO sweeps.
+
+    The production lifespan spawns `_janitor_loop` and
+    `_subscription_revalidation_loop`; the latter's INITIAL sweep calls
+    `downgrade_expired_entitlements(now())` immediately, on the app's
+    event-loop thread. That sweep RACES any test that seeds a `paid` user
+    whose purchase `expires_at` is in the PAST (e.g. the DID_RENEW
+    expiry-refresh tests): if the sweep SELECTs the expired user, the webhook
+    then commits paid, and the sweep's tier WRITE lands last, the user is
+    wrongly flipped to `free` — an intermittent `'free' == 'paid'` failure that
+    only began once wall-clock passed those fixtures' 2026-01-01 expiry. The
+    interleaving depends on cross-thread scheduling, so it flakes (worse under
+    CI load). Stubbing the loops to a no-op that just awaits the shutdown event
+    makes the `client` fixture deterministic; the sweep logic itself is covered
+    directly against isolated connections in test_subscription.py /
+    test_janitor.py.
+    """
+    await stop_event.wait()
+
+
 @pytest.fixture
-def client(test_db_path):
+def client(test_db_path, monkeypatch):
     """Build the production app, run lifespan (migrations), yield a TestClient.
 
     The `with TestClient(app)` context triggers FastAPI startup/shutdown so
-    `run_migrations()` populates the temp DB before any request runs.
+    `run_migrations()` populates the temp DB before any request runs. The
+    background janitor / subscription-revalidation loops are stubbed to no-ops
+    (`_noop_background_loop`) so their periodic sweeps can't race the test —
+    see that stub's docstring for the flake it removes.
     """
-    from api.app import app
+    import api.app as app_module
 
-    with TestClient(app) as c:
+    monkeypatch.setattr(app_module, "_janitor_loop", _noop_background_loop)
+    monkeypatch.setattr(
+        app_module, "_subscription_revalidation_loop", _noop_background_loop
+    )
+
+    with TestClient(app_module.app) as c:
         yield c
 
 
