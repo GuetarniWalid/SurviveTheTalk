@@ -1,5 +1,6 @@
 """Server configuration loaded from environment / .env."""
 
+import re
 from typing import Literal
 
 from pydantic import field_validator, model_validator
@@ -105,6 +106,20 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from_email: str = "noreply@survivethetalk.com"
     resend_from_name: str = "surviveTheTalk"
+
+    # Story 10.3 — Google Play "app access" review bypass. The app is
+    # passwordless (email + a RANDOM 6-digit code emailed to the user), so a
+    # store reviewer cannot sign in: the code lands in an inbox they don't
+    # control, and Google states it will not receive our codes. These two env
+    # vars let ONE designated test email sign in with a FIXED 6-digit code,
+    # skipping the email round-trip entirely (BOTH `/auth/request-code` and
+    # `/auth/verify-code` short-circuit for it — see `api.routes_auth`). OFF by
+    # default (both empty); set BOTH in the prod `.env` for the review window,
+    # then UNSET once the app is approved. Only this exact email + code
+    # bypasses (constant-time compared); every real user keeps the random-code
+    # path. The test account is an ordinary free-tier user.
+    review_login_email: str = ""  # REVIEW_LOGIN_EMAIL
+    review_login_code: str = ""  # REVIEW_LOGIN_CODE
 
     # Story 8.1 — In-app-purchase / subscription validation (StoreKit 2 +
     # Google Play Billing). All optional (empty / None defaults) so a deploy
@@ -527,6 +542,26 @@ class Settings(BaseSettings):
                 "GOOGLE_PLAY_PACKAGE_NAME and GOOGLE_SERVICE_ACCOUNT_JSON must be "
                 "set together — Android subscription validation needs both (or "
                 "neither, pre-store-setup)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_review_login(self) -> "Settings":
+        r"""Fail loud at boot on a half/invalid review-login bypass (Story 10.3).
+
+        The bypass is OFF when both fields are empty (the normal posture). When
+        REVIEW_LOGIN_EMAIL is set, REVIEW_LOGIN_CODE MUST be exactly 6 digits —
+        `/auth/verify-code` constrains the submitted code to `^\d{6}$`, so a
+        non-6-digit fixed code could NEVER match and the reviewer would be
+        silently locked out. Catch the misconfig at `systemctl restart`, not
+        when the reviewer fails to sign in.
+        """
+        if self.review_login_email and not re.fullmatch(
+            r"\d{6}", self.review_login_code
+        ):
+            raise ValueError(
+                "REVIEW_LOGIN_CODE must be exactly 6 digits when "
+                r"REVIEW_LOGIN_EMAIL is set (verify-code matches ^\d{6}$)"
             )
         return self
 
