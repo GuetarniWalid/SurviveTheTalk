@@ -86,3 +86,17 @@ def test_review_login_code_must_be_six_digits(
     monkeypatch.setenv("REVIEW_LOGIN_CODE", "abc")  # not 6 digits
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_review_login_email_must_not_be_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Boot-time validator: a truthy-but-blank email (e.g. whitespace) with a
+    valid code raises — otherwise the bypass is silently 'on' but unmatchable,
+    locking the reviewer out (the footgun the validator exists to prevent)."""
+    from config import Settings
+
+    monkeypatch.setenv("REVIEW_LOGIN_EMAIL", "   ")  # truthy, blank after strip
+    monkeypatch.setenv("REVIEW_LOGIN_CODE", _REVIEW_CODE)
+    with pytest.raises(ValidationError):
+        Settings()

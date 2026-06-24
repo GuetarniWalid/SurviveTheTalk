@@ -550,19 +550,26 @@ class Settings(BaseSettings):
         r"""Fail loud at boot on a half/invalid review-login bypass (Story 10.3).
 
         The bypass is OFF when both fields are empty (the normal posture). When
-        REVIEW_LOGIN_EMAIL is set, REVIEW_LOGIN_CODE MUST be exactly 6 digits —
-        `/auth/verify-code` constrains the submitted code to `^\d{6}$`, so a
-        non-6-digit fixed code could NEVER match and the reviewer would be
-        silently locked out. Catch the misconfig at `systemctl restart`, not
-        when the reviewer fails to sign in.
+        REVIEW_LOGIN_EMAIL is set it must be a non-blank, email-shaped value AND
+        REVIEW_LOGIN_CODE must be exactly 6 digits. `/auth/verify-code`
+        constrains the submitted code to `^\d{6}$` and matches on the NORMALISED
+        email, so a blank-after-strip email (truthy but `"   "`) or a non-6-digit
+        code would silently lock the reviewer out — the exact footgun this
+        validator exists to prevent. Catch the misconfig at `systemctl restart`,
+        not when the reviewer fails to sign in.
         """
-        if self.review_login_email and not re.fullmatch(
-            r"\d{6}", self.review_login_code
-        ):
-            raise ValueError(
-                "REVIEW_LOGIN_CODE must be exactly 6 digits when "
-                r"REVIEW_LOGIN_EMAIL is set (verify-code matches ^\d{6}$)"
-            )
+        if self.review_login_email:
+            email = self.review_login_email.strip()
+            if not email or "@" not in email:
+                raise ValueError(
+                    "REVIEW_LOGIN_EMAIL must be a non-blank email address when "
+                    "the review-login bypass is enabled"
+                )
+            if not re.fullmatch(r"\d{6}", self.review_login_code):
+                raise ValueError(
+                    "REVIEW_LOGIN_CODE must be exactly 6 digits when "
+                    r"REVIEW_LOGIN_EMAIL is set (verify-code matches ^\d{6}$)"
+                )
         return self
 
     @field_validator("resend_from_name", "resend_from_email")
