@@ -1,0 +1,83 @@
+---
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+// Account-deletion page — the public web URL required by Google Play for apps
+// with account creation. In-app deletion is the primary path (Account ->
+// Delete my account; server DELETE /user/me, Story 10.1). This page gives the
+// web-accessible instructions + an email fallback. Plain, compliance-clear
+// voice (Handler's Brief: no hype). Design matches the landing (Base + brand).
+---
+
+<Base
+  title="Delete your account — Survive the Talk"
+  description="How to permanently delete your Survive the Talk account and all your data."
+>
+  <Header />
+  <main>
+    <section aria-labelledby="delete-title">
+      <div class="mx-0 max-w-[720px] px-6 pt-10 pb-16 md:pl-20 md:pr-8 md:pt-16 md:pb-24">
+        <h1
+          id="delete-title"
+          class="font-display text-[clamp(28px,6vw,64px)] uppercase leading-none text-text-primary"
+        >
+          Delete your account
+        </h1>
+
+        <p class="mt-6 max-w-[62ch] text-body text-text-primary">
+          You can permanently delete your Survive the Talk account and all the
+          data tied to it, in one step. Here is how.
+        </p>
+
+        <h2 class="mt-10 text-headline text-text-primary">In the app (instant)</h2>
+        <p class="mt-3 max-w-[62ch] text-body text-text-primary">
+          Open <span class="font-medium">Survive the Talk</span> →
+          <span class="font-medium">Account</span> →
+          <span class="font-medium">Delete my account</span>, then confirm. This
+          permanently removes your email, your call history, your debrief
+          summaries, your progress, and your subscription records — in one
+          operation. It cannot be undone.
+        </p>
+
+        <h2 class="mt-8 text-headline text-text-primary">By email</h2>
+        <p class="mt-3 max-w-[62ch] text-body text-text-primary">
+          If you cannot open the app, email
+          <a
+            href="mailto:contact@survivethetalk.com?subject=Delete%20my%20account"
+            class="text-text-primary underline underline-offset-2"
+            >contact@survivethetalk.com</a
+          >
+          from your account's email address and ask us to delete your account.
+          We remove it within 30 days.
+        </p>
+
+        <h2 class="mt-8 text-headline text-text-primary">If you have a subscription</h2>
+        <p class="mt-3 max-w-[62ch] text-body text-text-primary">
+          Deleting your account does <span class="font-medium">not</span> cancel
+          a paid subscription — Google Play and Apple manage subscriptions, not
+          us. To stop auto-renewal, also cancel it in your store:
+          <span class="font-medium">Google Play → Subscriptions</span> (or
+          <span class="font-medium">App Store → Subscriptions</span>).
+        </p>
+
+        <p class="mt-8 max-w-[62ch] text-caption text-text-secondary">
+          Your voice is never stored — it is processed live during a call and
+          discarded — so there is nothing to delete there. Full details are in
+          the
+          <a
+            href="https://survivethetalk.com/legal/privacy"
+            class="underline underline-offset-2">Privacy Policy</a
+          >.
+        </p>
+
+        <a
+          href="/"
+          class="mt-9 inline-block text-caption text-text-secondary underline underline-offset-2"
+        >
+          Back to the start
+        </a>
+      </div>
+    </section>
+  </main>
+  <Footer />
+</Base>
