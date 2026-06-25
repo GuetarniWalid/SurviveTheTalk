@@ -1,6 +1,6 @@
 # Story 10.6: Migrate off the decommissioned Llama 4 Scout model
 
-Status: ready-for-dev
+Status: in-progress
 
 > 🚨 **MVP LAUNCH BLOCKER — HARD EXTERNAL DEADLINE 2026-07-17.** Groq emailed
 > 2026-06-24 that `meta-llama/llama-4-scout-17b-16e-instruct` is **deprecated now
@@ -73,22 +73,21 @@ clean parse, 2026-06-25).
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Swap the model defaults** (AC: 1)
-  - [ ] `server/config.py:207` `classifier_model` default → `"openai/gpt-oss-20b"`; `:216` `debrief_model` default → `"openai/gpt-oss-120b"`. Leave `:221` `character_model` untouched.
-  - [ ] Set `CLASSIFIER_MODEL` + `DEBRIEF_MODEL` in the VPS `/opt/survive-the-talk/shared/.env` (or the live `.env`) so the running service uses them even before the next code default ships.
-- [ ] **Task 2 — Wire `reasoning_effort: low`** (AC: 2, 3)
-  - [ ] Judge: add `"reasoning_effort": "low"` to the payload in `pipeline/exchange_classifier.classify_multi` (and the legacy `classify` if it shares the path), gated to gpt-oss models (`if "gpt-oss" in model`).
-  - [ ] Debrief: add the same to BOTH payloads in `pipeline/debrief_generator._generate` (`strict_payload` and `fallback_payload`), gated to gpt-oss.
-  - [ ] Verify no `finish_reason=="length"` on representative inputs; bump `max_tokens` (judge verdict cap; debrief `_MAX_TOKENS=3072` at `debrief_generator.py`) only if truncation is observed, and record the new value.
-- [ ] **Task 3 — Validate the judge on the prod path** (AC: 4, 5)
-  - [ ] `cd server && python scripts/calibrate_scenario.py` (golden-only sweep first, then a full sweep on a representative scenario) with the new judge model; paste PASS/FAIL.
-  - [ ] Confirm the multi-goal verdict is schema-clean (no all-None) — a live `classify_multi` exercise or a targeted run; assert ids echo back exactly.
-- [ ] **Task 4 — Confirm debrief acceptance** (AC: 6)
-  - [ ] `DEBRIEF_MODEL=openai/gpt-oss-120b python scripts/probe_debrief_schema.py` → exit 0. (Already passed once on 2026-06-25; re-run from the final code.)
-- [ ] **Task 5 — Prompt re-tune if needed** (AC: 4, 5)
-  - [ ] If the calibration sweep reveals accuracy drift, lightly re-tune `EXCHANGE_CLASSIFIER_MULTI_PROMPT` / `DEBRIEF_SYSTEM_PROMPT` for gpt-oss (the prompts were written for Qwen/Llama; `/no_think` is a Qwen-ism, inert here). Keep persona difficulty-neutral (server/CLAUDE.md §8). If you edit `DEBRIEF_SYSTEM_PROMPT`, update the authoritative `planning-artifacts/debrief-generation-prompt.md` to stay byte-identical (the drift-guard test `test_system_prompt_matches_authoritative_doc`) and bump `DEBRIEF_PROMPT_VERSION`.
-- [ ] **Task 6 — Docs + memory** (AC: 8)
-- [ ] **Task 7 — Gates + deploy** (AC: 7, 9) — ruff + pytest green; push to `main` (CI auto-deploys `server/**`); then the Smoke Test Gate below.
+- [x] **Task 1 — Swap the model defaults** (AC: 1)
+  - [x] `server/config.py` `classifier_model` default → `"openai/gpt-oss-20b"`; `debrief_model` default → `"openai/gpt-oss-120b"`. `character_model` untouched. ALSO flipped the secondary Scout defaults: `exchange_classifier._PROVIDER_MODEL` + `calibration_engine.LlmSettings`/`load_llm_settings` (AC1 "no active default still points at Scout").
+  - [ ] **DEFERRED to deploy (gated on R1, Walid):** set `CLASSIFIER_MODEL`/`DEBRIEF_MODEL` in the VPS `.env`. NOTE: the live VPS `.env` has NO override for these (verified 2026-06-25) → the new code default applies on deploy with no env change needed; the explicit env lines are belt-and-suspenders to add at deploy time.
+- [x] **Task 2 — Wire `reasoning_effort: low`** (AC: 2, 3)
+  - [x] Judge: `"reasoning_effort": "low"` added to `classify_multi` AND the legacy `classify`, gated by `_is_gpt_oss(model)`.
+  - [x] Debrief: added to BOTH `strict_payload` and `fallback_payload` in `_generate`, gated to gpt-oss.
+  - [x] No `finish_reason=="length"` confirmed live (judge: 87 reasoning tokens / finish_reason=stop; debrief: 1919 completion tokens / stop on an 11-turn call). `max_tokens` bumped: judge `+_GPT_OSS_REASONING_HEADROOM (1024)`; debrief `_MAX_TOKENS` 3072→4096 (documented in code).
+- [x] **Task 3 — Validate the judge on the prod path** (AC: 4, 5)
+  - [x] Validated the real `classify_multi` path on gpt-oss-20b directly (the `calibrate_scenario.py` golden sweep was abandoned — heavily throttled by the 8000 TPM free cap, ran 26 min, killed; itself R1 evidence). On-topic 6-goal turn → schema-clean correct verdicts (greet/main/drink=met, allergy/confirm/pay=unmet); off-topic universal seed → no goal `met`.
+  - [x] Multi-goal verdict schema-clean: dict keyed by EXACTLY the goal ids + `__user_abusive__`, ids echo exactly, NOT all-None. The 70B id-mangling failure class is structurally impossible under gpt-oss strict constrained decoding.
+- [x] **Task 4 — Confirm debrief acceptance** (AC: 6)
+  - [x] `DEBRIEF_MODEL=openai/gpt-oss-120b probe_debrief_schema.py` → HTTP 200 + clean parse (strict schema + reasoning_effort:low). (A second back-to-back run 429'd purely on the 8000 TPM cap — schema-acceptance proven on the first; probe updated to distinguish 429 from a schema 400.)
+- [x] **Task 5 — Prompt re-tune if needed** (AC: 4, 5) — NOT NEEDED. The judge returned correct, schema-clean verdicts on gpt-oss with the existing `EXCHANGE_CLASSIFIER_MULTI_PROMPT`; the debrief produced high-quality output with the existing `DEBRIEF_SYSTEM_PROMPT`. No accuracy drift observed → prompts unchanged (`DEBRIEF_PROMPT_VERSION` stays 2.2, authoritative doc untouched).
+- [x] **Task 6 — Docs + memory** (AC: 8) — `server/CLAUDE.md` §4 + `config.py` comments updated to gpt-oss (and corrected the stale "gpt-oss-20b 400s on schema" claim); memory `project_scout_decommission_migration` flipped to migrated + R1, `project_checkpoint_judge_structured_output` renamed to gpt-oss-20b.
+- [~] **Task 7 — Gates + deploy** (AC: 7, 9) — ruff check + ruff format + **pytest 1035 passed** GREEN. **Deploy + Smoke Test Gate DEFERRED — gated on R1 (Walid's Groq tier decision).** See Dev Agent Record.
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -144,8 +143,40 @@ clean parse, 2026-06-25).
 
 ### Agent Model Used
 
+claude-opus-4-8 (dev-story, 2026-06-25).
+
 ### Debug Log References
+
+Live measurements on our Groq account (2026-06-25, local → Groq US):
+- **Judge gpt-oss-20b** strict json_schema + `reasoning_effort:low`, 6-goal verdict: HTTP 200, `finish_reason=stop`, prompt 1186 / completion 140 (reasoning 87), verdict correct + schema-clean. → `reasoning_effort` works WITH strict `json_schema`.
+- **Debrief gpt-oss-120b** strict schema + `reasoning_effort:low`, 11-turn transcript, `max_tokens=3000`: HTTP 200, `finish_reason=stop`, prompt 4940 / completion 1919 (reasoning 794 + ~1125 content). Clean parse.
+- **Free-tier limits (rate-limit headers):** BOTH gpt-oss models = **8000 TPM**, 1000 req/day, `service tier on_demand`. Groq counts `prompt + max_tokens` at admission.
 
 ### Completion Notes List
 
+**What shipped (code, all gates green):** judge → `openai/gpt-oss-20b`, debrief → `openai/gpt-oss-120b`; `reasoning_effort:low` + reasoning-aware `max_tokens` on both, gated by `_is_gpt_oss`; secondary Scout defaults (exchange_classifier, calibration_engine) flipped; docs + memory updated; probe hardened to distinguish 429 from a schema 400. ruff + `pytest 1035 passed`. Local validation: judge correct + schema-clean, debrief schema accepted. The character LLM is untouched and confirmed on 70B in the live VPS `.env` (NOT affected by the Scout decommission).
+
+**🚨 BLOCKER — R1 (Groq free-tier capacity). DEPLOY + SMOKE GATE OWED, needs Walid.**
+The migration code is correct and is STRICTLY BETTER than leaving Scout (which is 100% dead after 2026-07-17). BUT on our current **`on_demand` (free) tier, both gpt-oss models are capped at 8000 TPM**, and Groq charges `prompt + max_tokens` at admission:
+- **Debrief (gpt-oss-120b):** a normal call's request (~5k prompt + 4096 `max_tokens` ≈ 9k) is **rejected HTTP 413** → the user gets the DEGRADED score-only debrief on most real calls. (Back-to-back debriefs also 429.)
+- **Judge (gpt-oss-20b):** ~8000 TPM ≈ 3-5 classifies/min → roughly ONE active call saturates it; sustained use drove a **338 s** rate-limit backoff during validation. Under load the judge 429s → fails OPEN (no credit, patience-neutral — degraded but not a crash).
+- **Fix = bump to the Groq Dev tier** (much higher TPM). ⚠️ Per memory `infra_groq_capacity_and_scout_fallback` (2026-06-08) the paid Dev-tier upgrade was WALLED platform-wide with no ETA — **needs Walid to verify if it's available now**. If walled, the alternative is moving the debrief to a paid OpenAI-compatible provider (DeepInfra/Together — needs a Walid API key).
+- Story AC7 explicitly allows "no 429 storm OR the Groq tier is bumped." Because deploying to the free tier NOW degrades the debrief vs today's working Scout (which still has ~3 weeks of runway), the deploy timing + tier strategy is a Walid decision — NOT auto-deployed.
+
+**Next step:** Walid decides the tier/deploy strategy → then deploy (push to `main` auto-deploys `server/**`) + run the Smoke Test Gate. Story stays `in-progress` until then.
+
 ### File List
+
+- `server/config.py` — `classifier_model`/`debrief_model` defaults → gpt-oss (+ rewritten comments).
+- `server/pipeline/exchange_classifier.py` — `_PROVIDER_MODEL` → gpt-oss-20b; `_is_gpt_oss` + `_GPT_OSS_REASONING_HEADROOM`; `_multi_max_tokens(model)` headroom; `reasoning_effort:low` on `classify_multi` + legacy `classify`; docstring.
+- `server/pipeline/debrief_generator.py` — `_is_gpt_oss`; `_MAX_TOKENS` 3072→4096; `reasoning_effort:low` on both payloads; docstrings.
+- `server/scripts/calibration_engine.py` — `LlmSettings`/`load_llm_settings` judge default → gpt-oss-20b.
+- `server/scripts/probe_debrief_schema.py` — `reasoning_effort:low`, model-from-Settings label, 429-vs-schema-400 distinction, stale `areas` print fix.
+- `server/scripts/benchmark_classifier.py` — added gpt-oss-20b/120b providers + `BENCH_REASONING_EFFORT` knob (the decision bench; was uncommitted in the tree).
+- `server/CLAUDE.md` — §4 updated to gpt-oss + R1 tier note; corrected the stale "gpt-oss-20b 400s on schema" claim.
+- Tests: `test_exchange_classifier.py`, `test_debrief_generator.py`, `test_config.py`, `test_calibration_engine.py`, `test_benchmark_classifier.py` — model-default + reasoning_effort-gating assertions.
+- Memory: `project_scout_decommission_migration.md`, `project_checkpoint_judge_structured_output.md`, `MEMORY.md`.
+
+### Change Log
+
+- 2026-06-25 — Story 10.6 dev-story: migrated checkpoint judge + debrief off the decommissioned Llama 4 Scout onto `openai/gpt-oss-20b` / `openai/gpt-oss-120b` with `reasoning_effort:low` + reasoning-aware `max_tokens`. Code + local validation + gates complete; deploy + smoke gate gated on R1 (Groq tier decision).

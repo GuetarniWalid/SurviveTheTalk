@@ -354,6 +354,8 @@ def test_providers_config_includes_documented_providers() -> None:
     PLUS the exploration variants added 2026-05-21:
       - groq_llama_3.3_70b (after the 8B bench surfaced as too-lenient)
       - qwen_via_dashscope (Lever 1 — direct Alibaba, skip OpenRouter proxy)
+    PLUS the Story 10.6 Scout-decommission bench (2026-06-25):
+      - groq_gpt_oss_120b / groq_gpt_oss_20b (the strict-capable replacements)
     A future addition (e.g. OpenAI GPT-4o-mini) should require an explicit
     test update — the test list mirrors the spec + exploration history.
     """
@@ -366,6 +368,9 @@ def test_providers_config_includes_documented_providers() -> None:
         "qwen3.6_flash_via_dashscope",
         "groq_llama_3.1_8b",
         "groq_llama_3.3_70b",  # Added 2026-05-21 mid-bench, see harness comment
+        # Story 10.6 — gpt-oss reasoning-model bench for the Scout migration.
+        "groq_gpt_oss_120b",
+        "groq_gpt_oss_20b",
         "cerebras_llama_3.1_8b",
         "anthropic_haiku_4.5",
     }

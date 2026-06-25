@@ -80,11 +80,19 @@ Groq server-side (constrained decoding). This replaces the free-form
 intermittently echo the literal id tag (`goal_id="greet"`) — breaking id
 matching and silently yielding all-None (no checkpoint flipped) for an
 input that had worked moments before. Because 70B does NOT support
-`json_schema` (HTTP 400), the classifier model defaults to Llama 4 Scout
-(`config.Settings.classifier_model`); the single-goal legacy `classify`
-keeps its prose-tolerant `_parse_classifier_output` and sends no
+`json_schema` (HTTP 400), the classifier model defaults to a strict-capable
+Groq model (`config.Settings.classifier_model`); the single-goal legacy
+`classify` keeps its prose-tolerant `_parse_classifier_output` and sends no
 `response_format`. The character + emotion paths are unaffected — both
 still run 70B and neither uses structured outputs.
+
+Story 10.6 (2026-06-25) — migrated off the soon-decommissioned Llama 4 Scout
+onto `openai/gpt-oss-20b` (Groq turns Scout off 2026-07-17). gpt-oss is the
+only Groq family with TRUE strict constrained decoding AND it is a REASONING
+model, so `classify_multi`/`_classify` send `reasoning_effort:low` and size
+`max_tokens` with `_GPT_OSS_REASONING_HEADROOM` (gated by `_is_gpt_oss` so the
+70B character model never sees the field). See `project_scout_decommission_
+migration` + server/CLAUDE.md §4.
 """
 
 from __future__ import annotations
@@ -102,13 +110,32 @@ from pipeline.prompts import (
 )
 
 _PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
-# 2026-05-29 — Llama 4 Scout (NOT 70B): the multi-goal path uses Groq
-# STRICT structured outputs (`response_format=json_schema`), which 70B
-# does not support (HTTP 400). Scout does, and is ~4-5x cheaper at the
-# same latency. See `config.Settings.classifier_model`. bot.py always
-# passes the resolved `Settings.classifier_model`; this default only
-# governs direct/test construction.
-_PROVIDER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# Story 10.6 (2026-06-25) — `openai/gpt-oss-20b` (NOT 70B, NOT the
+# decommissioned Scout): the multi-goal path uses Groq STRICT structured
+# outputs (`response_format=json_schema`), which only gpt-oss supports with TRUE
+# constrained decoding (70B HTTP-400s; Scout was best-effort). gpt-oss-20b is
+# the fastest/cheapest strict model and benchmarked 98.7% (vs Scout 93.3%). See
+# `config.Settings.classifier_model`. bot.py always passes the resolved
+# `Settings.classifier_model`; this default only governs direct/test
+# construction.
+_PROVIDER_MODEL = "openai/gpt-oss-20b"
+
+# Story 10.6 — gpt-oss are REASONING models: they emit reasoning tokens (billed
+# as completion tokens, counted against max_tokens) BEFORE the verdict JSON.
+# Measured ~87 reasoning tokens at reasoning_effort=low on a 6-goal verdict
+# (2026-06-25); 1024 is a safe ceiling so a harder turn's longer trace can't
+# truncate the strict-schema document — a truncated strict doc → Groq HTTP 400
+# `json_validate_failed` → no verdict → lost checkpoint (the Story 6.16 failure
+# class). Non-gpt-oss models add no headroom (kept lean as before).
+_GPT_OSS_REASONING_HEADROOM = 1024
+
+
+def _is_gpt_oss(model: str) -> bool:
+    """True for Groq's gpt-oss reasoning models (`openai/gpt-oss-20b|120b`),
+    which need `reasoning_effort` + token headroom for their reasoning trace
+    (Story 10.6). Substring test so both the 20b and 120b ids match."""
+    return "gpt-oss" in model
+
 
 # Story 6.10 follow-up (2026-05-29) — the multi-goal verdict is now a
 # schema-pinned object `{goal_id: "met"|"unmet"|"unsure"}`. Groq validates
@@ -144,11 +171,20 @@ _MULTI_MAX_TOKENS_BASE = 96
 _MULTI_MAX_TOKENS_PER_GOAL = 24
 
 
-def _multi_max_tokens(num_goals: int) -> int:
+def _multi_max_tokens(num_goals: int, model: str = "") -> int:
     """Completion-token budget for `classify_multi`, scaled to the pending-goal
     count so the schema-pinned verdict object can't be truncated mid-document
-    (Story 6.16). At 6 goals → 240; at 20 goals → 576."""
-    return _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
+    (Story 6.16). At 6 goals → 240; at 20 goals → 576.
+
+    Story 10.6 — for a gpt-oss REASONING model the budget MUST also cover the
+    reasoning trace that precedes the verdict JSON (the verdict-only sizing above
+    would truncate it → HTTP 400 → lost checkpoint), so add
+    `_GPT_OSS_REASONING_HEADROOM`. `model=""` (the default / non-gpt-oss) keeps
+    the original lean budget."""
+    budget = _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
+    if _is_gpt_oss(model):
+        budget += _GPT_OSS_REASONING_HEADROOM
+    return budget
 
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
@@ -631,6 +667,12 @@ class ExchangeClassifier:
             # truncation-mid-JSON essentially impossible.
             "max_tokens": 64,
         }
+        if _is_gpt_oss(self._model):
+            # Story 10.6 — keep the legacy `/connect` single-goal path coherent
+            # with the multi path if it ever runs on a gpt-oss reasoning model:
+            # reasoning tokens precede the verdict, so 64 alone would truncate.
+            payload["reasoning_effort"] = "low"
+            payload["max_tokens"] = 64 + _GPT_OSS_REASONING_HEADROOM
         content = await self._post_for_content(payload)
         if content is None:
             return None
@@ -660,10 +702,10 @@ class ExchangeClassifier:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": _multi_max_tokens(len(goal_ids)),
+            "max_tokens": _multi_max_tokens(len(goal_ids), self._model),
             # STRICT structured output — Groq constrains generation to this
             # schema, guaranteeing an exactly-keyed `{goal_id: enum}` object.
-            # Requires a structured-output-capable model (Scout, NOT 70B).
+            # Requires a model with TRUE constrained decoding (gpt-oss, NOT 70B).
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -673,6 +715,12 @@ class ExchangeClassifier:
                 },
             },
         }
+        if _is_gpt_oss(self._model):
+            # Story 10.6 — gpt-oss reasoning models: keep the trace SHORT so the
+            # verdict lands inside the per-turn ~800 ms fail-open budget and the
+            # max_tokens headroom above. Gated so it never leaks onto the 70B
+            # character model (which has no thinking mode → would 400).
+            payload["reasoning_effort"] = "low"
         content = await self._post_for_content(payload)
         if content is None:
             # Infra failure (HTTP error / non-2xx / closed client / empty

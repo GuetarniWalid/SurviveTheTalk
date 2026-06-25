@@ -30,6 +30,7 @@ from config import Settings  # noqa: E402
 from pipeline.debrief_generator import (  # noqa: E402
     _build_debrief_schema,
     _build_user_message,
+    _is_gpt_oss,
     _parse_debrief_output,
 )
 from pipeline.llm_provider import (  # noqa: E402
@@ -61,6 +62,12 @@ async def _main() -> int:
             {"role": "user", "content": user_message},
         ],
         "temperature": 0.2,
+        # Story 10.6 — deliberately a SMALLER budget than prod `_MAX_TOKENS`
+        # (4096): this probe isolates *schema acceptance* (does Groq accept the
+        # strict json_schema + reasoning combo and return parseable JSON), and a
+        # smaller max_tokens keeps the request under the on_demand 8000 TPM
+        # admission cap so the probe runs without the Dev-tier bump (R1). The
+        # short probe transcript needs far less than 2048 anyway.
         "max_tokens": 2048,
         "response_format": {
             "type": "json_schema",
@@ -71,6 +78,10 @@ async def _main() -> int:
             },
         },
     }
+    # Story 10.6 — mirror prod: gpt-oss reasoning models get reasoning_effort=low
+    # so the probe exercises the EXACT request shape `_generate` sends.
+    if _is_gpt_oss(settings.debrief_model):
+        payload["reasoning_effort"] = "low"
     url = resolve_llm_chat_url(settings)
     headers = {
         "Authorization": f"Bearer {resolve_llm_api_key(settings)}",
@@ -81,6 +92,19 @@ async def _main() -> int:
         resp = await client.post(url, headers=headers, json=payload)
 
     print(f"HTTP {resp.status_code}")
+    if resp.status_code in (413, 429):
+        # Story 10.6 R1 — a TPM rate-limit / admission rejection is NOT a schema
+        # problem; the request never reached the validator. Distinguish it so a
+        # constrained-tier run doesn't read as "schema rejected".
+        print("RATE-LIMITED (TPM), not a schema rejection — provider error body:")
+        print(resp.text[:2000])
+        print(
+            "\n[!] Groq returned a TPM rate-limit (Story 10.6 R1). The schema was "
+            "NOT evaluated. Re-run after the reset window, or on the Dev tier; the "
+            "debrief request (~5k prompt + max_tokens) exceeds the on_demand 8000 "
+            "TPM cap. This is an OPERATIONAL ceiling, not a schema failure."
+        )
+        return 3
     if resp.status_code >= 300:
         print("REJECTED — provider error body:")
         print(resp.text[:2000])
@@ -99,10 +123,10 @@ async def _main() -> int:
         print("\n[X] Accepted (HTTP 200) but the body did not parse into the core.")
         return 2
     print("\nParsed core keys:", sorted(core.keys()))
-    print("areas_to_work_on:", core.get("areas_to_work_on"))
+    print("areas:", core.get("areas"))
     print(
-        "\n[OK] Groq Scout ACCEPTED the debrief json_schema and returned "
-        "parseable JSON."
+        f"\n[OK] Groq ({settings.debrief_model}) ACCEPTED the debrief json_schema "
+        "and returned parseable JSON."
     )
     return 0
 

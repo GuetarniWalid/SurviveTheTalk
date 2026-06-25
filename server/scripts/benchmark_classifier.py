@@ -253,6 +253,23 @@ _PROVIDERS: tuple[ProviderConfig, ...] = (
         input_cost_per_1m=0.59,
         output_cost_per_1m=0.79,
     ),
+    # 2026-06-25 — Scout decommission migration bench (reasoning-effort matrix).
+    ProviderConfig(
+        name="groq_gpt_oss_120b",
+        url="https://api.groq.com/openai/v1/chat/completions",
+        model="openai/gpt-oss-120b",
+        api_key_env="GROQ_API_KEY",
+        input_cost_per_1m=0.15,
+        output_cost_per_1m=0.60,
+    ),
+    ProviderConfig(
+        name="groq_gpt_oss_20b",
+        url="https://api.groq.com/openai/v1/chat/completions",
+        model="openai/gpt-oss-20b",
+        api_key_env="GROQ_API_KEY",
+        input_cost_per_1m=0.075,
+        output_cost_per_1m=0.30,
+    ),
     ProviderConfig(
         name="cerebras_llama_3.1_8b",
         url="https://api.cerebras.ai/v1/chat/completions",
@@ -366,6 +383,14 @@ def _build_request(
         "temperature": 0.1,
         "max_tokens": 32,
     }
+    # 2026-06-25 Scout-migration bench: gpt-oss are reasoning models. Read the
+    # effort from BENCH_REASONING_EFFORT (low|medium|high, default low) so the
+    # same harness measures the accuracy/latency tradeoff across effort levels,
+    # and give a generous max_tokens so a long high-effort reasoning trace isn't
+    # truncated before the verdict JSON (which would fake a parse failure).
+    if "gpt-oss" in cfg.model:
+        body["reasoning_effort"] = os.environ.get("BENCH_REASONING_EFFORT", "low")
+        body["max_tokens"] = 4096
     # OpenRouter / Qwen: force-disable reasoning so Qwen-Flash doesn't sit
     # in chain-of-thought for 5-15 s per call. Other providers ignore the
     # field silently (it's an OpenRouter extension).

@@ -46,12 +46,13 @@ def test_settings_fails_without_required_vars() -> None:
 # ---------- Story 6.9b — Classifier model id sourced from Settings --------
 
 
-def test_settings_classifier_model_defaults_to_scout() -> None:
-    """2026-05-29 — `classifier_model` defaults to Llama 4 Scout. The
-    multi-goal judge uses Groq STRICT structured outputs
-    (`response_format=json_schema`), which 70B does NOT support (HTTP 400);
-    Scout does. The default is what the prod VPS uses when `CLASSIFIER_MODEL`
-    is unset and MUST stay a structured-output-capable Groq model (see
+def test_settings_classifier_model_defaults_to_gpt_oss() -> None:
+    """Story 10.6 — `classifier_model` defaults to `openai/gpt-oss-20b` (migrated
+    off the decommissioned Llama 4 Scout, 2026-07-17). The multi-goal judge uses
+    Groq STRICT structured outputs (`response_format=json_schema`); on Groq only
+    the gpt-oss family has TRUE strict constrained decoding (70B HTTP-400s). The
+    default is what the prod VPS uses when `CLASSIFIER_MODEL` is unset and MUST
+    stay a structured-output-capable Groq model (see
     `config.Settings.classifier_model` + `server/CLAUDE.md` §4).
 
     Story 6.9b review P2 — `clear=True` so a developer's shell with
@@ -61,7 +62,18 @@ def test_settings_classifier_model_defaults_to_scout() -> None:
     env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
     with patch.dict(os.environ, env, clear=True):
         s = Settings(_env_file=None)  # type: ignore[call-arg]
-        assert s.classifier_model == "meta-llama/llama-4-scout-17b-16e-instruct"
+        assert s.classifier_model == "openai/gpt-oss-20b"
+
+
+def test_settings_debrief_model_defaults_to_gpt_oss() -> None:
+    """Story 10.6 — `debrief_model` defaults to `openai/gpt-oss-120b` (the larger
+    gpt-oss; the debrief is a richer generative task whose latency is masked by
+    the Call Ended overlay). Migrated off the decommissioned Scout; MUST stay a
+    strict-structured-output-capable Groq model (server/CLAUDE.md §4)."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.debrief_model == "openai/gpt-oss-120b"
 
 
 def test_settings_classifier_model_overrides_via_env() -> None:

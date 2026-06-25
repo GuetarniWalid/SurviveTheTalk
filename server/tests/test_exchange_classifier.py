@@ -394,13 +394,12 @@ def test_classify_posts_to_groq_with_openai_compat_shape(
     test defends is BOTH directions:
 
     - Target host is `api.groq.com` (no longer `openrouter.ai`).
-    - Default model is `meta-llama/llama-4-scout-17b-16e-instruct` — the
-      2026-05-29 structured-output switch (70B can't do `json_schema`),
+    - Default model is `openai/gpt-oss-20b` — the Story 10.6 migration off the
+      decommissioned Llama 4 Scout (gpt-oss has TRUE strict structured output),
       no longer `qwen/qwen3.5-flash-02-23`.
-    - The `reasoning` field is NOT sent — Llama 3.3 70B has no thinking
-      mode and unknown fields risk 400 errors on stricter providers
-      (Qwen's `reasoning: {enabled: False}` was an OpenRouter-era hack
-      forced by Qwen's chain-of-thought default).
+    - The `reasoning` field is NOT sent (that is the OpenRouter/Qwen
+      chain-of-thought-disable hack — distinct from the gpt-oss
+      `reasoning_effort` field, which IS sent and asserted below).
     - `extra_body` still must not appear (OpenAI-SDK-only convention,
       raw HTTP APIs ignore it).
 
@@ -421,16 +420,21 @@ def test_classify_posts_to_groq_with_openai_compat_shape(
         # literal. If `_PROVIDER_MODEL` ever flips to a different default,
         # the assertion follows the constant; if a test wants to lock the
         # exact string value, that belongs in a dedicated default-model test.
-        assert (
-            sent["model"]
-            == _PROVIDER_MODEL
-            == "meta-llama/llama-4-scout-17b-16e-instruct"
-        ), "default classifier model is Llama 4 Scout (structured-output capable)"
+        assert sent["model"] == _PROVIDER_MODEL == "openai/gpt-oss-20b", (
+            "default classifier model is gpt-oss-20b (Story 10.6 — Scout "
+            "decommissioned 2026-07-17; gpt-oss has TRUE strict structured output)"
+        )
         assert "reasoning" not in sent, (
             "the `reasoning` field is OpenRouter-era (Qwen chain-of-thought "
-            "disable); Llama 3.3 70B has no thinking mode and unknown fields "
-            "risk 400 errors. Re-adding it without rolling back to OpenRouter "
-            "would break the contract."
+            "disable); it is NOT the gpt-oss `reasoning_effort` field and must "
+            "not appear. Re-adding it without rolling back to OpenRouter would "
+            "break the contract."
+        )
+        # Story 10.6 — gpt-oss is a reasoning model, so reasoning_effort=low IS
+        # sent (gated to gpt-oss so the 70B character model never sees it).
+        assert sent["reasoning_effort"] == "low", (
+            "a gpt-oss judge must send reasoning_effort=low to keep the trace "
+            "short (Story 10.6 AC2)"
         )
         assert "extra_body" not in sent, (
             "extra_body is OpenAI-SDK-only convention; raw HTTP API drops it"
@@ -836,6 +840,73 @@ def test_multi_max_tokens_scales_with_goal_count() -> None:
     assert _multi_max_tokens(1) < _multi_max_tokens(6) < _multi_max_tokens(20)
     # 20 goals need real headroom (the old fixed 128 truncated the JSON).
     assert _multi_max_tokens(20) >= 500
+
+
+def test_multi_max_tokens_adds_reasoning_headroom_for_gpt_oss() -> None:
+    """Story 10.6 — a gpt-oss reasoning model emits reasoning tokens before the
+    verdict JSON, so its budget must EXCEED the verdict-only budget by the
+    reasoning headroom (else the strict doc truncates → 400 → lost checkpoint).
+    A non-gpt-oss model keeps the original lean budget."""
+    from pipeline.exchange_classifier import (
+        _GPT_OSS_REASONING_HEADROOM,
+        _multi_max_tokens,
+    )
+
+    for n in (1, 6, 20):
+        assert _multi_max_tokens(n, "openai/gpt-oss-20b") == (
+            _multi_max_tokens(n) + _GPT_OSS_REASONING_HEADROOM
+        )
+        # 70B / non-gpt-oss → no headroom (unchanged from the verdict-only sizing)
+        assert _multi_max_tokens(n, "llama-3.3-70b-versatile") == _multi_max_tokens(n)
+
+
+def test_classify_multi_sends_reasoning_effort_low_for_gpt_oss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.6 AC2 — a gpt-oss judge sends reasoning_effort=low on the
+    multi-goal payload, and its max_tokens carries the reasoning headroom."""
+    from pipeline.exchange_classifier import (
+        _GPT_OSS_REASONING_HEADROOM,
+        _multi_max_tokens,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"a": "met", "b": "unmet"}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    clf = ExchangeClassifier(api_key="k", model="openai/gpt-oss-20b")
+    _run(clf.classify_multi(**_multi_kwargs(pending_goals=_multi_pending("a", "b"))))
+    assert seen["payload"]["reasoning_effort"] == "low"
+    assert seen["payload"]["max_tokens"] == _multi_max_tokens(2) + (
+        _GPT_OSS_REASONING_HEADROOM
+    )
+
+
+def test_classify_multi_omits_reasoning_effort_for_non_gpt_oss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.6 — the reasoning_effort field is GATED to gpt-oss: a non-gpt-oss
+    model (a future rollback / the 70B character model) must never receive it
+    (those models 400 on the unknown field)."""
+    seen: dict[str, Any] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"a": "met", "b": "unmet"}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    clf = ExchangeClassifier(api_key="k", model="llama-3.3-70b-versatile")
+    _run(clf.classify_multi(**_multi_kwargs(pending_goals=_multi_pending("a", "b"))))
+    assert "reasoning_effort" not in seen["payload"]
 
 
 def test_classify_multi_returns_none_on_429(monkeypatch: pytest.MonkeyPatch) -> None:

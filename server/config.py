@@ -188,32 +188,45 @@ class Settings(BaseSettings):
     # snapshot at deploy time without a code release. Retires
     # `deferred-work.md` line 450 (Story 6.9 Defer #3, hardcoded model id).
     #
-    # 2026-05-29 — switched off `llama-3.3-70b-versatile` onto Llama 4 Scout
-    # because the multi-goal judge (`classify_multi`) now uses Groq STRICT
-    # structured outputs (`response_format=json_schema`), and 70B does NOT
-    # support that response format (HTTP 400 "model does not support
-    # json_schema"). Scout does — it returns a schema-pinned
-    # `{goal_id: met|unmet|unsure}` object Groq validates server-side, which
-    # eliminated the format-instability bug where 70B intermittently echoed
-    # `goal_id="greet"` (broke our id matching → silent all-None → no
-    # checkpoint flipped). Scout is also ~4-5x cheaper ($0.11/$0.34 per 1M
-    # vs $0.59/$0.79) and same latency (~220 ms from VPS).
+    # 2026-06-25 (Story 10.6) — migrated off Llama 4 Scout onto
+    # `openai/gpt-oss-20b`. Groq DECOMMISSIONS Scout 2026-07-17 (requests fail
+    # after), and the judge MUST keep a model with TRUE strict structured output
+    # (server/CLAUDE.md §4 law). On Groq, ONLY `openai/gpt-oss-20b|120b` support
+    # real strict constrained decoding (`response_format=json_schema`,
+    # `strict:true`); Scout was best-effort `strict:false`, 70B HTTP-400s on
+    # json_schema, Qwen is json_object-only (disqualified). gpt-oss-20b
+    # benchmarked 98.7% vs Scout 93.3% (0 false-neg) AND faster — it is the
+    # per-turn judge (high frequency, ~800 ms fail-open budget) so the small/fast
+    # model wins here; the debrief gets 120b below.
+    #
+    # gpt-oss are REASONING models: `exchange_classifier` sends
+    # `reasoning_effort:low` + sizes max_tokens with headroom (see there). They
+    # also use more tokens-per-minute → bump the Groq tier for production
+    # (on_demand 8000 TPM saturates under per-turn judging — Story 10.6 R1).
     #
     # MUST stay a Groq model that supports `json_schema` structured outputs
-    # (see console.groq.com/docs/structured-outputs#supported-models).
-    # Pinning a model that lacks it (e.g. back to `llama-3.3-70b-versatile`)
-    # makes every `classify_multi` POST 400. The character + emotion paths
-    # keep 70B (they don't use structured outputs).
-    classifier_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # (console.groq.com/docs/structured-outputs#supported-models). Pinning a
+    # model that lacks it (e.g. 70B / Qwen) makes every `classify_multi` POST
+    # 400. The character + emotion paths keep 70B (no structured outputs).
+    classifier_model: str = "openai/gpt-oss-20b"
 
     # Story 7.1 — post-call debrief generator model id (env DEBRIEF_MODEL).
     # The debrief is a standalone Groq call that requests STRICT structured
     # outputs (`response_format=json_schema`), so — exactly like
     # `classifier_model` above — this MUST stay a Groq model that supports
-    # `json_schema` (Scout / Llama-4 / gpt-oss / kimi; NOT 70B, which HTTP
-    # 400s on json_schema). Project law: server/CLAUDE.md §4. Defaults to
-    # Scout, the same structured-output model the checkpoint judge trusts.
-    debrief_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # `json_schema` (project law: server/CLAUDE.md §4).
+    #
+    # 2026-06-25 (Story 10.6) — migrated off the decommissioned Scout onto
+    # `openai/gpt-oss-120b` (the LARGER gpt-oss, vs 20b for the judge): the
+    # debrief fires ONCE per call-end, its latency is masked by the Call Ended
+    # overlay, and it is a richer generative task → quality wins. 98.7% strict-
+    # schema acceptance, true constrained decoding makes the call_id=324 wrong-
+    # typed-field 400 structurally impossible. gpt-oss-120b is a reasoning model
+    # (debrief_generator sends reasoning_effort:low + a larger max_tokens) and is
+    # the heaviest single request we make (~5k prompt + ~4k completion) — it
+    # needs the Dev-tier bump to clear the on_demand 8000 TPM admission cap
+    # (Story 10.6 R1).
+    debrief_model: str = "openai/gpt-oss-120b"
 
     # 2026-05-29 "all-Groq" migration — the main character LLM moved off
     # Qwen-via-OpenRouter (429-prone shared pool) onto Groq (first-party
