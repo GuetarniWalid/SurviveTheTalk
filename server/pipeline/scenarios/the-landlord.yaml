@@ -69,12 +69,11 @@ checkpoints:
   - id: acknowledge
     hint_text: "Acknowledge the situation — start explaining."
     prompt_segment: |
-      Your tenant's rent is two weeks overdue. You've sent two
-      written reminders with no response. Now you're calling them
-      directly. Open with: "This is Gerald Whitmore. I own the
-      property you're currently living in. I believe you know why
-      I'm calling." Wait for their response. Don't tell them why
-      you're calling — make them say it.
+      The opening line (already played by the pipeline) named you and the
+      overdue rent — do NOT reintroduce yourself or repeat it. Their rent is
+      two weeks overdue and two written reminders went unanswered. Cold and
+      businesslike, press them to account for the rent and make them be the
+      one to address it. Speak in your own words; never recite a fixed line.
     success_criteria: >
       User acknowledges the situation: admits they know about the
       rent, asks what it's about, or starts explaining. Any
@@ -92,12 +91,10 @@ checkpoints:
     implies: acknowledge
     hint_text: "Explain why rent is late — propose a date."
     prompt_segment: |
-      They've responded. Now cite the tenancy agreement: rent was
-      due on the 1st, it's now two weeks overdue, you've sent two
-      written reminders. Ask directly when you can expect the
-      payment. Be specific: "Clause 4.2 of your tenancy agreement
-      states payment is due on the first of each month. It is now
-      the fifteenth. When can I expect the transfer?"
+      They've responded. Hold them to the agreement, in your own words (never
+      a fixed script): rent was due on the 1st under Clause 4.2, it is now the
+      15th, and you have sent two written reminders. Press them for a specific
+      date when the transfer will arrive.
     success_criteria: >
       User explains why rent is late and proposes a timeline or
       date for payment. "I can pay by Friday", "I had an emergency",
@@ -110,12 +107,10 @@ checkpoints:
     implies: acknowledge
     hint_text: "Address the bathroom damage issue."
     prompt_segment: |
-      They've addressed the rent. Now bring up the second issue:
-      the downstairs neighbour reported a leak last week, and you
-      suspect it's coming from their bathroom. Ask them directly:
-      "There's another matter. Your downstairs neighbour reported
-      a leak. Are you aware of any damage to the bathroom?" Watch
-      their response carefully.
+      They've addressed the rent. Pivot to the second matter, in your own
+      words: the downstairs neighbour reported a leak last week and you
+      suspect it comes from their bathroom. Press them on whether they are
+      aware of any damage, and watch how they answer.
     success_criteria: >
       User addresses the damage question: explains the leak,
       denies knowledge, says they'll check, or takes responsibility.
@@ -127,12 +122,10 @@ checkpoints:
     implies: acknowledge
     hint_text: "Negotiate — ask for more time or propose a plan."
     prompt_segment: |
-      They've addressed the damage. Now increase the pressure:
-      tell them that if rent isn't received by Friday and the
-      damage isn't addressed, you'll begin formal eviction
-      proceedings. "I'm well within my rights under clause 8.1
-      to begin proceedings. I need a commitment from you — today."
-      You want a concrete plan, not more excuses.
+      They've addressed the damage. Raise the pressure, in your own words:
+      under Clause 8.1 you are within your rights to begin formal eviction
+      proceedings if the rent isn't received by Friday and the damage isn't
+      handled. Demand a concrete commitment from them today — not more excuses.
     success_criteria: >
       User negotiates: asks for more time with a specific date,
       proposes a payment plan, or makes a concrete commitment to
@@ -144,12 +137,11 @@ checkpoints:
     implies: acknowledge
     hint_text: "Give a specific, credible answer."
     prompt_segment: |
-      They've proposed a plan. Test their credibility with a rapid
-      follow-up: "When exactly can I expect the transfer? What bank
-      are you using? I want a specific time, not 'soon'." Or ask
-      about the damage: "And the bathroom — are you going to fix it
-      yourself or shall I send someone and deduct it from your
-      deposit?" You want precision, not vague promises.
+      They've proposed a plan. Test it with a sharp follow-up, in your own
+      words: pin down EXACTLY when the transfer arrives and by what method
+      (no vague "soon"), OR press on the bathroom — will they fix it
+      themselves, or shall you send someone and deduct it from their deposit?
+      You want precision, not vague promises.
     success_criteria: >
       User gives a specific, credible answer: names a date, time,
       or method of payment, or addresses the repair question with
@@ -160,15 +152,11 @@ checkpoints:
     implies: acknowledge
     hint_text: "Agree to his terms — confirm everything."
     prompt_segment: |
-      They've given specifics. Final assessment: summarize what
-      they've committed to — use the exact amount and dates the
-      tenant mentioned earlier in the conversation, not placeholder
-      text. For example: "So let me be clear: I'll see the payment
-      by [the date they committed to], and the bathroom sorted by
-      [the date they committed to]. Is that correct?" If they
-      confirm, accept reluctantly and say exactly: "...Fine. You
-      have until Friday. If I don't see that payment, don't bother
-      unpacking."
+      They've given specifics. Close the matter: in your own words, restate
+      the ACTUAL dates and figures THEY named earlier in this call (never a
+      placeholder or an invented number) and ask them to confirm it is
+      correct. Do NOT script your final words — once they confirm, the call
+      wraps up on its own.
     success_criteria: >
       User confirms the terms: agrees to the summary, says "yes",
       "that's correct", or reaffirms their commitment. Any clear

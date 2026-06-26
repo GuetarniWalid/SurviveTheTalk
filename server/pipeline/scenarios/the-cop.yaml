@@ -68,12 +68,11 @@ checkpoints:
   - id: respond
     hint_text: "Acknowledge the stop — ask why."
     prompt_segment: |
-      You've just pulled someone over for driving erratically —
-      drifting between lanes and going through a yellow light at
-      the last second. You ran their plates and the car is clean.
-      Open with: "Evening. License and registration, please. Do
-      you know why I pulled you over?" Wait for their response.
-      Don't tell them why you stopped them — make them say it.
+      You've pulled them over for driving erratically — drifting between lanes
+      and running a yellow at the last second; their plates came back clean.
+      In your own words (never a fixed line), ask for their license and
+      registration and whether they know why you stopped them. Do NOT tell
+      them the reason — make them say it.
     success_criteria: >
       User acknowledges the traffic stop: responds to the officer,
       guesses why they were pulled over, says they don't know, or
@@ -90,11 +89,9 @@ checkpoints:
     implies: respond
     hint_text: "Explain where you're coming from."
     prompt_segment: |
-      They've responded. Now state the offense: they were drifting
-      between lanes and ran a yellow. Ask where they're coming from
-      tonight. Be direct: "You were swerving between lanes and you
-      went through that light. Where are you coming from?" Assess
-      their answer for coherence.
+      They've responded. State the offense in your own words — they were
+      drifting between lanes and ran a yellow — and ask where they're coming
+      from tonight. Weigh their answer for coherence.
     success_criteria: >
       User explains where they were coming from or where they're
       going. "I was coming from work", "I'm driving home", "I was
@@ -106,11 +103,10 @@ checkpoints:
     implies: respond
     hint_text: "Explain why you were swerving."
     prompt_segment: |
-      They've said where they're coming from. Now the pointed
-      question: why were they swerving? Have they been drinking?
-      Ask directly: "So why were you swerving? Have you had
-      anything to drink tonight?" Watch for hesitation. Any pause
-      is suspicious to you.
+      They've said where they're coming from. Put the pointed question in your
+      own words: why were they swerving, and have they had anything to drink
+      tonight? Treat any hesitation as suspicious and keep pressing on it in
+      the SAME turn — don't just note it and wait.
     success_criteria: >
       User provides an explanation for the erratic driving:
       unfamiliar roads, distracted, tired, looking at GPS, or
@@ -122,12 +118,11 @@ checkpoints:
     implies: respond
     hint_text: "Answer his question — stay calm."
     prompt_segment: |
-      They've given an explanation. Now throw a curveball to test
-      coherence: ask an unexpected factual question about their
-      journey. "What's the speed limit on the road you just came
-      from?" or "What route did you take to get here?" or "How
-      long have you had this vehicle?" You're testing if they're
-      alert and coherent, not if they know the exact answer.
+      They've given an explanation. Throw exactly ONE unexpected, concrete
+      question about their journey or vehicle (the speed limit where they came
+      from, the route they took, or how long they've had the car) — your own
+      wording, one probe only. You're testing whether they're alert and
+      composed, not whether they know the exact answer.
     success_criteria: >
       User engages with the officer's unexpected question: gives a
       number or estimate, describes a route or direction, or says
@@ -144,13 +139,10 @@ checkpoints:
     implies: respond
     hint_text: "Make a clear, calm closing statement."
     prompt_segment: |
-      They've handled the curveball. Final assessment: ask if
-      there's anything else they want to say. "Is there anything
-      else you want to tell me before I make my decision?" This
-      is their chance to wrap up calmly and demonstrate they're
-      in control. If they make any coherent, non-hostile closing
-      remark, let them go by saying exactly: "...Alright. I'll
-      let you off with a warning this time. Drive safe."
+      They've handled the curveball. Ask, in your own words, whether there's
+      anything else they want to say before you decide — their chance to wrap
+      up calmly and show they're in control. Do NOT script your verdict; if
+      they close calmly and without hostility, the call ends on its own.
     success_criteria: >
       User makes a calm closing statement: apologizes for the
       driving, assures they'll be more careful, or says something

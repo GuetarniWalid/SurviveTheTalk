@@ -68,13 +68,12 @@ checkpoints:
   - id: react
     hint_text: "Start explaining or apologize."
     prompt_segment: |
-      Your partner was supposed to meet you for your anniversary
-      dinner two hours ago. You booked a table at a nice restaurant,
-      got dressed up, sat there alone while the waiter kept asking
-      if someone was joining you. You finally left, humiliated. Now
-      you're calling them. Open with: "Oh, NOW you pick up? You know
-      what, don't even start. Explain yourself." Wait for their
-      reaction.
+      Your partner was supposed to meet you for your anniversary dinner two
+      hours ago. You booked a nice table, got dressed up, sat there alone while
+      the waiter kept asking if someone was joining you, and finally left
+      humiliated. The opening line (already played) made your fury clear — do
+      NOT repeat it. In your own words, cut off any excuse-making, make clear
+      you know they left you sitting there, and demand they explain themselves.
     success_criteria: >
       User reacts to the confrontation: starts explaining,
       apologizes, asks what happened, or expresses surprise or
@@ -134,12 +133,11 @@ checkpoints:
   - id: reassure
     hint_text: "Tell her the relationship matters to you."
     prompt_segment: |
-      They've acknowledged your feelings. But now the deeper fear
-      surfaces: does this person even care about the relationship?
-      Ask them directly — "Do you even care about us? Because right
-      now it doesn't feel like it." You need emotional reassurance,
-      not practical solutions. This is about the relationship, not
-      just tonight.
+      They've acknowledged your feelings. Now the deeper fear surfaces: does
+      this person even care about the relationship? In your own words, confront
+      them on whether they still care about you and the two of you. You need
+      emotional reassurance, not a practical fix — this is about the
+      relationship, not just tonight.
     success_criteria: >
       User expresses sincerely that the relationship matters to
       them. Emotional reassurance counts broadly: apologising
@@ -152,11 +150,10 @@ checkpoints:
   - id: make_right
     hint_text: "Propose a way to make it up to her."
     prompt_segment: |
-      They've said the right things. Now challenge them: "So what
-      are you going to do about it?" You want a concrete plan, not
-      more words. They need to propose something specific — reschedule
-      the dinner, plan something special, take responsibility. Vague
-      promises won't cut it.
+      They've said the right things. Now challenge them, in your own words, to
+      say what they're actually going to DO about it. You want a concrete plan
+      — reschedule the dinner, plan something special, take real
+      responsibility — not more words. Vague promises won't cut it.
     success_criteria: >
       User proposes a concrete plan to make it up to Rachel:
       reschedule the dinner, cook for her, plan a date, or any
@@ -166,11 +163,11 @@ checkpoints:
   - id: commit
     hint_text: "Confirm you mean it — be genuine."
     prompt_segment: |
-      They've proposed a plan. You're skeptical but listening. Test
-      their sincerity one last time: "You said that last time too."
-      or "How do I know you won't just forget again?" You want them
-      to confirm with genuine emotion, not just performative
-      apology. If they're sincere, you'll accept — reluctantly.
+      They've proposed a plan. You're skeptical but listening. In your own
+      words, test their sincerity one last time about whether they'll really
+      follow through THIS time — keep it strictly about tonight's promise,
+      never about past let-downs or old history. You want genuine emotion, not
+      a performative apology. If they're sincere, you'll accept — reluctantly.
     success_criteria: >
       User confirms their commitment with genuine sincerity:
       reaffirms the plan, promises to follow through, or says
