@@ -493,6 +493,60 @@ BEHAVIOR is the live A/B `scripts/compare_difficulty.py` — **run it on the pro
 
 ---
 
+### 9. Scenarios must be MODEL-AGNOSTIC + correct-by-construction (Gemini migration, 2026-06-26)
+
+**PROJECT LAW (Walid 2026-06-26).** Scenarios are mass-produced mechanically and
+MUST pass for **ANY** LLM **by construction** — never via manual per-scenario
+tweaks. A scenario must behave identically whether the runtime model is Groq's
+Llama, Gemini, or a future swap. **Model-agnostic is non-negotiable.** The trigger:
+`/no_think` (a Qwen reasoning-control prefix) was frozen into all 5 hand-authored
+personas — inert on its native model but **spoken aloud by Gemini**. Every scenario
+defect we fix becomes a PERMANENT rule below + a guardrail in the builder/loader; a
+one-off manual tweak is a SMELL.
+
+Enforcement has three layers (builder generates them right → fail-fast validators
+reject bad ones → calibration golden net validates behavior):
+
+- **R1 — Zero model-specific syntax.** No `/no_think`, `[INST]`, `<<SYS>>`,
+  `<|im_*|>`, or any token meaningful to one model family. **Enforced HARD:**
+  `scenarios.find_model_specific_tokens` is rejected by
+  `scenario_builder.validate_structure` (base_prompt + every prompt_segment), WARNED
+  by the loader (`load_scenario_base_prompt`), and fails the commit via
+  `tests/test_scenarios.py::test_shipped_scenarios_have_no_model_specific_tokens`. A
+  scenario with a model-ism CANNOT ship.
+- **R2 — Behavior, not scripts.** A `prompt_segment` describes WHAT the character
+  does; never a verbatim sentence in quotes to recite, nor a `[placeholder]`
+  template — a weaker model recites the instruction/placeholder aloud (the `confirm`
+  "Repeat the order: 'So that's [their order]…'" leak). Builder `CHECKPOINTS_PROMPT`
+  + COHERENCE_CHARTER rule 8.
+- **R3 — Never require what the scenario can't provide.** A `prompt_segment` must
+  not tell the character to ask for a choice/variation/option the menu/inventory
+  does not contain (the pasta "what kind?" loop — pasta has no varieties). No
+  variation → acknowledge and move on. Builder `CHECKPOINTS_PROMPT`.
+- **R4 — Always speak.** The character must never emit an all-meta reply (mood tag /
+  stage direction only) → silence. `reply_sanitizer` drops an empty-after-strip
+  reply (deliberate, but it fired often on Gemini); COHERENCE_CHARTER rule 9
+  ("always say at least one spoken sentence; silence is never acceptable").
+- **R5 — Abuse detection is model-agnostic + not trigger-happy.** Frustration
+  ("stop bothering me"), criticism of the food/service, and clumsy flirtation are
+  NOT abuse — only a genuine slur, hate speech, credible threat, or graphic sexual
+  proposition is. `EXCHANGE_CLASSIFIER_MULTI_PROMPT` `__user_abusive__` section; must
+  judge the same across models.
+- **R6 — The character DRIVES, never acknowledges-and-waits.** Each `prompt_segment`
+  must make the character ADVANCE (ask the next thing) in the SAME reply; a
+  guide/host (waiter) keeps the interaction moving so the learner is never left
+  waiting. Builder `CHECKPOINTS_PROMPT`. (Introduced by a fix that over-corrected
+  into passivity — proof every tweak must respect R2 + be validated on device.)
+
+**Status (2026-06-26):** R1 + R4 + R5 are code-enforced/embedded; R2/R3/R6 are
+builder-prompt guidance (strong steering, NOT yet automatic rejection — hardening
+them into lints is open). `the-waiter.yaml` is fixed + on-device-validated; the
+OTHER 4 scenarios have only the `/no_think` purge — they still need an R2-R6 audit +
+calibration + smoke gate. Full remaining-task list lives in the migration story
+`_bmad-output/implementation-artifacts/10-6-migrate-off-decommissioned-llama-4-scout-model.md`.
+
+---
+
 ## When in doubt
 
 - Pipeline regressions (silence escalation, emotion emission, hang-up

@@ -372,6 +372,38 @@ def find_persona_difficulty_leaks(base_prompt: str) -> list[str]:
     return [p for p in _PERSONA_DIFFICULTY_LEAK_PATTERNS if p in haystack]
 
 
+# R1 (Gemini migration, 2026-06-26) — scenarios MUST be MODEL-AGNOSTIC. A scenario
+# is mass-produced and must work on ANY model, so it must never embed a token /
+# command meaningful to only one model family. `/no_think` (a Qwen reasoning-
+# control prefix — inert on Llama/Scout but SPOKEN ALOUD by Gemini) was frozen into
+# all 5 hand-authored personas: the canonical violation. Same enforcement shape as
+# the difficulty-leak tripwire above (loader WARNS, builder + test HARD-fail). See
+# memory `feedback_scenarios_correct_by_construction`.
+_MODEL_SPECIFIC_TOKEN_PATTERNS: tuple[str, ...] = (
+    "/no_think",
+    "/think",
+    "[inst]",
+    "[/inst]",
+    "<<sys>>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|endoftext|>",
+)
+
+
+def find_model_specific_tokens(text: str) -> list[str]:
+    """Return any model-specific control tokens embedded in scenario text.
+
+    Scenarios must be model-agnostic: a token meaningful to only one model family
+    (e.g. Qwen's `/no_think`) is inert on its native model but spoken aloud or
+    mishandled by others. Case-insensitive substring tripwire; single source of
+    truth, imported by `scenario_builder.validate_structure` and the
+    `tests/test_scenarios.py` lint.
+    """
+    haystack = (text or "").lower()
+    return [p for p in _MODEL_SPECIFIC_TOKEN_PATTERNS if p in haystack]
+
+
 # ============================================================
 # Story 6.19 follow-up (2026-06-09) — Soniox STT proper-noun bias
 # ============================================================
@@ -923,6 +955,21 @@ def load_scenario_base_prompt(scenario_id: str, difficulty: str | None = None) -
             "composed at load time). Move that behavior out of the base_prompt.",
             scenario_id,
             leaks,
+        )
+
+    # R1 (2026-06-26) — parity model-agnostic tripwire: a scenario must never embed
+    # a model-specific control token (e.g. Qwen's `/no_think`, spoken aloud by
+    # Gemini). WARNS at runtime (same posture as the difficulty tripwire); the HARD
+    # gates are `scenario_builder.validate_structure` + the test lint.
+    model_tokens = find_model_specific_tokens(base_prompt)
+    if model_tokens:
+        from loguru import logger
+
+        logger.warning(
+            "scenario_model_specific_token scenario={} tokens={} — scenarios must be "
+            "MODEL-AGNOSTIC; remove model-specific control tokens from the base_prompt.",
+            scenario_id,
+            model_tokens,
         )
 
     # Story 6.28 — the global pick is the only difficulty cursor; absent →

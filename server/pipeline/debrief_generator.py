@@ -87,6 +87,18 @@ def _is_gpt_oss(model: str) -> bool:
     return "gpt-oss" in model
 
 
+def _reasoning_effort_for(model: str) -> str | None:
+    """`reasoning_effort` for a thinking-capable model, or None. gpt-oss -> 'low';
+    Gemini 2.5 defaults to dynamic thinking on the OpenAI-compat endpoint, which
+    pushes the debrief past its HTTP timeout (degraded score-only debrief) ->
+    'none' to disable it. Non-thinking models return None."""
+    if _is_gpt_oss(model):
+        return "low"
+    if "gemini-2.5" in model:
+        return "none"
+    return None
+
+
 # Low temperature: the debrief is a diagnostic instrument (clinical, factual),
 # not creative prose. A touch above the classifier's 0.1 so the correction /
 # context fields read as natural English without drifting off-transcript.
@@ -834,7 +846,8 @@ async def _generate(
     # BOTH the strict and the json_object-fallback payloads. Spread in so it
     # never leaks onto a non-reasoning model (would 400). The reasoning tokens
     # are already budgeted into `_MAX_TOKENS` above.
-    reasoning_extra = {"reasoning_effort": "low"} if _is_gpt_oss(model) else {}
+    _effort = _reasoning_effort_for(model)
+    reasoning_extra = {"reasoning_effort": _effort} if _effort else {}
     # STRICT structured output — Groq constrains generation to this schema
     # (clean, exactly-keyed JSON) on the happy path. Requires a model with TRUE
     # constrained decoding (gpt-oss, NOT 70B). Mirrors `exchange_classifier`.

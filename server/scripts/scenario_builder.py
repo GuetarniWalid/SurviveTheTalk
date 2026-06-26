@@ -69,7 +69,10 @@ from scripts.calibration_engine import (  # noqa: E402,F401
 # persona guard, shared with the loader (`scenarios.load_scenario_base_prompt`)
 # so a generated base_prompt can never carry a difficulty-coded phrase the loader
 # would reject. Used by `validate_structure`.
-from pipeline.scenarios import find_persona_difficulty_leaks  # noqa: E402
+from pipeline.scenarios import (  # noqa: E402
+    find_model_specific_tokens,
+    find_persona_difficulty_leaks,
+)
 
 # The five Rive puppets the client can render — a new scenario MUST reuse one
 # (puppets are expensive to make; you cannot invent a new character). See
@@ -248,6 +251,19 @@ A reactive beat literally cannot happen before that trigger. For each reactive b
 A beat the learner can volunteer at any time (PROACTIVE — give your name, state your alibi) must \
 OMIT "requires" entirely. When in doubt, omit it. The engine then refuses to credit a reactive \
 beat until its trigger is met, so its success_criteria can stay a simple lexical test.
+- BEHAVIOR, not scripts (prompt_segment): describe WHAT the character does; never put a full \
+verbatim sentence in quotes for them to say, and never a "[placeholder]" template — a weaker model \
+recites the instruction (or the placeholder) aloud instead of performing it.
+- NEVER require what the scenario can't provide: a prompt_segment must not tell the character to ask \
+for a choice, variation, or option the scenario's own facts/inventory do not contain (e.g. "what \
+kind of pasta?" when no pasta varieties exist). If an item has no real variation, the character just \
+acknowledges it and moves on.
+- MODEL-AGNOSTIC: never emit a token or command specific to one model family (e.g. Qwen's \
+"/no_think", "[INST]", "<<SYS>>"). A scenario must behave identically on any model.
+- DRIVE the conversation: each prompt_segment must make the character ADVANCE the interaction \
+(ask the next question, probe, push to the next beat) — never just acknowledge the learner's last \
+turn and then wait. Acknowledge AND move forward in the SAME reply, so the learner is never left \
+waiting for the character to do its job (a waiter/host especially must keep guiding the order along).
 """
 
 CRITIQUE_PROMPT = """\
@@ -723,6 +739,14 @@ def validate_structure(scenario: dict) -> list[str]:
                 "personas must be difficulty-NEUTRAL (the difficulty knob lives "
                 "in scenarios._DIFFICULTY_PROMPTS, composed at runtime)"
             )
+        # R1 (2026-06-26) — scenarios must be MODEL-AGNOSTIC: no token meaningful to
+        # only one model family (e.g. Qwen's '/no_think', spoken aloud by Gemini).
+        tokens = find_model_specific_tokens(base_prompt)
+        if tokens:
+            problems.append(
+                f"base_prompt contains model-specific token(s) {tokens} — scenarios "
+                "must be MODEL-AGNOSTIC (work on any model); remove them"
+            )
 
     checkpoints = scenario.get("checkpoints")
     if not isinstance(checkpoints, list) or not checkpoints:
@@ -738,6 +762,14 @@ def validate_structure(scenario: dict) -> list[str]:
             val = cp.get(fld)
             if not isinstance(val, str) or not val.strip():
                 problems.append(f"checkpoint[{i}] missing/empty {fld!r}")
+        seg = cp.get("prompt_segment")
+        if isinstance(seg, str):
+            seg_tokens = find_model_specific_tokens(seg)
+            if seg_tokens:
+                problems.append(
+                    f"checkpoint[{i}].prompt_segment contains model-specific "
+                    f"token(s) {seg_tokens} — scenarios must be MODEL-AGNOSTIC"
+                )
         if isinstance(cp.get("id"), str):
             ids.append(cp["id"])
     dupes = sorted({i for i in ids if ids.count(i) > 1})

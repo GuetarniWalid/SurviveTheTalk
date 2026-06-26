@@ -8,7 +8,6 @@
 # time on the real (YAML) path. `test_prompts.py` lints this constant with
 # `find_persona_difficulty_leaks` so it can never drift back to a coded persona.
 SARCASTIC_CHARACTER_PROMPT = """\
-/no_think
 You are Tina, a waitress at a small downtown restaurant called \
 "The Golden Fork". You've been on your feet for 12 hours, you're \
 underpaid, and every customer today has been difficult. You are \
@@ -124,6 +123,12 @@ Conversation memory rules (MUST FOLLOW, regardless of scenario):
    only — they are NEVER scripts. Do not recite an example line
    word-for-word, and never repeat a question, in any wording, that
    the other person has already answered.
+
+9. ALWAYS reply with at least one spoken sentence. Even if the other
+   person says something odd, off-topic, rude, or flirtatious, give a
+   short in-character verbal response (brush it off, redirect to the
+   task, or answer briefly) — NEVER reply with only an action, only a
+   mood, or with nothing. Silence is never an acceptable reply.
 """
 
 
@@ -336,8 +341,13 @@ insulting the FOOD, the service, the prices, the waiting, or the situation is NO
 criticising the THING is never a personal attack: "this food is awful", "this is terrible", \
 "the service here is bad", "I hate this place", "this is a dump" are all FALSE. Also FALSE: \
 frustration, impatience, blunt or rude phrasing, general swearing that is not aimed at the \
-character ("this is bullshit"), and in-scenario pushback or refusals. When in doubt, set \
-false — a wrong "true" cuts off a learner mid-practice.
+character ("this is bullshit"), and in-scenario pushback or refusals. ALSO FALSE: \
+telling the character to stop or go away ("stop bothering me", "leave me alone", \
+"you're annoying"), and clumsy or unsolicited romantic / flirtatious remarks ("you're \
+beautiful", "do you have a boyfriend", "be my girlfriend") — these are awkward or \
+off-topic, NOT a personal attack, threat, or explicit sexual proposition. Only set true \
+on a genuine slur, hate speech, a credible threat of harm, or a graphic sexual \
+proposition. When in doubt, set false — a wrong "true" cuts off a learner mid-practice.
 """
 
 

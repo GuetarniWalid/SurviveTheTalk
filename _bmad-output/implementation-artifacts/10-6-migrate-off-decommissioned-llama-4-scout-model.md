@@ -2,6 +2,60 @@
 
 Status: in-progress
 
+> ⚠️ **2026-06-26 — DECISION SUPERSEDED + SCOPE EXPANDED. READ THIS FIRST.**
+> The locked gpt-oss decision further below is **OBSOLETE**. Groq is being LEFT
+> ENTIRELY (its paid tier stays walled), so judge + debrief no longer move to
+> gpt-oss-on-Groq. **Current runtime = Google Gemini 2.5** (deployed for test on the
+> VPS, validated on device for the waiter). Switching providers also uncovered a
+> class of model-specific scenario bugs, now governed by **server/CLAUDE.md §9
+> (scenarios MUST be model-agnostic + correct-by-construction)**.
+>
+> **DECISION (2026-06-26):** all 3 roles → **Gemini 2.5** via the OpenAI-compatible
+> endpoint (`…/v1beta/openai`): `CHARACTER_MODEL = CLASSIFIER_MODEL = DEBRIEF_MODEL =
+> gemini-2.5-flash`; judge + debrief send `reasoning_effort:"none"`. Why: live-proven
+> on our EXACT strict schemas (true constrained decoding, `["string","null"]` union
+> OK); OpenAI-compatible (near-zero code); char TTFT ~480ms; self-serve paid (Cloud
+> billing). Mistral was tried first (cheapest) but set aside on quality (judge
+> timeouts, abuse false-positives, terse persona). NOTHING matches Groq's ~120ms
+> judge with reliable paid quota — the ~800ms Gemini judge is an ACCEPTED regression
+> (fail-open / non-blocking). `VERDICT_WAIT_BUDGET_MS` stays the calibrated 800.
+>
+> **DONE this session (code edited on disk, NOT YET COMMITTED — see Task C):**
+> - Gemini thinking-control: `_reasoning_effort_for` in `exchange_classifier.py` +
+>   `debrief_generator.py` (judge fast; debrief no longer times out → real report).
+> - Scenario model-agnostic hardening (server/CLAUDE.md §9, rules R1-R6):
+>   R1 `/no_think` purged from ALL 5 YAMLs + `prompts.SARCASTIC_CHARACTER_PROMPT`,
+>   `find_model_specific_tokens` guardrail (builder hard-fail + loader warn + commit
+>   test `test_shipped_scenarios_have_no_model_specific_tokens`); R2/R3 waiter
+>   `confirm` de-scripted + `clarify` no longer invents pasta varieties; R4
+>   COHERENCE_CHARTER rule 9 (always speak); R5 abuse prompt hardened (validated:
+>   frustration/flirt ≠ abuse, real abuse still caught); R6 waiter `clarify` drives
+>   forward + builder `CHECKPOINTS_PROMPT` carries R1/R2/R3/R6.
+> - `/opt/survive-the-talk/reset-quota.sh` fixed (was hardcoded `user_id=1` → now by
+>   email, so account re-creation never breaks it again).
+> - Waiter validated clean on device (call 333 "survived": pasta→drink drive,
+>   coherent confirm, real debrief). 347+ unit tests green, ruff clean.
+>
+> **REMAINING before MVP — the tracked task list (do in order):**
+> - **Task A — PAID Gemini key.** We're on the FREE tier (503 "high demand" risk on
+>   real users). Enable Google Cloud billing + set the paid key in the VPS `.env`.
+>   Walid-owned (billing + key). **Blocking for production.**
+> - **Task B — Audit + fix the OTHER 4 scenarios** (cop, girlfriend, landlord,
+>   mugger) against R1-R6 + their inventory. They only got the `/no_think` purge and
+>   likely share the waiter's R2/R3/R6 defects. Each: fix → `calibrate_scenario`
+>   (golden + band) → Pixel 9 smoke.
+> - **Task C — Consolidate + commit + REAL deploy.** The VPS runs scp'd file PATCHES
+>   that diverge from git `current` (pre-gpt-oss); a real deploy would overwrite them.
+>   Commit everything above (commit-per-stage rule), update `config.py` defaults to
+>   Gemini, run the full deploy so **git == prod**. (Until then prod is fragile.)
+> - **Task D — Harden R2/R3 into automatic lints** (today they are builder-prompt
+>   guidance only; R1/R4/R5 are already code-enforced).
+> - **Task E — Noise/STT phantom turns**: Soniox transcribes ambient noise into
+>   "Hmm."/"Um, okay." → the character answers a non-existent turn. VAD/STT tuning —
+>   PROPOSE before touching calibrated thresholds (`stop_secs`/`user_speech_timeout`).
+> - **Task F — Persona quality pass** ("pas la folie") across all scenarios on Gemini.
+> - **Re-validate** debrief + judge latency over a few on-device calls once A-C land.
+
 > 🚨 **MVP LAUNCH BLOCKER — HARD EXTERNAL DEADLINE 2026-07-17.** Groq emailed
 > 2026-06-24 that `meta-llama/llama-4-scout-17b-16e-instruct` is **deprecated now
 > and decommissioned 2026-07-17**; after that date requests to it FAIL. Scout is

@@ -137,6 +137,19 @@ def _is_gpt_oss(model: str) -> bool:
     return "gpt-oss" in model
 
 
+def _reasoning_effort_for(model: str) -> str | None:
+    """`reasoning_effort` value for a thinking-capable model on the
+    OpenAI-compatible endpoint, or None (omit the field). gpt-oss (Groq) always
+    reasons -> 'low'; Gemini 2.5 defaults to dynamic thinking on the compat
+    endpoint -> 'none' to keep the latency-critical judge fast (Gemini
+    migration). Non-thinking models (70B, gemini flash-lite) return None."""
+    if _is_gpt_oss(model):
+        return "low"
+    if "gemini-2.5" in model:
+        return "none"
+    return None
+
+
 # Story 6.10 follow-up (2026-05-29) — the multi-goal verdict is now a
 # schema-pinned object `{goal_id: "met"|"unmet"|"unsure"}`. Groq validates
 # it server-side (constrained decoding) so the model can neither mangle a
@@ -667,11 +680,11 @@ class ExchangeClassifier:
             # truncation-mid-JSON essentially impossible.
             "max_tokens": 64,
         }
+        effort = _reasoning_effort_for(self._model)
+        if effort:
+            payload["reasoning_effort"] = effort
         if _is_gpt_oss(self._model):
-            # Story 10.6 — keep the legacy `/connect` single-goal path coherent
-            # with the multi path if it ever runs on a gpt-oss reasoning model:
-            # reasoning tokens precede the verdict, so 64 alone would truncate.
-            payload["reasoning_effort"] = "low"
+            # gpt-oss emits reasoning tokens before the verdict; 64 alone truncates.
             payload["max_tokens"] = 64 + _GPT_OSS_REASONING_HEADROOM
         content = await self._post_for_content(payload)
         if content is None:
@@ -715,12 +728,11 @@ class ExchangeClassifier:
                 },
             },
         }
-        if _is_gpt_oss(self._model):
-            # Story 10.6 — gpt-oss reasoning models: keep the trace SHORT so the
-            # verdict lands inside the per-turn ~800 ms fail-open budget and the
-            # max_tokens headroom above. Gated so it never leaks onto the 70B
-            # character model (which has no thinking mode → would 400).
-            payload["reasoning_effort"] = "low"
+        effort = _reasoning_effort_for(self._model)
+        if effort:
+            # gpt-oss -> 'low' (always reasons); Gemini 2.5 -> 'none' (disable the
+            # default thinking so the per-turn judge stays inside its time budget).
+            payload["reasoning_effort"] = effort
         content = await self._post_for_content(payload)
         if content is None:
             # Infra failure (HTTP error / non-2xx / closed client / empty
