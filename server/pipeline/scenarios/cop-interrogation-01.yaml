@@ -51,7 +51,7 @@ base_prompt: |-
 checkpoints:
 - id: acknowledge_recorded_call
   hint_text: Confirm you're the person he named and acknowledge the call is being recorded.
-  prompt_segment: Open by confirming you have reached the learner by name, identify yourself as Detective Mercer with Riverside PD, and warn that this call is being recorded. Watch whether they confirm who they are and acknowledge the line is recorded.
+  prompt_segment: Identify yourself as Detective Mercer with Riverside PD and warn that this call is being recorded. You do NOT have their name — never address them by a name or invent one; instead ask them to confirm you're speaking to the right person. Watch whether they confirm who they are and acknowledge the line is recorded.
   success_criteria: PASS if the learner's turn both (a) confirms they are the person Mercer named (e.g. 'Yes, that's me', 'Speaking') AND (b) acknowledges being told the call is recorded (e.g. 'Okay, understood', 'Go ahead'). FAIL on a bare greeting/'hello', or confirming identity without acknowledging the recording.
 - id: give_name_and_address
   hint_text: State your full name and home address clearly so he can match the file.
@@ -75,7 +75,7 @@ checkpoints:
   success_criteria: PASS only if, in response to this arrival/departure probe, the turn gives BOTH an explicit arrival clock time AND an explicit departure clock time (e.g. 'I got there at 8, left at 9:30'). A single time embedded in the earlier where-answer does NOT satisfy this beat; both times must be present here. FAIL on only one time, or 'a while'.
 - id: describe_what_doing
   hint_text: Add a concrete detail about what you actually did there — something eaten, bought, or seen.
-  prompt_segment: Reference the locked timeframe ('you said you were there from your arrival to your departure — so what were you actually doing that whole time?') and push for one concrete corroborating activity detail. Demand a specific item or person, not a restatement of the place or companion.
+  prompt_segment: Referring to the timeframe they just locked in, in your own words push them for one concrete corroborating detail of what they were actually doing that whole time — a specific item, purchase, or person — not a restatement of the place or companion.
   success_criteria: 'PASS only if, in response to this probe, the turn supplies at least one NEW concrete detail tied to the location: a specific food/drink item, a purchase, a show/event watched, or a named person who served them. Re-stating the location, the times, or the companion does NOT count. FAIL on generic ''just hanging out'', ''nothing special'', or no new concrete detail.'
 - id: name_who_was_with_them
   hint_text: Give the name of a person who can vouch for you — or a named witness if you were alone.
@@ -88,7 +88,7 @@ checkpoints:
 - id: correct_misquoted_time
   requires: lock_arrival_and_departure
   hint_text: He misquotes your departure time — correct him firmly without changing your real story.
-  prompt_segment: 'Spring the first circle-back trap: repeat the learner''s OWN previously stated departure time back distorted (e.g. ''so you told me you left at <stated + 30 min>''). This must reference the time they actually gave. Bait them to correct you or agree with the false version.'
+  prompt_segment: 'Spring the first circle-back trap: repeat the learner''s OWN previously stated departure time back to them shifted about 30 minutes later than what they really said — use their real stated time, distorted, never a bracketed placeholder. Bait them to correct you or to agree with the wrong version.'
   success_criteria: PASS if the turn disputes a misquoted departure time — pushing back on a wrong time figure and giving the corrected time (e.g. 'no, that's not right, I said half past nine'). FAIL if the turn agrees with the stated time, or states a time without disputing/correcting it. The actual match against the originally stated departure time is verified by the session-level consistency evaluator, which is supplied that prior value.
 - id: deny_knowing_crew
   hint_text: Answer clearly whether you know anyone in the Carver Street Boys.
@@ -121,7 +121,7 @@ checkpoints:
 - id: reconcile_cctv_timestamp
   requires: deny_grey_hood_witness
   hint_text: He cites a specific CCTV timestamp — engage the exact time and show why it doesn't place you there.
-  prompt_segment: Cite a SPECIFIC numeric CCTV timestamp from the alley camera and create an arithmetic tension against the learner's stated travel/arrival times (e.g. 'camera shows the alley empty until 8:24, then a figure — your bus supposedly got in at 8:20, so where's the gap?'). Challenge them to close it.
+  prompt_segment: Cite a SPECIFIC numeric CCTV timestamp from the alley camera, in your own words, and set it against the learner's own stated travel and arrival times to create an arithmetic gap. Challenge them to close it.
   success_criteria: PASS only if the turn explicitly engages the cited CCTV TIMESTAMP value (names, accepts, or disputes the clock number) AND offers a time-based explanation for why it does not place them at the scene (e.g. the camera covers the front, the timestamp matches them leaving the diner). A bare 'I was elsewhere' that never touches the timestamp does NOT pass. Whether the gap is 'truly' closed is judged by the session-level evaluator using the supplied timestamp.
 - id: hold_consistency_on_recall
   requires: name_who_was_with_them

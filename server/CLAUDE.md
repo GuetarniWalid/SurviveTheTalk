@@ -537,12 +537,25 @@ reject bad ones → calibration golden net validates behavior):
   guide/host (waiter) keeps the interaction moving so the learner is never left
   waiting. Builder `CHECKPOINTS_PROMPT`. (Introduced by a fix that over-corrected
   into passivity — proof every tweak must respect R2 + be validated on device.)
+- **R7 — Never use runtime-absent info; the character has NO access to the learner's
+  name or identity.** A `prompt_segment` must not tell the character to address or
+  confirm the learner BY NAME (or any personal datum the pipeline never supplies) —
+  given none, the model invents and recites a literal placeholder ("I'm calling for
+  Mr./Ms. [Learner Name]. Are you [Learner Name]?", call 334 on cop_interrogation_01).
+  The character may ASK for a name; it must never claim to already have one. Builder
+  `CHECKPOINTS_PROMPT`. Sibling of R3 (don't require/use what the scenario can't provide).
 
-**Status (2026-06-26):** R1 + R4 + R5 are code-enforced/embedded; R2/R3/R6 are
-builder-prompt guidance (strong steering, NOT yet automatic rejection — hardening
-them into lints is open). `the-waiter.yaml` is fixed + on-device-validated; the
-OTHER 4 scenarios have only the `/no_think` purge — they still need an R2-R6 audit +
-calibration + smoke gate. Full remaining-task list lives in the migration story
+**Status (2026-06-26):** R1 + R4 + R5 are code-enforced/embedded; R2/R3/R6/R7 are
+builder-prompt guidance (strong steering, NOT yet automatic rejection — hardening R2/R7
+into a `[placeholder]`/`<token>` lint is the next step, OPEN). All SIX shipped scenarios
+are now de-scripted + audited (waiter + cop_hard + girlfriend + landlord + mugger +
+cop_interrogation). ⚠️ `cop_interrogation_01` was MISSED in the first audit pass — it
+still recited "[Learner Name]" (R7) AND tripped a separate judge bug: its 20 checkpoints
+made Gemini's multi-goal verdict exceed the old 1.5 s HTTP ceiling → every verdict
+ReadTimeout'd → nothing credited → it re-asked forever (call 334). Both fixed 2026-06-26
+(R7 reword + `_HTTP/_CLASSIFIER_TIMEOUT_SECONDS` 1.5/2.0→4.0/4.5 s; the felt
+`VERDICT_WAIT_BUDGET_MS` is UNTOUCHED). Remaining: per-scenario calibration + Pixel 9
+smoke gate. Full task list in the migration story
 `_bmad-output/implementation-artifacts/10-6-migrate-off-decommissioned-llama-4-scout-model.md`.
 
 ---

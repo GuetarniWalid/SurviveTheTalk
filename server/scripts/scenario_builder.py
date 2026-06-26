@@ -258,6 +258,10 @@ recites the instruction (or the placeholder) aloud instead of performing it.
 for a choice, variation, or option the scenario's own facts/inventory do not contain (e.g. "what \
 kind of pasta?" when no pasta varieties exist). If an item has no real variation, the character just \
 acknowledges it and moves on.
+- NEVER use info the runtime does not supply: the character has NO access to the learner's real name \
+or identity, so a prompt_segment must never tell it to address or confirm the learner BY NAME — given \
+none, a weaker model invents and recites a literal "[Learner Name]" placeholder aloud. The character \
+may ASK for a name; it must never claim to already have one.
 - MODEL-AGNOSTIC: never emit a token or command specific to one model family (e.g. Qwen's \
 "/no_think", "[INST]", "<<SYS>>"). A scenario must behave identically on any model.
 - DRIVE the conversation: each prompt_segment must make the character ADVANCE the interaction \

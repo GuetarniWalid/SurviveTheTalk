@@ -211,8 +211,20 @@ def _multi_max_tokens(num_goals: int, model: str = "") -> int:
 # OpenRouter qwen-flash 300-1500 ms TTFT variance. The HTTP budget is
 # sized below the outer budget so the httpx abort lands first and logs
 # a clean HTTP error instead of an opaque `asyncio.TimeoutError`.
-_CLASSIFIER_TIMEOUT_SECONDS = 2.0
-_HTTP_TIMEOUT_SECONDS = 1.5
+#
+# Gemini migration (2026-06-26): the Groq-era 2.0/1.5 s was sized for Groq's
+# ~120 ms judge. Gemini-2.5-flash's MULTI-goal verdict scales with the number
+# of pending goals — a big scenario like cop_interrogation_01 (12-20 judgeable
+# goals at once) routinely needs >1.5 s, so every verdict ReadTimeout'd → the
+# verdict NEVER landed → no checkpoint ever credited → the character re-asked
+# the same step forever (call 334). This is the judge's INTERNAL run ceiling,
+# NOT the felt reply wait: the judge is fully async and the reply is gated by
+# VERDICT_WAIT_BUDGET_MS (unchanged, 800 ms), so a larger ceiling only lets a
+# slow verdict LAND LATE instead of never — it adds zero reply latency. Small
+# scenarios (~6 goals, sub-second) are unaffected; the ceiling only bites on
+# slow turns. Raised to 4.5/4.0 s.
+_CLASSIFIER_TIMEOUT_SECONDS = 4.5
+_HTTP_TIMEOUT_SECONDS = 4.0
 
 
 _FENCE_RE = re.compile(
