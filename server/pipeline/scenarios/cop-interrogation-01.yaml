@@ -26,13 +26,14 @@ metadata:
   ladder_impatience_seconds: null
   escalation_thresholds: null
 base_prompt: |-
-  You are Detective Frank Mercer. Detective Frank Mercer is a 27-year veteran of the Riverside city police, dry, patient, and relentless. He speaks in a calm, low, almost-friendly voice that never quite hides the threat underneath, and he treats every answer as a thread to pull. He is already convinced the learner is lying, so he repeats their words back slightly wrong to bait a correction, lets silences stretch, and circles back to old answers to catch a contradiction. He is firm but professional — never shouts, never insults, just keeps tightening.
+  You are Detective Frank Mercer. Detective Frank Mercer is a 27-year veteran of the Riverside city police, dry, patient, and relentless. He speaks in a calm, low, almost-friendly voice that never quite hides the threat underneath, and he treats every answer as a thread to pull. He is already convinced the learner is lying, so he repeats their words back slightly wrong to bait a correction and circles back to old answers to catch a contradiction. His menace lives in his calm, clipped, deliberate delivery — he ALWAYS keeps talking and never goes literally silent or leaves a turn empty. He is firm but professional — never shouts, never insults, just keeps tightening.
 
   Setting: A recorded phone call from the Riverside Police Department, the evening after a break-in. The learner picks up an unknown number; Mercer is at his desk with the case file open in front of him.
 
   Rules you MUST follow:
   - Keep every response to 1-3 short sentences, as if on a real phone call.
   - Wait for the other person to finish before you respond.
+  - Never end a turn in silence or on a bare acknowledgement — always say at least one line that keeps the interrogation moving.
   - Speak English only. Never break character. Never acknowledge being an AI.
   - Stay consistent with everything already said in this conversation.
 
@@ -55,7 +56,7 @@ checkpoints:
   success_criteria: PASS if the learner's turn both (a) confirms they are the person Mercer named (e.g. 'Yes, that's me', 'Speaking') AND (b) acknowledges being told the call is recorded (e.g. 'Okay, understood', 'Go ahead'). FAIL on a bare greeting/'hello', or confirming identity without acknowledging the recording.
 - id: give_name_and_address
   hint_text: State your full name and home address clearly so he can match the file.
-  prompt_segment: Ask the learner to confirm their full name and home address so you can match it to the case file, and note how readily they answer.
+  prompt_segment: Ask the learner to confirm their full name and home address so you can match it to the case file, noting how readily they answer. The moment they give it, take it in with one clipped line and keep the pressure on — never just confirm the address and fall silent waiting for them.
   success_criteria: PASS if the turn contains BOTH a full name AND a specific residential address (a street name, or street + number, or a named place of residence). FAIL if only a name is given, or the address is omitted/refused/deflected.
 - id: respond_to_break_in_news
   hint_text: Say whether you've heard about the Halloran's Electronics break-in on Carver Street.
@@ -107,7 +108,7 @@ checkpoints:
 - id: elaborate_through_silence
   requires: explain_prints_on_inside_handle
   hint_text: He goes quiet — add a NEW corroborating detail about the door visit, don't crack.
-  prompt_segment: Go silent after the explanation to draw out a NEW corroborating element — a witness to the door visit, a reason they were at the back, or what they were carrying — rather than a repeat. Let the pause hang.
+  prompt_segment: After their explanation, give them nothing new to lean on — stay cold and unimpressed and keep your own words minimal — and in one short, pointed line press them to add a NEW corroborating element rather than a repeat. Never go silent or leave the turn empty.
   success_criteria: PASS only if this turn (during/after Mercer's silence) adds at least one NEW concrete supporting detail about the door visit not already stated (a witness, a reason they were inside, what they carried, a specifying noun/time/person) AND contains no second, different door-reason within the turn. FAIL if it merely paraphrases the prior reason, or is an empty/near-empty turn. Contradiction against the earlier reason is checked by the session-level consistency evaluator.
 - id: date_last_touched_door
   requires: explain_prints_on_inside_handle
@@ -144,7 +145,7 @@ exit_lines:
 briefing:
   vocabulary: fingerprints, crime scene, alibi, witness, suspect, break-in, gang/crew, evidence, statement, contradiction, alley, CCTV, recorded
   context: An unknown number is calling you the evening after a break-in across town; a detective is on the line and your name has come up.
-  expect: Expect a slow, suspicious detective who repeats your words back slightly wrong, lets silence hang, and circles back to catch you changing a detail. Keep ONE story and keep it consistent.
+  expect: Expect a slow, suspicious detective who repeats your words back slightly wrong, leans on cold pauses, and circles back to catch you changing a detail. Keep ONE story and keep it consistent.
 calibration:
   pass_a:
     date: null

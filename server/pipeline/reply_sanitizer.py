@@ -99,6 +99,11 @@ _ALLOWED_EMOTIONS: frozenset[str] = frozenset(
 # emit the emitter's old missing-intensity fallback; the client receives but
 # does not use it (verified 2026-06-10, story Dev Notes).
 _DEFAULT_INTENSITY = 0.5
+# call-335: structural never-silent floor. When the whole reply is non-spoken
+# meta (a mood tag only), the character would otherwise fall literally silent
+# (the dead air a user hung up on). A prompt-only "always speak" guard already
+# failed there, so we substitute this one short, deterministic spoken line.
+_NEVER_SILENT_FALLBACK = "Go on."
 
 # A complete mood tag, e.g. "<mood:frustration>". MOOD_TAG_DIRECTIVE instructs
 # lowercase snake_case, but the match is case-INSENSITIVE as a defense (review
@@ -250,7 +255,9 @@ def sanitize_reply_text(text: str) -> tuple[str, str | None]:
     scanner = _SpanScanner()
     cleaned = scanner.feed(text)
     scanner.finish()
-    return cleaned.strip(), scanner.mood
+    # golden==prod: mirror the live never-silent floor — an all-meta (or
+    # empty) reply becomes the deterministic fallback line, never silence.
+    return (cleaned.strip() or _NEVER_SILENT_FALLBACK), scanner.mood
 
 
 class ReplySanitizer(FrameProcessor):
@@ -326,13 +333,19 @@ class ReplySanitizer(FrameProcessor):
                 self._spoke_any,
             )
         if not self._spoke_any:
-            # AC2 — the whole reply was non-spoken meta (call-274 P2 shape).
-            # Accepted trade-off: a rare silent turn (the silence ladder still
-            # runs) beats spoken scaffolding. Do NOT regenerate, do NOT let
-            # the raw text through.
+            # call-335: the whole reply was non-spoken meta (a mood tag only),
+            # which previously left the turn literally silent — the dead air a
+            # user hung up on. A prompt-only "always speak" guard already
+            # failed here, so this is the STRUCTURAL floor: push one short,
+            # deterministic spoken line so the character is never silent.
+            # Mirrored in sanitize_reply_text for golden==prod.
+            await self.push_frame(
+                TextFrame(_NEVER_SILENT_FALLBACK), FrameDirection.DOWNSTREAM
+            )
             logger.info(
-                "reply_sanitizer_empty_reply_dropped "
-                "(reply was entirely non-spoken meta; silent this turn)"
+                "reply_sanitizer_empty_reply_filled fallback={!r} "
+                "(reply was entirely non-spoken meta)",
+                _NEVER_SILENT_FALLBACK,
             )
         if scanner.mood is not None:
             await self.push_frame(

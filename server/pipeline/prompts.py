@@ -164,8 +164,10 @@ NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT = (
 # `response_format=json_schema` on the character LLM breaks streaming and
 # 70B rejects it (server/CLAUDE.md §4).
 MOOD_TAG_DIRECTIVE = """\
-Mood tag (machine-read, never spoken): end EVERY reply with exactly one
-tag in this exact form, as the very last thing you output: <mood:VALUE>
+Mood tag (machine-read, never spoken): your reply must ALWAYS contain at
+least one spoken sentence FIRST — a reply that is only this tag, with no
+spoken words, is forbidden. End EVERY reply with exactly one tag in this
+exact form, as the very last thing you output, AFTER your spoken words: <mood:VALUE>
 VALUE must be exactly one of: satisfaction, smirk, frustration,
 impatience, anger, confusion, disgust_hangup. Pick the one that matches
 the tone of the line YOU just spoke. The tag is stripped out before the

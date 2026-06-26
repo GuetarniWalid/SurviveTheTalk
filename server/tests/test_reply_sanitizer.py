@@ -117,9 +117,10 @@ def test_asterisk_action_stripped_but_literal_asterisk_kept() -> None:
     assert "Anyway." in spoken
 
 
-def test_pure_meta_reply_dropped_whole_and_logged() -> None:
-    """The exact call-274 P2 case: a reply that is ONLY a parenthetical must
-    produce ZERO downstream text (silent turn) + the INFO log line."""
+def test_pure_meta_reply_filled_with_fallback_and_logged() -> None:
+    """call-335 never-silent floor: a reply that is ONLY a parenthetical (no
+    spoken words) must NOT fall silent — it is replaced by the deterministic
+    fallback spoken line + the INFO log line."""
     sanitizer = ReplySanitizer()
     captured = _capture_pushed(sanitizer)
 
@@ -135,8 +136,8 @@ def test_pure_meta_reply_dropped_whole_and_logged() -> None:
     finally:
         loguru_logger.remove(sink_id)
 
-    assert _spoken_text(captured) == ""
-    assert any("reply_sanitizer_empty_reply_dropped" in e for e in logs)
+    assert _spoken_text(captured) == "Go on."
+    assert any("reply_sanitizer_empty_reply_filled" in e for e in logs)
 
 
 def test_unterminated_paren_span_dropped_at_end_of_reply() -> None:
@@ -435,7 +436,7 @@ def test_fully_suppressed_chunk_emits_no_empty_frame() -> None:
     [
         ("Plain reply.", "Plain reply.", None),
         ("Reply with tag. <mood:anger>", "Reply with tag.", "anger"),
-        ("(pure meta) <mood:smirk>", "", "smirk"),
+        ("(pure meta) <mood:smirk>", "Go on.", "smirk"),
         ("Keep 2 * 3 math. *wink*", "Keep 2 * 3 math.", None),
         ("Bad tag. <mood:zen>", "Bad tag.", None),
     ],

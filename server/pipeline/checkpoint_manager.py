@@ -211,7 +211,11 @@ def format_suggested_focus_block(first_pending: dict) -> str:
         "objective only — and never tack on questions that belong to later "
         "objectives to round out the turn. If you have already asked this "
         "and their answer fell short, press or rephrase THIS objective "
-        "rather than advancing. If the other person has volunteered "
+        "rather than advancing. If they have ALREADY given what this "
+        "objective needs, do NOT re-ask it and do NOT fall silent — say one "
+        "short in-character line that takes it in and keeps the conversation "
+        "moving, never a bare acknowledgement that just stops. If the other "
+        "person has volunteered "
         "something that belongs to a later objective, genuinely take it in "
         'and react in character — a quick nod, a "noted", a flicker of '
         "interest or irritation, whatever fits you — so you never sound deaf "
