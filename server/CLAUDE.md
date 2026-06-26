@@ -517,8 +517,12 @@ reject bad ones → calibration golden net validates behavior):
 - **R2 — Behavior, not scripts.** A `prompt_segment` describes WHAT the character
   does; never a verbatim sentence in quotes to recite, nor a `[placeholder]`
   template — a weaker model recites the instruction/placeholder aloud (the `confirm`
-  "Repeat the order: 'So that's [their order]…'" leak). Builder `CHECKPOINTS_PROMPT`
-  + COHERENCE_CHARTER rule 8.
+  "Repeat the order: 'So that's [their order]…'" leak). **Enforced HARD (2026-06-26):**
+  `scenarios.find_scripting_violations` (placeholder tokens `[X]`/`{x}`/`<y>` + recite
+  directives like `say exactly`) is rejected by `scenario_builder.validate_structure`,
+  WARNED by the loader, and fails the commit via
+  `tests/test_scenarios.py::test_shipped_scenarios_have_no_scripting_violations`. The
+  builder `CHECKPOINTS_PROMPT` is still the first line (generate it right).
 - **R3 — Never require what the scenario can't provide.** A `prompt_segment` must
   not tell the character to ask for a choice/variation/option the menu/inventory
   does not contain (the pasta "what kind?" loop — pasta has no varieties). No
@@ -542,20 +546,35 @@ reject bad ones → calibration golden net validates behavior):
   confirm the learner BY NAME (or any personal datum the pipeline never supplies) —
   given none, the model invents and recites a literal placeholder ("I'm calling for
   Mr./Ms. [Learner Name]. Are you [Learner Name]?", call 334 on cop_interrogation_01).
-  The character may ASK for a name; it must never claim to already have one. Builder
-  `CHECKPOINTS_PROMPT`. Sibling of R3 (don't require/use what the scenario can't provide).
+  The character may ASK for a name; it must never claim to already have one. The literal
+  `[Learner Name]` placeholder is caught by the R2 lint above; the SEMANTIC trap (telling
+  the character to address the learner *by name* with no literal placeholder) is not
+  lexically detectable — it stays builder `CHECKPOINTS_PROMPT` guidance + the smoke gate.
+  Sibling of R3 (don't require/use what the scenario can't provide).
 
-**Status (2026-06-26):** R1 + R4 + R5 are code-enforced/embedded; R2/R3/R6/R7 are
-builder-prompt guidance (strong steering, NOT yet automatic rejection — hardening R2/R7
-into a `[placeholder]`/`<token>` lint is the next step, OPEN). All SIX shipped scenarios
-are now de-scripted + audited (waiter + cop_hard + girlfriend + landlord + mugger +
-cop_interrogation). ⚠️ `cop_interrogation_01` was MISSED in the first audit pass — it
-still recited "[Learner Name]" (R7) AND tripped a separate judge bug: its 20 checkpoints
-made Gemini's multi-goal verdict exceed the old 1.5 s HTTP ceiling → every verdict
-ReadTimeout'd → nothing credited → it re-asked forever (call 334). Both fixed 2026-06-26
-(R7 reword + `_HTTP/_CLASSIFIER_TIMEOUT_SECONDS` 1.5/2.0→4.0/4.5 s; the felt
-`VERDICT_WAIT_BUDGET_MS` is UNTOUCHED). Remaining: per-scenario calibration + Pixel 9
-smoke gate. Full task list in the migration story
+**Status (2026-06-26):** R1 + R2 + R7(literal placeholder) are code-enforced via fail-fast
+lints over the FULL `_SCENARIO_INDEX` (`find_model_specific_tokens` + `find_scripting_violations`,
+each in builder + loader + commit test); R4 + R6 are ENGINE-enforced (a scenario CANNOT
+produce dead air or acknowledge-and-stop no matter how it is written — `reply_sanitizer`
+never-silent floor + `checkpoint_manager` always-drive branch); R5 is embedded in the
+classifier prompt; R3 + R7(semantic) remain builder `CHECKPOINTS_PROMPT` guidance (not
+lexically detectable) + the smoke gate. All SIX shipped scenarios are de-scripted + audited
+(waiter + cop_hard + girlfriend + landlord + mugger + cop_interrogation); cop_interrogation
+also needed the judge-timeout fix (`_HTTP/_CLASSIFIER_TIMEOUT_SECONDS` 1.5/2.0→4.0/4.5 s; felt
+`VERDICT_WAIT_BUDGET_MS` UNTOUCHED). Remaining: per-scenario calibration + Pixel 9 smoke gate.
+
+**THE DURABLE LESSON (why bugs reached production — read before adding any rule).** They
+leaked because the rules were SOFT — the builder was *told* to follow them but nothing
+*rejected* a violator — and scenarios were audited BY HAND (which missed `cop_interrogation_01`
+entirely). Soft guidance + manual audits ALWAYS leak. The only "never again" is the R1
+pattern applied everywhere: (1) a fail-fast validator that runs over EVERY scenario via the
+glob index (NEVER a hand-list) and BLOCKS a violator at build + commit; AND (2) put the
+guarantee in the ENGINE when you can, so the scenario can't break core UX however it is
+written (R4/R6 are now engine guards, not prompt wishes). So: every recurring bug class
+becomes a lint or an engine guard — NOT a memory note, NOT a one-off scenario patch.
+Building a NEW scenario = run the builder (rule-compliant by construction) → the validators
+reject anything that slipped → golden calibration on the prod model → Pixel 9 smoke. Full
+task list in the migration story
 `_bmad-output/implementation-artifacts/10-6-migrate-off-decommissioned-llama-4-scout-model.md`.
 
 ---

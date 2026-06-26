@@ -71,6 +71,7 @@ from scripts.calibration_engine import (  # noqa: E402,F401
 # would reject. Used by `validate_structure`.
 from pipeline.scenarios import (  # noqa: E402
     find_model_specific_tokens,
+    find_scripting_violations,
     find_persona_difficulty_leaks,
 )
 
@@ -751,6 +752,14 @@ def validate_structure(scenario: dict) -> list[str]:
                 f"base_prompt contains model-specific token(s) {tokens} — scenarios "
                 "must be MODEL-AGNOSTIC (work on any model); remove them"
             )
+        # R2/R7 (2026-06-26) — no fill-in template or recite-this script (a
+        # weaker model reads '[Learner Name]' / 'say exactly: "..."' aloud).
+        base_scripts = find_scripting_violations(base_prompt)
+        if base_scripts:
+            problems.append(
+                f"base_prompt contains placeholder/recite artifact(s) {base_scripts}"
+                " — describe BEHAVIOR, never a fill-in template or a line to recite"
+            )
 
     checkpoints = scenario.get("checkpoints")
     if not isinstance(checkpoints, list) or not checkpoints:
@@ -773,6 +782,13 @@ def validate_structure(scenario: dict) -> list[str]:
                 problems.append(
                     f"checkpoint[{i}].prompt_segment contains model-specific "
                     f"token(s) {seg_tokens} — scenarios must be MODEL-AGNOSTIC"
+                )
+            seg_scripts = find_scripting_violations(seg)
+            if seg_scripts:
+                problems.append(
+                    f"checkpoint[{i}].prompt_segment contains placeholder/recite "
+                    f"artifact(s) {seg_scripts} — describe BEHAVIOR, never a "
+                    "fill-in template or a line to recite"
                 )
         if isinstance(cp.get("id"), str):
             ids.append(cp["id"])

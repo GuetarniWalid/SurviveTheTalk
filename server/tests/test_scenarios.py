@@ -1866,6 +1866,33 @@ def test_shipped_scenarios_have_no_model_specific_tokens() -> None:
     )
 
 
+def test_shipped_scenarios_have_no_scripting_violations() -> None:
+    """R2/R7 (server/CLAUDE.md §9) — every shipped scenario is CORRECT-BY-
+    CONSTRUCTION: neither the base_prompt nor any checkpoint prompt_segment may
+    carry a fill-in template ([Learner Name], {x}, <y>) or a recite-this script
+    ('say exactly'). A weaker model reads them aloud — the exact class that
+    reached production (the landlord placeholder, the detective '[Learner
+    Name]'). Iterates the FULL index, so a NEW scenario file is auto-covered."""
+    import yaml
+
+    from pipeline.scenarios import _SCENARIO_INDEX, find_scripting_violations
+
+    offenders: dict[str, list[str]] = {}
+    for scenario_id, path in _SCENARIO_INDEX.items():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        hits = list(find_scripting_violations(data.get("base_prompt") or ""))
+        for cp in data.get("checkpoints") or []:
+            if isinstance(cp, dict):
+                hits += find_scripting_violations(cp.get("prompt_segment") or "")
+        if hits:
+            offenders[scenario_id] = sorted(set(hits))
+    assert not offenders, (
+        f"placeholder/recite artifact(s) in scenario(s): {offenders}. A "
+        "prompt_segment must describe BEHAVIOR — never a fill-in template or a "
+        "line to recite (a weaker model reads them aloud)."
+    )
+
+
 # Identity tokens that MUST survive any persona rewrite (a careless 'strip coded
 # phrases' pass that also gutted the name would silently break test_calls.py /
 # the env-threading tests downstream). Cheap tripwire.

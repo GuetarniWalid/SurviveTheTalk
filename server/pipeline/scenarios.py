@@ -19,6 +19,7 @@ stay in sync.
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 
 import yaml
@@ -402,6 +403,42 @@ def find_model_specific_tokens(text: str) -> list[str]:
     """
     haystack = (text or "").lower()
     return [p for p in _MODEL_SPECIFIC_TOKEN_PATTERNS if p in haystack]
+
+
+# R2 / R7 (2026-06-26) — scenarios must be CORRECT-BY-CONSTRUCTION. A
+# prompt_segment describes BEHAVIOR; it must never carry a fill-in template or
+# an order to recite a fixed line. A weaker model reads them aloud: the landlord
+# '[the date]' leak, the detective inventing '[Learner Name]' when told to
+# address the learner by a name the runtime never supplies (R7), the mugger/cop
+# 'say exactly: "..."' completion re-scripts (R2). These reached production
+# because R2/R7 were only builder GUIDANCE, never a gate — this tripwire gives
+# them R1's three-layer enforcement (builder reject + loader warn + commit test).
+_TEMPLATE_PLACEHOLDER_RE = re.compile(
+    r"\[[A-Za-z][^\]]*\]|\{[A-Za-z][^}]*\}|<[A-Za-z][^>]*>"
+)
+_RECITE_DIRECTIVE_PATTERNS: tuple[str, ...] = (
+    "say exactly",
+    "say the following",
+    "say this exactly",
+)
+
+
+def find_scripting_violations(text: str) -> list[str]:
+    """Return any R2/R7 recite-this artifacts in scenario text.
+
+    Two mechanically-detectable tripwires:
+      * template placeholders — ``[Bracketed]``, ``{braced}`` or ``<angled>``
+        tokens a model recites verbatim (``[Learner Name]``, ``[the date]``,
+        ``<stated + 30 min>``);
+      * explicit recite directives — ``say exactly`` / ``say the following``.
+    Single source of truth, imported by ``scenario_builder.validate_structure``
+    and the ``tests/test_scenarios.py`` lint — same three-layer posture as
+    ``find_model_specific_tokens``. Describe BEHAVIOR, never a script.
+    """
+    hits = list(_TEMPLATE_PLACEHOLDER_RE.findall(text or ""))
+    low = (text or "").lower()
+    hits += [p for p in _RECITE_DIRECTIVE_PATTERNS if p in low]
+    return hits
 
 
 # ============================================================
@@ -970,6 +1007,20 @@ def load_scenario_base_prompt(scenario_id: str, difficulty: str | None = None) -
             "MODEL-AGNOSTIC; remove model-specific control tokens from the base_prompt.",
             scenario_id,
             model_tokens,
+        )
+
+    # R2/R7 (2026-06-26) — no fill-in template or recite-this script in the
+    # base_prompt (a weaker model reads it aloud). WARN at runtime; the HARD
+    # gates are scenario_builder.validate_structure + the test lint.
+    base_scripts = find_scripting_violations(base_prompt)
+    if base_scripts:
+        from loguru import logger
+
+        logger.warning(
+            "scenario_scripting_artifact scenario={} artifacts={} — describe "
+            "BEHAVIOR, never a placeholder or a line to recite.",
+            scenario_id,
+            base_scripts,
         )
 
     # Story 6.28 — the global pick is the only difficulty cursor; absent →
