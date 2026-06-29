@@ -270,3 +270,102 @@ Three required behaviours:
 
 **Reminder:** create the story WITH the Scrum in a `/bmad-create-story` session.
 This brief is the springboard, not the spec.
+
+---
+
+# ADDENDUM (2026-06-29) — two blockers CONFIRMED on the OpenAI smoke gate (call 340)
+
+> Added after the Story 10.6 code-review + Pixel 9 smoke gate on the FINAL runtime
+> (OpenAI `gpt-4.1-mini`, deployed `a82cbb4`). The 10.6 migration CODE is correct,
+> but the smoke gate failed on TWO distinct on-device blockers. Neither is caused
+> by the review patches (verified) — both are pre-existing, exposed by the precise
+> gpt-4.1 model. They are why 10.6 went back to `in-progress`. Author: code-review
+> session 2026-06-29 (claude-opus-4-8).
+
+## A. The judge is TOO LOOSE — over-permissive `success_criteria` (the LOOSE end of §3c's swing)
+
+§3c framed judge accuracy around a FALSE-NEGATIVE (greet missed → patience punished).
+Call 340 is the opposite, equally bad pole: **FALSE-POSITIVES — weak/nonsensical
+input credits checkpoints**, so the scenario "plays itself." Walid: *"c'est comme
+si il y avait rien, pas de scénario, je pouvais dire n'importe quoi, ça se déroule
+tout seul."*
+
+**Evidence (waiter_easy_01, call 340) — what was said vs what credited:**
+
+| user turn | checkpoint credited | correct? |
+|---|---|---|
+| "Hi, good evening." | greet | ✅ |
+| "I have the grilled chicken, please." | main_course **+ clarify (same turn)** | main ✅ / clarify ⚠️ premature |
+| "a cola, please." | drink | ✅ |
+| **"No other choice."** | **confirm** | ❌ not a confirmation |
+| **"No other choice. Is it a question?"** | **close** | ❌ closes nothing |
+
+**Root cause — the criteria literally say "accept anything"** (`the-waiter.yaml`):
+- `confirm.success_criteria`: *"User confirms the order … **Any acknowledgement of
+  the order summary counts.**"*
+- `close.success_criteria`: *"User says thank you … **Even a simple "okay" or
+  "thanks" counts.**"*
+
+So gpt-4.1-mini is **obeying the criteria literally** — it is not "broken," the
+criteria are authored too permissively. The old model masked it by being noisier /
+less literal. This is the **design misconception §8 warns about: "easy" was
+conflated with "accept anything."** Easy difficulty must forgive the LEARNER's
+LANGUAGE/grammar — NOT credit wrong or absent content. A confused/evasive/tangential
+reply must be `unmet` at every difficulty.
+
+**Fix direction (model-agnostic, for the Scrum to refine):**
+1. **Stiffen the judge prompt** (`EXCHANGE_CLASSIFIER_MULTI_PROMPT`): credit a beat
+   ONLY when the user GENUINELY accomplishes that specific goal; a non-committal /
+   off-topic / "I don't know" / question-back reply is `unmet`. This is the single
+   highest-leverage lever (one prompt, all scenarios, any model).
+2. **Rewrite the over-permissive `success_criteria`** across ALL 6 scenarios — purge
+   "any X counts" / "even a simple okay counts" phrasings; require the actual move
+   (confirm = affirms OR corrects the *specific* order; close = a real closing
+   courtesy, not merely "words exist").
+3. **Candidate new lint** (mirrors R1/R2 over `_SCENARIO_INDEX`): flag criteria that
+   contain "any … counts" / "even a simple … counts" / "any acknowledgement" —
+   mechanically detectable permissiveness, fail-fast at build + commit.
+4. Re-validate with `calibrate_scenario --golden-only` → target **6/6** (the
+   universal off-topic seed must be `unmet` on EVERY beat of EVERY scenario), then
+   the Pixel 9 re-smoke. NOTE: this is the SAME `success_criteria` surface §3c/§7's
+   construction rule already touches — do it ONCE, coherently, not twice.
+
+## B. SEPARATE small blocker — the DEBRIEF never produces a real recap (ReadTimeout)
+
+Distinct from everything above (not a checkpoint/HUD concern). On call 340 the
+post-call debrief **timed out and fell back to the degraded score-only debrief**, so
+the user sees NO analysis — every recent call. Logs:
+
+```
+11:47:33  call_ended call_id=340 reason=survived
+11:47:45  debrief_generation failed (non-fatal): (ReadTimeout)
+11:47:45  generation returned None → storing a degraded (score-only) debrief
+11:47:46  GET /debriefs/340 → 200 OK     (client gets the degraded one)
+```
+
+**Root cause:** the full ~2-3k-token structured debrief takes LONGER than the
+debrief's `_HTTP_TIMEOUT_SECONDS = 7.5 s` / `_GENERATION_TIMEOUT_SECONDS = 14 s`
+(`debrief_generator.py`) on gpt-4.1-mini. Sized for the old model; pre-existing from
+the `7487186` swap; the review patches did NOT touch these timeouts.
+
+**Fix (small, separable — could be its own quick story OR folded in):**
+1. Raise the debrief budgets — it is **overlay-masked / non-blocking** (Story 7.1):
+   `_HTTP_TIMEOUT_SECONDS` 7.5 → ~20 s, `_GENERATION_TIMEOUT_SECONDS` 14 → ~25 s.
+2. **Check the CLIENT poll budget** (Story 7.3 debrief screen ≈ 30 s + 1 s resume
+   poll, `debrief_screen.dart`): the server must finish UNDER the client's give-up
+   window, or the client shows "Debrief unavailable" first. Keep server < client.
+3. Measure the real gpt-4.1-mini debrief latency on the VPS (`probe_debrief_schema.py`
+   times one call); if it's routinely >20 s, ALSO trim the debrief size or revisit
+   the model for this role. Confirm `finish_reason != "length"` after any change.
+4. **This is the ONE place that overrides §10's "leave the timeouts" note** — §10
+   refers to the JUDGE timeouts (4.0/4.5 s); the DEBRIEF timeouts (7.5/14 s) are a
+   different pair and DO need raising. Re-validate with a real on-device call that
+   shows a full (non-degraded) `debrief stored … inserted=True` + a rich recap.
+
+## Status handoff
+- 10.6 = `in-progress` (migration code correct + deployed `a82cbb4`; cannot flip
+  `done` until BOTH blockers clear). Scout still dies 2026-07-17 — the migration
+  itself must stay shipped.
+- Both blockers belong to THIS story (10-7) or its scoping decision; A is the big
+  judge/criteria/rail-keeper body of work, B is a small self-contained timeout fix.
+  The Scrum decides one-story-vs-epic-vs-split (see §9).
