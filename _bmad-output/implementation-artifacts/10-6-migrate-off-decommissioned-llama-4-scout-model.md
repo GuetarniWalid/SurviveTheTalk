@@ -1,6 +1,6 @@
 # Story 10.6: Migrate off the decommissioned Llama 4 Scout model
 
-Status: in-progress
+Status: review
 
 > 🟢 **2026-06-29 — FINAL RUNTIME = OpenAI `gpt-4.1-mini` (all 3 roles). READ THIS FIRST.**
 > Supersedes BOTH the gpt-oss-on-Groq decision (ACs/Tasks below) AND the
@@ -21,10 +21,12 @@ Status: in-progress
 > the §9 scenario lints (P3); reconciled every stale gpt-oss/Groq/Gemini comment
 > in `config.py` / `exchange_classifier` / `debrief_generator` / `probe` /
 > `server/CLAUDE.md` §4+§9 to gpt-4.1-mini (P1).
-> **STILL OWED before `review → done` (review D1):** the §6 golden-net judge
-> validation on gpt-4.1-mini (`calibrate_scenario.py`) + the Pixel 9 smoke gate
-> (which also re-validates the D3 timeout). A gpt-4.1 judge mis-credit class is
-> backlogged to story 10-7.
+> **STILL OWED before `review → done`:** ONLY your Pixel 9 smoke gate. (D1 §6
+> golden RAN on the live gpt-4.1-mini → 3/6; the 3 fails are all the permissive
+> OPENING `react`/`respond` beat — a pre-existing, model-agnostic scenario
+> looseness, NOT a model regression → Walid ruled **SHIP 10.6** + tighten those 3
+> criteria in **10-7**. The D3 timeout retune was reverted after the live sweep
+> measured the judge at ~2 s/call.)
 
 > ⚠️ **2026-06-26 — DECISION SUPERSEDED + SCOPE EXPANDED. READ THIS FIRST.**
 > The locked gpt-oss decision further below is **OBSOLETE**. Groq is being LEFT
@@ -265,7 +267,7 @@ The migration code is correct and is STRICTLY BETTER than leaving Scout (which i
 
 **Resolution (2026-06-29 — Walid decided the 4 decisions; the 6 patches batch-applied, gates green):**
 
-- **D1 (judge §6 validation) → RAN on the live VPS (gpt-4.1-mini, 2026-06-29): golden 3/6.** ✅ PASS: `cop_interrogation_01`, `landlord_hard_01`, `waiter_easy_01`. ❌ FAIL: `cop_hard_01` (2), `girlfriend_medium_01` (1), `mugger_medium_01` (4) — but EVERY failure is the OPENING `react`/`respond` beat (`checkpoints[0]`) accepting generic small-talk ("I think the traffic was terrible this morning", "Did you watch the game last night?") as "engagement". This is a **pre-existing, model-agnostic permissive-opening-criteria looseness** (the sprint log already flagged mugger/cop openings as permissive pre-migration), **NOT a gpt-4.1 regression** — the judge correctly rejects off-topic on every TIGHTER criterion and on the later beats of the failing scenarios. (Timeouts can't cause this: a timeout → no credit, the safe direction.) **Decision owed (Walid):** ship 10.6 (the migration is sound) and tighten the 3 opening `react`/`respond` criteria in a follow-up / **10-7**, OR tighten them before the `done` flip. Story stays `in-progress`. The broader gpt-4.1 judge mis-credit class stays backlogged to **10-7**.
+- **D1 (judge §6 validation) → RAN on the live VPS (gpt-4.1-mini, 2026-06-29): golden 3/6.** ✅ PASS: `cop_interrogation_01`, `landlord_hard_01`, `waiter_easy_01`. ❌ FAIL: `cop_hard_01` (2), `girlfriend_medium_01` (1), `mugger_medium_01` (4) — but EVERY failure is the OPENING `react`/`respond` beat (`checkpoints[0]`) accepting generic small-talk ("I think the traffic was terrible this morning", "Did you watch the game last night?") as "engagement". This is a **pre-existing, model-agnostic permissive-opening-criteria looseness** (the sprint log already flagged mugger/cop openings as permissive pre-migration), **NOT a gpt-4.1 regression** — the judge correctly rejects off-topic on every TIGHTER criterion and on the later beats of the failing scenarios. (Timeouts can't cause this: a timeout → no credit, the safe direction.) **DECISION (Walid 2026-06-29): SHIP 10.6** — the migration is sound; the 3 permissive opening `react`/`respond` criteria (cop_hard / girlfriend / mugger) are tightened in **10-7** (which already carries the broader gpt-4.1 judge mis-credit). Story flipped `in-progress → review`; the ONLY remaining gate for `review → done` is the **Pixel 9 smoke gate**.
 - **D2 (dead reasoning gating) → DELETED.** Removed `_is_gpt_oss` / `_reasoning_effort_for` / `_GPT_OSS_REASONING_HEADROOM` + the `_multi_max_tokens(model=…)` headroom + the `reasoning_extra` spreads + the probe gating, across `exchange_classifier.py`, `debrief_generator.py`, `probe_debrief_schema.py` (+ their tests).
 - **D3 (terminal dead-air) → tried 2.5/2.0 s, then REVERTED to 4.5/4.0 s after live measurement.** The retune to 2.5/2.0 s was caught wrong by the D1 golden run: a live VPS sweep measured the gpt-4.1-mini judge at **~2 s/call**, so the 2.0 s HTTP budget clipped the tail (~2 % fail-open). Restored to the proven 4.5/4.0 s (near-zero fail-opens); the terminal-stall worry is rare at OpenAI latency (normal calls land ~2 s, well under the ceiling — the ~9 s case needs back-to-back infra failures, not slowness). The surgical option (cap only the terminal blocking path) is noted in-code if ever needed. Still corrected the false "zero reply latency" comment.
 - **D4 (`"Go on."` floor) → PER-SCENARIO.** `ReplySanitizer(fallback_line=…)` wired from a new optional YAML `never_silent_fallback`; in-character lines authored for all 6 scenarios (global `"Go on."` kept only as the default for un-authored scenarios).
