@@ -19,6 +19,7 @@ from db.queries import (
     get_debrief_by_call_id,
     insert_call_session,
     insert_debrief,
+    update_debrief_analysis,
     upsert_user_progress,
 )
 from db.seed_scenarios import seed_scenarios
@@ -173,3 +174,126 @@ def test_get_debrief_none_when_absent(seeded):
             return await get_debrief_by_call_id(db, call_id)
 
     assert asyncio.run(_go()) is None
+
+
+# ---------- Story 10.7 (Bug B) — two-phase progressive debrief ---------------
+
+
+def test_insert_debrief_defaults_status_ready(seeded):
+    """One-shot callers (and pre-10.7 tests) that omit `status` write a `ready`
+    row — back-compat with the single-write contract."""
+    _, call_id = seeded
+
+    async def _go():
+        async with get_connection() as db:
+            await insert_debrief(
+                db,
+                call_session_id=call_id,
+                survival_pct=73,
+                checkpoints_passed=2,
+                total_checkpoints=3,
+                debrief_json=json.dumps({"survival_pct": 73}),
+                prompt_version="2.2",
+                created_at=_NOW,
+            )
+            return await get_debrief_by_call_id(db, call_id)
+
+    row = asyncio.run(_go())
+    assert row["status"] == "ready"
+
+
+def test_pending_insert_then_update_to_ready(seeded):
+    """The two-phase write: a `pending` score-only row, then a guarded UPDATE
+    flips it to `ready` with the full blob (analysis filled in)."""
+    _, call_id = seeded
+
+    async def _go():
+        async with get_connection() as db:
+            inserted = await insert_debrief(
+                db,
+                call_session_id=call_id,
+                survival_pct=66,
+                checkpoints_passed=2,
+                total_checkpoints=3,
+                debrief_json=json.dumps({"survival_pct": 66, "errors": []}),
+                prompt_version="2.2",
+                created_at=_NOW,
+                status="pending",
+            )
+            pending_row = await get_debrief_by_call_id(db, call_id)
+            updated = await update_debrief_analysis(
+                db,
+                call_session_id=call_id,
+                debrief_json=json.dumps(
+                    {"survival_pct": 66, "errors": [{"user_said": "x"}]}
+                ),
+                status="ready",
+            )
+            ready_row = await get_debrief_by_call_id(db, call_id)
+        return inserted, pending_row, updated, ready_row
+
+    inserted, pending_row, updated, ready_row = asyncio.run(_go())
+    assert inserted is True
+    assert pending_row["status"] == "pending"
+    assert json.loads(pending_row["debrief_json"])["errors"] == []
+    assert updated is True
+    assert ready_row["status"] == "ready"
+    # The second write replaced the score-only blob with the analysis blob.
+    assert json.loads(ready_row["debrief_json"])["errors"] == [{"user_said": "x"}]
+
+
+def test_update_debrief_analysis_guarded_against_clobbering_ready(seeded):
+    """The UPDATE is guarded `WHERE status='pending'`: once a row is `ready`, a
+    duplicate/late writer (Popen retry, pooled re-run) affects 0 rows and can
+    neither clobber the completed blob nor resurrect a degraded one."""
+    _, call_id = seeded
+
+    async def _go():
+        async with get_connection() as db:
+            await insert_debrief(
+                db,
+                call_session_id=call_id,
+                survival_pct=66,
+                checkpoints_passed=2,
+                total_checkpoints=3,
+                debrief_json=json.dumps({"v": "pending"}),
+                prompt_version="2.2",
+                created_at=_NOW,
+                status="pending",
+            )
+            first = await update_debrief_analysis(
+                db,
+                call_session_id=call_id,
+                debrief_json=json.dumps({"v": "ready-full"}),
+                status="ready",
+            )
+            # A late writer tries to overwrite the already-ready row.
+            second = await update_debrief_analysis(
+                db,
+                call_session_id=call_id,
+                debrief_json=json.dumps({"v": "late-clobber"}),
+                status="ready",
+            )
+            row = await get_debrief_by_call_id(db, call_id)
+        return first, second, row
+
+    first, second, row = asyncio.run(_go())
+    assert first is True
+    assert second is False  # guard blocked the clobber
+    assert json.loads(row["debrief_json"])["v"] == "ready-full"
+
+
+def test_update_debrief_analysis_noop_when_no_row(seeded):
+    """An UPDATE with no matching row (no debrief at all) affects 0 rows."""
+    _, call_id = seeded
+
+    async def _go():
+        async with get_connection() as db:
+            return await update_debrief_analysis(
+                db,
+                call_session_id=call_id,
+                debrief_json=json.dumps({"v": "x"}),
+                status="ready",
+            )
+
+    assert asyncio.run(_go()) is False

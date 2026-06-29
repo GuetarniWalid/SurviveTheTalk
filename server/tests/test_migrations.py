@@ -546,3 +546,77 @@ def test_migration_016_purchase_original_transaction_id(test_db_path):
         assert row[0] is None
     finally:
         conn.close()
+
+
+def test_migration_017_debriefs_status(test_db_path):
+    """Story 10.7 (Bug B — progressive debrief) — migration 017 adds the NOT NULL
+    `debriefs.status` column (DEFAULT 'ready', CHECK pending|ready). ADD-only:
+    existing rows backfill to 'ready'. Asserted against a freshly-migrated empty
+    DB so a regression in 017's DDL fails fast; the prod-snapshot replay above
+    covers the populated-DB backfill case.
+    """
+    asyncio.run(run_migrations())
+
+    conn = sqlite3.connect(test_db_path)
+    try:
+        cols = {r[1]: r for r in conn.execute("PRAGMA table_info(debriefs)").fetchall()}
+        assert "status" in cols, f"debriefs missing status: {set(cols)}"
+        # PRAGMA table_info row: (cid, name, type, notnull, dflt_value, pk).
+        assert cols["status"][2] == "TEXT"
+        assert cols["status"][3] == 1, "status must be NOT NULL"
+        # DEFAULT 'ready' — backfills existing rows (stored as "'ready'").
+        assert "ready" in str(cols["status"][4]), (
+            f"status DEFAULT must be 'ready', got {cols['status'][4]!r}"
+        )
+
+        # Seed an FK prerequisite call_session, then exercise the CHECK + default.
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users(email, tier, created_at) VALUES (?, 'free', ?)",
+            ("buyer17@example.invalid", "2026-06-29T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO scenarios(id, title, is_free, rive_character, base_prompt, "
+            "checkpoints, briefing, exit_lines, language_focus) "
+            "VALUES ('s17', 't', 1, 'waiter', 'p', '[]', '{}', '{}', '[]')"
+        )
+        conn.execute(
+            "INSERT INTO call_sessions(user_id, scenario_id, started_at) "
+            "VALUES (1, 's17', 'now')"
+        )
+        call_id = conn.execute(
+            "SELECT id FROM call_sessions WHERE scenario_id = 's17'"
+        ).fetchone()[0]
+
+        # A debrief inserted WITHOUT a status takes the 'ready' DEFAULT (the
+        # backfill semantics for legacy rows).
+        conn.execute(
+            "INSERT INTO debriefs(call_session_id, survival_pct, debrief_json, "
+            "prompt_version, created_at) VALUES (?, 50, '{}', '2.2', 'now')",
+            (call_id,),
+        )
+        status = conn.execute(
+            "SELECT status FROM debriefs WHERE call_session_id = ?", (call_id,)
+        ).fetchone()[0]
+        assert status == "ready", f"DEFAULT should backfill 'ready', got {status!r}"
+
+        # The CHECK rejects an out-of-domain status.
+        conn.execute(
+            "INSERT INTO call_sessions(user_id, scenario_id, started_at) "
+            "VALUES (1, 's17', 'now')"
+        )
+        call_id2 = conn.execute(
+            "SELECT id FROM call_sessions WHERE scenario_id = 's17' ORDER BY id DESC"
+        ).fetchone()[0]
+        try:
+            conn.execute(
+                "INSERT INTO debriefs(call_session_id, survival_pct, debrief_json, "
+                "prompt_version, created_at, status) "
+                "VALUES (?, 50, '{}', '2.2', 'now', 'bogus')",
+                (call_id2,),
+            )
+            raise AssertionError("status CHECK did not reject 'bogus'")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()

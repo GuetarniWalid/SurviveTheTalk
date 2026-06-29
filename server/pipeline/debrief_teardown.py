@@ -29,6 +29,7 @@ from db.database import get_connection
 from db.queries import (
     get_call_session,
     insert_debrief,
+    update_debrief_analysis,
     upsert_user_progress,
 )
 from models.schemas import DebriefOut
@@ -109,22 +110,35 @@ async def persist_debrief(
 
     On a first run: writes the server-authoritative checkpoint counts + upserts
     the user's progression (attempts / best_score are progress, independent of
-    the debrief text), then stores a `debriefs` row. When the LLM core failed to
-    generate (even after the non-strict retry) it stores a DEGRADED score-only
-    row (empty analysis + a `degraded` marker) so the client gets the survival %
-    immediately instead of polling a never-arriving report — call_id=324
-    2026-06-24. The row is skipped ONLY when the assembled blob fails the
-    `DebriefOut` contract (reachable on the non-strict-provider fallback parse
-    path) — skipped + logged so `GET` serves `DEBRIEF_NOT_READY` instead of a
-    permanent 500. Never persists the full transcript.
+    the debrief text). Then, Story 10.7 (Bug B — PROGRESSIVE debrief), it persists
+    the debrief in TWO writes:
+
+      1. BEFORE awaiting the LLM, a SCORE-ONLY row marked `status='pending'`
+         (survival %, checkpoints, attempt #, framing — all backend-owned, reusing
+         the `degraded_core` shape but NOT flagged `degraded`: this is "analysis
+         still coming", not "analysis failed"). `GET /debriefs/{id}` returns it
+         200 immediately, so the client renders the scorecard with ~no wait.
+      2. The analysis is generated INLINE (the bot CANNOT background past
+         `asyncio.run` — the loop closes + cancels pending tasks the moment
+         teardown returns), then the SAME row is UPDATEd to `status='ready'`. On
+         success the full analysis lands; on a terminal LLM failure within the
+         budget the row is marked `ready` + the in-blob `degraded` flag (the
+         never-blank fallback — the user still keeps the score, call_id=324
+         2026-06-24 / call_id=340 2026-06-29 ReadTimeout).
+
+    This REMOVES the old fragile "race a single deadline → degraded forever"
+    failure: the score is unconditional and instant, and the analysis fills in on
+    a generous inline budget. The second write is guarded `WHERE status='pending'`
+    so a duplicate / late writer can't clobber a `ready` blob. Never persists the
+    full transcript.
     """
     survival_pct = compute_survival_pct(checkpoints_passed, total_checkpoints)
 
-    # Cheap existence + idempotency pre-check BEFORE the ~8 s paid LLM call:
+    # Cheap existence + idempotency pre-check BEFORE the claim + paid LLM call:
     # bail if the call row was rolled back (Popen-rollback), or if teardown
     # already ran (`checkpoints_passed` is the marker the atomic claim below
     # writes). This is only a COST optimisation — the authoritative guard is the
-    # conditional CLAIM inside the write transaction, which stays correct under a
+    # conditional CLAIM in the next transaction, which stays correct under a
     # concurrent / post-crash retry that this earlier, separate-connection read
     # could miss.
     async with get_connection() as db:
@@ -140,30 +154,18 @@ async def persist_debrief(
         return
     user_id = call_row["user_id"]
 
-    core = await generate_debrief(
-        transcript=transcript,
-        reason=reason,
-        character_name=character_name,
-        scenario_title=scenario_title,
-        brief_personality_description=brief_personality_description,
-        hesitations=hesitations,
-        api_key=resolve_llm_api_key(settings),
-        model=settings.debrief_model,
-        base_url=resolve_llm_chat_url(settings),
-    )
-
     now = _now_iso()
+    # ONE atomic transaction = the authoritative idempotency guard + the
+    # progression bump. The conditional CLAIM flips `checkpoints_passed` from NULL
+    # only on the FIRST teardown; a concurrent run or a post-crash retry (Story
+    # 6.26 bot pooling) gets rowcount 0 and bails — so `user_progress.attempts` is
+    # bumped EXACTLY once even though the cheap pre-check above and this claim can
+    # each be reached twice. The marker write and the attempt bump share this
+    # transaction, so a crash before commit rolls back BOTH (no half-applied
+    # attempt, no orphaned marker). The claim writes the server-authoritative
+    # checkpoint counts (AC1/AC9). Story 10.7: the claim now runs BEFORE the LLM,
+    # so a duplicate teardown is rejected here and never pays for generation.
     async with get_connection() as db:
-        # ONE atomic transaction = the authoritative idempotency guard + the
-        # progression bump. The conditional CLAIM flips `checkpoints_passed` from
-        # NULL only on the FIRST teardown; a concurrent run or a post-crash retry
-        # (future Story 6.26 bot pooling) gets rowcount 0 and bails — so
-        # `user_progress.attempts` is bumped EXACTLY once even though the cheap
-        # pre-check above and this claim can each be reached twice. The marker
-        # write and the attempt bump share this transaction, so a crash before
-        # commit rolls back BOTH (no half-applied attempt, no orphaned marker).
-        # The claim UPDATE also writes the server-authoritative checkpoint counts
-        # (AC1/AC9) — they land regardless of LLM success.
         await db.execute("BEGIN IMMEDIATE")
         try:
             claim = await db.execute(
@@ -188,22 +190,13 @@ async def persist_debrief(
             await db.rollback()
             raise
 
-        # Never-blank fallback (call_id=324, 2026-06-24): generation yielded no
-        # core even after the non-strict retry. Rather than leave NO debrief row
-        # (a permanent `DEBRIEF_NOT_READY` the client polls ~40 s before giving up
-        # on a report that will never arrive), persist a DEGRADED score-only
-        # debrief: the survival %, attempt, checkpoint breakdown — everything the
-        # backend already owns — with empty LLM analysis and a `degraded` marker
-        # so the client shows 'detailed analysis unavailable', not a flawless call.
-        degraded = core is None
-        if degraded:
-            logger.warning(
-                "debrief: generation returned None for call_id={} — storing a "
-                "degraded (score-only) debrief (counts + progress persisted)",
-                call_id,
-            )
-            core = degraded_core(reason)
-
+    def _assemble_json(core: dict, *, degraded: bool) -> str | None:
+        """Assemble + WRITE-time validate a debrief blob → JSON string (or None
+        on a contract failure). On the non-strict fallback parse path a
+        structurally-wrong item could slip through `_normalize_core` (which only
+        checks list-ness); storing it would make every future GET a 500. Validate
+        against the same `DebriefOut` contract the route enforces and refuse a
+        poison blob."""
         debrief = assemble_debrief(
             core=core,
             survival_pct=survival_pct,
@@ -215,36 +208,99 @@ async def persist_debrief(
             checkpoints=checkpoints,
             degraded=degraded,
         )
-        # Validate at WRITE time against the same contract the GET route enforces.
-        # On the non-strict fallback parse path a structurally-wrong item could
-        # slip through `_normalize_core` (which only checks list-ness); storing it
-        # would make every future GET a permanent 500 (the insert is idempotent,
-        # so the poison blob is never overwritten). Skip → GET serves NOT_READY.
         try:
             DebriefOut.model_validate(debrief)
         except ValidationError as exc:
             logger.error(
                 "debrief: assembled blob failed the DebriefOut contract for "
-                "call_id={} ({}) — not storing (GET will serve DEBRIEF_NOT_READY)",
+                "call_id={} (degraded={}) ({})",
                 call_id,
+                degraded,
                 exc,
             )
-            return
+            return None
+        return json.dumps(debrief, ensure_ascii=False)
 
-        inserted = await insert_debrief(
+    # --- PHASE 1: persist the score-only PENDING row BEFORE the LLM ---------
+    # `degraded_core` is the all-empty analysis core; assembled WITHOUT the
+    # `degraded` flag it is the "score-only, analysis coming" blob. This makes
+    # `GET /debriefs/{id}` return the full scorecard + checkpoints with ~no wait.
+    pending_json = _assemble_json(degraded_core(reason), degraded=False)
+    if pending_json is None:
+        # Should be unreachable (degraded_core always validates), but never write
+        # an invalid pending row — leave GET serving DEBRIEF_NOT_READY.
+        return
+    async with get_connection() as db:
+        inserted_pending = await insert_debrief(
             db,
             call_session_id=call_id,
             survival_pct=survival_pct,
             checkpoints_passed=checkpoints_passed,
             total_checkpoints=total_checkpoints,
-            debrief_json=json.dumps(debrief, ensure_ascii=False),
+            debrief_json=pending_json,
             prompt_version=DEBRIEF_PROMPT_VERSION,
             created_at=now,
+            status="pending",
         )
-        logger.info(
-            "debrief stored call_id={} survival_pct={} attempt={} inserted={}",
+    logger.info(
+        "debrief score-only stored call_id={} survival_pct={} attempt={} "
+        "status=pending inserted={}",
+        call_id,
+        survival_pct,
+        attempt_number,
+        inserted_pending,
+    )
+
+    # --- PHASE 2: generate the analysis INLINE, then UPDATE the SAME row -----
+    # Inline (not fire-and-forget): the bot subprocess runs `asyncio.run` and
+    # exits the moment teardown returns, so a background task that outlives this
+    # would be cancelled. The bot runs teardown to completion with no deadline-
+    # kill, so a generous inline budget (debrief_generator p99 + one retry) is
+    # safe; pooled bots are single-use so this never starves a worker.
+    core = await generate_debrief(
+        transcript=transcript,
+        reason=reason,
+        character_name=character_name,
+        scenario_title=scenario_title,
+        brief_personality_description=brief_personality_description,
+        hesitations=hesitations,
+        api_key=resolve_llm_api_key(settings),
+        model=settings.debrief_model,
+        base_url=resolve_llm_chat_url(settings),
+    )
+
+    analysis_json = None if core is None else _assemble_json(core, degraded=False)
+    degraded = analysis_json is None
+    if degraded:
+        # Never-blank fallback (call_id=324 / call_id=340): generation yielded no
+        # usable core (timeout, terminal HTTP error, or a blob that failed the
+        # contract). Mark the row `ready` + the in-blob `degraded` flag so the
+        # client stops polling and shows 'detailed analysis unavailable' — the
+        # user keeps the survival %, checkpoints, and progression already stored.
+        logger.warning(
+            "debrief: no usable analysis core for call_id={} — finalising the "
+            "score-only row as ready+degraded (score + progress already persisted)",
             call_id,
-            survival_pct,
-            attempt_number,
-            inserted,
         )
+        analysis_json = _assemble_json(degraded_core(reason), degraded=True)
+        if analysis_json is None:
+            # Unreachable (degraded_core always validates); the pending row stays
+            # and the client keeps the score-only scorecard.
+            return
+
+    async with get_connection() as db:
+        updated = await update_debrief_analysis(
+            db,
+            call_session_id=call_id,
+            debrief_json=analysis_json,
+            status="ready",
+        )
+    logger.info(
+        "debrief stored call_id={} survival_pct={} attempt={} status=ready "
+        "degraded={} updated={}",
+        call_id,
+        survival_pct,
+        attempt_number,
+        degraded,
+        updated,
+    )

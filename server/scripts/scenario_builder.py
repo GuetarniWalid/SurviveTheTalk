@@ -71,6 +71,7 @@ from scripts.calibration_engine import (  # noqa: E402,F401
 # would reject. Used by `validate_structure`.
 from pipeline.scenarios import (  # noqa: E402
     find_model_specific_tokens,
+    find_permissive_criteria_phrases,
     find_scripting_violations,
     find_persona_difficulty_leaks,
 )
@@ -794,6 +795,20 @@ def validate_structure(scenario: dict) -> list[str]:
                     f"checkpoint[{i}].{fld} contains placeholder/recite "
                     f"artifact(s) {fld_scripts} — describe BEHAVIOR, never a "
                     "fill-in template or a line to recite"
+                )
+        # R8 (Story 10.7) — the judge-facing `success_criteria` must not grant a
+        # blanket-permissive pass ("any … counts", "even a simple … counts",
+        # "either way — pass it"); the literal judge then credits empty/evasive
+        # content (call_id=340). State the GENUINE move + exclude the non-committal
+        # reply (the landlord model).
+        crit = cp.get("success_criteria")
+        if isinstance(crit, str):
+            permissive = find_permissive_criteria_phrases(crit)
+            if permissive:
+                problems.append(
+                    f"checkpoint[{i}].success_criteria contains blanket-permissive "
+                    f"license {permissive} — state the GENUINE move and exclude the "
+                    "non-committal/off-topic reply, never grant a catch-all pass (R8)"
                 )
         if isinstance(cp.get("id"), str):
             ids.append(cp["id"])

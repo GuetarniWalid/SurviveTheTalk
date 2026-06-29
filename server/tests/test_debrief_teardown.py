@@ -326,7 +326,12 @@ async def _fake_malformed_core(**_kwargs):
     }
 
 
-def test_persist_skips_storage_when_assembled_blob_fails_contract(seeded, monkeypatch):
+def test_persist_marks_degraded_when_analysis_blob_fails_contract(seeded, monkeypatch):
+    """Story 10.7 (Bug B) — a malformed analysis core that fails the DebriefOut
+    contract no longer drops the whole debrief. The score-only `pending` row was
+    already written, so the never-blank fallback finalises it as `ready` +
+    `degraded` (the poison analysis is discarded, the score is kept). Progression
+    still landed."""
     user_id, call_id = seeded
     monkeypatch.setattr(
         "pipeline.debrief_teardown.generate_debrief", _fake_malformed_core
@@ -345,10 +350,53 @@ def test_persist_skips_storage_when_assembled_blob_fails_contract(seeded, monkey
         return debrief, progress
 
     debrief, progress = asyncio.run(_go())
-    # No poison blob stored (GET will serve DEBRIEF_NOT_READY, not a 500)...
-    assert debrief is None
-    # ...but progression still landed (the attempt happened).
+    # A ready+degraded score-only row IS stored (never-blank), NOT the poison blob.
+    assert debrief is not None
+    assert debrief["status"] == "ready"
+    stored = json.loads(debrief["debrief_json"])
+    assert stored["degraded"] is True
+    assert stored["errors"] == []  # the malformed analysis was discarded
+    assert stored["survival_pct"] == 66  # but the score is kept
+    # ...and progression still landed (the attempt happened).
     assert progress["attempts"] == 1
+
+
+def test_persist_writes_pending_score_before_generation_then_ready(seeded, monkeypatch):
+    """Story 10.7 (Bug B) AC1/AC2 — the score lands as a `pending` row BEFORE the
+    LLM runs, then the SAME row is UPDATEd to `ready` with the full analysis. We
+    prove the ordering by inspecting the DB from INSIDE the mocked generator: at
+    that moment a score-only `pending` row already exists (scorecard renderable),
+    with empty analysis; after teardown returns the row is `ready` + full."""
+    _user_id, call_id = seeded
+    observed: dict = {}
+
+    async def _inspecting_core(**_ignored):
+        # Mid-generation: the pending score-only row must already be queryable.
+        async with get_connection() as db:
+            row = await get_debrief_by_call_id(db, call_id)
+        observed["status"] = row["status"] if row else None
+        observed["blob"] = json.loads(row["debrief_json"]) if row else None
+        return dict(_CORE)
+
+    monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _inspecting_core)
+
+    async def _go():
+        await persist_debrief(**_kwargs(call_id))
+        async with get_connection() as db:
+            return await get_debrief_by_call_id(db, call_id)
+
+    final = asyncio.run(_go())
+
+    # Phase 1 snapshot (seen from inside the generator): score-only, pending.
+    assert observed["status"] == "pending"
+    assert observed["blob"]["survival_pct"] == 66
+    assert observed["blob"]["errors"] == []  # analysis not generated yet
+    assert "degraded" not in observed["blob"]  # pending != failed
+    # Phase 2 final state: ready + full analysis filled in.
+    assert final["status"] == "ready"
+    final_blob = json.loads(final["debrief_json"])
+    assert final_blob["errors"][0]["user_said"] == "I am agree"
+    assert "degraded" not in final_blob
 
 
 def test_persist_stores_device_sourced_hesitation_from_merge(seeded, monkeypatch):

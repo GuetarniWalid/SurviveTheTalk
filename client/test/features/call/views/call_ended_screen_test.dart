@@ -750,5 +750,35 @@ void main() {
         expect(tester.takeException(), isNull); // write failure swallowed
       },
     );
+
+    testWidgets(
+      'Story 10.7 — a PENDING payload is handed off but NOT cached as final',
+      (tester) async {
+        final store = MockDebriefCacheStore();
+        // The overlay's first 200 is the score-only pending row (Bug B).
+        final pending = <String, dynamic>{'survival_pct': 66, 'pending': true};
+        when(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        ).thenAnswer((_) async => pending);
+        final forwarded = <Map<String, dynamic>?>[];
+
+        await pumpScreen(
+          tester,
+          buildScreen(
+            debriefCacheStore: store,
+            debriefRouteBuilder: sentinelRoute(forwarded),
+          ),
+        );
+        await tester.pump(); // resolve fetch → _cacheDebrief skips a pending blob
+        await tester.pump(const Duration(milliseconds: 150)); // minHold → exit
+
+        // The pending payload is still HANDED OFF to the debrief screen (which
+        // keeps polling for the analysis)...
+        expect(forwarded, hasLength(1));
+        expect(forwarded.single, pending);
+        // ...but it is NEVER written to the offline cache as the final report.
+        verifyZeroInteractions(store);
+      },
+    );
   });
 }

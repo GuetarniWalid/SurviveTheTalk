@@ -32,9 +32,11 @@ Two prod patterns reused verbatim (do not reinvent):
     (`degraded_core`) so the client still gets the survival % instead of a
     never-arriving report. Only `CancelledError` propagates.
 
-The debrief is masked by Story 7.2's Call Ended overlay, so the outer budget
-(14 s — one strict call ~2-3 s on the happy path, plus the rare non-strict
-retry) is non-blocking to the user's `/end` path.
+Story 10.7 (Bug B) — the debrief is PROGRESSIVE: the teardown persists the
+score-only row first and then awaits this generator INLINE on a generous budget
+(`_GENERATION_TIMEOUT_SECONDS`) to fill in the analysis. The user already sees
+the scorecard while this runs, so the budget bounds only how long the bot blocks
+before finalising the row, not the user's `/end` path.
 """
 
 from __future__ import annotations
@@ -49,15 +51,23 @@ from loguru import logger
 
 from pipeline.prompts import DEBRIEF_SYSTEM_PROMPT
 
-# AC10 — <5 s target / 10 s ceiling on the HAPPY path (one strict call, ~2-3 s).
-# The outer wall-clock budget sits ABOVE a single attempt because a strict
-# schema-validation 400 triggers ONE non-strict retry (`_generate` below) — a
-# second round-trip. The whole call is masked by the Call Ended overlay, so the
-# extra latency on the rare retry path is non-blocking. The inner httpx timeout
-# sits below a single attempt's share so httpx aborts a hung attempt first with a
-# clean HTTP error instead of an opaque `asyncio.TimeoutError`.
-_GENERATION_TIMEOUT_SECONDS = 14.0
-_HTTP_TIMEOUT_SECONDS = 7.5
+# Story 10.7 (Bug B) — this is the INLINE generation cap, NOT a client-facing
+# deadline. The debrief is now PROGRESSIVE: the score-only row is persisted
+# `pending` at teardown BEFORE this call, so the client already has the scorecard
+# and is polling for the analysis — the budget below only bounds how long the bot
+# blocks before finalising the row (full on success, ready+degraded on a terminal
+# failure). The bot runs teardown to completion with no deadline-kill and pooled
+# bots are single-use, so a generous budget is safe (it never starves a worker).
+# Sized to the measured gpt-4.1-mini debrief p99 + the rare non-strict retry —
+# the call_id=340 ReadTimeout was the old 7.5 s/14 s racing a maxed ~2.5-3k-token
+# recap. CONFIRM on the VPS with `scripts/probe_debrief_schema.py` (it times one
+# live call + asserts `finish_reason != "length"`); raise these if p99 grows.
+# The inner httpx (per-attempt) timeout sits below the outer wall-clock budget so
+# httpx aborts a hung attempt first with a clean HTTP error instead of an opaque
+# `asyncio.TimeoutError`; the outer budget covers a strict attempt PLUS one
+# non-strict retry (the second round-trip on a schema-validation 400).
+_HTTP_TIMEOUT_SECONDS = 25.0
+_GENERATION_TIMEOUT_SECONDS = 55.0
 
 # The v2 debrief JSON is large: up to 5 errors (each with `explanation` + up to
 # 2 `examples`), up to 3 areas (each a ~900-char `practice_prompt`), <=2
@@ -686,7 +696,8 @@ async def generate_debrief(
         hesitations: backend-measured gaps `[{duration_sec, preceding_character_line}]`.
         api_key / model / base_url: resolved via `pipeline.llm_provider`;
             `base_url` is the FULL chat-completions endpoint (raw httpx POST).
-        timeout: outer wall-clock budget (default 8 s, AC10).
+        timeout: outer wall-clock budget (default `_GENERATION_TIMEOUT_SECONDS`,
+            the inline cap — covers a strict attempt + one non-strict retry).
     """
     if not isinstance(transcript, list) or not transcript:
         logger.info("debrief_generation skipped (empty transcript) reason={}", reason)

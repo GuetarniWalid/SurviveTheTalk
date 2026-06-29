@@ -548,10 +548,28 @@ reject bad ones → calibration golden net validates behavior):
   the character to address the learner *by name* with no literal placeholder) is not
   lexically detectable — it stays builder `CHECKPOINTS_PROMPT` guidance + the smoke gate.
   Sibling of R3 (don't require/use what the scenario can't provide).
+- **R8 — `success_criteria` state the GENUINE move, never grant a blanket pass (Story
+  10.7, Bug A).** A criterion describes what ACTUALLY satisfies a beat AND excludes the
+  non-committal / off-topic / evasive reply (the landlord "X counts; doing nothing does
+  NOT count" model). It must NOT end on a catch-all license — "any … counts", "any
+  acknowledgement counts", "even a simple okay counts", "any coherent response counts",
+  "either way — pass it" — because the LITERAL judge (gpt-4.1-mini) obeys it and credits
+  empty/evasive/wrong content, so the scenario "plays itself" (call_id=340: "No other
+  choice." credited `confirm`; "Is it a question?" credited `close`). Easy forgives the
+  learner's LANGUAGE, never absent/wrong CONTENT (§8). **Enforced HARD (2026-06-29):**
+  `scenarios.find_permissive_criteria_phrases` (substring `any acknowledgement` / `even a
+  simple` / `any coherent` / `any firm closing` + a within-sentence `any … counts` regex
+  + `either way … pass it`; `\bcounts\b` is PLURAL only, so a "does NOT count" exclusion is
+  never flagged) is rejected by `scenario_builder.validate_structure`, WARNED by the loader
+  (`load_scenario_checkpoints`), and fails the commit via
+  `tests/test_scenarios.py::test_shipped_scenarios_have_no_permissive_criteria`. The judge
+  prompt `EXCHANGE_CLASSIFIER_MULTI_PROMPT` principle 7 ALSO caps this at the model: a
+  permissive-sounding criterion never licenses crediting empty content. Write the rewritten
+  criteria FIRST, then trust the lint to keep them honest.
 
-**Status (2026-06-26):** R1 + R2 + R7(literal placeholder) are code-enforced via fail-fast
-lints over the FULL `_SCENARIO_INDEX` (`find_model_specific_tokens` + `find_scripting_violations`,
-each in builder + loader + commit test); R4 + R6 are ENGINE-enforced (a scenario CANNOT
+**Status (2026-06-29):** R1 + R2 + R7(literal placeholder) + R8 are code-enforced via fail-fast
+lints over the FULL `_SCENARIO_INDEX` (`find_model_specific_tokens` + `find_scripting_violations`
++ `find_permissive_criteria_phrases`, each in builder + loader + commit test); R4 + R6 are ENGINE-enforced (a scenario CANNOT
 produce dead air or acknowledge-and-stop no matter how it is written — `reply_sanitizer`
 never-silent floor + `checkpoint_manager` always-drive branch); R5 is embedded in the
 classifier prompt; R3 + R7(semantic) remain builder `CHECKPOINTS_PROMPT` guidance (not

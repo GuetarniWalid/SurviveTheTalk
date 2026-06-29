@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+import time
 
 _HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))  # `server/` on path for config/pipeline imports
@@ -81,10 +82,15 @@ async def _main() -> int:
         "Content-Type": "application/json",
     }
     print(f"POST {url}  model={settings.debrief_model}")
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    # Story 10.7 (Bug B) — time the live call so the smoke gate can confirm the
+    # INLINE generation budget (`debrief_generator._GENERATION_TIMEOUT_SECONDS`)
+    # covers the measured p99. The client timeout here is generous on purpose.
+    started = time.perf_counter()
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
+    elapsed = time.perf_counter() - started
 
-    print(f"HTTP {resp.status_code}")
+    print(f"HTTP {resp.status_code}  ({elapsed:.2f}s)")
     if resp.status_code in (413, 429):
         # Story 10.6 R1 — a TPM rate-limit / admission rejection is NOT a schema
         # problem; the request never reached the validator. Distinguish it so a
@@ -109,17 +115,30 @@ async def _main() -> int:
         )
         return 1
 
-    content = resp.json()["choices"][0]["message"]["content"]
+    choice = resp.json()["choices"][0]
+    finish_reason = choice.get("finish_reason")
+    content = choice["message"]["content"]
     core = _parse_debrief_output(content)
+    print(f"finish_reason={finish_reason!r}")
     print("\nRaw content (first 2000 chars):\n" + str(content)[:2000])
+    if finish_reason == "length":
+        # Story 10.7 (Bug B) — a truncated completion would fail to parse anyway;
+        # surface it distinctly so an under-sized `_MAX_TOKENS` is diagnosable.
+        print(
+            "\n[X] finish_reason='length' — the completion was TOKEN-CAPPED and "
+            "truncated mid-document. Raise `_MAX_TOKENS` in debrief_generator.py."
+        )
+        return 4
     if core is None:
         print("\n[X] Accepted (HTTP 200) but the body did not parse into the core.")
         return 2
     print("\nParsed core keys:", sorted(core.keys()))
     print("areas:", core.get("areas"))
     print(
-        f"\n[OK] Groq ({settings.debrief_model}) ACCEPTED the debrief json_schema "
-        "and returned parseable JSON."
+        f"\n[OK] {settings.debrief_model} ACCEPTED the debrief json_schema and "
+        f"returned parseable JSON in {elapsed:.2f}s (finish_reason={finish_reason!r}). "
+        "Confirm this latency (+ headroom for the rare non-strict retry) fits "
+        "`_GENERATION_TIMEOUT_SECONDS`."
     )
     return 0
 

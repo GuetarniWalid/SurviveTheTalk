@@ -78,6 +78,15 @@ async def get_debrief(call_id: int, request: Request) -> dict:
             },
         ) from exc
 
+    # Story 10.7 (Bug B — progressive debrief) — surface the two-phase lifecycle
+    # so the client can tell "score-only, analysis still coming" (keep polling)
+    # from a terminal row (full OR degraded). The flag is the `status` COLUMN, not
+    # part of the stored blob (single source of truth). A `pending` row carries
+    # the real survival % + checkpoints (renders the scorecard now) but empty
+    # analysis arrays; a `ready` row is terminal. A missing row still 404s
+    # DEBRIEF_NOT_READY above.
+    data["pending"] = debrief_row["status"] == "pending"
+
     # Serve the STORED dict (not a model re-dump): assemble_debrief already
     # encodes the null-omission convention — `encouraging_framing` is ABSENT
     # (not null) below 41%, and the client keys on field presence (FR15b).

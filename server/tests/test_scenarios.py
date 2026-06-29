@@ -1921,6 +1921,88 @@ def test_shipped_scenarios_have_no_scripting_violations() -> None:
     )
 
 
+# ---------- Story 10.7 (Bug A) — R8 permissive-criteria lint ----------
+
+
+def test_find_permissive_criteria_phrases_flags_blanket_license() -> None:
+    """The R8 source-of-truth helper flags every blanket-permissive catch-all
+    that lets the literal judge credit empty/evasive content (call_id=340)."""
+    from pipeline.scenarios import find_permissive_criteria_phrases
+
+    assert find_permissive_criteria_phrases(
+        "User confirms. Any acknowledgement of the order summary counts."
+    )
+    assert find_permissive_criteria_phrases('Even a simple "okay" or "thanks" counts.')
+    assert find_permissive_criteria_phrases("Any coherent response counts.")
+    assert find_permissive_criteria_phrases("Any firm closing statement counts.")
+    assert find_permissive_criteria_phrases("Any specific, actionable answer counts.")
+    assert find_permissive_criteria_phrases(
+        "The user is engaging either way — pass it."
+    )
+    # A long "Any … counts" sentence is still caught (within-sentence regex).
+    assert find_permissive_criteria_phrases(
+        "Any response that demonstrates they take the commitment seriously counts."
+    )
+
+
+def test_find_permissive_criteria_phrases_ignores_legitimate_exclusions() -> None:
+    """ZERO false-positives on the rewritten landlord-model criteria: a real
+    exclusion uses "does NOT count" (singular), and an enumerated positive
+    ("X counts") without a leading "any" is fine."""
+    from pipeline.scenarios import find_permissive_criteria_phrases
+
+    assert (
+        find_permissive_criteria_phrases(
+            "User confirms the order is correct or corrects it. A non-committal or "
+            'off-topic reply ("no other choice", a question back) does NOT count.'
+        )
+        == []
+    )
+    assert (
+        find_permissive_criteria_phrases(
+            "An explanation paired with a real payment commitment is what passes. "
+            'A bare "I\'m sorry" with no date does NOT count.'
+        )
+        == []
+    )
+    # "counts" (plural) BEFORE "any" in a sentence is not the catch-all pattern
+    # (directional regex) — a legitimate "X counts broadly: … or any heartfelt …".
+    assert (
+        find_permissive_criteria_phrases(
+            "Emotional reassurance counts broadly: apologising, affirming, or any "
+            "heartfelt statement that addresses her doubt."
+        )
+        == []
+    )
+
+
+def test_shipped_scenarios_have_no_permissive_criteria() -> None:
+    """R8 (Story 10.7, server/CLAUDE.md §9) — every shipped scenario's
+    `success_criteria` states the GENUINE move and excludes the non-committal
+    reply; NONE grant a blanket-permissive pass ("any … counts" / "even a simple
+    … counts" / "either way — pass it"), the call_id=340 self-playing-scenario
+    bug. Iterates the FULL index, so a NEW scenario file is auto-covered."""
+    import yaml
+
+    from pipeline.scenarios import _SCENARIO_INDEX, find_permissive_criteria_phrases
+
+    offenders: dict[str, list[str]] = {}
+    for scenario_id, path in _SCENARIO_INDEX.items():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        hits: list[str] = []
+        for cp in data.get("checkpoints") or []:
+            if isinstance(cp, dict):
+                hits += find_permissive_criteria_phrases(cp.get("success_criteria"))
+        if hits:
+            offenders[scenario_id] = sorted(set(hits))
+    assert not offenders, (
+        f"blanket-permissive success_criteria in scenario(s): {offenders}. A "
+        "criterion must state the GENUINE move AND exclude the non-committal / "
+        "off-topic reply (the landlord 'X; doing nothing does NOT count' model) — "
+        "never grant a catch-all pass that the literal judge will obey (R8)."
+    )
+
+
 # Identity tokens that MUST survive any persona rewrite (a careless 'strip coded
 # phrases' pass that also gutted the name would silently break test_calls.py /
 # the env-threading tests downstream). Cheap tripwire.
@@ -2249,3 +2331,44 @@ def test_girlfriend_react_criteria_rejects_offtopic_smalltalk() -> None:
         "the catch-all 'any coherent response counts' clause must be gone"
     )
     assert "small talk" in crit, "react must explicitly exclude off-topic small talk"
+
+
+# ---------- Story 10.7 (Bug A) — the call_id=340 money beats ----------
+
+
+def test_waiter_confirm_criteria_rejects_non_confirmation() -> None:
+    """Story 10.7 (Bug A) — `confirm` used to end with "Any acknowledgement of the
+    order summary counts", so the literal judge credited a non-confirmation like
+    "No other choice." (call_id=340). The criterion must now require an actual
+    confirm-or-correct AND exclude the non-committal reply."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    cp = next(
+        c for c in load_scenario_checkpoints("waiter_easy_01") if c["id"] == "confirm"
+    )
+    crit = cp["success_criteria"].lower()
+    assert "any acknowledgement" not in crit, (
+        "the 'any acknowledgement … counts' catch-all must be gone"
+    )
+    assert "does not count" in crit, "confirm must exclude the non-committal reply"
+    assert "no other choice" in crit, (
+        "confirm should name the call_id=340 non-confirmation it must reject"
+    )
+
+
+def test_waiter_close_criteria_rejects_question_back() -> None:
+    """Story 10.7 (Bug A) — `close` used to end with "Even a simple 'okay' or
+    'thanks' counts", so a question-back like "Is it a question?" credited it
+    (call_id=340). The criterion must require a genuine closing courtesy AND
+    exclude a contentless/question-back reply."""
+    from pipeline.scenarios import load_scenario_checkpoints
+
+    cp = next(
+        c for c in load_scenario_checkpoints("waiter_easy_01") if c["id"] == "close"
+    )
+    crit = cp["success_criteria"].lower()
+    assert "even a simple" not in crit, (
+        "the 'even a simple … counts' catch-all must be gone"
+    )
+    assert "does not count" in crit, "close must exclude the contentless reply"
+    assert "question back" in crit, "close must exclude a question-back reply"

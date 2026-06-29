@@ -346,6 +346,13 @@ class DebriefOut(BaseModel):
     # analysis) so the client shows 'detailed analysis unavailable' rather than
     # implying a flawless call. Absent (the normal case) reads False.
     degraded: bool = False
+    # Story 10.7 (Bug B — progressive debrief) — `pending` is the two-phase
+    # lifecycle signal, injected by the route from the `debriefs.status` COLUMN
+    # (never stored in the blob). True = score-only row, the analysis is still
+    # generating (the client renders the scorecard + checkpoints and KEEPS
+    # polling); False = terminal (full analysis OR the `degraded` fallback —
+    # stop polling). Stored blobs never carry it → defaults False for back-compat.
+    pending: bool = False
 
 
 # --- Story 8.1: subscription verification ----------------------------------

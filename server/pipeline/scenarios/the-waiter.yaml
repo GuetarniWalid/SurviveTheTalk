@@ -144,19 +144,17 @@ checkpoints:
     # category of valid clarify response (alongside dish-confirmations
     # and cooking-preference variations).
     success_criteria: >
-      User answers the clarifying question about their dish in any
-      coherent way. Three categories all count as a successful
-      response: (1) specifying a variation about the main course
-      (grilled / fried, rare / medium / well done, cooking preference,
-      side preference); (2) re-stating or re-confirming the dish
-      they already named, including phrases like "I already said
-      pasta", "the chicken, like I said"; (3) naming a drink when
-      Tina's prior question shifted into drinks (water, juice, cola,
-      coffee, plus common synonyms / brand names Coke, Pepsi, Sprite,
-      sparkling water, tap water, espresso); or polite
-      acknowledgements ("okay", "thanks", "sounds good"). The
-      classifier judges semantically; this prose tells it the wide
-      net is intentional.
+      User responds to Tina's clarifying question with real content,
+      in one of three ways: (1) specifying a variation about the main
+      course (grilled / fried, rare / medium / well done, a cooking or
+      side preference); (2) re-stating or re-confirming the dish they
+      already named ("I already said pasta", "the chicken, like I
+      said"); or (3) naming a drink when Tina's question shifted into
+      drinks (water, juice, cola, coffee, plus synonyms / brand names
+      like Coke, Pepsi, Sprite, sparkling water, tap water, espresso).
+      A contentless filler ("okay", "sure"), a question back, or an
+      off-topic remark that does not actually answer her question does
+      NOT count.
 
   - id: drink
     hint_text: "Order a drink."
@@ -173,13 +171,14 @@ checkpoints:
     # names, AND any explicit refusal (which is also a valid response
     # to the drink question).
     success_criteria: >
-      User names ANY beverage in response to the drinks question.
-      Accept the menu items (water, juice, cola, coffee) AND common
-      synonyms / brand names (Coke, Pepsi, Sprite, juice variants,
-      sparkling water, tap water, espresso). Also accept explicit
-      refusals ("just water", "nothing", "I'm fine", "no drink") as
-      a valid response. The user is engaging with the drink question
-      either way — pass it.
+      User names a beverage in response to the drinks question, OR
+      explicitly declines one. Accept the menu items (water, juice,
+      cola, coffee) AND common synonyms / brand names (Coke, Pepsi,
+      Sprite, juice variants, sparkling water, tap water, espresso);
+      accept an explicit refusal ("just water", "nothing", "I'm fine",
+      "no drink") — declining IS a valid answer to the drink question.
+      A non-answer, a question back, or an off-topic remark that names
+      no drink and does not decline does NOT count.
 
   - id: confirm
     hint_text: "Confirm your order is correct."
@@ -189,9 +188,12 @@ checkpoints:
       ask them to confirm it is right. Do NOT script it word for word.
       Wait for their confirmation or correction.
     success_criteria: >
-      User confirms the order ("yes", "that's right", "correct") or
-      makes a correction to the order. Any acknowledgement of the
-      order summary counts.
+      User confirms the order is correct ("yes", "that's right",
+      "correct", "yep") OR corrects it (names what is wrong). The reply
+      must actually respond to the order summary Tina read back. A
+      non-committal or off-topic reply ("no other choice", a question
+      back, silence, changing the subject) that neither confirms nor
+      corrects the order does NOT count.
 
   - id: close
     hint_text: "Say thank you or wrap up."
@@ -201,8 +203,11 @@ checkpoints:
       then." If they say thank you or anything polite, react with
       mild surprise — you're not used to courtesy.
     success_criteria: >
-      User says thank you, acknowledges the wait time, or makes any
-      polite closing remark. Even a simple "okay" or "thanks" counts.
+      User makes a genuine closing courtesy: thanks Tina, acknowledges
+      the 15-minute wait, or gives a real sign-off ("thanks", "sounds
+      good, thank you", "alright, I'll wait"). A bare filler with no
+      closing intent, a question back ("is it a question?"), or an
+      off-topic remark does NOT count.
 
 # ============================================================
 # EXIT LINES

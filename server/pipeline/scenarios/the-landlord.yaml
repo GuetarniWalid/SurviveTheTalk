@@ -76,18 +76,20 @@ checkpoints:
       one to address it. Speak in your own words; never recite a fixed line.
     success_criteria: >
       User acknowledges the situation: admits they know about the
-      rent, asks what it's about, or starts explaining. Any
-      coherent response that engages with the confrontation counts.
+      rent, asks what it is about, or starts explaining. A bare
+      greeting, silence, or an off-topic remark that does not engage
+      the overdue-rent confrontation does NOT count.
 
   - id: explain_late
-    # Story 6.27 — `acknowledge`'s criteria ends on an explicit catch-all
-    # ("Any coherent response that engages with the confrontation counts"),
-    # making it a strict logical SUPERSET of every later beat: explaining the
-    # rent, addressing the damage, negotiating, giving specifics and
-    # confirming terms all engage the confrontation coherently. Without these
-    # edges the judge can credit a narrower later beat on the user's first
-    # engaged turn and strand `acknowledge` forever (the call_id=266 class —
-    # see the-waiter.yaml).
+    # Story 6.27 — `acknowledge` credits any genuine engagement with the
+    # overdue-rent confrontation, making it a strict logical SUPERSET of every
+    # later beat: explaining the rent, addressing the damage, negotiating,
+    # giving specifics and confirming terms all engage the confrontation.
+    # Without these edges the judge can credit a narrower later beat on the
+    # user's first engaged turn and strand `acknowledge` forever (the
+    # call_id=266 class — see the-waiter.yaml). (Story 10.7 tightened
+    # acknowledge's wording to exclude bare greeting/off-topic; the superset
+    # relationship is unchanged.)
     implies: acknowledge
     hint_text: "Explain why rent is late — propose a date."
     prompt_segment: |
@@ -96,11 +98,11 @@ checkpoints:
       15th, and you have sent two written reminders. Press them for a specific
       date when the transfer will arrive.
     success_criteria: >
-      User explains why rent is late and proposes a timeline or
-      date for payment. "I can pay by Friday", "I had an emergency",
-      "I'll transfer it this week", or any explanation combined with
-      a payment commitment counts. A bare "I'm sorry" without a
-      date does NOT count.
+      User explains why rent is late and proposes a timeline or date
+      for payment ("I can pay by Friday", "I had an emergency, I'll
+      transfer it this week"). An explanation paired with a real
+      payment commitment is what passes. A bare "I'm sorry" with no
+      date, or an off-topic reply, does NOT count.
 
   - id: damage
     # Story 6.27 — addressing the damage ⊂ acknowledge (catch-all clause).
@@ -112,10 +114,11 @@ checkpoints:
       suspect it comes from their bathroom. Press them on whether they are
       aware of any damage, and watch how they answer.
     success_criteria: >
-      User addresses the damage question: explains the leak,
-      denies knowledge, says they'll check, or takes responsibility.
-      Any coherent response that engages with the damage issue
-      counts. Ignoring the question does NOT count.
+      User addresses the damage question: explains the leak, denies
+      knowledge, says they will check, or takes responsibility. The
+      reply must actually engage the bathroom-damage issue. Ignoring
+      the question, a question back with no engagement, or an off-topic
+      remark does NOT count.
 
   - id: negotiate
     # Story 6.27 — negotiating a plan ⊂ acknowledge (catch-all clause).
@@ -129,8 +132,9 @@ checkpoints:
     success_criteria: >
       User negotiates: asks for more time with a specific date,
       proposes a payment plan, or makes a concrete commitment to
-      resolve both issues. Any attempt to negotiate or propose a
-      solution counts. Simply agreeing without a plan does NOT count.
+      resolve both issues. A genuine attempt to negotiate or propose a
+      solution is what passes. Simply agreeing with no plan, or an
+      off-topic reply, does NOT count.
 
   - id: credibility
     # Story 6.27 — a specific, actionable answer ⊂ acknowledge (catch-all).
@@ -143,9 +147,10 @@ checkpoints:
       themselves, or shall you send someone and deduct it from their deposit?
       You want precision, not vague promises.
     success_criteria: >
-      User gives a specific, credible answer: names a date, time,
-      or method of payment, or addresses the repair question with
-      a concrete response. Any specific, actionable answer counts.
+      User gives a specific, credible answer: names a date, time, or
+      method of payment, or addresses the repair question with a
+      concrete response. A vague "soon", a non-answer, or an off-topic
+      reply does NOT count.
 
   - id: commit
     # Story 6.27 — confirming the terms ⊂ acknowledge (catch-all clause).
@@ -158,9 +163,10 @@ checkpoints:
       correct. Do NOT script your final words — once they confirm, the call
       wraps up on its own.
     success_criteria: >
-      User confirms the terms: agrees to the summary, says "yes",
-      "that's correct", or reaffirms their commitment. Any clear
-      confirmation of the agreed terms counts.
+      User confirms the terms: agrees to the summary, says "yes" /
+      "that's correct", or reaffirms their commitment to the agreed
+      dates and figures. A non-committal reply, a question back, or an
+      off-topic remark that does not confirm the terms does NOT count.
 
 # ============================================================
 # EXIT LINES

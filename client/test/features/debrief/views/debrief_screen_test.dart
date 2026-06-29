@@ -8,6 +8,7 @@ import 'dart:async';
 
 import 'package:bloc_test/bloc_test.dart';
 import 'package:client/core/api/api_exception.dart';
+import 'package:client/core/local_cache/debrief_cache_store.dart';
 import 'package:client/core/theme/app_colors.dart';
 import 'package:client/features/call/repositories/call_repository.dart';
 import 'package:client/features/debrief/views/debrief_screen.dart';
@@ -22,6 +23,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 class MockCallRepository extends Mock implements CallRepository {}
+
+/// Story 10.7 (Bug B) — the progressive cache write happens in DebriefScreen now.
+class MockDebriefCacheStore extends Mock implements DebriefCacheStore {}
 
 /// Story 8.2 (FR29) — drives the paywall's bloc through the test seam so the
 /// auto-presented sheet never touches the real store plugin.
@@ -164,8 +168,38 @@ Map<String, dynamic> degradedPayload({
   };
 }
 
+/// Story 10.7 (Bug B) — the SCORE-ONLY `pending` payload the overlay hands off:
+/// real survival % + checkpoints, empty analysis arrays, `pending: true`.
+Map<String, dynamic> pendingPayload({int survivalPct = 73}) {
+  return <String, dynamic>{
+    'debrief_version': 2,
+    'survival_pct': survivalPct,
+    'character_name': 'The Mugger',
+    'scenario_title': 'Give me your wallet',
+    'attempt_number': 2,
+    'previous_best': 67,
+    'checkpoints': [
+      {'id': 'greet', 'hint': 'Greet the mugger', 'met': true},
+      {'id': 'refuse', 'hint': 'Refuse to comply', 'met': false},
+    ],
+    'errors': <Object?>[],
+    'hesitations': <Object?>[],
+    'idioms': <Object?>[],
+    'better_phrasings': <Object?>[],
+    'areas': <Object?>[],
+    'areas_to_work_on': <Object?>[],
+    'inappropriate_behavior': null,
+    'pending': true,
+  };
+}
+
 void main() {
   late MockCallRepository repository;
+
+  setUpAll(() {
+    // mocktail `any(named: 'payload')` needs a fallback for the Map type.
+    registerFallbackValue(<String, dynamic>{});
+  });
 
   setUp(() {
     repository = MockCallRepository();
@@ -174,11 +208,15 @@ void main() {
   DebriefScreen buildScreen({
     required Map<String, dynamic>? payload,
     int? callId = 7,
+    DebriefCacheStore? cacheStore,
+    String? scenarioId,
   }) {
     return DebriefScreen(
       payload: payload,
       callId: callId,
       callRepository: repository,
+      debriefCacheStore: cacheStore,
+      scenarioId: scenarioId,
       pollInterval: const Duration(milliseconds: 50),
       pollBudget: const Duration(milliseconds: 400),
     );
@@ -880,6 +918,236 @@ void main() {
 
         expect(find.byType(BottomSheet), findsNothing);
         expect(find.text('Speak English for real'), findsNothing);
+      },
+    );
+  });
+
+  // ===========================================================================
+  // Story 10.7 (Bug B) — progressive debrief
+  // ===========================================================================
+  group('Story 10.7 — progressive debrief (Bug B)', () {
+    testWidgets(
+      'a pending payload shows the scorecard + analyzing placeholder, keeps polling',
+      (tester) async {
+        when(() => repository.fetchDebrief(callId: 7)).thenAnswer(
+          (_) async => throw const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'still generating',
+            statusCode: 404,
+          ),
+        );
+
+        await pumpScreen(tester, buildScreen(payload: pendingPayload()));
+        await tester.pump();
+
+        // The scorecard + checkpoints render INSTANTLY from the pending payload.
+        expect(find.text('73%'), findsOneWidget);
+        expect(find.text('CHECKPOINTS'), findsOneWidget);
+        expect(find.text('1 of 2 reached'), findsOneWidget);
+        // The analysis is a quiet placeholder — NOT the empty "No errors
+        // flagged" sections (which would falsely imply a flawless call).
+        expect(find.text('ANALYSIS'), findsOneWidget);
+        expect(find.text('Analyzing your conversation...'), findsOneWidget);
+        expect(find.text('LANGUAGE ERRORS'), findsNothing);
+
+        // It KEEPS polling for the analysis (the score being shown is not a
+        // terminal state).
+        await tester.pump(const Duration(milliseconds: 60));
+        verify(
+          () => repository.fetchDebrief(callId: 7),
+        ).called(greaterThanOrEqualTo(1));
+
+        // Drain the budget so no timer outlives the test.
+        await tester.pump(const Duration(milliseconds: 450));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('a ready fetch fills the analysis in and stops polling', (
+      tester,
+    ) async {
+      var calls = 0;
+      when(() => repository.fetchDebrief(callId: 7)).thenAnswer((_) async {
+        calls++;
+        return fullPayload();
+      });
+
+      await pumpScreen(tester, buildScreen(payload: pendingPayload()));
+      await tester.pump();
+      expect(find.text('Analyzing your conversation...'), findsOneWidget);
+      expect(find.text('LANGUAGE ERRORS'), findsNothing);
+
+      // The first poll returns the READY analysis → it merges in.
+      await tester.pump(const Duration(milliseconds: 60));
+      await tester.pump();
+      expect(find.text('LANGUAGE ERRORS'), findsOneWidget);
+      expect(find.text('I am agree'), findsOneWidget);
+      expect(find.text('Analyzing your conversation...'), findsNothing);
+
+      // Polling stops on a terminal (ready) payload — no further fetches.
+      await tester.pump(const Duration(milliseconds: 410));
+      final settledCalls = calls;
+      await tester.pump(const Duration(milliseconds: 410));
+      expect(calls, settledCalls);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'budget exhaustion while pending lands a score-only (degraded) terminal',
+      (tester) async {
+        when(() => repository.fetchDebrief(callId: 7)).thenAnswer(
+          (_) async => throw const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'still generating',
+            statusCode: 404,
+          ),
+        );
+
+        await pumpScreen(tester, buildScreen(payload: pendingPayload()));
+        await tester.pump();
+        expect(find.text('73%'), findsOneWidget);
+        expect(find.text('Analyzing your conversation...'), findsOneWidget);
+
+        // The analysis never lands within the budget.
+        await tester.pump(const Duration(milliseconds: 450));
+
+        // Never blank: the score + checkpoints stay; the placeholder is replaced
+        // by the honest "unavailable" line (the degraded terminal).
+        expect(find.text('73%'), findsOneWidget);
+        expect(find.text('CHECKPOINTS'), findsOneWidget);
+        expect(find.text('Analyzing your conversation...'), findsNothing);
+        expect(
+          find.text('Detailed analysis is unavailable for this call.'),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a pending payload with no callId degrades to score-only immediately',
+      (tester) async {
+        await pumpScreen(
+          tester,
+          buildScreen(payload: pendingPayload(), callId: null),
+        );
+        await tester.pump();
+        // No id to poll with → render the score, but never spin the placeholder.
+        expect(find.text('73%'), findsOneWidget);
+        expect(find.text('Analyzing your conversation...'), findsNothing);
+        expect(
+          find.text('Detailed analysis is unavailable for this call.'),
+          findsOneWidget,
+        );
+        verifyNever(
+          () => repository.fetchDebrief(callId: any(named: 'callId')),
+        );
+      },
+    );
+  });
+
+  group('Story 10.7 — progressive offline cache (Story 9.1)', () {
+    testWidgets('a pending payload is NOT cached; the ready analysis IS', (
+      tester,
+    ) async {
+      final store = MockDebriefCacheStore();
+      final writes = <Map<String, dynamic>>[];
+      when(
+        () => store.write(
+          callId: any(named: 'callId'),
+          scenarioId: any(named: 'scenarioId'),
+          payload: any(named: 'payload'),
+        ),
+      ).thenAnswer((inv) async {
+        writes.add(inv.namedArguments[#payload] as Map<String, dynamic>);
+      });
+
+      var ready = false;
+      when(() => repository.fetchDebrief(callId: 7)).thenAnswer((_) async {
+        if (!ready) {
+          throw const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'still generating',
+            statusCode: 404,
+          );
+        }
+        return fullPayload();
+      });
+
+      await pumpScreen(
+        tester,
+        buildScreen(
+          payload: pendingPayload(),
+          cacheStore: store,
+          scenarioId: 'mugger_medium_01',
+        ),
+      );
+      await tester.pump();
+      // While pending, NOTHING is cached (never a pending blob as final).
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(writes, isEmpty);
+
+      // Once the READY analysis lands, it IS cached — and it is not pending.
+      ready = true;
+      await tester.pump(const Duration(milliseconds: 60));
+      await tester.pump();
+      expect(writes, hasLength(1));
+      expect(writes.first['pending'], isNot(true));
+      expect(writes.first['errors'], isNotEmpty);
+
+      await tester.pump(const Duration(milliseconds: 410));
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Story 10.7 — paywall deferred until the analysis merges', () {
+    setUp(() {
+      FlutterSecureStorage.setMockInitialValues({});
+      final paywallBloc = MockSubscriptionBloc();
+      whenListen(
+        paywallBloc,
+        const Stream<SubscriptionState>.empty(),
+        initialState: const SubscriptionInitial(),
+      );
+      PaywallSheet.debugBlocBuilder = () => paywallBloc;
+    });
+
+    tearDown(() => PaywallSheet.debugBlocBuilder = null);
+
+    testWidgets(
+      'the paywall is NOT presented while pending, then presents at the terminal',
+      (tester) async {
+        when(() => repository.fetchDebrief(callId: 7)).thenAnswer(
+          (_) async => throw const ApiException(
+            code: 'DEBRIEF_NOT_READY',
+            message: 'still generating',
+            statusCode: 404,
+          ),
+        );
+
+        await pumpScreen(
+          tester,
+          DebriefScreen(
+            payload: pendingPayload(),
+            callId: 7,
+            callRepository: repository,
+            presentPaywallOnLoad: true,
+            pollInterval: const Duration(milliseconds: 50),
+            pollBudget: const Duration(milliseconds: 400),
+          ),
+        );
+        await tester.pump();
+        // Deferred: the scrim must not cover the analysis-pending state.
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('Speak English for real'), findsNothing);
+
+        // The budget fires → the debrief reaches a terminal state → the paywall
+        // is now allowed.
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(BottomSheet), findsOneWidget);
+        expect(find.text('Speak English for real'), findsOneWidget);
       },
     );
   });

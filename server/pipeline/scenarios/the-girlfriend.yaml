@@ -101,14 +101,14 @@ checkpoints:
     success_criteria: >
       User gives a concrete reason that explains why they could not
       call or text her tonight. The reason must account for being
-      unable to reach her, not just be any statement: "I forgot",
+      unable to reach her, not merely be a statement: "I forgot",
       "I lost track of time", "I got stuck at work", "my phone was
-      dead so I couldn't call", or any specific excuse for the
-      missed contact counts. Judge by intent, so a genuine reason in
-      messy or informal English still passes. What does NOT count: a
-      bare "I'm sorry" with no reason; an off-topic remark that does
-      not explain the silence (weather, traffic, the crowd, how busy
-      it is); or merely noting a circumstance that would not actually
+      dead so I couldn't call" — a specific excuse for the missed
+      contact. Judge by intent, so a genuine reason in messy or
+      informal English still passes. What does NOT count: a bare
+      "I'm sorry" with no reason; an off-topic remark that does not
+      explain the silence (weather, traffic, the crowd, how busy it
+      is); or merely noting a circumstance that would not actually
       have prevented a quick call or text (for example a phone that
       is only low or "almost dead" rather than fully dead).
 
@@ -171,8 +171,9 @@ checkpoints:
     success_criteria: >
       User confirms their commitment with genuine sincerity:
       reaffirms the plan, promises to follow through, or says
-      something heartfelt. Any response that demonstrates they
-      take the commitment seriously counts.
+      something heartfelt about meaning it this time. A flat "sure"
+      with no sincerity, a question back, or an off-topic remark does
+      NOT count.
 
 # ============================================================
 # EXIT LINES

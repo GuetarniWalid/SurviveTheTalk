@@ -335,6 +335,25 @@ void main() {
       expect(Debrief.tryParse(payload)!.degraded, isTrue);
     });
 
+    test('parses the pending flag (Story 10.7 progressive debrief)', () {
+      // Absent key reads false (terminal/v1 payload); an explicit true is
+      // carried so the screen knows to keep polling for the analysis.
+      expect(Debrief.tryParse(v2Payload())!.pending, isFalse);
+      final payload = v2Payload()..['pending'] = true;
+      expect(Debrief.tryParse(payload)!.pending, isTrue);
+    });
+
+    test('copyWith flips only the lifecycle flags (Story 10.7)', () {
+      final base = Debrief.tryParse(v2Payload())!;
+      final terminal = base.copyWith(degraded: true, pending: false);
+      // The two flags change; every other field is carried verbatim.
+      expect(terminal.degraded, isTrue);
+      expect(terminal.pending, isFalse);
+      expect(terminal.survivalPct, base.survivalPct);
+      expect(terminal.errors, base.errors);
+      expect(terminal.checkpoints, base.checkpoints);
+    });
+
     test('malformed v2 items are skipped defensively', () {
       final payload = v2Payload()
         ..['checkpoints'] = [

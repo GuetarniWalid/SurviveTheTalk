@@ -478,6 +478,52 @@ def find_scripting_violations(text: str) -> list[str]:
     return hits
 
 
+# R8 (Story 10.7, Bug A) — `success_criteria` must NOT carry BLANKET-PERMISSIVE
+# license. A criterion describes what GENUINELY satisfies a beat; a catch-all tail
+# like "any acknowledgement counts" / "even a simple okay counts" / "any coherent
+# response counts" / "either way — pass it" makes the literal judge credit
+# empty/evasive/off-topic content, so the scenario "plays itself" (call_id=340:
+# "No other choice." credited `confirm`). Each criterion must instead state the
+# real move AND exclude the non-committal reply (the landlord "X; doing nothing
+# does NOT count" model). Same enforcement shape as R1/R2: loader WARNs, builder +
+# test HARD-fail. Tuned for ZERO false-positives on the rewritten criteria — a
+# legitimate exclusion uses "does NOT count" (singular), never "any … counts".
+_PERMISSIVE_CRITERIA_SUBSTRINGS: tuple[str, ...] = (
+    "any acknowledgement",
+    "even a simple",
+    "any coherent",
+    "any firm closing",
+)
+# A bare "any … counts" catch-all (directional: any BEFORE counts, same sentence —
+# `[^.\n]*` keeps it within one sentence so a legitimate "… counts. … any …" never
+# trips), plus the waiter "either way — pass it" license. `\bcounts\b` is PLURAL
+# only, so a "does NOT count" exclusion is never flagged.
+_PERMISSIVE_CRITERIA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bany\b[^.\n]*\bcounts\b", re.IGNORECASE),
+    re.compile(r"\beither way\b[^.\n]*\bpass it\b", re.IGNORECASE),
+)
+
+
+def find_permissive_criteria_phrases(text: str) -> list[str]:
+    """Return any blanket-permissive license phrases in a `success_criteria`.
+
+    R8 (Story 10.7) — a non-empty return means the criterion grants a catch-all
+    pass ("any … counts" / "even a simple … counts" / "either way — pass it")
+    that licenses crediting empty / evasive / off-topic content, which the literal
+    judge obeys (the call_id=340 self-playing scenario). Case-insensitive
+    substring + regex tripwire; single source of truth, imported by
+    ``scenario_builder.validate_structure`` and the ``tests/test_scenarios.py``
+    lint. Scan ONLY `success_criteria` (the judge-facing field) — a permissive
+    word in a persona or prompt_segment is harmless.
+    """
+    haystack = text or ""
+    low = haystack.lower()
+    hits = [p for p in _PERMISSIVE_CRITERIA_SUBSTRINGS if p in low]
+    for pattern in _PERMISSIVE_CRITERIA_PATTERNS:
+        hits += pattern.findall(haystack)
+    return hits
+
+
 # ============================================================
 # Story 6.19 follow-up (2026-06-09) — Soniox STT proper-noun bias
 # ============================================================
@@ -849,6 +895,24 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
                     f"Scenario {scenario_id!r}: checkpoint[{idx}] missing/empty "
                     f"required string field {field!r}."
                 )
+        # R8 (Story 10.7) — WARN on a blanket-permissive `success_criteria` (the
+        # call_id=340 self-playing scenario). Runtime canary only (same posture as
+        # the R1/R2 tripwires in `load_scenario_base_prompt`): the HARD gates are
+        # `scenario_builder.validate_structure` + the `tests/test_scenarios.py`
+        # lint, where a human is present. A scenario hand-edited on the VPS past
+        # those gates surfaces here.
+        permissive = find_permissive_criteria_phrases(entry.get("success_criteria"))
+        if permissive:
+            from loguru import logger
+
+            logger.warning(
+                "scenario_permissive_criteria scenario={} checkpoint={} phrases={} — "
+                "a success_criteria must state the GENUINE move and exclude the "
+                "non-committal/off-topic reply, never grant a blanket pass (R8).",
+                scenario_id,
+                entry.get("id"),
+                permissive,
+            )
     # Story 6.10 review patch — checkpoint ids MUST be unique. The
     # goal-tracking engine keys state by id (`CheckpointManager._goals` /
     # `_id_to_index`), so a duplicate id silently collapses two goals into

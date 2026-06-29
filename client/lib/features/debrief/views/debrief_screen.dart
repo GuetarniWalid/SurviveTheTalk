@@ -24,6 +24,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/api/api_exception.dart';
+import '../../../core/local_cache/debrief_cache_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
@@ -78,6 +79,13 @@ const String _kDetailHint = 'Show detail';
 const String _kBackSemantics = 'Back to scenarios';
 const String _kLoading = 'Analyzing your conversation...';
 const String _kUnavailable = 'Debrief unavailable for this call.';
+// Story 10.7 (Bug B — progressive debrief): the score + checkpoints render
+// instantly while the LLM analysis is still being generated. This quiet line
+// sits under the checkpoints in that window (NOT the empty "No errors flagged"
+// sections, which would falsely imply a flawless call). COPY LINT: factual,
+// present tense, no praise / exclaim / question / emoji / tips.
+const String _kAnalysisHeader = 'ANALYSIS';
+const String _kAnalysisPending = 'Analyzing your conversation...';
 // Server never-blank fallback (degraded debrief): generation failed, so the
 // analysis sections are suppressed and this one honest line shows instead. The
 // score + checkpoints above stay (backend-factual). COPY LINT: factual, present
@@ -156,6 +164,10 @@ const double _kDragHandleHeight = 4.0;
 
 const double _kEyebrowLetterSpacing = 1.0;
 
+// Story 10.7 (Bug B) — the analysis sections fade in once they arrive (the score
+// + checkpoints above stay put — no re-animation of the already-shown scorecard).
+const Duration _kAnalysisFadeIn = Duration(milliseconds: 400);
+
 /// Hero gauge color (Walid 2026-06-15): red at/below 40% (below the survival
 /// threshold), amber 41-99% (survived, not perfect), green at 100%.
 @visibleForTesting
@@ -213,18 +225,28 @@ String hesitationDurationLabel(double sec) => '~${sec.round()}s';
 String checkpointSemantics(bool met, String hint) =>
     met ? 'Reached: $hint' : 'Not reached: $hint';
 
-/// Screen state machine (Story 7.3 Task 3.1) — unchanged.
-enum _DebriefPhase { content, loading, unavailable }
+/// Screen state machine (Story 7.3 Task 3.1; Story 10.7 adds `contentPending`).
+/// `content` is TERMINAL (full OR degraded — stop polling); `contentPending` is
+/// the progressive in-between (score + checkpoints rendered, analysis still
+/// generating — KEEP polling and merge the ready fetch in).
+enum _DebriefPhase { content, contentPending, loading, unavailable }
 
 class DebriefScreen extends StatefulWidget {
   /// Canonical BS-7 polling cadence/budget — tests shrink these through the
   /// constructor seams so the loop runs inside a pumped window.
   static const Duration kPollInterval = Duration(seconds: 1);
-  static const Duration kPollBudget = Duration(seconds: 30);
 
-  /// Debrief payload pre-fetched by the Call Ended overlay. Null when the
-  /// overlay's 10 s cap fired first, the callId was unknown, or its fetch
-  /// failed terminally — the BS-7 fallback then takes over.
+  /// Story 10.7 (Bug B) — raised 30 s → 90 s to cover the INLINE debrief
+  /// generation window (`server _GENERATION_TIMEOUT_SECONDS` ≈ 55 s for a maxed
+  /// recap + the rare non-strict retry, plus network margin), so the screen
+  /// never gives up while the `pending` row is legitimately still filling in.
+  static const Duration kPollBudget = Duration(seconds: 90);
+
+  /// Debrief payload pre-fetched by the Call Ended overlay. With Story 10.7 this
+  /// is typically the SCORE-ONLY `pending` payload (the overlay hands off as soon
+  /// as the row exists — the analysis then fills in here). Null when the overlay's
+  /// cap fired first, the callId was unknown, or its fetch failed terminally — the
+  /// BS-7 fallback then takes over.
   final Map<String, dynamic>? payload;
 
   /// Call-session id for the resume-poll. Null disables polling.
@@ -234,8 +256,17 @@ class DebriefScreen extends StatefulWidget {
 
   /// Story 8.2 (AC3 / FR29) — when true, auto-present the paywall on load (the
   /// user's 3rd/last free scenario). The debrief content stays visible behind
-  /// the scrim; dismissing returns the user to the debrief unchanged.
+  /// the scrim; dismissing returns the user to the debrief unchanged. Story 10.7
+  /// (Bug B): DEFERRED until the analysis merge completes (terminal `content`) so
+  /// the scrim doesn't cover the section-in animations.
   final bool presentPaywallOnLoad;
+
+  /// Story 10.7 (Bug B) — when set (the live call-end handoff), the READY
+  /// (non-pending) debrief is cached locally for the report icon (Story 9.1). A
+  /// `pending` payload is NEVER cached as final; the analysis is written once it
+  /// lands here. Null on the cached-replay path (already cached) and most tests.
+  final DebriefCacheStore? debriefCacheStore;
+  final String? scenarioId;
 
   final Duration pollInterval;
   final Duration pollBudget;
@@ -246,6 +277,8 @@ class DebriefScreen extends StatefulWidget {
     required this.callId,
     required this.callRepository,
     this.presentPaywallOnLoad = false,
+    this.debriefCacheStore,
+    this.scenarioId,
     this.pollInterval = kPollInterval,
     this.pollBudget = kPollBudget,
   });
@@ -259,31 +292,56 @@ class _DebriefScreenState extends State<DebriefScreen> {
   Debrief? _debrief;
   Timer? _pollTimer;
   Timer? _budgetTimer;
+  bool _paywallPresented = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.payload != null) {
       final parsed = Debrief.tryParse(widget.payload);
-      _debrief = parsed;
-      _phase = parsed != null
-          ? _DebriefPhase.content
-          : _DebriefPhase.unavailable;
+      if (parsed == null) {
+        _phase = _DebriefPhase.unavailable;
+        _scheduleMaybePaywall();
+      } else if (parsed.pending && widget.callId != null) {
+        // Story 10.7 (Bug B) — the overlay handed off the SCORE-ONLY pending
+        // payload. Render the scorecard now and KEEP polling for the analysis.
+        _debrief = parsed;
+        _phase = _DebriefPhase.contentPending;
+        _budgetTimer = Timer(widget.pollBudget, _onBudgetExhausted);
+        _scheduleNextPoll();
+      } else {
+        // A terminal payload (ready full/degraded), or a PENDING payload with no
+        // callId to poll → finalise the latter as score-only (degraded) so the
+        // placeholder never spins and the empty analysis sections never imply a
+        // flawless call.
+        _debrief = parsed.pending
+            ? parsed.copyWith(pending: false, degraded: true)
+            : parsed;
+        _phase = _DebriefPhase.content;
+        // Cache only a genuinely-ready served payload (never a pending blob).
+        _cacheReadyJson(widget.payload!);
+        _scheduleMaybePaywall();
+      }
     } else if (widget.callId != null) {
       _phase = _DebriefPhase.loading;
       _budgetTimer = Timer(widget.pollBudget, _onBudgetExhausted);
       unawaited(_attemptFetch());
     } else {
       _phase = _DebriefPhase.unavailable;
+      _scheduleMaybePaywall();
     }
-    // Story 8.2 (AC3 / FR29) — auto-present the paywall at the emotional peak
-    // (0ms, design Open-Q1) once the first frame is mounted. The debrief stays
-    // visible behind the scrim; dismissing returns the user to it unchanged.
-    if (widget.presentPaywallOnLoad) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _presentPaywall();
-      });
-    }
+  }
+
+  /// Story 10.7 (Bug B) — present the Story 8.2 paywall ONCE, and only once the
+  /// debrief reaches a TERMINAL state (`content` full/degraded, or
+  /// `unavailable`) — NOT during `loading`/`contentPending`, so the scrim never
+  /// covers the analysis section-in animations (AC5).
+  void _scheduleMaybePaywall() {
+    if (!widget.presentPaywallOnLoad || _paywallPresented) return;
+    _paywallPresented = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _presentPaywall();
+    });
   }
 
   /// Fail-open (AC5/Task 5): a screen-reader / network / product-unavailable
@@ -303,42 +361,133 @@ class _DebriefScreenState extends State<DebriefScreen> {
     }
   }
 
+  /// Story 10.7 (Bug B) — persist a READY (non-pending) debrief offline for the
+  /// report icon (Story 9.1). Fire-and-forget; a `pending` blob is NEVER cached
+  /// as final, so the analysis is written only once it has actually landed (the
+  /// initial-ready handoff, or the ready fetch that arrives via polling). No-op
+  /// without the store / scenarioId / callId.
+  void _cacheReadyJson(Map<String, dynamic> payload) {
+    final store = widget.debriefCacheStore;
+    final scenarioId = widget.scenarioId;
+    final callId = widget.callId;
+    if (store == null || scenarioId == null || callId == null) return;
+    if (payload['pending'] == true) return;
+    unawaited(
+      store
+          .write(callId: callId, scenarioId: scenarioId, payload: payload)
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _scheduleNextPoll() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer(widget.pollInterval, () {
+      unawaited(_attemptFetch());
+    });
+  }
+
   Future<void> _attemptFetch() async {
     final callId = widget.callId;
     if (callId == null) return;
     try {
       final payload = await widget.callRepository.fetchDebrief(callId: callId);
       if (!mounted || _phase == _DebriefPhase.content) return;
-      _settle(Debrief.tryParse(payload));
+      _onPayload(payload, Debrief.tryParse(payload));
       // ignore: avoid_catches_without_on_clauses
     } catch (e) {
-      if (!mounted || _phase != _DebriefPhase.loading) return;
+      if (!mounted || _phase == _DebriefPhase.content) return;
       if (e is ApiException && e.code == 'DEBRIEF_NOT_READY') {
-        _pollTimer = Timer(widget.pollInterval, () {
-          unawaited(_attemptFetch());
-        });
+        // No row yet — keep polling until ready or the budget fires.
+        _scheduleNextPoll();
         return;
       }
-      _settle(null);
+      // A transient fetch error: if the score is already on screen
+      // (contentPending), keep it and retry on the next tick; if still loading,
+      // it is terminal → unavailable.
+      if (_phase == _DebriefPhase.contentPending) {
+        _scheduleNextPoll();
+        return;
+      }
+      _settleUnavailable();
     }
   }
 
-  void _settle(Debrief? parsed) {
+  /// Route a fetched payload through the progressive state machine.
+  void _onPayload(Map<String, dynamic>? rawPayload, Debrief? parsed) {
+    if (parsed == null) {
+      // Malformed body: keep a shown score (contentPending) and retry; otherwise
+      // (still loading) it is terminal.
+      if (_phase == _DebriefPhase.contentPending) {
+        _scheduleNextPoll();
+        return;
+      }
+      _settleUnavailable();
+      return;
+    }
+    if (parsed.pending) {
+      // Still generating — show/keep the scorecard, keep polling.
+      setState(() {
+        _debrief = _mergeDebrief(_debrief, parsed);
+        _phase = _DebriefPhase.contentPending;
+      });
+      _scheduleNextPoll();
+      return;
+    }
+    // READY (full OR degraded) — terminal. Stop polling, merge the analysis in,
+    // cache it, then (now that the merge is done) allow the deferred paywall.
     _budgetTimer?.cancel();
     _budgetTimer = null;
+    _pollTimer?.cancel();
+    _pollTimer = null;
     setState(() {
-      _debrief = parsed;
-      _phase = parsed != null
-          ? _DebriefPhase.content
-          : _DebriefPhase.unavailable;
+      _debrief = _mergeDebrief(_debrief, parsed);
+      _phase = _DebriefPhase.content;
     });
+    if (rawPayload != null) _cacheReadyJson(rawPayload);
+    _scheduleMaybePaywall();
+  }
+
+  /// Story 10.7 (Bug B) — merge a later (ready) fetch onto the on-screen debrief.
+  /// The ready payload is the COMPLETE, authoritative debrief for the same call,
+  /// so its score + checkpoints are identical to the pending one and its analysis
+  /// arrays are now populated — `fresh` is the source of truth. (The analysis
+  /// cards don't exist during `pending`, and the detail sheets capture their own
+  /// item, so there is no open-sheet to go stale; the merge is a clean swap.)
+  Debrief _mergeDebrief(Debrief? current, Debrief fresh) => fresh;
+
+  void _settleUnavailable() {
+    _budgetTimer?.cancel();
+    _budgetTimer = null;
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    setState(() {
+      _debrief = null;
+      _phase = _DebriefPhase.unavailable;
+    });
+    _scheduleMaybePaywall();
   }
 
   void _onBudgetExhausted() {
-    if (!mounted || _phase != _DebriefPhase.loading) return;
+    if (!mounted) return;
     _pollTimer?.cancel();
     _pollTimer = null;
-    setState(() => _phase = _DebriefPhase.unavailable);
+    if (_phase == _DebriefPhase.contentPending && _debrief != null) {
+      // The score is already on screen and the analysis never landed within the
+      // budget. Finalise as a score-only (degraded) terminal so the "analyzing"
+      // placeholder doesn't spin forever — never blank, the user keeps the score.
+      // NOT cached: the server row may still be `pending`, so a later report-icon
+      // open re-fetches and can still get the real analysis.
+      setState(() {
+        _debrief = _debrief!.copyWith(degraded: true, pending: false);
+        _phase = _DebriefPhase.content;
+      });
+      _scheduleMaybePaywall();
+      return;
+    }
+    if (_phase == _DebriefPhase.loading) {
+      setState(() => _phase = _DebriefPhase.unavailable);
+      _scheduleMaybePaywall();
+    }
   }
 
   @override
@@ -367,6 +516,11 @@ class _DebriefScreenState extends State<DebriefScreen> {
   Widget _buildPhase() {
     switch (_phase) {
       case _DebriefPhase.content:
+      case _DebriefPhase.contentPending:
+        // Same ValueKey for both → the AnimatedSwitcher updates the content in
+        // place (the scorecard stays put, no re-animation). `_DebriefContent`
+        // branches on `debrief.pending`: the "analyzing" placeholder while
+        // pending, the analysis sections (faded in) once ready.
         return _DebriefContent(
           key: const ValueKey('debrief-content'),
           debrief: _debrief!,
@@ -463,7 +617,6 @@ class _DebriefContent extends StatelessWidget {
       color: AppColors.textSecondary,
     );
     final framing = d.encouragingFraming;
-    final about = d.inappropriateBehavior;
     final metCount = d.checkpoints.where((c) => c.met).length;
 
     return SingleChildScrollView(
@@ -543,95 +696,153 @@ class _DebriefContent extends StatelessWidget {
                     checkpoints: d.checkpoints,
                   ),
                 ],
-                // The LLM analysis sections (errors / hesitations / idioms /
-                // better phrasings / areas). SUPPRESSED on a DEGRADED debrief:
-                // generation failed, so empty sections ("No errors flagged")
-                // would falsely imply a flawless call. The score + checkpoints
-                // above are backend-factual and stay; one honest line replaces
-                // the analysis.
-                if (d.degraded) ...[
-                  const SizedBox(height: _kSectionGap),
-                  Text(
-                    _kDegradedAnalysis,
-                    style: AppTypography.body.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  // An inappropriate-content end still explains itself — the
-                  // backend pins this factual line even on a degraded debrief.
-                  if (about != null) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrAbout),
-                    const SizedBox(height: _kCardGap),
-                    _AboutThisCallCard(explanation: about),
-                  ],
-                ] else ...[
-                  // LANGUAGE ERRORS — always visible (count line).
-                  const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrErrors),
-                  const SizedBox(height: _kCountLineGap),
-                  Text(errorCountLine(d.errors.length), style: mutedCaption),
-                  for (final error in d.errors) ...[
-                    const SizedBox(height: _kCardGap),
-                    _ErrorCard(error: error),
-                  ],
-                  // HESITATIONS — always visible (count line).
-                  const SizedBox(height: _kSectionGap),
-                  const _SectionHeader(_kHdrHesitations),
-                  const SizedBox(height: _kCountLineGap),
-                  Text(
-                    hesitationCountLine(d.hesitations.length),
-                    style: mutedCaption,
-                  ),
-                  for (final hesitation in d.hesitations) ...[
-                    const SizedBox(height: _kCardGap),
-                    _HesitationCard(hesitation: hesitation),
-                  ],
-                  // IDIOMS & SLANG — absence IS the design (no empty state).
-                  if (d.idioms.isNotEmpty) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrIdioms),
-                    for (final idiom in d.idioms) ...[
-                      const SizedBox(height: _kCardGap),
-                      _IdiomCard(idiom: idiom),
-                    ],
-                  ],
-                  // SAID MORE NATURALLY (B2) — hidden when empty (often is).
-                  if (d.betterPhrasings.isNotEmpty) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrBetterPhrasing),
-                    for (final phrasing in d.betterPhrasings) ...[
-                      const SizedBox(height: _kCardGap),
-                      _BetterPhrasingCard(phrasing: phrasing),
-                    ],
-                  ],
-                  // ABOUT THIS CALL (FR37) — hidden when null.
-                  if (about != null) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrAbout),
-                    const SizedBox(height: _kCardGap),
-                    _AboutThisCallCard(explanation: about),
-                  ],
-                  // AREAS TO WORK ON — rich v2 cards when present; v1 fallback to
-                  // the flat title list otherwise (AC2).
-                  if (d.areas.isNotEmpty) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrAreas),
-                    for (final area in d.areas) ...[
-                      const SizedBox(height: _kCardGap),
-                      _AreaCard(area: area),
-                    ],
-                  ] else if (d.areasToWorkOn.isNotEmpty) ...[
-                    const SizedBox(height: _kSectionGap),
-                    const _SectionHeader(_kHdrAreas),
-                    const SizedBox(height: _kCardGap),
-                    _AreasFallbackCard(areas: d.areasToWorkOn),
-                  ],
-                ],
+                // Story 10.7 (Bug B — progressive debrief) — the analysis area:
+                // a quiet placeholder while the LLM analysis is still generating
+                // (pending), the "analysis unavailable" line on a degraded
+                // debrief, or the full analysis sections (faded in) once ready.
+                _AnalysisArea(debrief: d),
                 const SizedBox(height: _kBottomPadding),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Story 10.7 (Bug B — progressive debrief) — the analysis area below the
+/// scorecard + checkpoints. Three states keyed off the two lifecycle flags:
+///   - `pending`  → the analysis is still generating: a quiet placeholder (NEVER
+///     the empty "No errors flagged" sections, which would falsely imply a
+///     flawless call). The screen keeps polling and re-renders this widget when
+///     the analysis lands.
+///   - `degraded` → terminal score-only: the existing "analysis unavailable"
+///     line (+ the inappropriate-behavior explanation if the call ended on it).
+///   - ready      → the full analysis sections, FADED IN once (the scorecard +
+///     checkpoints above stay put — only the new sections animate).
+class _AnalysisArea extends StatelessWidget {
+  final Debrief debrief;
+
+  const _AnalysisArea({required this.debrief});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = debrief;
+    final mutedCaption = AppTypography.caption.copyWith(
+      color: AppColors.textSecondary,
+    );
+    final about = d.inappropriateBehavior;
+
+    if (d.pending) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: _kSectionGap),
+          const _SectionHeader(_kAnalysisHeader),
+          const SizedBox(height: _kCountLineGap),
+          Text(_kAnalysisPending, style: mutedCaption),
+        ],
+      );
+    }
+
+    if (d.degraded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: _kSectionGap),
+          Text(
+            _kDegradedAnalysis,
+            style: AppTypography.body.copyWith(color: AppColors.textSecondary),
+          ),
+          // An inappropriate-content end still explains itself — the backend
+          // pins this factual line even on a degraded debrief.
+          if (about != null) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrAbout),
+            const SizedBox(height: _kCardGap),
+            _AboutThisCallCard(explanation: about),
+          ],
+        ],
+      );
+    }
+
+    // READY — the full analysis sections, faded in once (the scorecard above is
+    // unaffected). TweenAnimationBuilder runs its 0→1 tween on first build, i.e.
+    // when this READY subtree first replaces the pending placeholder.
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.0, end: 1.0),
+      duration: _kAnalysisFadeIn,
+      curve: Curves.easeOut,
+      // alwaysIncludeSemantics: the fade is cosmetic — a screen reader must read
+      // the analysis throughout (Opacity(0) would otherwise drop it from the
+      // semantics tree at frame 0).
+      builder: (context, opacity, child) => Opacity(
+        opacity: opacity,
+        alwaysIncludeSemantics: true,
+        child: child,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // LANGUAGE ERRORS — always visible (count line).
+          const SizedBox(height: _kSectionGap),
+          const _SectionHeader(_kHdrErrors),
+          const SizedBox(height: _kCountLineGap),
+          Text(errorCountLine(d.errors.length), style: mutedCaption),
+          for (final error in d.errors) ...[
+            const SizedBox(height: _kCardGap),
+            _ErrorCard(error: error),
+          ],
+          // HESITATIONS — always visible (count line).
+          const SizedBox(height: _kSectionGap),
+          const _SectionHeader(_kHdrHesitations),
+          const SizedBox(height: _kCountLineGap),
+          Text(hesitationCountLine(d.hesitations.length), style: mutedCaption),
+          for (final hesitation in d.hesitations) ...[
+            const SizedBox(height: _kCardGap),
+            _HesitationCard(hesitation: hesitation),
+          ],
+          // IDIOMS & SLANG — absence IS the design (no empty state).
+          if (d.idioms.isNotEmpty) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrIdioms),
+            for (final idiom in d.idioms) ...[
+              const SizedBox(height: _kCardGap),
+              _IdiomCard(idiom: idiom),
+            ],
+          ],
+          // SAID MORE NATURALLY (B2) — hidden when empty (often is).
+          if (d.betterPhrasings.isNotEmpty) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrBetterPhrasing),
+            for (final phrasing in d.betterPhrasings) ...[
+              const SizedBox(height: _kCardGap),
+              _BetterPhrasingCard(phrasing: phrasing),
+            ],
+          ],
+          // ABOUT THIS CALL (FR37) — hidden when null.
+          if (about != null) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrAbout),
+            const SizedBox(height: _kCardGap),
+            _AboutThisCallCard(explanation: about),
+          ],
+          // AREAS TO WORK ON — rich v2 cards when present; v1 fallback to the
+          // flat title list otherwise (AC2).
+          if (d.areas.isNotEmpty) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrAreas),
+            for (final area in d.areas) ...[
+              const SizedBox(height: _kCardGap),
+              _AreaCard(area: area),
+            ],
+          ] else if (d.areasToWorkOn.isNotEmpty) ...[
+            const SizedBox(height: _kSectionGap),
+            const _SectionHeader(_kHdrAreas),
+            const SizedBox(height: _kCardGap),
+            _AreasFallbackCard(areas: d.areasToWorkOn),
+          ],
         ],
       ),
     );

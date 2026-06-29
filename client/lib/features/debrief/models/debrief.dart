@@ -270,6 +270,15 @@ class Debrief {
   /// sections, rather than implying a flawless call. Absent → false.
   final bool degraded;
 
+  /// Story 10.7 (Bug B — progressive debrief): the score-only PENDING phase.
+  /// The server persists the scorecard (survival %, checkpoints, attempt #)
+  /// INSTANTLY at teardown with empty analysis arrays and `status='pending'`,
+  /// then fills the analysis in via a second write. `pending == true` means the
+  /// score renders now but the analysis is STILL COMING — the screen keeps
+  /// polling and merges the later (ready) fetch in. A `ready` payload (full OR
+  /// degraded) reads false. Stored/v1 payloads omit the key → false.
+  final bool pending;
+
   const Debrief({
     required this.survivalPct,
     required this.characterName,
@@ -287,7 +296,36 @@ class Debrief {
     this.betterPhrasings = const [],
     this.areas = const [],
     this.degraded = false,
+    this.pending = false,
   });
+
+  /// Story 10.7 (Bug B) — minimal copy used by the progressive screen: convert a
+  /// `pending` score-only debrief into a terminal score-only one when the inline
+  /// analysis never lands within the poll budget (`degraded: true, pending:
+  /// false` → the screen shows the existing "analysis unavailable" line, the
+  /// never-blank fallback). Only the two lifecycle flags vary; everything else is
+  /// carried verbatim.
+  Debrief copyWith({bool? degraded, bool? pending}) {
+    return Debrief(
+      survivalPct: survivalPct,
+      characterName: characterName,
+      scenarioTitle: scenarioTitle,
+      attemptNumber: attemptNumber,
+      previousBest: previousBest,
+      errors: errors,
+      hesitations: hesitations,
+      idioms: idioms,
+      areasToWorkOn: areasToWorkOn,
+      inappropriateBehavior: inappropriateBehavior,
+      encouragingFraming: encouragingFraming,
+      debriefVersion: debriefVersion,
+      checkpoints: checkpoints,
+      betterPhrasings: betterPhrasings,
+      areas: areas,
+      degraded: degraded ?? this.degraded,
+      pending: pending ?? this.pending,
+    );
+  }
 
   static Debrief? tryParse(Map<String, dynamic>? json) {
     if (json == null) return null;
@@ -327,6 +365,7 @@ class Debrief {
       ),
       areas: _parseItems(json['areas'], DebriefArea.tryParse),
       degraded: _asBool(json['degraded']) ?? false,
+      pending: _asBool(json['pending']) ?? false,
     );
   }
 }

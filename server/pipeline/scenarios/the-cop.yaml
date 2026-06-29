@@ -74,10 +74,11 @@ checkpoints:
       registration and whether they know why you stopped them. Do NOT tell
       them the reason — make them say it.
     success_criteria: >
-      User acknowledges the traffic stop: responds to the officer,
-      guesses why they were pulled over, says they don't know, or
-      asks what happened. Any coherent response to the initial
-      question counts.
+      User engages with the traffic stop: hands over or mentions
+      license and registration, guesses why they were pulled over,
+      says they don't know why, or asks what happened. A bare greeting,
+      silence, or off-topic small talk (the weather, the traffic, the
+      crowd) that does not engage the stop does NOT count.
 
   - id: explain_driving
     # Story 6.27 — `respond`'s criteria enumerates "responds to the officer"
@@ -93,10 +94,11 @@ checkpoints:
       drifting between lanes and ran a yellow — and ask where they're coming
       from tonight. Weigh their answer for coherence.
     success_criteria: >
-      User explains where they were coming from or where they're
-      going. "I was coming from work", "I'm driving home", "I was
-      at a friend's house", or any location/activity explanation
-      counts.
+      User explains where they were coming from or where they are
+      going — names a place or activity ("coming from work", "driving
+      home", "at a friend's house"). A reply that names no
+      location/activity, dodges the question, or changes the subject
+      does NOT count.
 
   - id: justify
     # Story 6.27 — justifying the driving ⊂ respond ("responds to the officer").
@@ -108,10 +110,10 @@ checkpoints:
       tonight? Treat any hesitation as suspicious and keep pressing on it in
       the SAME turn — don't just note it and wait.
     success_criteria: >
-      User provides an explanation for the erratic driving:
-      unfamiliar roads, distracted, tired, looking at GPS, or
-      denies drinking. Any coherent justification counts. Silence
-      or "I don't know" does NOT count.
+      User gives a reason for the erratic driving (unfamiliar roads,
+      distracted, tired, looking at GPS) or denies drinking. The reply
+      must offer an actual justification. Silence, "I don't know", or
+      an off-topic remark does NOT count.
 
   - id: curveball
     # Story 6.27 — engaging the officer's question ⊂ respond (same clause).
@@ -144,10 +146,11 @@ checkpoints:
       up calmly and show they're in control. Do NOT script your verdict; if
       they close calmly and without hostility, the call ends on its own.
     success_criteria: >
-      User makes a calm closing statement: apologizes for the
-      driving, assures they'll be more careful, or says something
-      composed and respectful. Any coherent, non-hostile closing
-      remark counts.
+      User makes a calm, on-topic closing statement: apologizes for
+      the driving, assures they will be more careful, or gives a
+      composed, respectful sign-off. A hostile reply, a question back,
+      or an off-topic remark that does not close the stop does NOT
+      count.
 
 # ============================================================
 # EXIT LINES

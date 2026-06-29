@@ -343,9 +343,16 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
   /// Story 9.1 (Task 4) — persist the fetched debrief offline, fire-and-forget.
   /// Keyed by the scenario in scope + the callId. A cache-write failure is
   /// swallowed: it must never block the exit transition or surface in the UI.
+  ///
+  /// Story 10.7 (Bug B — progressive debrief) — SKIP a `pending` (score-only)
+  /// payload: it is NOT the final report. The overlay hands the pending payload
+  /// off to the debrief screen, which keeps polling and caches the READY analysis
+  /// once it lands (DebriefScreen._cacheReadyJson). Caching the pending blob here
+  /// would freeze the report icon on a score-only copy.
   void _cacheDebrief(int callId, Map<String, dynamic> payload) {
     final store = widget.debriefCacheStore;
     if (store == null) return;
+    if (payload['pending'] == true) return;
     unawaited(
       store
           .write(
@@ -393,6 +400,11 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
         // Story 8.2 (FR29) — auto-present the paywall on the debrief when this
         // was the user's last free scenario.
         presentPaywallOnLoad: widget.presentPaywallOnDebrief,
+        // Story 10.7 (Bug B) — the overlay hands off the SCORE-ONLY pending
+        // payload; the debrief screen keeps polling and caches the READY analysis
+        // once it lands (a pending blob is never cached as final).
+        debriefCacheStore: widget.debriefCacheStore,
+        scenarioId: widget.scenario.id,
       ),
       transitionsBuilder: (_, animation, _, child) => FadeTransition(
         opacity: CurvedAnimation(

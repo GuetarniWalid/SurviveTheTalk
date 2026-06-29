@@ -76,10 +76,13 @@ class _CachedDebriefScreenState extends State<CachedDebriefScreen> {
         }
         final result = snapshot.data;
         if (result != null) {
-          // A non-null payload makes DebriefScreen render immediately and never
-          // poll, so `callRepository` is unused on this cache-hit path —
-          // constructed inline exactly as the incoming-call route does
-          // (router.dart). No new DI thread needed.
+          // A READY cached payload makes DebriefScreen render immediately and
+          // never poll. Story 10.7 (Bug B): a `pending` blob is never cached as
+          // final, so this is normally a terminal report; were a pending copy
+          // ever cached, the progressive DebriefScreen would RE-FETCH the
+          // analysis (it gets the real `callId` + repository here). `callId` is
+          // therefore threaded; the repository is constructed inline exactly as
+          // the incoming-call route does (router.dart). No new DI thread needed.
           return DebriefScreen(
             payload: result.payload,
             callId: result.callId,

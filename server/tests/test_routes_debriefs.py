@@ -85,6 +85,8 @@ def test_get_debrief_happy_path(client, test_db_path):
     assert len(data["errors"]) == 1
     assert 2 <= len(data["areas_to_work_on"]) <= 3
     assert "encouraging_framing" in data
+    # Story 10.7 (Bug B) — a stored (ready) debrief surfaces pending=False.
+    assert data["pending"] is False
     assert resp.json()["meta"]["timestamp"]
 
 
@@ -138,6 +140,48 @@ def test_nonexistent_call_returns_404_call_not_found(client, test_db_path):
 
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "CALL_NOT_FOUND"
+
+
+def _seed_pending_call(user_id: int, survival: int = 66) -> int:
+    """Seed a SCORE-ONLY `pending` debrief (Story 10.7 Bug B phase 1): the real
+    scorecard, but empty analysis arrays and `status='pending'`."""
+
+    async def _go() -> int:
+        score_only = _full_debrief(survival)
+        score_only["errors"] = []
+        score_only["areas_to_work_on"] = []
+        async with get_connection() as db:
+            call_id = await insert_call_session(db, user_id, _SCENARIO_ID, _NOW)
+            await insert_debrief(
+                db,
+                call_session_id=call_id,
+                survival_pct=survival,
+                checkpoints_passed=2,
+                total_checkpoints=3,
+                debrief_json=json.dumps(score_only),
+                prompt_version="2.2",
+                created_at=_NOW,
+                status="pending",
+            )
+        return call_id
+
+    return asyncio.run(_go())
+
+
+def test_pending_debrief_serves_200_with_pending_true(client, test_db_path):
+    """Story 10.7 (Bug B) AC4 — a `pending` row returns 200 (NOT 404) so the
+    client renders the scorecard immediately, with `pending: true` signalling it
+    must keep polling for the analysis."""
+    user_id = register_user(client, test_db_path, email="pendrow@example.com")
+    call_id = _seed_pending_call(user_id)
+
+    resp = client.get(f"/debriefs/{call_id}", headers=_auth(issue_token(user_id)))
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["pending"] is True
+    assert data["survival_pct"] == 66  # the score renders now
+    assert data["errors"] == []  # analysis still coming
 
 
 def test_not_ready_returns_404_debrief_not_ready(client, test_db_path):

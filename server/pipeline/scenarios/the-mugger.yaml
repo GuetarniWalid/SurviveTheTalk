@@ -77,17 +77,20 @@ checkpoints:
       demand and press them for an answer; if they go quiet, push it again,
       harder.
     success_criteria: >
-      User acknowledges the situation in any way: asks a question,
-      expresses confusion, says they don't understand, or reacts
-      to the demand. Any coherent response counts.
+      User engages with Danny's demand: asks a question, expresses
+      confusion, says they don't understand, refuses, or otherwise
+      responds to the protection-money demand. Silence or an off-topic
+      remark that ignores the demand does NOT count.
 
   - id: refuse
-    # Story 6.27 — `react`'s criteria ends on an explicit catch-all ("Any
-    # coherent response counts"), making it a strict logical SUPERSET of every
-    # later beat in this scenario: refusing / challenging / deflecting /
-    # standing firm are all coherent reactions. Without these edges the judge
-    # can credit a narrower later beat on the user's first engaged turn and
-    # strand `react` forever (the call_id=266 class — see the-waiter.yaml).
+    # Story 6.27 — `react` credits any genuine engagement with the demand,
+    # making it a strict logical SUPERSET of every later beat in this scenario:
+    # refusing / challenging / deflecting / standing firm are all engaged
+    # reactions to the demand. Without these edges the judge can credit a
+    # narrower later beat on the user's first engaged turn and strand `react`
+    # forever (the call_id=266 class — see the-waiter.yaml). (Story 10.7
+    # tightened react's wording to exclude silence/off-topic, but the superset
+    # relationship is unchanged.)
     implies: react
     hint_text: "Tell him you're not going to pay."
     prompt_segment: |
@@ -115,7 +118,7 @@ checkpoints:
       actually protect them, or questions his credibility.
 
   - id: deflect
-    # Story 6.27 — refusing to share info ⊂ react ("any coherent response").
+    # Story 6.27 — refusing to share info ⊂ react (an engaged reaction to Danny).
     implies: react
     hint_text: "He's asking personal questions — refuse to answer."
     prompt_segment: |
@@ -130,7 +133,7 @@ checkpoints:
       telling you that", "stop asking me questions" all count.
 
   - id: stand_firm
-    # Story 6.27 — a firm closing statement ⊂ react ("any coherent response").
+    # Story 6.27 — a firm closing statement ⊂ react (an engaged reaction to Danny).
     implies: react
     hint_text: "Tell him to stop calling you. Final refusal."
     prompt_segment: |
@@ -139,9 +142,11 @@ checkpoints:
       you've lost. Do NOT script your give-up line; if they refuse once more
       or threaten the police, the call ends on its own.
     success_criteria: >
-      User gives a definitive final refusal, tells Danny to
-      stop calling, threatens to call police, or asserts they
-      are not afraid. Any firm closing statement counts.
+      User gives a definitive final refusal, tells Danny to stop
+      calling, threatens to call the police, or makes clear they are
+      not afraid. A non-committal reply, a question back, or an
+      off-topic remark that does not firmly close the call does NOT
+      count.
 
 # ============================================================
 # EXIT LINES

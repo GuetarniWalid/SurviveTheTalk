@@ -1,6 +1,6 @@
 # Story 10.7: Tighten judge accuracy + make the debrief progressive (instant score, analysis fills in)
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -189,45 +189,59 @@ structural fix is to decouple the two halves of the debrief** (see Dev Notes →
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Bug B server: two-phase debrief persistence (AC: 1, 2, 3, 4)**
-  - [ ] Migration (next free number, dev confirms — 016 is the latest): add
-        `debriefs.status TEXT NOT NULL DEFAULT 'ready'`; backfill existing rows to
-        `ready`. Run `scripts/refresh_prod_snapshot.py`; keep `test_migrations.py`
-        green against `prod_snapshot.sqlite`.
-  - [ ] `db/queries.py`: keep `insert_debrief` (first write) but write `status='pending'`
-        + the score-only blob; ADD `update_debrief_analysis(call_session_id,
-        debrief_json, status='ready')` doing an UPDATE guarded `WHERE status='pending'`.
-  - [ ] `pipeline/debrief_teardown.py::persist_debrief`: reorder — write the score-only
-        `pending` row BEFORE `generate_debrief`; then await generation inline (generous
-        budget); on success UPDATE → `ready` + full blob; on failure UPDATE → `ready` +
-        in-blob `degraded` (never-blank kept). Preserve the idempotency claim + the
-        `upsert_user_progress` transaction.
-  - [ ] `pipeline/debrief_generator.py`: size the inline generation budget to measured
-        gpt-4.1-mini p99 + one retry (this REPLACES the old 7.5/14 s as the inline cap,
-        NOT a client-facing threshold). Measure via `probe_debrief_schema.py` on the
-        VPS; confirm `finish_reason != "length"`.
-  - [ ] `api/routes_debriefs.py` + `models/schemas.py` (`DebriefOut`): surface `status`
-        (or a `pending` flag) in the 200 envelope; a missing row still → `DEBRIEF_NOT_READY`.
-- [ ] **Task 2 — Bug B client: progressive merge (AC: 5, 6)**
-  - [ ] `models/debrief.dart`: add the `pending` flag to `tryParse`.
-  - [ ] `views/debrief_screen.dart`: add `_DebriefPhase.contentPending`; change the
-        line-~311 terminal guard so `pending` keeps polling; add a merge (fill empty
-        analysis arrays from later fetches, keep score/checkpoints, key items by id);
-        animate sections in; extend `kPollBudget`; defer the Story 8.2 paywall until
-        merge done.
-  - [ ] `views/call_ended_screen.dart`: verify the overlay hands off a `pending`
-        payload to the debrief screen and lets it keep polling (the overlay already
-        hands off whatever it fetched — confirm `pending` isn't treated as final).
-  - [ ] Story 9.1 cache (`debrief_cache_store.dart` wiring): don't cache a `pending`
-        blob as final; re-fetch on report-icon re-open if still pending.
-- [ ] **Task 3 — Bug A: stiffen the judge prompt (AC: 7)** — `prompts.py`.
-- [ ] **Task 4 — Bug A: rewrite the 6 scenarios' over-permissive `success_criteria` (AC: 8, 9)**
-- [ ] **Task 5 — Bug A: add the permissiveness lint R8 (AC: 10)** — `scenarios.py`
-      helper + builder reject + loader warn + `test_scenarios.py` glob lint + `server/CLAUDE.md §9`.
-- [ ] **Task 6 — Re-validate (AC: 11, 12, 13)** — golden 6/6 + cooperative band + full
-      server & client gates.
-- [ ] **Task 7 — Deploy + smoke gate (AC: 14)** — DB backup, deploy, fill the Smoke Test
-      Gate boxes, hand Walid a ready-to-play Pixel 9 script (Dev Notes → Smoke script).
+- [x] **Task 1 — Bug B server: two-phase debrief persistence (AC: 1, 2, 3, 4)**
+  - [x] Migration **017** (`017_debriefs_status.sql`): add
+        `debriefs.status TEXT NOT NULL DEFAULT 'ready'` (+ `CHECK(status IN
+        ('pending','ready'))`); the DEFAULT backfills existing rows to `ready`.
+        `test_migrations.py` replays GREEN against `prod_snapshot.sqlite` (+ a new
+        `test_migration_017_debriefs_status`). Snapshot REFRESH is a post-deploy
+        step (the ADD-only replay against the OLD snapshot is the meaningful test).
+  - [x] `db/queries.py`: `insert_debrief` gained `status='ready'` (default, back-compat),
+        the teardown first-write passes `status='pending'`; ADD
+        `update_debrief_analysis(call_session_id, debrief_json, status='ready')` —
+        an UPDATE guarded `WHERE status='pending'` (can't clobber a ready blob).
+  - [x] `pipeline/debrief_teardown.py::persist_debrief`: reordered — the idempotency
+        claim + the score-only `pending` insert run BEFORE `generate_debrief`; then
+        generation awaits inline (generous budget); on success UPDATE → `ready` + full
+        blob; on failure (or a contract-failing blob) UPDATE → `ready` + in-blob
+        `degraded` (never-blank kept). Idempotency claim + `upsert_user_progress`
+        transaction preserved.
+  - [x] `pipeline/debrief_generator.py`: inline budget raised 7.5/14 → 25/55 s (the
+        INLINE cap, not a client deadline); `probe_debrief_schema.py` now TIMES the
+        live call + prints `finish_reason` so the VPS smoke gate can confirm p99 fits.
+  - [x] `api/routes_debriefs.py` + `models/schemas.py` (`DebriefOut`): the route injects
+        `pending` (from the `status` COLUMN) into the 200 envelope; a missing row still
+        → `DEBRIEF_NOT_READY`.
+- [x] **Task 2 — Bug B client: progressive merge (AC: 5, 6)**
+  - [x] `models/debrief.dart`: `tryParse` learns the `pending` flag (+ a `copyWith`).
+  - [x] `views/debrief_screen.dart`: added `_DebriefPhase.contentPending`; the terminal
+        guard now only stops on terminal `content`, so `pending` KEEPS polling; the ready
+        fetch merges in (a quiet "Analyzing…" placeholder replaces the empty analysis
+        sections while pending, then the analysis fades in); `kPollBudget` 30 → 90 s;
+        the Story 8.2 paywall is DEFERRED until the terminal merge; budget-exhaust →
+        score-only degraded terminal (never blank).
+  - [x] `views/call_ended_screen.dart`: confirmed the overlay hands off the `pending`
+        payload (debrief screen keeps polling); it now SKIPS caching a pending blob.
+  - [x] Story 9.1 cache: a `pending` blob is never cached as final; the READY analysis is
+        cached from `DebriefScreen` once it lands; a cached pending blob (defensive) re-polls.
+- [x] **Task 3 — Bug A: stiffen the judge prompt (AC: 7)** — `prompts.py` principle 7 +
+      a reminder after the goals block: a permissive criterion never licenses crediting
+      empty/evasive/off-topic/question-back content.
+- [x] **Task 4 — Bug A: rewrite the 6 scenarios' over-permissive `success_criteria` (AC: 8, 9)**
+      — purged every blanket catch-all across waiter/cop/girlfriend/mugger/landlord; each
+      rewritten criterion states the genuine move + a "does NOT count" exclusion (the
+      landlord model). cop_interrogation untouched (its hit is a base_prompt rule).
+- [x] **Task 5 — Bug A: add the permissiveness lint R8 (AC: 10)** — `scenarios.py`
+      `find_permissive_criteria_phrases` + builder HARD reject + loader WARN +
+      `test_scenarios.py` glob lint + `server/CLAUDE.md §9` (R8).
+- [x] **Task 6 — Re-validate (AC: 13 green; AC: 11, 12 owed on the VPS)** — server
+      `ruff`/`format`/`pytest` **1051** + client `flutter analyze` clean + `flutter test`
+      **701** all GREEN (incl. the new migration / lint / criteria-regression / progressive
+      tests). The LIVE golden 6/6 (AC11) + cooperative band (AC12) need the OpenAI key →
+      run **on the VPS** (Smoke Test Gate boxes) — not runnable locally.
+- [ ] **Task 7 — Deploy + smoke gate (AC: 14)** — the review→done gate: DB backup, deploy,
+      run the VPS golden sweep + probe, fill the Smoke Test Gate boxes, Pixel 9 (script in
+      Dev Notes → Smoke script). Owned by the reviewer (deploy) + Walid (device).
 
 ## Smoke Test Gate (Server / Deploy Stories Only)
 
@@ -435,10 +449,101 @@ all beats to confirm a genuine confirm/close still credits.
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-8 (Claude Opus 4.8)
 
 ### Debug Log References
 
+- Server gates: `ruff check .` + `ruff format --check .` clean; `pytest` → **1051 passed**
+  (incl. `test_migrations` replaying migration 017 against `prod_snapshot.sqlite`, the new
+  R8 lint glob, the criteria-regression nets, and the two-phase teardown/queries/routes tests).
+- Client gates: `flutter analyze` → No issues found!; `flutter test` → **701 passed** (incl.
+  the new progressive-debrief screen tests + the pending-handoff overlay test).
+- One client a11y test surfaced the `Opacity(0)` semantics-drop on the analysis fade-in →
+  fixed with `alwaysIncludeSemantics: true` (a screen reader must read the analysis throughout).
+
 ### Completion Notes List
 
+**Bug B — progressive debrief (server + client).** The debrief is now two-phase. At teardown
+the bot claims idempotency, persists a SCORE-ONLY `pending` row (reusing
+`degraded_core`/`assemble_debrief`, NOT flagged `degraded`), then generates the analysis INLINE
+and UPDATEs the SAME row → `ready` (guarded `WHERE status='pending'`). `GET /debriefs/{id}`
+returns the scorecard instantly with `pending:true`; the client renders the score + checkpoints
+at once, shows a quiet "Analyzing…" placeholder (never the empty "No errors flagged" sections),
+keeps polling, then fades the analysis in. Never-blank preserved on every failure path (timeout,
+terminal HTTP error, contract-failing blob, or client budget-exhaust → score-only degraded).
+The inline budget (25/55 s) is the only "threshold" left and it no longer races a client clock.
+
+**Bug A — judge accuracy.** `EXCHANGE_CLASSIFIER_MULTI_PROMPT` gained principle 7 (a
+permissive-sounding criterion never licenses crediting empty/evasive/off-topic/question-back
+content — the user must perform the move; difficulty forgives LANGUAGE not CONTENT). All 6
+scenarios' over-permissive `success_criteria` were rewritten to the landlord model (state the
+genuine move + a "does NOT count" exclusion); the call_id=340 beats (`confirm`/`close`) now
+explicitly reject "No other choice." / "Is it a question?". New R8 lint
+(`find_permissive_criteria_phrases`) enforces this by construction: builder HARD reject + loader
+WARN + a `test_scenarios.py` glob over the full index, tuned for zero false-positives on the
+rewrites + cop_interrogation (server/CLAUDE.md §9 R8).
+
+**OWED before `done` (the review→done gate, NOT runnable in this dev session):**
+1. `/bmad-code-review` by a DIFFERENT LLM (Opus 4.8 implemented this).
+2. Deploy to the VPS (DB backup first; migration 017 auto-applies) + refresh `prod_snapshot`.
+3. VPS live validation (needs the OpenAI key, absent locally):
+   `calibrate_scenario.py --golden-only` → 6/6 PASS; a cooperative `easy` band sweep stays in
+   60–80; `probe_debrief_schema.py` times one live debrief (`finish_reason != "length"`, budget
+   covers p99). Bump `ENGINE_VERSION` if the band sweep shows the rules drifted.
+4. **Pixel 9 smoke gate (Walid)** — clearing it flips BOTH 10.7 and 10.6 → `done`.
+
+**Ready-to-play Pixel 9 script (The Waiter, easy):**
+- Open **The Waiter**. Order normally: say **"Hi, good evening."** → **"I'll have the grilled
+  chicken, please."** → (she asks grilled/fried — answer) → **"A cola, please."**
+- 💰 **Money moment A (judge):** when she reads the order back and asks you to confirm, answer
+  **"No other choice."** then **"No other choice. Is it a question?"** — the `confirm` and `close`
+  checkpoints must NOT tick (HUD holds). *(Then give a real confirm — "Yes, that's right." — and
+  a real close — "Thanks." — so a genuine confirm/close still credits.)*
+- 💰 **Money moment B (debrief):** after the call ends, the survival % + checkpoints appear within
+  ~1–2 s, then the language-analysis sections fill in a few seconds later — NO "Debrief unavailable",
+  NO degraded "analysis unavailable" on this normal call.
+
 ### File List
+
+**Server — added**
+- `server/db/migrations/017_debriefs_status.sql`
+
+**Server — modified**
+- `server/db/queries.py`
+- `server/pipeline/debrief_teardown.py`
+- `server/pipeline/debrief_generator.py`
+- `server/api/routes_debriefs.py`
+- `server/models/schemas.py`
+- `server/scripts/probe_debrief_schema.py`
+- `server/pipeline/prompts.py`
+- `server/pipeline/scenarios.py`
+- `server/scripts/scenario_builder.py`
+- `server/pipeline/scenarios/the-waiter.yaml`
+- `server/pipeline/scenarios/the-cop.yaml`
+- `server/pipeline/scenarios/the-girlfriend.yaml`
+- `server/pipeline/scenarios/the-mugger.yaml`
+- `server/pipeline/scenarios/the-landlord.yaml`
+- `server/CLAUDE.md`
+- `server/tests/test_migrations.py`
+- `server/tests/test_debrief_queries.py`
+- `server/tests/test_debrief_teardown.py`
+- `server/tests/test_routes_debriefs.py`
+- `server/tests/test_scenarios.py`
+- `server/tests/test_scenario_builder.py`
+
+**Client — modified**
+- `client/lib/features/debrief/models/debrief.dart`
+- `client/lib/features/debrief/views/debrief_screen.dart`
+- `client/lib/features/debrief/views/cached_debrief_screen.dart`
+- `client/lib/features/call/views/call_ended_screen.dart`
+- `client/test/features/debrief/models/debrief_test.dart`
+- `client/test/features/debrief/views/debrief_screen_test.dart`
+- `client/test/features/call/views/call_ended_screen_test.dart`
+
+### Change Log
+
+- 2026-06-29 — dev-story 10.7: Bug B progressive debrief (migration 017 + two-phase teardown +
+  `pending` route signal + progressive debrief screen) and Bug A judge accuracy (prompt
+  principle 7 + 6 scenarios' criteria rewritten + R8 permissiveness lint). All automated gates
+  green (server pytest 1051; client analyze + 701). Status → review. Owed: code review (diff LLM)
+  + deploy + VPS golden/probe + Pixel 9 smoke (the review→done gate, which also flips 10.6).

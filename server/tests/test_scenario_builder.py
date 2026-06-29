@@ -527,6 +527,26 @@ def test_validate_structure_rejects_difficulty_coded_persona():
     assert any("difficulty-coded" in p for p in problems), problems
 
 
+def test_validate_structure_rejects_permissive_criteria():
+    """Story 10.7 (Bug A, R8) — the builder mirrors the loader's blanket-permissive
+    guard: a success_criteria granting a catch-all pass ("any … counts") is
+    flagged, so the builder can never WRITE the call_id=340 self-playing scenario."""
+    good = builder.assemble_scenario(
+        scenario_id="x",
+        title="X",
+        rive_character="cop",
+        base_prompt="You are X.",
+        checkpoints=_checkpoints(3),
+        brief=_brief(3),
+    )
+    cps = [dict(c) for c in good["checkpoints"]]
+    cps[1]["success_criteria"] = (
+        "User responds. Any acknowledgement of the request counts."
+    )
+    problems = builder.validate_structure({**good, "checkpoints": cps})
+    assert any("blanket-permissive" in p or "R8" in p for p in problems), problems
+
+
 def test_validate_structure_accepts_good_scenario():
     scenario = builder.assemble_scenario(
         scenario_id="cop_interrogation_01",

@@ -524,20 +524,28 @@ async def insert_debrief(
     debrief_json: str,
     prompt_version: str,
     created_at: str,
+    status: str = "ready",
 ) -> bool:
     """Persist the distilled debrief for a call (one per call).
 
-    `debrief_json` is the FULLY-ASSEMBLED client debrief (LLM core + backend
-    fields + encouraging_framing) as a JSON string — the FULL transcript is
+    `debrief_json` is the assembled client debrief (backend fields +,
+    eventually, the LLM analysis core) as a JSON string — the FULL transcript is
     never stored (privacy). The `call_session_id` UNIQUE constraint makes this
     idempotent: a re-run at teardown does nothing (ON CONFLICT DO NOTHING).
     Returns True if a row was inserted, False if a debrief already existed.
+
+    Story 10.7 (Bug B — progressive debrief): `status` is the FIRST write of the
+    two-phase lifecycle. The teardown writes the SCORE-ONLY blob with
+    `status='pending'` BEFORE awaiting the LLM (so `GET /debriefs/{id}` returns
+    the scorecard immediately), then `update_debrief_analysis` does the second
+    write. Defaults to `'ready'` so any one-shot caller (and the existing tests)
+    keep the pre-10.7 single-write semantics.
     """
     cursor = await db.execute(
         "INSERT INTO debriefs "
         "(call_session_id, survival_pct, checkpoints_passed, total_checkpoints, "
-        "debrief_json, prompt_version, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "debrief_json, prompt_version, created_at, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(call_session_id) DO NOTHING",
         (
             call_session_id,
@@ -547,7 +555,34 @@ async def insert_debrief(
             debrief_json,
             prompt_version,
             created_at,
+            status,
         ),
+    )
+    await db.commit()
+    return cursor.rowcount == 1
+
+
+async def update_debrief_analysis(
+    db: aiosqlite.Connection,
+    *,
+    call_session_id: int,
+    debrief_json: str,
+    status: str = "ready",
+) -> bool:
+    """Second write of the two-phase progressive debrief (Story 10.7, Bug B).
+
+    Replaces the score-only `pending` blob with the FULL assembled debrief (or
+    the never-blank `degraded` fallback) and flips `status` to `'ready'`. The
+    update is GUARDED `WHERE status='pending'` so a duplicate / late writer (a
+    Popen retry, a pooled-bot re-run) can neither clobber an already-`ready`
+    blob nor resurrect a degraded one — it simply affects 0 rows. Returns True
+    if the pending row was updated, False if no pending row matched (already
+    ready, or no row at all). Commits.
+    """
+    cursor = await db.execute(
+        "UPDATE debriefs SET debrief_json = ?, status = ? "
+        "WHERE call_session_id = ? AND status = 'pending'",
+        (debrief_json, status, call_session_id),
     )
     await db.commit()
     return cursor.rowcount == 1
