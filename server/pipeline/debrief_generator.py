@@ -58,16 +58,21 @@ from pipeline.prompts import DEBRIEF_SYSTEM_PROMPT
 # blocks before finalising the row (full on success, ready+degraded on a terminal
 # failure). The bot runs teardown to completion with no deadline-kill and pooled
 # bots are single-use, so a generous budget is safe (it never starves a worker).
-# Sized to the measured gpt-4.1-mini debrief p99 + the rare non-strict retry —
-# the call_id=340 ReadTimeout was the old 7.5 s/14 s racing a maxed ~2.5-3k-token
-# recap. CONFIRM on the VPS with `scripts/probe_debrief_schema.py` (it times one
-# live call + asserts `finish_reason != "length"`); raise these if p99 grows.
-# The inner httpx (per-attempt) timeout sits below the outer wall-clock budget so
-# httpx aborts a hung attempt first with a clean HTTP error instead of an opaque
-# `asyncio.TimeoutError`; the outer budget covers a strict attempt PLUS one
-# non-strict retry (the second round-trip on a schema-validation 400).
-_HTTP_TIMEOUT_SECONDS = 25.0
-_GENERATION_TIMEOUT_SECONDS = 55.0
+# Sized to the MEASURED gpt-4.1-mini debrief latency on the VPS + the rare
+# non-strict retry. `scripts/probe_debrief_schema.py` (2026-06-29) timed a SHORT
+# 2-turn debrief at 7.34 s with `finish_reason='stop'` — already AT the old 7.5 s
+# HTTP cap, which is exactly why call_id=340's MAXED recap ReadTimeout'd. A maxed
+# debrief (5 errors + 3 ~900-char practice_prompts + idioms + better_phrasings,
+# ~2.5k output tokens) extrapolates to ~25-35 s at the observed ~110 tok/s, so the
+# per-attempt HTTP budget is 38 s (covers that p99 with margin) and the outer
+# wall-clock budget is 80 s (a strict attempt + the rare non-strict retry, both
+# bounded by the inner httpx timeout). Both sit UNDER the client's 90 s poll budget
+# (`debrief_screen.dart kPollBudget`) so the client is still polling when the row
+# flips to `ready`. The inner httpx timeout sits below the outer so httpx aborts a
+# hung attempt first with a clean HTTP error instead of an opaque
+# `asyncio.TimeoutError`. Re-run the probe and raise these if p99 grows.
+_HTTP_TIMEOUT_SECONDS = 38.0
+_GENERATION_TIMEOUT_SECONDS = 80.0
 
 # The v2 debrief JSON is large: up to 5 errors (each with `explanation` + up to
 # 2 `examples`), up to 3 areas (each a ~900-char `practice_prompt`), <=2
