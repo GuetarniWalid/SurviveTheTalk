@@ -181,6 +181,9 @@ exit_lines:
   hangup: "You know what? We're done. Don't call me back."
   completion: "...Okay. Fine. But we're still talking about this later."
 
+# Story 10.6 review (D4) — in-character never-silent floor (vs the global "Go on.")
+never_silent_fallback: "...are you even listening to me?"
+
 # ============================================================
 # BRIEFING — shown before the call
 # ============================================================

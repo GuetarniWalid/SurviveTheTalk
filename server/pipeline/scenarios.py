@@ -104,6 +104,36 @@ def load_scenario_metadata(scenario_id: str) -> dict:
     return metadata
 
 
+def load_scenario_never_silent_fallback(scenario_id: str) -> str | None:
+    """Return the scenario's optional `never_silent_fallback` spoken line, or None.
+
+    Story 10.6 review (D4) — when a whole reply sanitizes to non-spoken meta (a
+    mood tag only), `reply_sanitizer` injects ONE deterministic spoken line so the
+    character is never silent (the call-335 dead-air floor). A single GLOBAL line
+    ("Go on.") breaks persona for a mugger/detective and wrongly invites the
+    learner to keep talking, so each scenario may supply an in-character line via a
+    top-level `never_silent_fallback` string. Absent → the caller's default (the
+    global floor) applies. Unknown ids raise `FileNotFoundError`, matching the
+    other loaders; a present-but-malformed value fails fast.
+    """
+    yaml_path = _SCENARIO_INDEX.get(scenario_id)
+    if yaml_path is None:
+        raise FileNotFoundError(
+            f"Unknown scenario_id: {scenario_id!r}. Known ids: "
+            f"{sorted(_SCENARIO_INDEX)}."
+        )
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    line = data.get("never_silent_fallback")
+    if line is None:
+        return None
+    if not isinstance(line, str) or not line.strip():
+        raise RuntimeError(
+            f"Scenario {scenario_id!r} has malformed `never_silent_fallback` "
+            "(must be a non-empty string)."
+        )
+    return line.strip()
+
+
 # ============================================================
 # Story 6.4 — Difficulty presets + PatienceTracker config resolver
 # ============================================================
@@ -413,8 +443,15 @@ def find_model_specific_tokens(text: str) -> list[str]:
 # 'say exactly: "..."' completion re-scripts (R2). These reached production
 # because R2/R7 were only builder GUIDANCE, never a gate — this tripwire gives
 # them R1's three-layer enforcement (builder reject + loader warn + commit test).
+# Story 10.6 review (P3) — match any [bracketed]/{braced}/<angled> run whose body
+# contains at least one LETTER, anywhere (not just as the first char). The old
+# `\[[A-Za-z]…` form required the letter FIRST, so a leading space/digit/punct
+# slipped a real placeholder through ("[ the date ]", "<30 min later>",
+# "[their order]"). YAML structural `[]`/`{}` are flow-collection syntax in the
+# raw file, never inside a parsed prompt string, so this can't false-positive on
+# them; a letter-bearing bracket inside prose IS a recite template.
 _TEMPLATE_PLACEHOLDER_RE = re.compile(
-    r"\[[A-Za-z][^\]]*\]|\{[A-Za-z][^}]*\}|<[A-Za-z][^>]*>"
+    r"\[[^\]]*[A-Za-z][^\]]*\]|\{[^}]*[A-Za-z][^}]*\}|<[^>]*[A-Za-z][^>]*>"
 )
 _RECITE_DIRECTIVE_PATTERNS: tuple[str, ...] = (
     "say exactly",

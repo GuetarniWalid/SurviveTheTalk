@@ -155,99 +155,96 @@ assert any("expected message" in entry for entry in captured)
 
 Bit us on Story 6.5 review P6 (NULL `duration_sec` log assertion).
 
-### 4. ALL LLM paths run on Groq (2026-05-29 all-Groq migration)
+### 4. ALL LLM paths run on OpenAI gpt-4.1-mini (Story 10.6, 2026-06-29)
+
+> **FINAL STATE (Story 10.6, 2026-06-29).** All three LLM roles —
+> `classifier_model` (judge), `debrief_model`, `character_model` — default to
+> OpenAI **`gpt-4.1-mini`** via the OpenAI-compatible endpoint
+> (`llm_base_url=https://api.openai.com/v1`). gpt-4.1-mini supports strict
+> `json_schema` (`strict:true`) NATIVELY, so the judge + debrief keep their
+> server-validated structured-output contract, and it is NOT a reasoning model so
+> NO `reasoning_effort` is sent. The Groq / gpt-oss / Gemini material below is
+> MIGRATION HISTORY (Scout → gpt-oss on Groq → Gemini 2.5 → OpenAI); the LAW it
+> states still holds — only the provider/model names changed.
 
 > **PROJECT LAW — checkpoint-judge model swaps.** Any future change to
 > `CLASSIFIER_MODEL` / `Settings.classifier_model` MUST pick a model that
-> supports **strict structured output** (Groq `response_format=
-> json_schema`, or the provider equivalent). Never pin a judge model that
-> lacks it. Reason: the 2026-05-29 "nothing checks" bug — a free-form-JSON
-> judge intermittently echoed a mangled goal id (`goal_id="greet"`) →
-> silent all-None → no checkpoint flipped. The format guarantee OUTRANKS a
-> few points of raw accuracy: a mangled-format turn silently drops a
-> checkpoint (bad UX), worse than an occasional wrong verdict. Verify the
-> candidate accepts `json_schema` on the target provider BEFORE adopting it
-> (console.groq.com/docs/structured-outputs#supported-models — 70B does
-> NOT; the `openai/gpt-oss-*` family does, with TRUE strict constrained
-> decoding). **Story 10.6 (2026-06-25): the judge + debrief migrated off the
-> Groq-decommissioned Llama 4 Scout (off 2026-07-17) onto
-> `openai/gpt-oss-20b` (judge) / `openai/gpt-oss-120b` (debrief)** — on Groq,
-> ONLY the gpt-oss family has real `strict:true` (Scout was best-effort
-> `strict:false`, Qwen is json_object-only → disqualified). gpt-oss are
-> REASONING models (send `reasoning_effort:low`, size `max_tokens` with
-> reasoning headroom) and use more tokens-per-minute → see the Dev-tier note
-> (R1) below.
+> supports **strict structured output** (`response_format=json_schema`, or the
+> provider equivalent). Never pin a judge model that lacks it. Reason: the
+> 2026-05-29 "nothing checks" bug — a free-form-JSON judge intermittently echoed
+> a mangled goal id (`goal_id="greet"`) → silent all-None → no checkpoint
+> flipped. The format guarantee OUTRANKS a few points of raw accuracy: a
+> mangled-format turn silently drops a checkpoint (bad UX), worse than an
+> occasional wrong verdict. Verify the candidate accepts `json_schema` on the
+> target provider BEFORE adopting it. **Story 10.6 (2026-06-29, FINAL): the judge
+> + debrief migrated off the Groq-decommissioned Llama 4 Scout (off 2026-07-17)
+> onto OpenAI `gpt-4.1-mini`**, which supports strict `json_schema` NATIVELY
+> (incl. `["string","null"]` unions). The migration passed through
+> `openai/gpt-oss-20b`/`120b` on Groq (the only Groq family with real
+> `strict:true`; the paid Dev tier stayed walled) and Gemini 2.5 (character too
+> weak) before landing on OpenAI. gpt-4.1-mini is NOT a reasoning model, so NO
+> `reasoning_effort` is sent (the gpt-oss/Gemini reasoning gating was removed in
+> the 10.6 review). 70B returns HTTP 400 on `json_schema`; Qwen is
+> json_object-only → both disqualified.
 
 Story 6.9b (2026-05-22) moved only the classifier to Groq; the
 **2026-05-29 all-Groq migration** then moved the remaining two LLM
 paths off Qwen-via-OpenRouter too. **Reason:** OpenRouter's *shared
 free pool* access to Qwen kept returning HTTP 429 "rate-limited
 upstream" from Alibaba (`is_byok: False`) — even on single slow test
-calls, freezing the character. Adding OpenRouter credits did NOT help
-(the bottleneck is Alibaba rate-limiting OpenRouter's pool, not our
-spend). Groq is a first-party provider: with our own dedicated key we
-get our own quota (raise it by upgrading the Groq tier), not a pool we
-can't control. So all three now run on Groq:
+calls, freezing the character. Story 10.6 (2026-06-29) later left Groq
+entirely for OpenAI gpt-4.1-mini (above); the three-path structure below
+is unchanged — only the provider/model/URL differ, so the Groq specifics
+in these bullets are history:
 
-- **`ExchangeClassifier`** (`pipeline/exchange_classifier.py`) → Groq via
-  raw httpx (`api.groq.com/openai/v1/chat/completions`). Reads
-  `Settings.groq_api_key` + `Settings.classifier_model`. **The multi-goal
-  judge (`classify_multi`) sends Groq STRICT structured outputs
-  (`response_format=json_schema`): a schema-pinned object
-  `{goal_id: "met"|"unmet"|"unsure"}` validated server-side. So
-  `classifier_model` defaults to **`openai/gpt-oss-20b`** (Story 10.6 — was
-  Llama 4 Scout until its 2026-07-17 decommission), NOT 70B — 70B returns
-  HTTP 400 on `json_schema`. Strict structured output killed the
-  format-instability bug where 70B intermittently echoed the literal id tag
-  (`goal_id="greet"`) under the old free-form `{"goals_met":[...]}` contract
-  → broke id matching → silent all-None → NO checkpoint flipped for the SAME
-  input that worked a call earlier. `CLASSIFIER_MODEL` must stay a
-  structured-output-capable Groq model. gpt-oss is a REASONING model, so
-  `_classify_multi`/`_classify` send `reasoning_effort:low` + size
-  `max_tokens` with `_GPT_OSS_REASONING_HEADROOM` (gated by `_is_gpt_oss`).
-  See `_build_verdict_schema` + `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.**
+- **`ExchangeClassifier`** (`pipeline/exchange_classifier.py`) → the configured
+  OpenAI-compatible endpoint via raw httpx (`resolve_llm_chat_url`, now
+  `api.openai.com/v1/chat/completions`). Reads the LLM key + `Settings.
+  classifier_model`. **The multi-goal judge (`classify_multi`) sends STRICT
+  structured outputs (`response_format=json_schema`): a schema-pinned object
+  `{goal_id: "met"|"unmet"|"unsure"}` validated server-side. So `classifier_model`
+  defaults to **`gpt-4.1-mini`** (Story 10.6 — was Llama 4 Scout until its
+  2026-07-17 decommission, then gpt-oss-20b on Groq), NOT 70B — 70B returns HTTP
+  400 on `json_schema`. Strict structured output killed the format-instability
+  bug where 70B intermittently echoed the literal id tag (`goal_id="greet"`) under
+  the old free-form `{"goals_met":[...]}` contract → broke id matching → silent
+  all-None → NO checkpoint flipped for the SAME input that worked a call earlier.
+  `CLASSIFIER_MODEL` must stay a structured-output-capable model. gpt-4.1-mini is
+  not a reasoning model, so no `reasoning_effort` is sent. See
+  `_build_verdict_schema` + `EXCHANGE_CLASSIFIER_MULTI_PROMPT`.**
 - **`EmotionEmitter` — RETIRED (Story 6.29, 2026-06-10).** The face
   emotion is now CO-GENERATED by the reply LLM as a trailing
   `<mood:VALUE>` tag (`prompts.MOOD_TAG_DIRECTIVE`, appended to every
   system-instruction composition); `pipeline/reply_sanitizer.py` strips
   the tag (plus `(...)`/`*...*` stage directions) from the streamed
   reply before TTS/transcript/context and re-emits the same
-  `{"type":"emotion"}` envelope. Deletes one Groq call per turn;
+  `{"type":"emotion"}` envelope. Deletes one LLM call per turn;
   `EMOTION_MODEL` is a legacy no-op env var (kept parseable).
-- **Main character LLM** (`bot.py`) → **`OpenAILLMService` pointed at
-  `base_url="https://api.groq.com/openai/v1"`** with
-  `Settings.groq_api_key` + `Settings.character_model`. We use
-  `OpenAILLMService` (the already-present `openai` SDK), **NOT** pipecat's
-  `GroqLLMService` — importing `pipecat.services.groq` pulls in
-  `groq.tts`, which hard-requires the `groq` SDK (`pipecat-ai[groq]`
-  extra) that we do NOT install → `ModuleNotFoundError` at boot. The
-  warm-up (`llm_warmup.py`) hits Groq too.
+- **Main character LLM** (`bot.py`) → **`OpenAILLMService` pointed at the
+  configured `llm_base_url`** (now `https://api.openai.com/v1`, Story 10.6) with
+  the LLM key + `Settings.character_model`. We use `OpenAILLMService` (the
+  already-present `openai` SDK), **NOT** pipecat's `GroqLLMService` — importing
+  `pipecat.services.groq` pulls in `groq.tts`, which hard-requires the `groq` SDK
+  (`pipecat-ai[groq]` extra) that we do NOT install → `ModuleNotFoundError` at
+  boot. The warm-up (`llm_warmup.py`) hits the same endpoint.
 
-`character_model` defaults to `"llama-3.3-70b-versatile"`;
-`classifier_model` defaults to `"openai/gpt-oss-20b"` and `debrief_model` to
-`"openai/gpt-oss-120b"` (Story 10.6 Scout-decommission migration above). All
-env-overridable (`CHARACTER_MODEL` / `CLASSIFIER_MODEL` / `DEBRIEF_MODEL`;
-`EMOTION_MODEL` legacy since 6.29). **Accuracy (75-sample
-`tests/fixtures/classifier_benchmark_corpus.json`, judge task,
-`reasoning_effort=low`):** gpt-oss-20b **98.7%** (1.3% FP, **0 FN**) and
-gpt-oss-120b **98.7%** vs Scout's 93.3% — both candidates beat Scout on
-accuracy AND latency. Pricing /1M: 120b $0.15/$0.60, 20b $0.075/$0.30. The
-judge uses the small/fast 20b (fires per-turn, ~800 ms fail-open budget); the
-debrief uses 120b (once per call-end, latency masked by the overlay, richer
-task). **(Corrects the stale 2026-05-29 note that `gpt-oss-20b` "400s on
-schema" — verified 2026-06-25 it accepts strict `json_schema` +
-`reasoning_effort` cleanly; that earlier failure predated Groq's gpt-oss
-strict support.)**
+`character_model`, `classifier_model`, and `debrief_model` all default to
+`"gpt-4.1-mini"` (Story 10.6, 2026-06-29). All env-overridable (`CHARACTER_MODEL`
+/ `CLASSIFIER_MODEL` / `DEBRIEF_MODEL`; `EMOTION_MODEL` legacy since 6.29). **Judge
+benchmark history (75-sample `tests/fixtures/classifier_benchmark_corpus.json`):**
+during the Groq migration both gpt-oss-20b and gpt-oss-120b scored **98.7%** vs
+Scout's 93.3%; that bench was the gpt-oss decision proxy, NOT a gpt-4.1-mini
+measurement. ⚠️ **The judge's accuracy on the SHIPPED model (gpt-4.1-mini) against
+the §6 golden net is OWED** (Story 10.6 review D1 — run `calibrate_scenario.py`
+before flipping the story to `done`; a gpt-4.1 judge mis-credit is also backlogged
+to story 10-7).
 
-> **R1 — Groq tier / TPM (production prerequisite).** gpt-oss are reasoning
-> models → more tokens-per-minute, and Groq counts `prompt + max_tokens`
-> against the per-minute TPM cap AT ADMISSION. On the `on_demand` tier (8000
-> TPM/model, measured 2026-06-25) a normal-length debrief request (~5k prompt
-> + 4096 max_tokens ≈ 9k) is **rejected HTTP 413**, and the per-turn judge
-> saturates 8000 TPM under a live call. **Bump to the Groq Dev tier before
-> production** (console.groq.com/settings/billing). Degradation without it is
-> graceful, not a crash: a 413/429 judge fails OPEN (no credit, patience-
-> neutral); a 413/429 debrief falls back to the degraded score-only debrief.
+> **R1 — Groq tier / TPM (HISTORICAL).** This applied only while the judge/debrief
+> ran on Groq gpt-oss (reasoning models, `prompt + max_tokens` counted against an
+> 8000-TPM `on_demand` cap → 413/429). On OpenAI gpt-4.1-mini it no longer
+> applies. Kept for the graceful-degradation contract, which still holds: a
+> 413/429/timeout judge fails OPEN (no credit, patience-neutral); a failed debrief
+> falls back to the degraded score-only debrief.
 
 **Persona note:** the character prompts were written for Qwen (`/no_think`
 prefix is a Qwen-ism, inert on Llama/gpt-oss); a persona recalibration is a
@@ -493,7 +490,7 @@ BEHAVIOR is the live A/B `scripts/compare_difficulty.py` — **run it on the pro
 
 ---
 
-### 9. Scenarios must be MODEL-AGNOSTIC + correct-by-construction (Gemini migration, 2026-06-26)
+### 9. Scenarios must be MODEL-AGNOSTIC + correct-by-construction (2026-06-26)
 
 **PROJECT LAW (Walid 2026-06-26).** Scenarios are mass-produced mechanically and
 MUST pass for **ANY** LLM **by construction** — never via manual per-scenario
@@ -560,8 +557,10 @@ never-silent floor + `checkpoint_manager` always-drive branch); R5 is embedded i
 classifier prompt; R3 + R7(semantic) remain builder `CHECKPOINTS_PROMPT` guidance (not
 lexically detectable) + the smoke gate. All SIX shipped scenarios are de-scripted + audited
 (waiter + cop_hard + girlfriend + landlord + mugger + cop_interrogation); cop_interrogation
-also needed the judge-timeout fix (`_HTTP/_CLASSIFIER_TIMEOUT_SECONDS` 1.5/2.0→4.0/4.5 s; felt
-`VERDICT_WAIT_BUDGET_MS` UNTOUCHED). Remaining: per-scenario calibration + Pixel 9 smoke gate.
+also needed a judge-timeout bump for the SLOW Gemini era (`_HTTP/_CLASSIFIER_TIMEOUT_SECONDS`
+1.5/2.0→4.0/4.5 s), pulled back to 2.0/2.5 s for the FAST OpenAI gpt-4.1-mini in the 10.6
+review (D3; felt `VERDICT_WAIT_BUDGET_MS` UNTOUCHED — owes a Pixel 9 re-validation). Remaining:
+per-scenario calibration + Pixel 9 smoke gate.
 
 **THE DURABLE LESSON (why bugs reached production — read before adding any rule).** They
 leaked because the rules were SOFT — the builder was *told* to follow them but nothing

@@ -112,8 +112,8 @@ def _kwargs(**overrides: Any) -> dict[str, Any]:
             {"duration_sec": 4.2, "preceding_character_line": "Talk properly."}
         ],
         api_key="test-key",
-        model="openai/gpt-oss-120b",
-        base_url="https://api.groq.com/openai/v1/chat/completions",
+        model="gpt-4.1-mini",
+        base_url="https://api.openai.com/v1/chat/completions",
     )
     base.update(overrides)
     return base
@@ -336,23 +336,25 @@ def test_generate_returns_core_and_sends_strict_schema(monkeypatch):
     out = _run(generate_debrief(**_kwargs()))
     assert out is not None
     assert out["errors"][0]["user_said"] == "I am agree"
-    # request carried a strict json_schema response_format + the gpt-oss model.
+    # request carried a strict json_schema response_format + the OpenAI model.
     rf = seen["payload"]["response_format"]
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["name"] == "debrief_analysis"
     assert rf["json_schema"]["strict"] is True
-    assert seen["payload"]["model"] == "openai/gpt-oss-120b"
-    # Story 10.6 — gpt-oss reasoning model → reasoning_effort=low on the request.
-    assert seen["payload"]["reasoning_effort"] == "low"
+    assert seen["payload"]["model"] == "gpt-4.1-mini"
+    # Story 10.6 review (D2) — gpt-4.1-mini is not a reasoning model: no
+    # reasoning_effort on the request.
+    assert "reasoning_effort" not in seen["payload"]
     # system + user messages both sent.
     roles = [m["role"] for m in seen["payload"]["messages"]]
     assert roles == ["system", "user"]
 
 
-def test_generate_omits_reasoning_effort_for_non_gpt_oss(monkeypatch):
-    """Story 10.6 — reasoning_effort is GATED to gpt-oss: a non-gpt-oss
-    debrief_model (e.g. a rollback) must never receive the field (it 400s on the
-    unknown param)."""
+def test_generate_never_sends_reasoning_effort(monkeypatch):
+    """Story 10.6 review (D2) — the gpt-oss/Gemini reasoning_effort gating was
+    removed. The shipped debrief model (OpenAI gpt-4.1-mini) is not a reasoning
+    model, so the request must NEVER carry reasoning_effort (a non-reasoning model
+    400s on the unknown param)."""
     seen: dict[str, Any] = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -370,7 +372,7 @@ def test_generate_omits_reasoning_effort_for_non_gpt_oss(monkeypatch):
         )
 
     _mock_http(monkeypatch, handler=_handler)
-    out = _run(generate_debrief(**_kwargs(model="llama-3.3-70b-versatile")))
+    out = _run(generate_debrief(**_kwargs()))
     assert out is not None
     assert "reasoning_effort" not in seen["payload"]
 
@@ -453,10 +455,10 @@ def test_generate_retries_without_strict_on_schema_400(monkeypatch):
     assert len(calls) == 2
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[1]["response_format"] == {"type": "json_object"}
-    # Story 10.6 — reasoning_effort=low rides BOTH the strict and the fallback
-    # payloads for a gpt-oss model (the fallback still hits the same model).
-    assert calls[0]["reasoning_effort"] == "low"
-    assert calls[1]["reasoning_effort"] == "low"
+    # Story 10.6 review (D2) — no reasoning_effort on EITHER payload (gpt-4.1-mini
+    # is not a reasoning model; the gating was removed).
+    assert "reasoning_effort" not in calls[0]
+    assert "reasoning_effort" not in calls[1]
     # The fallback system message carries the "json" token (json_object mode
     # requires it) AND pins the string-not-object rule that caused the 400.
     fallback_system = calls[1]["messages"][0]["content"]

@@ -182,7 +182,10 @@ def test_bot_instantiates_emitters() -> None:
     """
     source = _BOT_PATH.read_text(encoding="utf-8")
     # Story 6.29 — the sanitizer replaces the EmotionEmitter construction.
-    assert "ReplySanitizer()" in source
+    # Story 10.6 review (D4) — now constructed with the per-scenario never-silent
+    # floor line (in-character, vs the global "Go on.").
+    assert "ReplySanitizer(" in source
+    assert "fallback_line=load_scenario_never_silent_fallback(scenario_id)" in source
     assert "EmotionEmitter(" not in source
     assert "model=settings.emotion_model" not in source
     assert "PatienceTracker(" in source

@@ -244,31 +244,42 @@ class _SpanScanner:
             self.paren_depth = 0
 
 
-def sanitize_reply_text(text: str) -> tuple[str, str | None]:
+def sanitize_reply_text(
+    text: str, fallback_line: str | None = None
+) -> tuple[str, str | None]:
     """Pure, non-streaming variant for whole-string replies.
 
     Returns ``(clean_text, mood)`` where ``mood`` is the LAST valid tag value
     found (or None). Used by the Story 6.15 calibration harness so the
     simulated character's replies are sanitized EXACTLY like prod's streamed
     ones (golden==prod): same span-stripping, same tag extraction.
+
+    ``fallback_line`` mirrors the FrameProcessor's per-scenario never-silent floor
+    (Story 10.6 review D4); ``None`` uses the global default.
     """
     scanner = _SpanScanner()
     cleaned = scanner.feed(text)
     scanner.finish()
     # golden==prod: mirror the live never-silent floor — an all-meta (or
     # empty) reply becomes the deterministic fallback line, never silence.
-    return (cleaned.strip() or _NEVER_SILENT_FALLBACK), scanner.mood
+    return (cleaned.strip() or (fallback_line or _NEVER_SILENT_FALLBACK)), scanner.mood
 
 
 class ReplySanitizer(FrameProcessor):
     """Strips non-spoken artifacts + extracts the trailing mood tag."""
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, *, fallback_line: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._in_llm_response = False
         self._scanner = _SpanScanner()
         # True once any non-whitespace SPOKEN text was forwarded this reply.
         self._spoke_any = False
+        # Story 10.6 review (D4) — the never-silent floor line, per scenario.
+        # None → the global default (`_NEVER_SILENT_FALLBACK`). An in-character
+        # line keeps a mugger/detective from breaking persona, and avoids the
+        # generic "Go on." inviting the learner to keep talking after, e.g., a
+        # threat. bot.py passes `load_scenario_never_silent_fallback(scenario_id)`.
+        self._fallback_line = (fallback_line or "").strip() or _NEVER_SILENT_FALLBACK
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -340,12 +351,12 @@ class ReplySanitizer(FrameProcessor):
             # deterministic spoken line so the character is never silent.
             # Mirrored in sanitize_reply_text for golden==prod.
             await self.push_frame(
-                TextFrame(_NEVER_SILENT_FALLBACK), FrameDirection.DOWNSTREAM
+                TextFrame(self._fallback_line), FrameDirection.DOWNSTREAM
             )
             logger.info(
                 "reply_sanitizer_empty_reply_filled fallback={!r} "
                 "(reply was entirely non-spoken meta)",
-                _NEVER_SILENT_FALLBACK,
+                self._fallback_line,
             )
         if scanner.mood is not None:
             await self.push_frame(

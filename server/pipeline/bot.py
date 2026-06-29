@@ -80,6 +80,7 @@ from pipeline.scenarios import (
     load_scenario_base_prompt,
     load_scenario_checkpoints,
     load_scenario_metadata,
+    load_scenario_never_silent_fallback,
     resolve_patience_config,
 )
 from pipeline.transcript_logger import TranscriptCollector, TranscriptLogger
@@ -488,7 +489,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # `client/.../AudioClockChannel.kt` + `FormantVisemeAnalyzer.kt`.
     # No server-side viseme emitter is required (or wanted: data-channel
     # latency made the previous server-driven approach unsyncable).
-    reply_sanitizer = ReplySanitizer()
+    # Story 10.6 review (D4) — per-scenario never-silent floor line (in-character,
+    # not the global "Go on."). None → the sanitizer's global default.
+    reply_sanitizer = ReplySanitizer(
+        fallback_line=load_scenario_never_silent_fallback(scenario_id)
+    )
 
     # Story 6.4 — server-side silence escalation + character hang-up.
     # PatienceTracker sits between `context_aggregator.user()` and `llm`

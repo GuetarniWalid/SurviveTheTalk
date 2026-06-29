@@ -20,8 +20,8 @@ Two prod patterns reused verbatim (do not reinvent):
     below never runs. On that 400 ONLY, `_generate` retries once in json_object
     mode (no strict schema) so the salvage CAN run — call_id=324 2026-06-24
     (areas[0].practice_prompt came back as an object). Requires a structured-
-    output-capable Groq model (`Settings.debrief_model` = `openai/gpt-oss-120b`
-    since Story 10.6, whose TRUE constrained decoding should stop that 400 from
+    output-capable model (`Settings.debrief_model` = OpenAI `gpt-4.1-mini` since
+    Story 10.6, whose native constrained decoding should stop that 400 from
     firing in the first place; 70B HTTP 400s) — project law in server/CLAUDE.md
     §4.
   * **Time-boxed standalone call** — copy
@@ -62,41 +62,14 @@ _HTTP_TIMEOUT_SECONDS = 7.5
 # The v2 debrief JSON is large: up to 5 errors (each with `explanation` + up to
 # 2 `examples`), up to 3 areas (each a ~900-char `practice_prompt`), <=2
 # better_phrasings, 3 idioms, 3 hesitation contexts, an inappropriate-behavior
-# sentence. Groq STRICT mode returns HTTP 400 `json_validate_failed` if the
-# document is truncated mid-generation (the Story 6.16 classifier overflow
-# class); a maxed-out v2 debrief is on the order of ~2.5-3k content tokens.
-#
-# Story 10.6 — bumped 3072 → 4096 for the gpt-oss-120b migration. gpt-oss is a
-# REASONING model: it emits reasoning tokens (counted against max_tokens) BEFORE
-# the JSON, so the budget must cover content + the reasoning trace. Measured on
-# 2026-06-25 at reasoning_effort=low: a substantial 11-turn call used 1919
-# completion tokens (794 reasoning + ~1125 content), finish_reason=stop; 4096
-# leaves margin for a worst-case maxed debrief (~2.8k content + ~0.9k reasoning).
-# If real calls hit `finish_reason=="length"` (logged below), raise it.
-# NOTE (R1): Groq counts prompt + max_tokens against the per-minute TPM cap at
-# admission — on the on_demand tier (8000 TPM) a normal call (~5k prompt + 4096)
-# is rejected 413; production needs the Dev-tier bump (see config.debrief_model).
+# sentence. STRICT mode returns HTTP 400 `json_validate_failed` if the document
+# is truncated mid-generation (the Story 6.16 classifier overflow class); a
+# maxed-out v2 debrief is on the order of ~2.5-3k content tokens. 4096 leaves
+# clear margin. (Was 3072; bumped to 4096 during the Story 10.6 gpt-oss era for
+# reasoning headroom — kept on OpenAI gpt-4.1-mini, which is NOT a reasoning model
+# and bills only the actual completion tokens, so the larger ceiling is free.) If
+# real calls hit `finish_reason=="length"` (logged below), raise it.
 _MAX_TOKENS = 4096
-
-
-def _is_gpt_oss(model: str) -> bool:
-    """True for Groq's gpt-oss reasoning models (`openai/gpt-oss-20b|120b`).
-    Story 10.6 — they need `reasoning_effort` (and the reasoning-aware
-    `_MAX_TOKENS` above); gated so the field never leaks onto a non-reasoning
-    model. Substring test so both the 20b and 120b ids match."""
-    return "gpt-oss" in model
-
-
-def _reasoning_effort_for(model: str) -> str | None:
-    """`reasoning_effort` for a thinking-capable model, or None. gpt-oss -> 'low';
-    Gemini 2.5 defaults to dynamic thinking on the OpenAI-compat endpoint, which
-    pushes the debrief past its HTTP timeout (degraded score-only debrief) ->
-    'none' to disable it. Non-thinking models return None."""
-    if _is_gpt_oss(model):
-        return "low"
-    if "gemini-2.5" in model:
-        return "none"
-    return None
 
 
 # Low temperature: the debrief is a diagnostic instrument (clinical, factual),
@@ -841,16 +814,10 @@ async def _generate(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    # Story 10.6 — gpt-oss reasoning models: send reasoning_effort=low (short
-    # trace, since the debrief is masked by the Call Ended overlay anyway) on
-    # BOTH the strict and the json_object-fallback payloads. Spread in so it
-    # never leaks onto a non-reasoning model (would 400). The reasoning tokens
-    # are already budgeted into `_MAX_TOKENS` above.
-    _effort = _reasoning_effort_for(model)
-    reasoning_extra = {"reasoning_effort": _effort} if _effort else {}
-    # STRICT structured output — Groq constrains generation to this schema
-    # (clean, exactly-keyed JSON) on the happy path. Requires a model with TRUE
-    # constrained decoding (gpt-oss, NOT 70B). Mirrors `exchange_classifier`.
+    # STRICT structured output — the provider constrains generation to this
+    # schema (clean, exactly-keyed JSON) on the happy path. Requires a model with
+    # TRUE constrained decoding (gpt-4.1-mini, NOT 70B). Mirrors
+    # `exchange_classifier`.
     strict_payload = {
         "model": model,
         "messages": [
@@ -859,7 +826,6 @@ async def _generate(
         ],
         "temperature": _TEMPERATURE,
         "max_tokens": _MAX_TOKENS,
-        **reasoning_extra,
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -904,7 +870,6 @@ async def _generate(
             ],
             "temperature": _TEMPERATURE,
             "max_tokens": _MAX_TOKENS,
-            **reasoning_extra,
             "response_format": {"type": "json_object"},
         }
         core, _ = await _post_and_parse(

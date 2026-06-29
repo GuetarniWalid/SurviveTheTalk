@@ -1841,12 +1841,29 @@ def test_shipped_personas_have_no_difficulty_coded_phrases() -> None:
     )
 
 
+def _all_strings(value: object) -> list[str]:
+    """Recursively collect every string leaf from a YAML value (str / dict /
+    list). `briefing` and `exit_lines` are sometimes plain strings and sometimes
+    mappings (e.g. briefing `{context: …}`, exit_lines `{hangup: …}`), so flatten
+    defensively rather than assuming a shape."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _all_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _all_strings(v)]
+    return []
+
+
 def test_shipped_scenarios_have_no_model_specific_tokens() -> None:
     """R1 (Gemini migration, server/CLAUDE.md §9) — every shipped scenario is
-    MODEL-AGNOSTIC: neither the base_prompt nor any checkpoint prompt_segment may
-    carry a token meaningful to only one model family (e.g. Qwen's `/no_think`,
-    which Gemini speaks aloud). A scenario must behave identically on any model.
-    Commit-time complement to the builder + loader guardrails."""
+    MODEL-AGNOSTIC: no model-family-specific token (e.g. Qwen's `/no_think`, which
+    Gemini speaks aloud) in ANY text a model reads or recites. A scenario must
+    behave identically on any model. Commit-time complement to the builder +
+    loader guardrails. Story 10.6 review (P3) widened the scan from
+    base_prompt + prompt_segment to ALSO cover success_criteria (judge-read),
+    briefing, and the spoken exit_lines — fields a hand-edit could slip a token
+    into."""
     import yaml
 
     from pipeline.scenarios import _SCENARIO_INDEX, find_model_specific_tokens
@@ -1854,10 +1871,17 @@ def test_shipped_scenarios_have_no_model_specific_tokens() -> None:
     offenders: dict[str, list[str]] = {}
     for scenario_id, path in _SCENARIO_INDEX.items():
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        hits = list(find_model_specific_tokens(data.get("base_prompt") or ""))
+        texts = _all_strings(data.get("base_prompt"))
+        texts += _all_strings(data.get("briefing"))
+        texts += _all_strings(data.get("exit_lines"))
+        texts += _all_strings(data.get("never_silent_fallback"))
         for cp in data.get("checkpoints") or []:
             if isinstance(cp, dict):
-                hits += find_model_specific_tokens(cp.get("prompt_segment") or "")
+                texts += _all_strings(cp.get("prompt_segment"))
+                texts += _all_strings(cp.get("success_criteria"))
+        hits: list[str] = []
+        for t in texts:
+            hits += find_model_specific_tokens(t)
         if hits:
             offenders[scenario_id] = sorted(set(hits))
     assert not offenders, (
@@ -1868,11 +1892,14 @@ def test_shipped_scenarios_have_no_model_specific_tokens() -> None:
 
 def test_shipped_scenarios_have_no_scripting_violations() -> None:
     """R2/R7 (server/CLAUDE.md §9) — every shipped scenario is CORRECT-BY-
-    CONSTRUCTION: neither the base_prompt nor any checkpoint prompt_segment may
-    carry a fill-in template ([Learner Name], {x}, <y>) or a recite-this script
-    ('say exactly'). A weaker model reads them aloud — the exact class that
-    reached production (the landlord placeholder, the detective '[Learner
-    Name]'). Iterates the FULL index, so a NEW scenario file is auto-covered."""
+    CONSTRUCTION: no fill-in template ([Learner Name], {x}, <y>) or recite-this
+    script ('say exactly') in the base_prompt, any checkpoint prompt_segment, or
+    any judge-facing success_criteria. A weaker model reads them aloud — the exact
+    class that reached production (the landlord placeholder, the detective
+    '[Learner Name]'). Story 10.6 review (P3) added success_criteria to the scan
+    (it was previously unscanned). Iterates the FULL index, so a NEW scenario file
+    is auto-covered. (exit_lines / briefing are deliberately fixed recited/UI text
+    — scanned for model tokens above, NOT for placeholders.)"""
     import yaml
 
     from pipeline.scenarios import _SCENARIO_INDEX, find_scripting_violations
@@ -1884,12 +1911,13 @@ def test_shipped_scenarios_have_no_scripting_violations() -> None:
         for cp in data.get("checkpoints") or []:
             if isinstance(cp, dict):
                 hits += find_scripting_violations(cp.get("prompt_segment") or "")
+                hits += find_scripting_violations(cp.get("success_criteria") or "")
         if hits:
             offenders[scenario_id] = sorted(set(hits))
     assert not offenders, (
         f"placeholder/recite artifact(s) in scenario(s): {offenders}. A "
-        "prompt_segment must describe BEHAVIOR — never a fill-in template or a "
-        "line to recite (a weaker model reads them aloud)."
+        "prompt_segment / success_criteria must describe BEHAVIOR — never a "
+        "fill-in template or a line to recite (a weaker model reads them aloud)."
     )
 
 

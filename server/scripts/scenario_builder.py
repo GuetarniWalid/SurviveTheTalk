@@ -775,19 +775,24 @@ def validate_structure(scenario: dict) -> list[str]:
             val = cp.get(fld)
             if not isinstance(val, str) or not val.strip():
                 problems.append(f"checkpoint[{i}] missing/empty {fld!r}")
-        seg = cp.get("prompt_segment")
-        if isinstance(seg, str):
-            seg_tokens = find_model_specific_tokens(seg)
-            if seg_tokens:
+        # Story 10.6 review (P3) — scan BOTH the character-facing `prompt_segment`
+        # AND the judge-facing `success_criteria`: a `[placeholder]` recite
+        # template (or a model-specific token) leaks the same way from either.
+        for fld in ("prompt_segment", "success_criteria"):
+            val = cp.get(fld)
+            if not isinstance(val, str):
+                continue
+            fld_tokens = find_model_specific_tokens(val)
+            if fld_tokens:
                 problems.append(
-                    f"checkpoint[{i}].prompt_segment contains model-specific "
-                    f"token(s) {seg_tokens} — scenarios must be MODEL-AGNOSTIC"
+                    f"checkpoint[{i}].{fld} contains model-specific "
+                    f"token(s) {fld_tokens} — scenarios must be MODEL-AGNOSTIC"
                 )
-            seg_scripts = find_scripting_violations(seg)
-            if seg_scripts:
+            fld_scripts = find_scripting_violations(val)
+            if fld_scripts:
                 problems.append(
-                    f"checkpoint[{i}].prompt_segment contains placeholder/recite "
-                    f"artifact(s) {seg_scripts} — describe BEHAVIOR, never a "
+                    f"checkpoint[{i}].{fld} contains placeholder/recite "
+                    f"artifact(s) {fld_scripts} — describe BEHAVIOR, never a "
                     "fill-in template or a line to recite"
                 )
         if isinstance(cp.get("id"), str):

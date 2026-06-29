@@ -142,6 +142,9 @@ exit_lines:
   hangup: That's the second time your story's changed on me. Innocent people don't need three versions. We'll continue this down at the station — don't leave town. Goodbye.
   completion: All right. Your story holds together — every detail checks out, and I can't poke a hole in it. I'm clearing your name from this one. Thank you for your time. We won't be calling again.
   patience_warning: I'm going to ask you one more time, and I need a straight answer — not a guess, not a maybe. Where were you at half past eight last night?
+
+# Story 10.6 review (D4) — in-character never-silent floor (vs the global "Go on.")
+never_silent_fallback: "I'm waiting for an answer."
 briefing:
   vocabulary: fingerprints, crime scene, alibi, witness, suspect, break-in, gang/crew, evidence, statement, contradiction, alley, CCTV, recorded
   context: An unknown number is calling you the evening after a break-in across town; a detective is on the line and your name has come up.

@@ -140,6 +140,35 @@ def test_pure_meta_reply_filled_with_fallback_and_logged() -> None:
     assert any("reply_sanitizer_empty_reply_filled" in e for e in logs)
 
 
+def test_pure_meta_reply_uses_per_scenario_fallback_line() -> None:
+    """Story 10.6 review (D4) — the never-silent floor is PER-SCENARIO: a mugger
+    gets an in-character line, not the global "Go on." (which breaks persona and
+    wrongly invites the learner to keep talking after a threat)."""
+    sanitizer = ReplySanitizer(fallback_line="Don't make me ask twice.")
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["(only a stage direction, no spoken words)"]))
+    assert _spoken_text(captured) == "Don't make me ask twice."
+
+
+def test_blank_per_scenario_fallback_falls_back_to_global_floor() -> None:
+    """A blank / whitespace-only per-scenario line must NOT produce an empty floor
+    — it falls back to the global default, so the character is never silent."""
+    sanitizer = ReplySanitizer(fallback_line="   ")
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["(only a stage direction, no spoken words)"]))
+    assert _spoken_text(captured) == "Go on."
+
+
+def test_sanitize_reply_text_honors_fallback_line_arg() -> None:
+    """The pure helper mirrors the FrameProcessor: an all-meta reply becomes the
+    supplied per-scenario line (golden==prod), or the global default when None."""
+    assert sanitize_reply_text("<mood:anger>", "Don't make me ask twice.") == (
+        "Don't make me ask twice.",
+        "anger",
+    )
+    assert sanitize_reply_text("<mood:anger>")[0] == "Go on."
+
+
 def test_unterminated_paren_span_dropped_at_end_of_reply() -> None:
     sanitizer = ReplySanitizer()
     captured = _capture_pushed(sanitizer)

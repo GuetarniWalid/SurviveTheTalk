@@ -2,6 +2,28 @@
 
 Status: in-progress
 
+> 🟢 **2026-06-29 — FINAL RUNTIME = OpenAI `gpt-4.1-mini` (all 3 roles). READ THIS FIRST.**
+> Supersedes BOTH the gpt-oss-on-Groq decision (ACs/Tasks below) AND the
+> 2026-06-26 Gemini 2.5 banner beneath this one. Committed in `7487186`
+> (`config.py` + `exchange_classifier` + `calibration_engine` flipped to OpenAI;
+> `llm_base_url=api.openai.com`; the VPS already runs this via `.env`, so
+> git == prod). gpt-4.1-mini supports strict `json_schema` NATIVELY and is NOT a
+> reasoning model. The Acceptance Criteria (AC1–AC9) + Tasks below are the
+> HISTORICAL gpt-oss dev record — read them as such (the Story statement's
+> "Groq replacement models" is likewise historical).
+>
+> **Code-review reconciliation (2026-06-29, claude-opus-4-8 — see Review Findings
+> at the bottom).** Applied: removed the dead gpt-oss/Gemini `reasoning_effort`
+> gating (D2); pulled `_CLASSIFIER/_HTTP_TIMEOUT_SECONDS` back 4.5/4.0→2.5/2.0 s
+> for fast OpenAI (D3); made the never-silent floor PER-SCENARIO (D4); hardened
+> the §9 scenario lints (P3); reconciled every stale gpt-oss/Groq/Gemini comment
+> in `config.py` / `exchange_classifier` / `debrief_generator` / `probe` /
+> `server/CLAUDE.md` §4+§9 to gpt-4.1-mini (P1).
+> **STILL OWED before `review → done` (review D1):** the §6 golden-net judge
+> validation on gpt-4.1-mini (`calibrate_scenario.py`) + the Pixel 9 smoke gate
+> (which also re-validates the D3 timeout). A gpt-4.1 judge mis-credit class is
+> backlogged to story 10-7.
+
 > ⚠️ **2026-06-26 — DECISION SUPERSEDED + SCOPE EXPANDED. READ THIS FIRST.**
 > The locked gpt-oss decision further below is **OBSOLETE**. Groq is being LEFT
 > ENTIRELY (its paid tier stays walled), so judge + debrief no longer move to
@@ -234,3 +256,33 @@ The migration code is correct and is STRICTLY BETTER than leaving Scout (which i
 ### Change Log
 
 - 2026-06-25 — Story 10.6 dev-story: migrated checkpoint judge + debrief off the decommissioned Llama 4 Scout onto `openai/gpt-oss-20b` / `openai/gpt-oss-120b` with `reasoning_effort:low` + reasoning-aware `max_tokens`. Code + local validation + gates complete; deploy + smoke gate gated on R1 (Groq tier decision).
+
+### Review Findings
+
+> Code review 2026-06-29 (claude-opus-4-8). Scope = the full story-10.6 NET arc `61a620e..HEAD` (Scout → gpt-oss/Groq → Gemini 2.5 → **final: OpenAI `gpt-4.1-mini` for all 3 roles**). 3 adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor), per-finding source verification. Triage: 4 decision-needed, 3 patch, 0 defer, 3 dismissed. **Functional end-state is defensible** (strict `json_schema` judge+debrief paths intact + unconditional, non-strict debrief fallback preserved per §4, provider switch is env-driven with no hardcoded-Groq POST path, gpt-4.1-mini natively supports strict structured output, 6 scenarios lexically clean). The issues are a pervasive **half-migration of comments/docs/laws**, **dead `reasoning_effort` gating**, an **unvalidated judge on the §6 net for the shipped model**, and **story bookkeeping two pivots stale**.
+
+**Resolution (2026-06-29 — Walid decided the 4 decisions; the 6 patches batch-applied, gates green):**
+
+- **D1 (judge §6 validation) → VALIDATE BEFORE `done`.** Not a code change — a **flip-blocker**: `calibrate_scenario.py` golden net + banded sweep must pass on `gpt-4.1-mini` before `review → done` (folds into the owed Pixel 9 smoke gate). Story stays `in-progress`. The gpt-4.1 judge mis-credit class stays backlogged to **10-7**.
+- **D2 (dead reasoning gating) → DELETED.** Removed `_is_gpt_oss` / `_reasoning_effort_for` / `_GPT_OSS_REASONING_HEADROOM` + the `_multi_max_tokens(model=…)` headroom + the `reasoning_extra` spreads + the probe gating, across `exchange_classifier.py`, `debrief_generator.py`, `probe_debrief_schema.py` (+ their tests).
+- **D3 (terminal dead-air) → TIMEOUT PULLED BACK.** `_CLASSIFIER/_HTTP_TIMEOUT_SECONDS` 4.5/4.0 → **2.5/2.0 s** for fast OpenAI (halves the worst-case terminal stall; corrected the false "zero reply latency" comment). ⚠️ Calibrated threshold → **owes a Pixel 9 re-validation** in the smoke gate.
+- **D4 (`"Go on."` floor) → PER-SCENARIO.** `ReplySanitizer(fallback_line=…)` wired from a new optional YAML `never_silent_fallback`; in-character lines authored for all 6 scenarios (global `"Go on."` kept only as the default for un-authored scenarios).
+- **P1/P2/P3 → APPLIED.** P1: every stale gpt-oss/Groq/Gemini comment reconciled to gpt-4.1-mini (`config.py`, `exchange_classifier`, `debrief_generator`, `probe`, `server/CLAUDE.md` §4+§9, R1→historical). P2: this story re-anchored (top banner). P3: `_TEMPLATE_PLACEHOLDER_RE` broadened (leading space/digit no longer evades) + `success_criteria` now scanned (builder + commit test) + model-token scan widened to `briefing`/`exit_lines`/`never_silent_fallback`.
+- **Gates:** `ruff check` + `ruff format --check` clean; full `pytest` green.
+
+---
+
+**Decision-needed:**
+
+- [ ] [Review][Decision] **Judge accuracy on the shipped model is unvalidated against the §6 golden net** — `calibrate_scenario.py` was NEVER run on `gpt-4.1-mini`; AC4/AC5 are marked `[x]` on obsolete `gpt-oss-20b` evidence, and a known gpt-4.1 judge mis-credit (too-strict / too-loose) is backlogged to story 10-7. This is the strongest stop-ship for a `review→done` flip. Decide: run the golden net + banded sweep on gpt-4.1-mini before flipping, OR fold it into the owed VPS smoke gate / 10-7. [CLAUDE.md §6; scripts/calibrate_scenario.py]
+- [ ] [Review][Decision] **Dead `reasoning_effort` / headroom gating** — `_is_gpt_oss` / `_reasoning_effort_for` only return non-None for `gpt-oss` / `gemini-2.5`, so on the shipped `gpt-4.1-mini` the entire Story-10.6 reasoning machinery (`reasoning_effort`, `_GPT_OSS_REASONING_HEADROOM`, `_multi_max_tokens` headroom, legacy-`classify` headroom, probe gating) is inert. Risk seed: pointing `CLASSIFIER_MODEL`/`DEBRIEF_MODEL` at a real OpenAI reasoning model (`o4-mini`, `gpt-5*`) via `.env` would size `max_tokens` with zero reasoning headroom → truncation. Decide: keep as clearly-commented rollback scaffolding (and generalize to `_is_reasoning_model`), or delete. [exchange_classifier.py:133-150, debrief_generator.py:82-99]
+- [ ] [Review][Decision] **Terminal-turn dead air** — `_CLASSIFIER_TIMEOUT_SECONDS` was raised 2.0→4.5s (commit 6fdb220) for the now-abandoned **Gemini** era; the terminal-turn path awaits the classify under this timeout, so a single OpenAI error/429 on a CALL-ENDING turn can stall ~9s (2×4.5 with the Story-6.27 first-call retry). The in-code "adds zero reply latency (gated by 800ms)" comment is FALSE for the terminal path. Decide: re-tune the timeout down for fast OpenAI, cap `_run_classifier_blocking` with its own short wall-clock, or accept. (Touches calibrated thresholds → proposing, not auto-changing.) [exchange_classifier.py:226 → checkpoint_manager.py:799-830]
+- [ ] [Review][Decision] **`_NEVER_SILENT_FALLBACK = "Go on."` is one global English filler** pushed for every character when a reply is all-meta — for a mugger/detective mid-threat it breaks persona, and "Go on." wrongly invites the user to keep talking. Already on-device validated (call-335) as a never-silent floor. Decide: keep the global floor or make it scenario/character-driven. [reply_sanitizer.py:106,260,343]
+
+**Patch:**
+
+- [ ] [Review][Patch] Reconcile stale comments/docstrings that LIE about the runtime model (gpt-oss/Groq/Gemini → `gpt-4.1-mini`, AC8) — incl. the false "zero reply latency" comment [server/config.py:191-235, server/pipeline/exchange_classifier.py:112-121 + module docstring + strict-schema comment, server/pipeline/debrief_generator.py:854-893, server/CLAUDE.md §4 + §9 + R1 box]
+- [ ] [Review][Patch] Re-anchor the story doc to the gpt-4.1-mini end-state — the Story statement still says "law-compliant **Groq** replacement models", the "READ THIS FIRST" banner still says **Gemini 2.5**, and AC4/5/6 evidence cites gpt-oss [10-6-migrate-off-decommissioned-llama-4-scout-model.md]
+- [ ] [Review][Patch] Harden the §9 model-agnostic lints — `_TEMPLATE_PLACEHOLDER_RE` misses brackets with a leading space/digit and never scans `success_criteria`; the `find_model_specific_tokens` commit test skips `briefing`/`exit_lines` (latent — current 6 scenarios are clean) [server/pipeline/scenarios.py:283-285, server/scripts/scenario_builder.py:2087, server/tests/test_scenarios.py]
+
+**Dismissed (noise / false-positive):** (1) debrief test pinning a Groq URL + `gpt-oss-120b` — it's a legitimate unit test of the `_is_gpt_oss` gating branch (forces the model); coupled to the dead-gating decision, not a standalone bug. (2) `test_settings_..._default_to_groq` rename + orphaned `emotion_model` Groq id — intentional, nothing reads it. (3) never-silent fallback emitted as a bare `TextFrame` vs `LLMTextFrame` — speculative; fine for the current one-word literal.

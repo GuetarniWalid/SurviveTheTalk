@@ -217,6 +217,9 @@ exit_lines:
   # generic NOISY_ENVIRONMENT_EXIT_LINE_DEFAULT from prompts.py.
   noisy_environment: "I can't hear you — there's another voice talking over you. Call me back when it's just you, somewhere quieter."
 
+# Story 10.6 review (D4) — in-character never-silent floor (vs the global "Go on.")
+never_silent_fallback: "So — what can I get you?"
+
 # ============================================================
 # BRIEFING — shown before the call
 # ============================================================

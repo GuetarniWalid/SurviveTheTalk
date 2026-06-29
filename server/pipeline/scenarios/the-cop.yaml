@@ -156,6 +156,9 @@ exit_lines:
   hangup: "We're done here."
   completion: "...Alright. I'll let you off with a warning this time. Drive safe."
 
+# Story 10.6 review (D4) — in-character never-silent floor (vs the global "Go on.")
+never_silent_fallback: "Let's hear it."
+
 # ============================================================
 # BRIEFING — shown before the call
 # ============================================================

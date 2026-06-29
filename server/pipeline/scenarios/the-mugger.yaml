@@ -150,6 +150,9 @@ exit_lines:
   hangup: "Forget it. You're not even worth robbing."
   completion: "...Fine. Keep your wallet. You talk too much anyway."
 
+# Story 10.6 review (D4) — in-character never-silent floor (vs the global "Go on.")
+never_silent_fallback: "Don't make me ask twice."
+
 # ============================================================
 # BRIEFING — shown before the call
 # ============================================================

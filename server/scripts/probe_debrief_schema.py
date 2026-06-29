@@ -30,7 +30,6 @@ from config import Settings  # noqa: E402
 from pipeline.debrief_generator import (  # noqa: E402
     _build_debrief_schema,
     _build_user_message,
-    _is_gpt_oss,
     _parse_debrief_output,
 )
 from pipeline.llm_provider import (  # noqa: E402
@@ -62,12 +61,10 @@ async def _main() -> int:
             {"role": "user", "content": user_message},
         ],
         "temperature": 0.2,
-        # Story 10.6 — deliberately a SMALLER budget than prod `_MAX_TOKENS`
-        # (4096): this probe isolates *schema acceptance* (does Groq accept the
-        # strict json_schema + reasoning combo and return parseable JSON), and a
-        # smaller max_tokens keeps the request under the on_demand 8000 TPM
-        # admission cap so the probe runs without the Dev-tier bump (R1). The
-        # short probe transcript needs far less than 2048 anyway.
+        # Deliberately a SMALLER budget than prod `_MAX_TOKENS` (4096): this probe
+        # isolates *schema acceptance* (does the provider accept the strict
+        # json_schema and return parseable JSON). The short probe transcript needs
+        # far less than 2048 anyway.
         "max_tokens": 2048,
         "response_format": {
             "type": "json_schema",
@@ -78,10 +75,6 @@ async def _main() -> int:
             },
         },
     }
-    # Story 10.6 — mirror prod: gpt-oss reasoning models get reasoning_effort=low
-    # so the probe exercises the EXACT request shape `_generate` sends.
-    if _is_gpt_oss(settings.debrief_model):
-        payload["reasoning_effort"] = "low"
     url = resolve_llm_chat_url(settings)
     headers = {
         "Authorization": f"Bearer {resolve_llm_api_key(settings)}",

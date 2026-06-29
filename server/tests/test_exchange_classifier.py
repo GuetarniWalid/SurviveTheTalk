@@ -397,7 +397,7 @@ def test_classify_posts_to_openai_with_compat_shape(
       structured output), no longer Groq gpt-oss / Qwen via OpenRouter.
     - The `reasoning` field is NOT sent (OpenRouter/Qwen chain-of-thought
       hack), AND `reasoning_effort` is NOT sent either (gpt-4.1 is not a
-      reasoning model — `_reasoning_effort_for` returns None).
+      reasoning model — the gpt-oss/Gemini reasoning gating was removed in 10.6).
     - `extra_body` still must not appear (OpenAI-SDK-only convention,
       raw HTTP APIs ignore it).
 
@@ -425,7 +425,7 @@ def test_classify_posts_to_openai_with_compat_shape(
             "disable); it must never appear."
         )
         # gpt-4.1 is NOT a reasoning model, so reasoning_effort is NOT sent
-        # (`_reasoning_effort_for` returns None for non-gpt-oss/non-gemini-2.5).
+        # (the gpt-oss/Gemini reasoning gating was removed in Story 10.6 review D2).
         assert "reasoning_effort" not in sent, (
             "a non-reasoning model (gpt-4.1) must not receive reasoning_effort"
         )
@@ -835,34 +835,13 @@ def test_multi_max_tokens_scales_with_goal_count() -> None:
     assert _multi_max_tokens(20) >= 500
 
 
-def test_multi_max_tokens_adds_reasoning_headroom_for_gpt_oss() -> None:
-    """Story 10.6 — a gpt-oss reasoning model emits reasoning tokens before the
-    verdict JSON, so its budget must EXCEED the verdict-only budget by the
-    reasoning headroom (else the strict doc truncates → 400 → lost checkpoint).
-    A non-gpt-oss model keeps the original lean budget."""
-    from pipeline.exchange_classifier import (
-        _GPT_OSS_REASONING_HEADROOM,
-        _multi_max_tokens,
-    )
-
-    for n in (1, 6, 20):
-        assert _multi_max_tokens(n, "openai/gpt-oss-20b") == (
-            _multi_max_tokens(n) + _GPT_OSS_REASONING_HEADROOM
-        )
-        # 70B / non-gpt-oss → no headroom (unchanged from the verdict-only sizing)
-        assert _multi_max_tokens(n, "llama-3.3-70b-versatile") == _multi_max_tokens(n)
-
-
-def test_classify_multi_sends_reasoning_effort_low_for_gpt_oss(
+def test_classify_multi_never_sends_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Story 10.6 AC2 — a gpt-oss judge sends reasoning_effort=low on the
-    multi-goal payload, and its max_tokens carries the reasoning headroom."""
-    from pipeline.exchange_classifier import (
-        _GPT_OSS_REASONING_HEADROOM,
-        _multi_max_tokens,
-    )
-
+    """Story 10.6 review (D2) — the gpt-oss/Gemini reasoning_effort gating was
+    removed. The shipped judge (OpenAI gpt-4.1-mini) is not a reasoning model, so
+    `classify_multi` must NEVER put `reasoning_effort` on the payload (a
+    non-reasoning model 400s on the unknown field)."""
     seen: dict[str, Any] = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -873,31 +852,7 @@ def test_classify_multi_sends_reasoning_effort_low_for_gpt_oss(
         )
 
     _mock_http(monkeypatch, handler=_handler)
-    clf = ExchangeClassifier(api_key="k", model="openai/gpt-oss-20b")
-    _run(clf.classify_multi(**_multi_kwargs(pending_goals=_multi_pending("a", "b"))))
-    assert seen["payload"]["reasoning_effort"] == "low"
-    assert seen["payload"]["max_tokens"] == _multi_max_tokens(2) + (
-        _GPT_OSS_REASONING_HEADROOM
-    )
-
-
-def test_classify_multi_omits_reasoning_effort_for_non_gpt_oss(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Story 10.6 — the reasoning_effort field is GATED to gpt-oss: a non-gpt-oss
-    model (a future rollback / the 70B character model) must never receive it
-    (those models 400 on the unknown field)."""
-    seen: dict[str, Any] = {}
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        seen["payload"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"a": "met", "b": "unmet"}'}}]},
-        )
-
-    _mock_http(monkeypatch, handler=_handler)
-    clf = ExchangeClassifier(api_key="k", model="llama-3.3-70b-versatile")
+    clf = ExchangeClassifier(api_key="k", model="gpt-4.1-mini")
     _run(clf.classify_multi(**_multi_kwargs(pending_goals=_multi_pending("a", "b"))))
     assert "reasoning_effort" not in seen["payload"]
 

@@ -86,12 +86,13 @@ Groq model (`config.Settings.classifier_model`); the single-goal legacy
 `response_format`. The character + emotion paths are unaffected — both
 still run 70B and neither uses structured outputs.
 
-Story 10.6 (2026-06-25) — migrated off the soon-decommissioned Llama 4 Scout
-onto `openai/gpt-oss-20b` (Groq turns Scout off 2026-07-17). gpt-oss is the
-only Groq family with TRUE strict constrained decoding AND it is a REASONING
-model, so `classify_multi`/`_classify` send `reasoning_effort:low` and size
-`max_tokens` with `_GPT_OSS_REASONING_HEADROOM` (gated by `_is_gpt_oss` so the
-70B character model never sees the field). See `project_scout_decommission_
+Story 10.6 (2026-06-29) — migrated off the decommissioned Llama 4 Scout (Groq
+turned it off 2026-07-17), through gpt-oss/Groq then Gemini 2.5, finally onto
+OpenAI `gpt-4.1-mini` for all three roles. gpt-4.1-mini natively supports strict
+structured outputs (`response_format=json_schema`, `strict:true`), so the
+multi-goal judge keeps its server-validated `{goal_id: enum}` contract. It is NOT
+a reasoning model, so no `reasoning_effort` is sent (the gpt-oss/Gemini reasoning
+gating was removed in this story's review — D2). See `project_scout_decommission_
 migration` + server/CLAUDE.md §4.
 """
 
@@ -110,44 +111,13 @@ from pipeline.prompts import (
 )
 
 _PROVIDER_URL = "https://api.openai.com/v1/chat/completions"
-# Story 10.6 (2026-06-25) — `openai/gpt-oss-20b` (NOT 70B, NOT the
-# decommissioned Scout): the multi-goal path uses Groq STRICT structured
-# outputs (`response_format=json_schema`), which only gpt-oss supports with TRUE
-# constrained decoding (70B HTTP-400s; Scout was best-effort). gpt-oss-20b is
-# the fastest/cheapest strict model and benchmarked 98.7% (vs Scout 93.3%). See
-# `config.Settings.classifier_model`. bot.py always passes the resolved
-# `Settings.classifier_model`; this default only governs direct/test
-# construction.
+# Story 10.6 (2026-06-29) — OpenAI `gpt-4.1-mini`: the multi-goal path uses
+# STRICT structured outputs (`response_format=json_schema`, `strict:true`),
+# which gpt-4.1-mini supports natively (true constrained decoding; 70B HTTP-400s,
+# Scout was best-effort). See `config.Settings.classifier_model`. bot.py always
+# passes the resolved `Settings.classifier_model`; this default only governs
+# direct/test construction.
 _PROVIDER_MODEL = "gpt-4.1-mini"
-
-# Story 10.6 — gpt-oss are REASONING models: they emit reasoning tokens (billed
-# as completion tokens, counted against max_tokens) BEFORE the verdict JSON.
-# Measured ~87 reasoning tokens at reasoning_effort=low on a 6-goal verdict
-# (2026-06-25); 1024 is a safe ceiling so a harder turn's longer trace can't
-# truncate the strict-schema document — a truncated strict doc → Groq HTTP 400
-# `json_validate_failed` → no verdict → lost checkpoint (the Story 6.16 failure
-# class). Non-gpt-oss models add no headroom (kept lean as before).
-_GPT_OSS_REASONING_HEADROOM = 1024
-
-
-def _is_gpt_oss(model: str) -> bool:
-    """True for Groq's gpt-oss reasoning models (`openai/gpt-oss-20b|120b`),
-    which need `reasoning_effort` + token headroom for their reasoning trace
-    (Story 10.6). Substring test so both the 20b and 120b ids match."""
-    return "gpt-oss" in model
-
-
-def _reasoning_effort_for(model: str) -> str | None:
-    """`reasoning_effort` value for a thinking-capable model on the
-    OpenAI-compatible endpoint, or None (omit the field). gpt-oss (Groq) always
-    reasons -> 'low'; Gemini 2.5 defaults to dynamic thinking on the compat
-    endpoint -> 'none' to keep the latency-critical judge fast (Gemini
-    migration). Non-thinking models (70B, gemini flash-lite) return None."""
-    if _is_gpt_oss(model):
-        return "low"
-    if "gemini-2.5" in model:
-        return "none"
-    return None
 
 
 # Story 6.10 follow-up (2026-05-29) — the multi-goal verdict is now a
@@ -184,20 +154,13 @@ _MULTI_MAX_TOKENS_BASE = 96
 _MULTI_MAX_TOKENS_PER_GOAL = 24
 
 
-def _multi_max_tokens(num_goals: int, model: str = "") -> int:
+def _multi_max_tokens(num_goals: int) -> int:
     """Completion-token budget for `classify_multi`, scaled to the pending-goal
     count so the schema-pinned verdict object can't be truncated mid-document
-    (Story 6.16). At 6 goals → 240; at 20 goals → 576.
-
-    Story 10.6 — for a gpt-oss REASONING model the budget MUST also cover the
-    reasoning trace that precedes the verdict JSON (the verdict-only sizing above
-    would truncate it → HTTP 400 → lost checkpoint), so add
-    `_GPT_OSS_REASONING_HEADROOM`. `model=""` (the default / non-gpt-oss) keeps
-    the original lean budget."""
-    budget = _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
-    if _is_gpt_oss(model):
-        budget += _GPT_OSS_REASONING_HEADROOM
-    return budget
+    (Story 6.16). At 6 goals → 240; at 20 goals → 576. gpt-4.1-mini is not a
+    reasoning model, so the verdict-only sizing is exact (no reasoning-trace
+    headroom needed — the gpt-oss headroom was removed in Story 10.6 review D2)."""
+    return _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
 
 
 # Per epic AC6 line 1196: "fails or times out → checkpoint is NOT
@@ -212,19 +175,20 @@ def _multi_max_tokens(num_goals: int, model: str = "") -> int:
 # sized below the outer budget so the httpx abort lands first and logs
 # a clean HTTP error instead of an opaque `asyncio.TimeoutError`.
 #
-# Gemini migration (2026-06-26): the Groq-era 2.0/1.5 s was sized for Groq's
-# ~120 ms judge. Gemini-2.5-flash's MULTI-goal verdict scales with the number
-# of pending goals — a big scenario like cop_interrogation_01 (12-20 judgeable
-# goals at once) routinely needs >1.5 s, so every verdict ReadTimeout'd → the
-# verdict NEVER landed → no checkpoint ever credited → the character re-asked
-# the same step forever (call 334). This is the judge's INTERNAL run ceiling,
-# NOT the felt reply wait: the judge is fully async and the reply is gated by
-# VERDICT_WAIT_BUDGET_MS (unchanged, 800 ms), so a larger ceiling only lets a
-# slow verdict LAND LATE instead of never — it adds zero reply latency. Small
-# scenarios (~6 goals, sub-second) are unaffected; the ceiling only bites on
-# slow turns. Raised to 4.5/4.0 s.
-_CLASSIFIER_TIMEOUT_SECONDS = 4.5
-_HTTP_TIMEOUT_SECONDS = 4.0
+# The 4.5/4.0 s ceiling was raised for the (now-abandoned) Gemini era, whose
+# multi-goal verdict on a big scenario (cop_interrogation_01, 12-20 goals at
+# once) routinely needed >1.5 s. Story 10.6 (2026-06-29) moved the judge to the
+# FAST OpenAI gpt-4.1-mini (sub-second multi-goal verdicts), so the Gemini-sized
+# ceiling is oversized — and it matters on ONE path: a TERMINAL turn awaits the
+# verdict BEFORE forwarding the user frame (`checkpoint_manager._run_classifier_
+# blocking`), so on a slow/error/429 turn this ceiling — NOT VERDICT_WAIT_BUDGET_MS
+# — bounds the felt wait, and the Story-6.27 first-call retry can double it (the
+# review-D3 ~9 s terminal dead-air case). Pulled back to 2.5/2.0 s for OpenAI:
+# headroom for a p95 gpt-4.1-mini verdict while ~halving the worst-case terminal
+# dead air. Non-terminal turns are unaffected (still gated by the 800 ms felt
+# budget). ⚠️ Calibrated threshold — owes a Pixel 9 smoke re-validation (10.6 D3).
+_CLASSIFIER_TIMEOUT_SECONDS = 2.5
+_HTTP_TIMEOUT_SECONDS = 2.0
 
 
 _FENCE_RE = re.compile(
@@ -692,12 +656,6 @@ class ExchangeClassifier:
             # truncation-mid-JSON essentially impossible.
             "max_tokens": 64,
         }
-        effort = _reasoning_effort_for(self._model)
-        if effort:
-            payload["reasoning_effort"] = effort
-        if _is_gpt_oss(self._model):
-            # gpt-oss emits reasoning tokens before the verdict; 64 alone truncates.
-            payload["max_tokens"] = 64 + _GPT_OSS_REASONING_HEADROOM
         content = await self._post_for_content(payload)
         if content is None:
             return None
@@ -727,10 +685,11 @@ class ExchangeClassifier:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": _multi_max_tokens(len(goal_ids), self._model),
-            # STRICT structured output — Groq constrains generation to this
-            # schema, guaranteeing an exactly-keyed `{goal_id: enum}` object.
-            # Requires a model with TRUE constrained decoding (gpt-oss, NOT 70B).
+            "max_tokens": _multi_max_tokens(len(goal_ids)),
+            # STRICT structured output — the provider constrains generation to
+            # this schema, guaranteeing an exactly-keyed `{goal_id: enum}` object.
+            # Requires a model with TRUE constrained decoding (gpt-4.1-mini; 70B
+            # HTTP-400s).
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -740,11 +699,6 @@ class ExchangeClassifier:
                 },
             },
         }
-        effort = _reasoning_effort_for(self._model)
-        if effort:
-            # gpt-oss -> 'low' (always reasons); Gemini 2.5 -> 'none' (disable the
-            # default thinking so the per-turn judge stays inside its time budget).
-            payload["reasoning_effort"] = effort
         content = await self._post_for_content(payload)
         if content is None:
             # Infra failure (HTTP error / non-2xx / closed client / empty
