@@ -39,6 +39,19 @@ Status: in-progress
 > CODE stays correct + deployed; it just can't flip `done` until the experience is
 > fixed. (The D3 timeout retune was already reverted to 4.5/4.0 after the live
 > sweep measured the judge at ~2 s/call.)
+>
+> **🚨 SECOND smoke-gate blocker (same call 340) — the DEBRIEF never produces a
+> real recap.** Logs: `debrief_generation failed (non-fatal): (ReadTimeout)` →
+> `generation returned None → storing a degraded (score-only) debrief`. The full
+> ~2-3k-token structured debrief takes LONGER than the debrief's 7.5 s HTTP /
+> 14 s outer budget on gpt-4.1-mini, so EVERY recent call falls back to the
+> score-only degraded debrief (no analysis). Pre-existing from the model swap
+> (`7487186`), NOT the review patches (debrief_generator timeouts were untouched).
+> Fix: raise `_HTTP_TIMEOUT_SECONDS` (7.5→~20 s) + `_GENERATION_TIMEOUT_SECONDS`
+> (14→~25 s) — the debrief is overlay-masked / non-blocking — AND check the
+> CLIENT poll budget (Story 7.3 = ~30 s) so it doesn't give up first; possibly
+> trim the debrief size. Folds into the 10-7 fix (or a 10.6 follow-up). Both
+> device blockers (loose criteria + debrief timeout) must clear before `done`.
 
 > ⚠️ **2026-06-26 — DECISION SUPERSEDED + SCOPE EXPANDED. READ THIS FIRST.**
 > The locked gpt-oss decision further below is **OBSOLETE**. Groq is being LEFT
