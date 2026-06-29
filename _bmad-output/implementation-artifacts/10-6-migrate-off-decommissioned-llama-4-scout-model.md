@@ -1,6 +1,6 @@
 # Story 10.6: Migrate off the decommissioned Llama 4 Scout model
 
-Status: review
+Status: in-progress
 
 > 🟢 **2026-06-29 — FINAL RUNTIME = OpenAI `gpt-4.1-mini` (all 3 roles). READ THIS FIRST.**
 > Supersedes BOTH the gpt-oss-on-Groq decision (ACs/Tasks below) AND the
@@ -21,12 +21,24 @@ Status: review
 > the §9 scenario lints (P3); reconciled every stale gpt-oss/Groq/Gemini comment
 > in `config.py` / `exchange_classifier` / `debrief_generator` / `probe` /
 > `server/CLAUDE.md` §4+§9 to gpt-4.1-mini (P1).
-> **STILL OWED before `review → done`:** ONLY your Pixel 9 smoke gate. (D1 §6
-> golden RAN on the live gpt-4.1-mini → 3/6; the 3 fails are all the permissive
-> OPENING `react`/`respond` beat — a pre-existing, model-agnostic scenario
-> looseness, NOT a model regression → Walid ruled **SHIP 10.6** + tighten those 3
-> criteria in **10-7**. The D3 timeout retune was reverted after the live sweep
-> measured the judge at ~2 s/call.)
+> **🚨 SMOKE GATE FAILED (Pixel 9, call_id=340, 2026-06-29) — back to `in-progress`.**
+> The checkpoint experience is broken: the judge credited `confirm` on "No other
+> choice." and `close` on "No other choice. Is it a question?" — weak/nonsensical
+> input completing the scenario. ROOT CAUSE: the `success_criteria` are authored
+> FAR too permissively (waiter `confirm`: "Any acknowledgement of the order summary
+> counts"; `close`: "Even a simple okay or thanks counts"), so the precise
+> gpt-4.1-mini judge follows them literally. NOT a model bug — a SCENARIO-AUTHORING
+> bug (conflates "easy difficulty" with "accept anything"; §8 says easy forgives
+> LANGUAGE, not wrong content). This is BROADER than the golden's opening beats
+> (confirm/close + likely every scenario). **MVP BLOCKER.** Fix = (1) stiffen the
+> judge prompt `EXCHANGE_CLASSIFIER_MULTI_PROMPT` to credit ONLY genuine goal
+> accomplishment, (2) rewrite the over-permissive `success_criteria` across
+> scenarios to require the goal actually done, then re-run the §6 golden + re-smoke.
+> This is a DEV story (10-7, scope expanded from "openings" to all loose criteria)
+> — a SEPARATE agent/session per the one-agent-per-workflow rule. 10.6's migration
+> CODE stays correct + deployed; it just can't flip `done` until the experience is
+> fixed. (The D3 timeout retune was already reverted to 4.5/4.0 after the live
+> sweep measured the judge at ~2 s/call.)
 
 > ⚠️ **2026-06-26 — DECISION SUPERSEDED + SCOPE EXPANDED. READ THIS FIRST.**
 > The locked gpt-oss decision further below is **OBSOLETE**. Groq is being LEFT
