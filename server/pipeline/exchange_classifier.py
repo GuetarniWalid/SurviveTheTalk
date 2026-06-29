@@ -109,7 +109,7 @@ from pipeline.prompts import (
     EXCHANGE_CLASSIFIER_PROMPT,
 )
 
-_PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
+_PROVIDER_URL = "https://api.openai.com/v1/chat/completions"
 # Story 10.6 (2026-06-25) — `openai/gpt-oss-20b` (NOT 70B, NOT the
 # decommissioned Scout): the multi-goal path uses Groq STRICT structured
 # outputs (`response_format=json_schema`), which only gpt-oss supports with TRUE
@@ -118,7 +118,7 @@ _PROVIDER_URL = "https://api.groq.com/openai/v1/chat/completions"
 # `config.Settings.classifier_model`. bot.py always passes the resolved
 # `Settings.classifier_model`; this default only governs direct/test
 # construction.
-_PROVIDER_MODEL = "openai/gpt-oss-20b"
+_PROVIDER_MODEL = "gpt-4.1-mini"
 
 # Story 10.6 — gpt-oss are REASONING models: they emit reasoning tokens (billed
 # as completion tokens, counted against max_tokens) BEFORE the verdict JSON.

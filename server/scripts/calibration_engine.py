@@ -276,11 +276,11 @@ class LlmSettings:
 
     groq_api_key: str
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.groq.com/openai/v1"
-    character_model: str = "llama-3.3-70b-versatile"
-    # Story 10.6 — judge migrated off the decommissioned Scout onto gpt-oss-20b
+    llm_base_url: str = "https://api.openai.com/v1"
+    character_model: str = "gpt-4.1-mini"
+    # Story 10.6 (2026-06-29) — migrated to OpenAI gpt-4.1-mini
     # (kept in sync with `config.Settings.classifier_model`).
-    classifier_model: str = "openai/gpt-oss-20b"
+    classifier_model: str = "gpt-4.1-mini"
     # Story 6.17 — optional; used by the builder's voice-selection step. Empty
     # locally is fine (it lives on the VPS); voice selection degrades gracefully.
     cartesia_api_key: str = ""
@@ -319,9 +319,9 @@ def load_llm_settings() -> LlmSettings:
     return LlmSettings(
         groq_api_key=groq_key,
         llm_api_key=llm_key,
-        llm_base_url=_env("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
-        character_model=_env("CHARACTER_MODEL", "llama-3.3-70b-versatile"),
-        classifier_model=_env("CLASSIFIER_MODEL", "openai/gpt-oss-20b"),
+        llm_base_url=_env("LLM_BASE_URL", "https://api.openai.com/v1"),
+        character_model=_env("CHARACTER_MODEL", "gpt-4.1-mini"),
+        classifier_model=_env("CLASSIFIER_MODEL", "gpt-4.1-mini"),
         cartesia_api_key=(os.environ.get("CARTESIA_API_KEY", "") or "").strip(),
     )
 

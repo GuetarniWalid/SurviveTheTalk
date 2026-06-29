@@ -386,20 +386,18 @@ def test_parser_returns_none_for_pure_prose() -> None:
 # ---------- Test 11: HTTP boundary smoke ----------------------------------
 
 
-def test_classify_posts_to_groq_with_openai_compat_shape(
+def test_classify_posts_to_openai_with_compat_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Story 6.9b migration witness — locks in the post-bench provider
-    swap (Qwen via OpenRouter → Groq Llama 3.3 70B). The contract this
-    test defends is BOTH directions:
+    """Story 10.6 (2026-06-29) provider witness — locks in the OpenAI request
+    shape. The contract this test defends:
 
-    - Target host is `api.groq.com` (no longer `openrouter.ai`).
-    - Default model is `openai/gpt-oss-20b` — the Story 10.6 migration off the
-      decommissioned Llama 4 Scout (gpt-oss has TRUE strict structured output),
-      no longer `qwen/qwen3.5-flash-02-23`.
-    - The `reasoning` field is NOT sent (that is the OpenRouter/Qwen
-      chain-of-thought-disable hack — distinct from the gpt-oss
-      `reasoning_effort` field, which IS sent and asserted below).
+    - Target host is `api.openai.com`.
+    - Default model is `gpt-4.1-mini` (migrated to OpenAI; native strict
+      structured output), no longer Groq gpt-oss / Qwen via OpenRouter.
+    - The `reasoning` field is NOT sent (OpenRouter/Qwen chain-of-thought
+      hack), AND `reasoning_effort` is NOT sent either (gpt-4.1 is not a
+      reasoning model — `_reasoning_effort_for` returns None).
     - `extra_body` still must not appear (OpenAI-SDK-only convention,
       raw HTTP APIs ignore it).
 
@@ -411,30 +409,25 @@ def test_classify_posts_to_groq_with_openai_compat_shape(
     """
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "api.groq.com", (
-            "Story 6.9b migration — classifier posts to Groq, not OpenRouter"
+        assert request.url.host == "api.openai.com", (
+            "Story 10.6 (2026-06-29) — classifier posts to OpenAI"
         )
         assert request.headers["authorization"] == "Bearer test-key"
         sent = json.loads(request.content)
-        # Story 6.9b review P1 — assert against the module constant, not a
-        # literal. If `_PROVIDER_MODEL` ever flips to a different default,
-        # the assertion follows the constant; if a test wants to lock the
-        # exact string value, that belongs in a dedicated default-model test.
-        assert sent["model"] == _PROVIDER_MODEL == "openai/gpt-oss-20b", (
-            "default classifier model is gpt-oss-20b (Story 10.6 — Scout "
-            "decommissioned 2026-07-17; gpt-oss has TRUE strict structured output)"
+        # Assert against the module constant, not a literal — if `_PROVIDER_MODEL`
+        # flips again the assertion follows it.
+        assert sent["model"] == _PROVIDER_MODEL == "gpt-4.1-mini", (
+            "default classifier model is gpt-4.1-mini (Story 10.6 — migrated to "
+            "OpenAI, native strict structured output)"
         )
         assert "reasoning" not in sent, (
             "the `reasoning` field is OpenRouter-era (Qwen chain-of-thought "
-            "disable); it is NOT the gpt-oss `reasoning_effort` field and must "
-            "not appear. Re-adding it without rolling back to OpenRouter would "
-            "break the contract."
+            "disable); it must never appear."
         )
-        # Story 10.6 — gpt-oss is a reasoning model, so reasoning_effort=low IS
-        # sent (gated to gpt-oss so the 70B character model never sees it).
-        assert sent["reasoning_effort"] == "low", (
-            "a gpt-oss judge must send reasoning_effort=low to keep the trace "
-            "short (Story 10.6 AC2)"
+        # gpt-4.1 is NOT a reasoning model, so reasoning_effort is NOT sent
+        # (`_reasoning_effort_for` returns None for non-gpt-oss/non-gemini-2.5).
+        assert "reasoning_effort" not in sent, (
+            "a non-reasoning model (gpt-4.1) must not receive reasoning_effort"
         )
         assert "extra_body" not in sent, (
             "extra_body is OpenAI-SDK-only convention; raw HTTP API drops it"
@@ -753,7 +746,7 @@ def test_classify_multi_returns_per_goal_verdict(
         assert schema["properties"][ABUSE_KEY]["type"] == "boolean"
         assert set(schema["required"]) == {"greet", "main", "drink", ABUSE_KEY}
         assert schema["additionalProperties"] is False
-        assert request.url.host == "api.groq.com"
+        assert request.url.host == "api.openai.com"
         return httpx.Response(
             200,
             json={

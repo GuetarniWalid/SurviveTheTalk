@@ -817,10 +817,10 @@ def test_load_llm_settings_reads_key_only(monkeypatch):
     monkeypatch.delenv("CLASSIFIER_MODEL", raising=False)
     s = engine.load_llm_settings()
     assert s.groq_api_key == "test-groq-key"
-    # Story 10.6 — default judge migrated off Scout onto gpt-oss-20b.
-    assert s.classifier_model == "openai/gpt-oss-20b"
-    assert s.character_model == "llama-3.3-70b-versatile"
-    assert s.llm_base_url == "https://api.groq.com/openai/v1"
+    # Story 10.6 (2026-06-29) — migrated to OpenAI gpt-4.1-mini (all roles).
+    assert s.classifier_model == "gpt-4.1-mini"
+    assert s.character_model == "gpt-4.1-mini"
+    assert s.llm_base_url == "https://api.openai.com/v1"
 
 
 def test_load_llm_settings_raises_without_any_key(monkeypatch):
