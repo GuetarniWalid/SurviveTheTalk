@@ -257,50 +257,71 @@ async def persist_debrief(
     # would be cancelled. The bot runs teardown to completion with no deadline-
     # kill, so a generous inline budget (debrief_generator p99 + one retry) is
     # safe; pooled bots are single-use so this never starves a worker.
-    core = await generate_debrief(
-        transcript=transcript,
-        reason=reason,
-        character_name=character_name,
-        scenario_title=scenario_title,
-        brief_personality_description=brief_personality_description,
-        hesitations=hesitations,
-        api_key=resolve_llm_api_key(settings),
-        model=settings.debrief_model,
-        base_url=resolve_llm_chat_url(settings),
-    )
-
-    analysis_json = None if core is None else _assemble_json(core, degraded=False)
-    degraded = analysis_json is None
-    if degraded:
-        # Never-blank fallback (call_id=324 / call_id=340): generation yielded no
-        # usable core (timeout, terminal HTTP error, or a blob that failed the
-        # contract). Mark the row `ready` + the in-blob `degraded` flag so the
-        # client stops polling and shows 'detailed analysis unavailable' — the
-        # user keeps the survival %, checkpoints, and progression already stored.
-        logger.warning(
-            "debrief: no usable analysis core for call_id={} — finalising the "
-            "score-only row as ready+degraded (score + progress already persisted)",
-            call_id,
+    #
+    # The generate→UPDATE pair is wrapped in try/finally so the Phase-1 `pending`
+    # row is ALWAYS finalised to `ready` — even if generation is CANCELLED
+    # (process shutdown injects `CancelledError`, which `generate_debrief`
+    # re-raises; it is a BaseException the bot's `except Exception` teardown guard
+    # would miss) or raises unexpectedly. Without this, an exception here would
+    # leave the row stuck `pending` forever — the idempotency pre-check bails on
+    # any retry, so it never self-heals, and the client polls its whole budget
+    # before degrading. A re-raised exception still propagates AFTER the finally,
+    # so cancellation semantics are preserved. (A SIGKILL/OOM between the Phase-1
+    # commit and here is the one residual — instantaneous + unhandleable; the
+    # client still degrades gracefully via its poll-budget fallback.)
+    core = None
+    try:
+        core = await generate_debrief(
+            transcript=transcript,
+            reason=reason,
+            character_name=character_name,
+            scenario_title=scenario_title,
+            brief_personality_description=brief_personality_description,
+            hesitations=hesitations,
+            api_key=resolve_llm_api_key(settings),
+            model=settings.debrief_model,
+            base_url=resolve_llm_chat_url(settings),
         )
-        analysis_json = _assemble_json(degraded_core(reason), degraded=True)
-        if analysis_json is None:
-            # Unreachable (degraded_core always validates); the pending row stays
-            # and the client keeps the score-only scorecard.
-            return
-
-    async with get_connection() as db:
-        updated = await update_debrief_analysis(
-            db,
-            call_session_id=call_id,
-            debrief_json=analysis_json,
-            status="ready",
-        )
-    logger.info(
-        "debrief stored call_id={} survival_pct={} attempt={} status=ready "
-        "degraded={} updated={}",
-        call_id,
-        survival_pct,
-        attempt_number,
-        degraded,
-        updated,
-    )
+    finally:
+        analysis_json = None if core is None else _assemble_json(core, degraded=False)
+        degraded = analysis_json is None
+        if degraded:
+            # Never-blank fallback (call_id=324 / call_id=340): no usable core
+            # (timeout, terminal HTTP error, a contract-failing blob, or a
+            # cancellation). Mark the row `ready` + the in-blob `degraded` flag so
+            # the client stops polling and shows 'detailed analysis unavailable' —
+            # the user keeps the survival %, checkpoints, and progression.
+            logger.warning(
+                "debrief: no usable analysis core for call_id={} — finalising the "
+                "score-only row as ready+degraded (score + progress already persisted)",
+                call_id,
+            )
+            analysis_json = _assemble_json(degraded_core(reason), degraded=True)
+        if analysis_json is not None:
+            try:
+                async with get_connection() as db:
+                    updated = await update_debrief_analysis(
+                        db,
+                        call_session_id=call_id,
+                        debrief_json=analysis_json,
+                        status="ready",
+                    )
+                logger.info(
+                    "debrief stored call_id={} survival_pct={} attempt={} "
+                    "status=ready degraded={} updated={}",
+                    call_id,
+                    survival_pct,
+                    attempt_number,
+                    degraded,
+                    updated,
+                )
+            except Exception as exc:
+                # A cleanup-write failure must never MASK the original exception
+                # (e.g. the CancelledError we are propagating) — log + swallow it.
+                # The row stays `pending`; the client degrades on its poll budget.
+                logger.warning(
+                    "debrief: failed to finalize pending row for call_id={}: {} ({})",
+                    call_id,
+                    exc,
+                    type(exc).__name__,
+                )

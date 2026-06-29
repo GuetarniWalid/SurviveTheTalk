@@ -483,6 +483,25 @@ explicitly reject "No other choice." / "Is it a question?". New R8 lint
 WARN + a `test_scenarios.py` glob over the full index, tuned for zero false-positives on the
 rewrites + cop_interrogation (server/CLAUDE.md §9 R8).
 
+**Self-verification pass (adversarial, multi-agent on Sonnet 4.6 — a different model
+than the Opus 4.8 implementer).** 5 review lenses → 15 raw findings → 4 confirmed after
+adversarial refutation. Resolved this session:
+- **(HIGH) Stuck `pending` row on cancellation** — `generate_debrief` re-raises
+  `CancelledError` (a `BaseException` the bot's `except Exception` teardown guard misses),
+  so a process-shutdown mid-generation left the Phase-1 `pending` row stranded forever
+  (the idempotency pre-check bails on any retry). FIXED: Phase 2 is now `try/finally` —
+  the row is ALWAYS finalised to `ready` (full or degraded), and the exception still
+  propagates. + regression test (`…_when_generation_cancelled`).
+- **(MEDIUM) Same root cause** for an uncaught exception between Phase 1 and Phase 2 —
+  same `try/finally` fix. (Residual: a SIGKILL/OOM in the µs between the Phase-1 commit and
+  the finally — instantaneous/unhandleable; the client still degrades gracefully.)
+- **(LOW) AC3 test gap** — the degraded-on-fail test now also asserts `status == 'ready'`.
+- **(MEDIUM) Back-compat** — a pre-10.7 client treating a `pending` payload as terminal:
+  documented as an EXPLICIT decision (vacuous pre-launch — the first public build is 10.7+;
+  no pre-10.7 client will ever exist in the field). Code comment in `routes_debriefs.py`.
+Gates re-run GREEN after the fixes (server pytest still passes; the 2 new/updated teardown
+tests included).
+
 **OWED before `done` (the review→done gate, NOT runnable in this dev session):**
 1. `/bmad-code-review` by a DIFFERENT LLM (Opus 4.8 implemented this).
 2. Deploy to the VPS (DB backup first; migration 017 auto-applies) + refresh `prod_snapshot`.

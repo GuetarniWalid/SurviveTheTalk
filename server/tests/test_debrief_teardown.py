@@ -114,6 +114,13 @@ async def _fake_none(**_kwargs):
     return None
 
 
+async def _fake_cancelled(**_kwargs):
+    # Simulates process-shutdown cancellation mid-generation: generate_debrief
+    # re-raises CancelledError (a BaseException the bot's `except Exception`
+    # teardown guard misses).
+    raise asyncio.CancelledError()
+
+
 def test_persist_writes_debrief_counts_and_progress(seeded, monkeypatch):
     user_id, call_id = seeded
     monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_core)
@@ -203,6 +210,9 @@ def test_persist_stores_degraded_debrief_when_generation_fails(seeded, monkeypat
 
     # A degraded row IS stored (score-only), and counts + progress still land.
     assert debrief is not None
+    # Story 10.7 — the two-phase path must finalise the status to 'ready' even on
+    # the LLM-failure path (else the client polls a never-ready row forever).
+    assert debrief["status"] == "ready"
     assert debrief["survival_pct"] == 66  # floor(2/3*100)
     stored = json.loads(debrief["debrief_json"])
     assert stored["degraded"] is True
@@ -397,6 +407,36 @@ def test_persist_writes_pending_score_before_generation_then_ready(seeded, monke
     final_blob = json.loads(final["debrief_json"])
     assert final_blob["errors"][0]["user_said"] == "I am agree"
     assert "degraded" not in final_blob
+
+
+def test_persist_finalizes_pending_row_when_generation_cancelled(seeded, monkeypatch):
+    """Story 10.7 review (HIGH) — a CancelledError mid-generation (process
+    shutdown: `generate_debrief` re-raises it, a BaseException the bot's
+    `except Exception` teardown guard misses) must NOT strand the Phase-1
+    `pending` row. The teardown's `finally` finalises it to ready+degraded
+    (never-blank), AND the CancelledError still propagates (cancellation
+    semantics preserved)."""
+    _user_id, call_id = seeded
+    monkeypatch.setattr("pipeline.debrief_teardown.generate_debrief", _fake_cancelled)
+
+    async def _go():
+        cancelled = False
+        try:
+            await persist_debrief(**_kwargs(call_id))
+        except asyncio.CancelledError:
+            cancelled = True
+        async with get_connection() as db:
+            return cancelled, await get_debrief_by_call_id(db, call_id)
+
+    cancelled, debrief = asyncio.run(_go())
+    # The cancellation propagates (not swallowed)...
+    assert cancelled
+    # ...but the pending row was finalised — never stranded `pending`.
+    assert debrief is not None
+    assert debrief["status"] == "ready"
+    stored = json.loads(debrief["debrief_json"])
+    assert stored["degraded"] is True
+    assert stored["survival_pct"] == 66  # the score is kept
 
 
 def test_persist_stores_device_sourced_hesitation_from_merge(seeded, monkeypatch):

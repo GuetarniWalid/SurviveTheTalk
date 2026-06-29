@@ -85,6 +85,15 @@ async def get_debrief(call_id: int, request: Request) -> dict:
     # the real survival % + checkpoints (renders the scorecard now) but empty
     # analysis arrays; a `ready` row is terminal. A missing row still 404s
     # DEBRIEF_NOT_READY above.
+    #
+    # Back-compat decision (Story 10.7 review): a PRE-10.7 client that ignored
+    # this `pending` flag would treat a score-only `pending` payload as terminal
+    # (empty analysis → a false "flawless call"). This is accepted: 10.7 is a
+    # PRE-LAUNCH blocker, so the FIRST public build is already 10.7+ — no pre-10.7
+    # client will ever exist in the field. If a future debrief change ships
+    # post-launch and old builds must be guarded, gate this injection on a
+    # client-capability header instead of serving 404 to all (which would cost new
+    # clients the instant scorecard this story delivers).
     data["pending"] = debrief_row["status"] == "pending"
 
     # Serve the STORED dict (not a model re-dump): assemble_debrief already
