@@ -75,12 +75,12 @@ checkpoints:
       NOT repeat it. In your own words, cut off any excuse-making, make clear
       you know they left you sitting there, and demand they explain themselves.
     success_criteria: >
-      User reacts to the confrontation: starts explaining,
-      apologizes, asks what happened, or expresses surprise or
-      concern at why she is upset. The reply must actually engage
-      with the situation, even clumsily. An off-topic remark or
-      small talk that ignores the confrontation (the weather, the
-      crowd, how busy it is) does NOT count.
+      User engages with being stood up for the dinner: apologizes,
+      starts to explain the no-show, asks what happened, or
+      acknowledges why she is upset. The reply must actually address
+      the missed dinner, even clumsily. A reply that ignores standing
+      her up — small talk or a stray unrelated circumstance (the
+      weather, the traffic, the crowd, how busy it is) — does NOT count.
 
   - id: explain
     # Story 6.27 — giving a concrete reason ⊂ react ("starts explaining" is

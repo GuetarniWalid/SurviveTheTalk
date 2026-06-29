@@ -110,10 +110,14 @@ checkpoints:
       tonight? Treat any hesitation as suspicious and keep pressing on it in
       the SAME turn — don't just note it and wait.
     success_criteria: >
-      User gives a reason for the erratic driving (unfamiliar roads,
-      distracted, tired, looking at GPS) or denies drinking. The reply
-      must offer an actual justification. Silence, "I don't know", or
-      an off-topic remark does NOT count.
+      User gives a reason that actually accounts for the SWERVING /
+      erratic driving — distracted, tired, unfamiliar with the road,
+      reaching for something, looking at the GPS — OR addresses the
+      drinking question (admits or denies it). The reply must explain
+      the bad driving itself, not just name a circumstance. Silence, "I
+      don't know", or a remark that does not account for the swerving
+      (the weather, heavy traffic, running late, general small talk)
+      does NOT count.
 
   - id: curveball
     # Story 6.27 — engaging the officer's question ⊂ respond (same clause).
