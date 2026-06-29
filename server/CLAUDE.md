@@ -558,9 +558,10 @@ classifier prompt; R3 + R7(semantic) remain builder `CHECKPOINTS_PROMPT` guidanc
 lexically detectable) + the smoke gate. All SIX shipped scenarios are de-scripted + audited
 (waiter + cop_hard + girlfriend + landlord + mugger + cop_interrogation); cop_interrogation
 also needed a judge-timeout bump for the SLOW Gemini era (`_HTTP/_CLASSIFIER_TIMEOUT_SECONDS`
-1.5/2.0→4.0/4.5 s), pulled back to 2.0/2.5 s for the FAST OpenAI gpt-4.1-mini in the 10.6
-review (D3; felt `VERDICT_WAIT_BUDGET_MS` UNTOUCHED — owes a Pixel 9 re-validation). Remaining:
-per-scenario calibration + Pixel 9 smoke gate.
+1.5/2.0→4.0/4.5 s); the 10.6 review (D3) briefly cut it to 2.0/2.5 s for OpenAI, but a live VPS
+golden sweep MEASURED the gpt-4.1-mini judge at ~2 s/call (a 2.0 s HTTP budget → ~2 % fail-open),
+so it was RESTORED to 4.0/4.5 s (felt `VERDICT_WAIT_BUDGET_MS` UNTOUCHED). Remaining: per-scenario
+calibration + Pixel 9 smoke gate.
 
 **THE DURABLE LESSON (why bugs reached production — read before adding any rule).** They
 leaked because the rules were SOFT — the builder was *told* to follow them but nothing

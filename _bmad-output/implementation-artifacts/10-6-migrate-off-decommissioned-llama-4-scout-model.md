@@ -14,8 +14,10 @@ Status: in-progress
 >
 > **Code-review reconciliation (2026-06-29, claude-opus-4-8 — see Review Findings
 > at the bottom).** Applied: removed the dead gpt-oss/Gemini `reasoning_effort`
-> gating (D2); pulled `_CLASSIFIER/_HTTP_TIMEOUT_SECONDS` back 4.5/4.0→2.5/2.0 s
-> for fast OpenAI (D3); made the never-silent floor PER-SCENARIO (D4); hardened
+> gating (D2); tried cutting `_CLASSIFIER/_HTTP_TIMEOUT_SECONDS`
+> 4.5/4.0→2.5/2.0 s then REVERTED to 4.5/4.0 s after a live VPS golden sweep
+> measured the gpt-4.1-mini judge at ~2 s/call (2.0 s HTTP → ~2 % fail-open) (D3);
+> made the never-silent floor PER-SCENARIO (D4); hardened
 > the §9 scenario lints (P3); reconciled every stale gpt-oss/Groq/Gemini comment
 > in `config.py` / `exchange_classifier` / `debrief_generator` / `probe` /
 > `server/CLAUDE.md` §4+§9 to gpt-4.1-mini (P1).
@@ -265,7 +267,7 @@ The migration code is correct and is STRICTLY BETTER than leaving Scout (which i
 
 - **D1 (judge §6 validation) → VALIDATE BEFORE `done`.** Not a code change — a **flip-blocker**: `calibrate_scenario.py` golden net + banded sweep must pass on `gpt-4.1-mini` before `review → done` (folds into the owed Pixel 9 smoke gate). Story stays `in-progress`. The gpt-4.1 judge mis-credit class stays backlogged to **10-7**.
 - **D2 (dead reasoning gating) → DELETED.** Removed `_is_gpt_oss` / `_reasoning_effort_for` / `_GPT_OSS_REASONING_HEADROOM` + the `_multi_max_tokens(model=…)` headroom + the `reasoning_extra` spreads + the probe gating, across `exchange_classifier.py`, `debrief_generator.py`, `probe_debrief_schema.py` (+ their tests).
-- **D3 (terminal dead-air) → TIMEOUT PULLED BACK.** `_CLASSIFIER/_HTTP_TIMEOUT_SECONDS` 4.5/4.0 → **2.5/2.0 s** for fast OpenAI (halves the worst-case terminal stall; corrected the false "zero reply latency" comment). ⚠️ Calibrated threshold → **owes a Pixel 9 re-validation** in the smoke gate.
+- **D3 (terminal dead-air) → tried 2.5/2.0 s, then REVERTED to 4.5/4.0 s after live measurement.** The retune to 2.5/2.0 s was caught wrong by the D1 golden run: a live VPS sweep measured the gpt-4.1-mini judge at **~2 s/call**, so the 2.0 s HTTP budget clipped the tail (~2 % fail-open). Restored to the proven 4.5/4.0 s (near-zero fail-opens); the terminal-stall worry is rare at OpenAI latency (normal calls land ~2 s, well under the ceiling — the ~9 s case needs back-to-back infra failures, not slowness). The surgical option (cap only the terminal blocking path) is noted in-code if ever needed. Still corrected the false "zero reply latency" comment.
 - **D4 (`"Go on."` floor) → PER-SCENARIO.** `ReplySanitizer(fallback_line=…)` wired from a new optional YAML `never_silent_fallback`; in-character lines authored for all 6 scenarios (global `"Go on."` kept only as the default for un-authored scenarios).
 - **P1/P2/P3 → APPLIED.** P1: every stale gpt-oss/Groq/Gemini comment reconciled to gpt-4.1-mini (`config.py`, `exchange_classifier`, `debrief_generator`, `probe`, `server/CLAUDE.md` §4+§9, R1→historical). P2: this story re-anchored (top banner). P3: `_TEMPLATE_PLACEHOLDER_RE` broadened (leading space/digit no longer evades) + `success_criteria` now scanned (builder + commit test) + model-token scan widened to `briefing`/`exit_lines`/`never_silent_fallback`.
 - **Gates:** `ruff check` + `ruff format --check` clean; full `pytest` green.

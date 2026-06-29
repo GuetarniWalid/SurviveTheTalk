@@ -175,20 +175,22 @@ def _multi_max_tokens(num_goals: int) -> int:
 # sized below the outer budget so the httpx abort lands first and logs
 # a clean HTTP error instead of an opaque `asyncio.TimeoutError`.
 #
-# The 4.5/4.0 s ceiling was raised for the (now-abandoned) Gemini era, whose
-# multi-goal verdict on a big scenario (cop_interrogation_01, 12-20 goals at
-# once) routinely needed >1.5 s. Story 10.6 (2026-06-29) moved the judge to the
-# FAST OpenAI gpt-4.1-mini (sub-second multi-goal verdicts), so the Gemini-sized
-# ceiling is oversized — and it matters on ONE path: a TERMINAL turn awaits the
-# verdict BEFORE forwarding the user frame (`checkpoint_manager._run_classifier_
-# blocking`), so on a slow/error/429 turn this ceiling — NOT VERDICT_WAIT_BUDGET_MS
-# — bounds the felt wait, and the Story-6.27 first-call retry can double it (the
-# review-D3 ~9 s terminal dead-air case). Pulled back to 2.5/2.0 s for OpenAI:
-# headroom for a p95 gpt-4.1-mini verdict while ~halving the worst-case terminal
-# dead air. Non-terminal turns are unaffected (still gated by the 800 ms felt
-# budget). ⚠️ Calibrated threshold — owes a Pixel 9 smoke re-validation (10.6 D3).
-_CLASSIFIER_TIMEOUT_SECONDS = 2.5
-_HTTP_TIMEOUT_SECONDS = 2.0
+# The 4.5/4.0 s ceiling dates to the (abandoned) Gemini era. Story 10.6 review
+# (D3) first cut it to 2.5/2.0 s for OpenAI, ASSUMING gpt-4.1-mini was sub-second
+# — but a live VPS golden sweep (2026-06-29) MEASURED the judge at ~2 s/call, so a
+# 2.0 s HTTP budget clipped the slow tail and ~2 % of classifies ReadTimeout'd →
+# fail-open (no credit that turn). RESTORED to 4.5/4.0 s: at the real ~2 s latency
+# this keeps comfortable margin (near-zero fail-opens, as in the proven pre-10.6
+# prod). The original D3 worry — a TERMINAL turn awaits the verdict under this
+# ceiling (`checkpoint_manager._run_classifier_blocking`) and the Story-6.27
+# first-call retry can double it — is RARE at OpenAI latency: normal calls land at
+# ~2 s (well under the ceiling, no timeout), so the ~9 s worst case needs
+# back-to-back genuine infra failures, not slowness. If that rare case ever
+# matters, the surgical fix is to cap the terminal blocking path specifically (NOT
+# the global ceiling, which must stay > judge latency or it fail-opens). The HTTP
+# budget sits below the outer budget so httpx aborts first with a clean error.
+_CLASSIFIER_TIMEOUT_SECONDS = 4.5
+_HTTP_TIMEOUT_SECONDS = 4.0
 
 
 _FENCE_RE = re.compile(
