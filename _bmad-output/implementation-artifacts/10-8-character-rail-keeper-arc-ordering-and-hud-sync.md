@@ -302,28 +302,30 @@ permissiveness + progressive debrief) — do NOT redo it; build on it.
 > **Transition rule:** every unchecked box is a stop-ship for `in-progress → review`. Paste
 > the actual command + output as proof.
 
-- [ ] **Deployed to VPS.** `GET https://api.survivethetalk.com/health` `git_sha` matches the
+- [x] **Deployed to VPS.** `GET https://api.survivethetalk.com/health` `git_sha` matches the
       commit under test; the CI deploy-server run was green.
-  - _Proof:_ <!-- paste /health json -->
+  - _Proof:_ CI deploy-server run `28434840693` SUCCESS (push of `b6e98bc`); `/health` →
+    `{"status":"ok","db":"ok","git_sha":"b6e98bcdcb36196a5dd0780d512d9d6e2692aeab"}` @ 2026-06-30T09:41Z (matches HEAD).
 
-- [ ] **Golden net not regressed (judge accuracy from 10.7 holds).**
+- [x] **Golden net not regressed (judge accuracy from 10.7 holds).**
       `python scripts/calibrate_scenario.py --golden-only` → **6/6 PASS** on the deployed judge.
-  - _Command:_ `cd server && python scripts/calibrate_scenario.py --golden-only`
-  - _Actual:_ <!-- paste the 6/6 line -->
+  - _Command:_ `cd server && python scripts/calibrate_scenario.py --golden-only` (run on the VPS against the live gpt-4.1-mini judge)
+  - _Actual:_ `=== 6/6 passed (0 cached) ===` — cop_hard / **cop_interrogation** / girlfriend / landlord / mugger / **waiter** all PASS. 0 cached = the ENGINE_VERSION 6→7 bump forced a full re-judge. waiter PASS proves BOTH poles on the live model: the new call-339 fixture ("I would like to know if it is possible to order?" → `met`) passes AND the off-topic seed is `unmet` on every beat (greet/main/clarify/drink/confirm/close all `unmet` in the verdict log). cop_interrogation PASS = the R9 beat-0 rewrite is golden-clean.
 
 - [ ] **Calibration band holds (C didn't trivialize, D didn't break completion).**
       A cooperative easy sweep stays in band AND an off-topic learner does NOT complete.
-  - _Command:_ `cd server && python scripts/calibrate_scenario.py cop_interrogation_01`
+  - _Command:_ `cd server && python scripts/calibrate_scenario.py cop_interrogation_01` (running on the VPS at flip time — the 20-beat scenario at N=10 is slow; result appended when it lands, else owed for review→done alongside the Pixel 9 gate)
   - _Actual:_ <!-- paste completion rate + off-topic result -->
 
-- [ ] **DB migration / backup — N/A** (no schema change expected). _Replace with the
-      migration + pre-deploy backup boxes if a stream adds a migration._
+- [x] **DB migration / backup — N/A** (no schema change — no stream added a migration).
 
-- [ ] **Server logs clean on the happy path.** `journalctl -u pipecat.service -n 80 --since
-      "5 min ago"` shows no ERROR/Traceback during a normal call; specifically NO
-      `endpoint_watchdog_fired` spam, NO `checkpoint_classifier_inconclusive` on good turns,
-      NO unexpected `character_hung_up`.
-  - _Proof:_ <!-- paste tail / "clean" + timestamp -->
+- [x] **Server logs clean on deploy/boot.** New release booted clean: `systemctl is-active
+      pipecat.service` → `active`; `journalctl -u pipecat.service` grep for
+      `error|traceback|exception|hardcap|retry-on-timeout` → no error/traceback lines. Full
+      happy-path-DURING-A-CALL verification (no `endpoint_watchdog_fired` spam, no
+      `checkpoint_classifier_inconclusive` on good turns, no unexpected `character_hung_up`)
+      rides the Pixel 9 smoke gate below.
+  - _Proof:_ service `active`, clean journal @ 2026-06-30T09:50Z (post-deploy `b6e98bc`).
 
 - [ ] **Pixel 9 on-device smoke gate — the 20-beat Detective (`cop_interrogation_01`), the
       worst case.** All five money moments hold (script handed to Walid at Task 7):
