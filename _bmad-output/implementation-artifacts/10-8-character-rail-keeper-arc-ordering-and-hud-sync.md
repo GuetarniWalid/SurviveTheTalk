@@ -314,8 +314,8 @@ permissiveness + progressive debrief) — do NOT redo it; build on it.
 
 - [ ] **Calibration band holds (C didn't trivialize, D didn't break completion).**
       A cooperative easy sweep stays in band AND an off-topic learner does NOT complete.
-  - _Command:_ `cd server && python scripts/calibrate_scenario.py cop_interrogation_01` (running on the VPS at flip time — the 20-beat scenario at N=10 is slow; result appended when it lands, else owed for review→done alongside the Pixel 9 gate)
-  - _Actual:_ <!-- paste completion rate + off-topic result -->
+  - _Command:_ `cd server && python scripts/calibrate_scenario.py cop_interrogation_01`
+  - _Actual:_ OWED. The cop sweep (20-beat, N=10, ~20-30 min) was KILLED mid-run to free the OpenAI account for Walid's live Pixel 9 calls (it was inducing rate-limit contention). Judge accuracy is already proven by the live golden 6/6 + zero false-negatives across calls 344/345. The cooperative-easy band on the NEW −9 `fail_penalty` is owed for the reviewer/Walid (re-run when no live call is in flight). NOTE: the band itself is about to be reworked by Story 10.9 (survival decoupling), so a deep cop calibration on −9 has limited shelf-life.
 
 - [x] **DB migration / backup — N/A** (no schema change — no stream added a migration).
 
@@ -338,7 +338,7 @@ permissiveness + progressive debrief) — do NOT redo it; build on it.
     instead of re-asking, and never reveals a later beat (fingerprints) before identity is done.
   - **E:** the on-screen instruction **always matches** what the cop is actually saying — it
     never freezes on a beat the conversation has passed.
-  - _Result:_ <!-- Walid signs off; record per-money-moment outcome -->
+  - _Result (calls 344 + 345, 2026-06-30):_ **The 10.8 FIXES validated; completion confounded by the 10.9 survival issue.** **A ✅** no mid-sentence hang-up (the call-341 bug did not recur; hard cap force-finalized, ladder stayed cancelled; after the 25s fix, no truncation). **B ✅** no silently-missed beat on a good turn; HUD ticked. **E ✅** HUD never froze; beat 0 credited immediately (call-336 strand gone). Judge accurate (zero false negatives). **C / D (completion):** the engaged learner was HUNG UP by the patience meter (10/20 then 8/20) — NOT the call-341 bug, but the structural "patience drains on non-advancement" conflation (cop circles back to met beats; `lock_arrival_and_departure` near-unsatisfiable for a stay-home alibi). **Carved to Story 10.9 (`survival-decoupling-design-brief.md`) — not a 10.8 failure.** RECOMMENDED for review→done: accept that 10.8's fixes are live-validated (A/B/E + judge + no-truncation + golden 6/6) and that "complete the 20-beat Detective" is gated by 10.9; OR re-smoke the 10.8 fixes on a SHORTER scenario (6-beat waiter) where the survival math isn't a confound. Walid's call.
 
 ## Dev Notes
 
@@ -497,6 +497,14 @@ claude-opus-4-8 (dev-story, 2026-06-30)
 **Per-stream:** A = EndpointWatchdog continuous-growth hard cap (`_MAX_INTERIM_DURATION_SECONDS=15`, armed once/turn) + PatienceTracker `InterimTranscriptionFrame` cancel branch (the missing §1-trap branch). B = `_last_failure_was_timeout` flag + an `elif` single bounded retry in `classify_multi` (≤1 retry/turn, strict json_schema + fail-open + 4.0/4.5 untouched). D4 = R9 `find_unsatisfiable_criteria` lint (builder reject + loader warn + glob test, zero false positives) + `cop_interrogation_01` beat-0 rewrite + `server/CLAUDE.md §9` R9. D = `format_suggested_focus_block` already-given reconcile (confirm-and-hold, never advance-on-assumption). E = verify-first (no rewrite) + stranded/overtaken regression tests (client + server). C = judge prompt principles 2/7 (polite/indirect/question-form genuine intent counts; dodge-question stays unmet, objective-dependent) + golden 339 fixture + `ENGINE_VERSION` 6→7.
 
 **Owed at deploy/review (Task 7 + the gates):** live VPS golden 6/6 (`calibrate_scenario.py --golden-only`, needs the OpenAI key absent locally) incl. the new 339 fixture; a cooperative easy calibration sweep in-band + off-topic fails; deploy via CI deploy-server; Pixel 9 smoke on the 20-beat Detective (the 5 money moments). NO new DB migration.
+
+**DEPLOY + LIVE VALIDATION (2026-06-30).** Deployed `b6e98bc` (CI deploy-server `28434840693` green, `/health` SHA match, db ok). Live VPS golden net = **6/6 PASS** (0 cached after ENGINE_VERSION 6→7) — `waiter_easy_01` PASS proves both poles on the deployed gpt-4.1-mini judge (the new call-339 polite-question fixture → `met` AND off-topic seed → `unmet` on every beat). Service `active`, journal clean (no error/traceback).
+
+**REVIEW-PASS TUNING (calls 344/345, deployed `00dfe03`).** Two Pixel 9 calls on the 20-beat Detective surfaced two tuning issues, both fixed live: (1) the 15s hard cap truncated a SLOW B1 speaker mid-answer → fragments judged `unmet` → patience drained; RAISED 15s → 25s + ERROR→WARNING log (a cap fire is expected on a continuous talker, not a crash). (2) easy `fail_penalty` LOWERED −15 → −9. Both deployed (`00dfe03`, CI `28438447106` green, `/health` SHA match).
+
+**WHAT THE LIVE CALLS PROVED — 10.8's fixes HOLD:** the call-341 bug (Soniox-never-finalizes → silence-ladder hang-up mid-sentence) did NOT recur (the hard cap force-finalized the long turns, the ladder stayed cancelled during speech — A2+A3 confirmed in prod); **beat 0 credited immediately** ("yeah sure" → `acknowledge_recorded_call: met` — the call-336 strand is GONE); the **HUD never froze** (truthful out-of-order `goals_met_indices`); the **judge was accurate** (zero false negatives across both ~5-min calls — Stream C validated live); progressive debrief OK; after the 25s cap fix, NO truncation.
+
+**THE RESIDUAL "ENGAGED LEARNER STILL GETS HUNG UP" IS CARVED TO A NEW STORY (10.9), NOT a 10.8 bug.** Both calls ended in a PATIENCE-meter hang-up (survival mechanic), NOT the call-341 bug. Root cause: the patience meter drains on "didn't advance a beat", but an ENGAGED learner doesn't advance for GOOD reasons (the cop's circle-back persona re-asks already-met beats; a beat — `lock_arrival_and_departure` — is near-unsatisfiable for a stay-home alibi; clarifications; slow B1 pace). −9 slowed but didn't cure it (it's a structural conflation, not a magnitude knob). A 13-agent design exploration produced `survival-decoupling-design-brief.md` (decouple SURVIVAL=engagement from PROGRESS=beats via one extra `__engaged__` field on the existing judge call). Walid will open **Story 10.9** in a DEDICATED create-story session from that brief. The −9 is an interim gentling that 10.9 supersedes.
 
 ### File List
 **Server — pipeline:**
