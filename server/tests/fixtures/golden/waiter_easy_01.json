@@ -40,6 +40,13 @@
       "note": "the literal 2026-05-30 off-topic that wrongly flipped greet"
     },
     {
+      "checkpoint_id": "greet",
+      "kind": "positive",
+      "character_line": "Hi. Welcome to The Golden Fork. What can I get you?",
+      "user_text": "I would like to know if it is possible to order?",
+      "note": "Story 10.8 call 339 — a genuine move to order phrased POLITELY as a question MUST be 'met' (judge-reliability fix, prompt principle 2). The strict judge previously read it as a precondition/dodge question and false-negated, which spiralled patience to a hang-up."
+    },
+    {
       "checkpoint_id": "main_course",
       "kind": "positive",
       "character_line": "So what do you want to eat?",

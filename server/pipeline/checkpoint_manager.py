@@ -202,26 +202,45 @@ def format_suggested_focus_block(first_pending: dict) -> str:
     when the focused beat was already asked but not yet credited, the
     character must press/rephrase THIS objective, not roam ahead to fill
     the turn (the reply-4 forward-leak).
+
+    Story 10.8 (Stream D, call 336) — the 10.6 "already-given" branch is
+    RECONCILED with 6.21's firm hold (brief §8.7). It previously told the model
+    to "take it in and keep the conversation MOVING" when it BELIEVED the info
+    was given — which the model read as "advance to the next beat" and used to
+    JUMP off an uncredited beat it merely *assumed* was done (the proximate
+    call-336 strand: the cop's opening voiced beat 0's content, the model
+    believed beat 0 done, moved to the name beat, and beat 0 stranded `unmet`
+    forever, freezing the HUD). The reconcile: a genuinely-credited beat has
+    ALREADY dropped off `pending_goals`, so this block is only ever called for a
+    STILL-PENDING beat — therefore the already-given path must CONFIRM-and-HOLD
+    (give the judge a clean turn to credit), NEVER advance on the model's own
+    assumption. The credit engine moves the focus the instant the beat flips; the
+    character must never do it pre-emptively. R4/R6 preserved: the confirm IS a
+    spoken line (never-silent), and confirming-and-holding is still DRIVING the
+    current beat (never passive).
     """
     return (
         "Right now the only objective you may pursue is: "
         + first_pending["prompt_segment"].rstrip()
         + "\nStay on it until it is genuinely addressed, and do not move on "
-        "to anything below it yet. Raise EXACTLY ONE ask this turn — this "
-        "objective only — and never tack on questions that belong to later "
-        "objectives to round out the turn. If you have already asked this "
-        "and their answer fell short, press or rephrase THIS objective "
-        "rather than advancing. If they have ALREADY given what this "
-        "objective needs, do NOT re-ask it and do NOT fall silent — say one "
-        "short in-character line that takes it in and keeps the conversation "
-        "moving, never a bare acknowledgement that just stops. If the other "
+        "to anything below it yet — not even if you believe it is already "
+        "handled. Raise EXACTLY ONE ask this turn — this objective only — and "
+        "never tack on questions that belong to later objectives to round out "
+        "the turn. If you have already asked this and their answer fell short, "
+        "press or rephrase THIS objective rather than advancing. If they have "
+        "ALREADY given what this objective needs (this turn or earlier), or you "
+        "already stated it yourself, do NOT re-ask it from scratch and do NOT "
+        "fall silent — briefly CONFIRM what was said, in your own words and "
+        "using their actual answer, and HOLD here; you will be moved on "
+        "automatically the moment it is registered, so NEVER jump ahead on your "
+        "own assumption that it is done. If the other "
         "person has volunteered "
         "something that belongs to a later objective, genuinely take it in "
         'and react in character — a quick nod, a "noted", a flicker of '
         "interest or irritation, whatever fits you — so you never sound deaf "
         "or stuck in a loop; then, without re-raising anything already "
         "settled (the rules above keep you from that), ease the conversation "
-        "back to it as the thing you still need from them. Keep that pull "
+        "back to THIS objective as the thing you still need from them. Keep that pull "
         "firm and fully in character — in your own voice and register, never "
         "a robotic, word-for-word repeated refusal."
     )

@@ -279,6 +279,15 @@ class ExchangeClassifier:
         # connection. Never retries after the first success; never twice
         # within one call.
         self._completed_one_classify: bool = False
+        # Story 10.8 (Stream B, call 342) — True when the LAST guarded attempt
+        # failed with a TIMEOUT (an httpx `TimeoutException` — ReadTimeout etc. —
+        # or the outer `asyncio.wait_for`), False on success or any non-timeout
+        # failure. Read by `classify_multi` to grant a single bounded retry on a
+        # TRANSIENT judge timeout (an OpenAI latency spike), which otherwise
+        # silently+permanently drops a clearly-met beat (fail-open, but lost).
+        # Distinct from the cold-start first-call retry: this one fires on ANY
+        # turn (call 342 spiked mid-call, after earlier successes).
+        self._last_failure_was_timeout: bool = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Return a shared `httpx.AsyncClient`, lazily instantiated on
@@ -486,6 +495,28 @@ class ExchangeClassifier:
                 pending_goals=pending_goals,
                 scenario_description=scenario_description,
             )
+        elif result is None and self._last_failure_was_timeout:
+            # Story 10.8 (Stream B, call 342) — a TRANSIENT timeout (an OpenAI
+            # latency spike beyond `_HTTP_TIMEOUT_SECONDS`, or the outer
+            # `_CLASSIFIER_TIMEOUT_SECONDS`) AFTER the cold-start window otherwise
+            # drops the beat silently+permanently (fail-open, patience unchanged,
+            # but the beat is lost — call 342). Retry ONCE: the spike has almost
+            # always passed by the next attempt (~2 s judge latency at OpenAI),
+            # and the classify is fire-and-forget for non-terminal turns, so the
+            # extra budget never blocks the character's reply. `elif` so this
+            # never STACKS on the cold-start retry — at most ONE retry per turn.
+            # Strict json_schema + the felt 4.0/4.5 s budgets are untouched
+            # (the retry re-runs the SAME guarded attempt, fresh outer budget).
+            logger.info(
+                "exchange classifier retry-on-timeout (transient judge timeout — "
+                "Story 10.8 Stream B; spike usually passed by the retry)"
+            )
+            result = await self._classify_multi_guarded(
+                user_text=user_text,
+                last_character_line=last_character_line,
+                pending_goals=pending_goals,
+                scenario_description=scenario_description,
+            )
         if result is not None:
             self._completed_one_classify = True
         return result
@@ -513,6 +544,11 @@ class ExchangeClassifier:
             )
         except asyncio.TimeoutError:
             logger.warning("exchange classifier multi timeout")
+            # Story 10.8 (Stream B) — the OUTER budget fired (the inner POST was
+            # still awaiting when wait_for cancelled it, so _post_for_content
+            # never got to flag it). Mark it a timeout so classify_multi grants
+            # the single bounded retry.
+            self._last_failure_was_timeout = True
             return None
         except asyncio.CancelledError:
             raise
@@ -529,6 +565,10 @@ class ExchangeClassifier:
         caller layers its own JSON-verdict parser on top of the returned
         content string.
         """
+        # Story 10.8 (Stream B) — reset the timeout flag per attempt; set True
+        # only on a timeout failure below. classify_multi reads it to grant the
+        # single bounded transient-timeout retry.
+        self._last_failure_was_timeout = False
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -542,6 +582,11 @@ class ExchangeClassifier:
             # TimeoutException sometimes serialises to ""). Without
             # this, operator sees "HTTP error: " and can't tell if it
             # was a timeout / connect failure / response error.
+            # Story 10.8 (Stream B) — flag a TIMEOUT (ReadTimeout / ConnectTimeout
+            # / WriteTimeout / PoolTimeout all subclass httpx.TimeoutException) so
+            # classify_multi grants the single bounded retry; a non-timeout HTTP
+            # error (connect refused, protocol error) stays single-attempt.
+            self._last_failure_was_timeout = isinstance(exc, httpx.TimeoutException)
             logger.warning(
                 "exchange classifier HTTP error: {} ({})",
                 exc or "<no message>",

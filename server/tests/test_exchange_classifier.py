@@ -1162,10 +1162,14 @@ def test_first_call_retry_recovers_verdicts(monkeypatch: pytest.MonkeyPatch) -> 
     assert any("first-call retry" in entry for entry in captured)
 
 
-def test_no_retry_after_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """D2b — once the instance has completed one parsed verdict, a later
-    failure is NOT retried (the retry is a cold-start measure only; steady-
-    state failures stay single-attempt + consecutive-None backstop)."""
+def test_no_retry_after_first_success_for_non_timeout_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2b (narrowed by Story 10.8 Stream B) — once the instance has completed
+    one parsed verdict, a later NON-TIMEOUT failure (a connect error, protocol
+    error, 5xx) is NOT retried: the cold-start retry is spent and only a
+    transient TIMEOUT earns the new Stream B retry. Steady-state non-timeout
+    failures stay single-attempt + the consecutive-None backstop."""
     attempts: list[int] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -1175,7 +1179,8 @@ def test_no_retry_after_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
                 200,
                 json={"choices": [{"message": {"content": '{"greet": "met"}'}}]},
             )
-        raise httpx.ReadTimeout("simulated mid-call timeout")
+        # A NON-timeout transport error — must NOT be retried after success.
+        raise httpx.ConnectError("simulated mid-call connect failure")
 
     _mock_http(monkeypatch, handler=_handler)
     classifier = _make_classifier()
@@ -1186,7 +1191,72 @@ def test_no_retry_after_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     second = _run(classifier.classify_multi(**kwargs))
     assert second is None
-    assert len(attempts) == 2  # no third POST — the failure was NOT retried
+    assert len(attempts) == 2  # no third POST — a non-timeout failure is NOT retried
+
+
+def test_transient_timeout_after_first_success_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.8 Stream B (call 342) — a TRANSIENT judge timeout AFTER the
+    instance's first success (the call-342 mid-call OpenAI latency spike) MUST
+    earn a single bounded retry, so a clearly-met beat is not silently+
+    permanently dropped. The retry rides the (now-passed) spike and the verdict
+    lands. Distinct from the cold-start retry, which is already spent here."""
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        # turn 1 success; turn 2 first attempt times out; turn 2 retry succeeds.
+        if len(attempts) == 2:
+            raise httpx.ReadTimeout("simulated mid-call OpenAI spike")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"greet": "met"}'}}]},
+        )
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+    kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
+
+    first = _run(classifier.classify_multi(**kwargs))
+    assert first == {"greet": True, ABUSE_KEY: False}
+
+    # turn 2: attempt 2 times out → Stream B retry → attempt 3 parses the verdict.
+    second = _run(classifier.classify_multi(**kwargs))
+    assert second == {"greet": True, ABUSE_KEY: False}
+    assert len(attempts) == 3  # one success + (timeout + its single retry)
+
+
+def test_sustained_timeout_after_success_surfaces_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.8 Stream B (AC8) — a SUSTAINED timeout (both the attempt AND its
+    single retry time out) still surfaces as `None`, exactly once-retried, so a
+    genuine sustained classifier degradation reaches the caller's
+    5-consecutive-None force-drain backstop intact (not masked by infinite
+    retrying)."""
+    attempts: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"greet": "met"}'}}]},
+            )
+        raise httpx.ReadTimeout("simulated sustained outage")
+
+    _mock_http(monkeypatch, handler=_handler)
+    classifier = _make_classifier()
+    kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
+
+    assert _run(classifier.classify_multi(**kwargs)) == {
+        "greet": True,
+        ABUSE_KEY: False,
+    }
+    # turn 2: timeout + one retry both fail → None, exactly two POSTs this turn.
+    assert _run(classifier.classify_multi(**kwargs)) is None
+    assert len(attempts) == 3
 
 
 def test_first_call_retry_never_retries_twice(

@@ -116,6 +116,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
@@ -658,6 +659,32 @@ class PatienceTracker(FrameProcessor):
                     return
                 if is_abuse:
                     self._schedule_hang_up(_REASON_INAPPROPRIATE)
+        elif isinstance(frame, InterimTranscriptionFrame):
+            # Story 10.8 (Stream A3) — the user is AUDIBLY producing speech.
+            # Soniox streams interim results as `InterimTranscriptionFrame`, a
+            # SEPARATE class from the finalized `TranscriptionFrame` above (the
+            # server/CLAUDE.md §1 frame-type trap), so interims NEVER reached the
+            # finalized branch's cancel path. The branch above (L639) was always
+            # MEANT to cancel on interim speech (`text and not self._self_speaking`)
+            # but keyed on `TranscriptionFrame(finalized=False)`, which Soniox
+            # never emits — and Soniox emits NO `UserStartedSpeakingFrame` either.
+            # So a long, no-pause utterance Soniox never finalized (call 341:
+            # ~51 words, interims streaming) produced NO cancel signal and the
+            # silence ladder ran to a hang-up WHILE the user was still talking.
+            # Cancel the ladder on real interim speech — the missing branch.
+            #
+            # Per server/CLAUDE.md §1's cost analysis, a stray-artifact interim
+            # cancel only DEFERS a genuine-silence hang-up by one ladder cycle
+            # (the next post-bot-turn `playback_idle` re-arms it) — recoverable;
+            # a prompt/hang-up spoken over live speech is the bad UX we kill.
+            # `_self_speaking` guard (same as the finalized branch): while WE
+            # play our own stage-2 prompt, an interim is almost certainly the
+            # user's mic echoing it — it must NOT cancel the hang-up escalation
+            # on a genuinely silent user. A genuine barge-in still cancels when
+            # it FINALIZES (the finalized branch's `if finalized or ...`).
+            text = (getattr(frame, "text", "") or "").strip()
+            if text and not self._self_speaking:
+                self._cancel_silence_timer()
         elif isinstance(frame, UserStartedSpeakingFrame):
             # Defensive: VAD start may land before the STT finalizes
             # a transcription. Cancel the ladder now so a user mid-

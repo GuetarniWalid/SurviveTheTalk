@@ -524,6 +524,53 @@ def find_permissive_criteria_phrases(text: str) -> list[str]:
     return hits
 
 
+# R9 (Story 10.8, call 336) — a `success_criteria` must NOT require the USER to
+# explicitly ACKNOWLEDGE a passive procedural NOTICE the character delivered (the
+# call being recorded, a read-out disclaimer). A real person treats such a notice
+# as rhetorical and never verbally acknowledges it, and the character never
+# re-elicits it — so the beat strands `unmet` FOREVER, which freezes the
+# lowest-unmet HUD behind the live conversation (the call-336
+# `acknowledge_recorded_call` trap, whose part (b) demanded "acknowledges being
+# told the call is recorded"). The genuine user move (confirm identity / agree to
+# talk) is satisfiable; the meta-acknowledgement is not. This is the
+# MECHANICALLY-DETECTABLE slice only — the broader "two beats are the SAME
+# conversational moment" class is not lexically detectable and stays builder
+# `CHECKPOINTS_PROMPT` guidance + the smoke gate (server/CLAUDE.md §9). Tuned for
+# ZERO false positives: only an ACKNOWLEDGE-of-RECORDING/DISCLAIMER requirement is
+# flagged, never "acknowledges the fingerprint claim" / "acknowledges her
+# feelings" / "acknowledges the situation" (real content moves). `[^.\n]*` keeps
+# the match within one sentence. Add a pattern as each new unsatisfiable-beat
+# trap surfaces — the durable-lesson approach (a permanent rule, not a one-off
+# scenario patch).
+_UNSATISFIABLE_CRITERIA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "acknowledge(s/d/ing) … (being) recorded" / "… the recording"
+    re.compile(r"\backnowledg\w*\b[^.\n]*\brecord(?:ed|ing)\b", re.IGNORECASE),
+    # "acknowledge(s/d/ing) … a/the disclaimer"
+    re.compile(r"\backnowledg\w*\b[^.\n]*\bdisclaimer\b", re.IGNORECASE),
+)
+
+
+def find_unsatisfiable_criteria(text: str) -> list[str]:
+    """Return any R9 unsatisfiable-in-natural-flow requirements in a
+    `success_criteria`.
+
+    R9 (Story 10.8) — a non-empty return means the criterion demands the USER
+    explicitly acknowledge a passive procedural NOTICE (being recorded, a
+    disclaimer) the character delivered, which a real person never verbalises and
+    the character never re-elicits — so the beat strands `unmet` forever and
+    freezes the lowest-unmet HUD (the call-336 trap). Case-insensitive regex
+    tripwire; single source of truth, imported by
+    ``scenario_builder.validate_structure`` and the ``tests/test_scenarios.py``
+    lint. Scan ONLY `success_criteria` (the judge-facing field) — the same word
+    in a persona / prompt_segment / briefing is harmless.
+    """
+    haystack = text or ""
+    hits: list[str] = []
+    for pattern in _UNSATISFIABLE_CRITERIA_PATTERNS:
+        hits += pattern.findall(haystack)
+    return hits
+
+
 # ============================================================
 # Story 6.19 follow-up (2026-06-09) — Soniox STT proper-noun bias
 # ============================================================
@@ -912,6 +959,25 @@ def load_scenario_checkpoints(scenario_id: str) -> list[dict]:
                 scenario_id,
                 entry.get("id"),
                 permissive,
+            )
+        # R9 (Story 10.8) — WARN on a criterion that requires the USER to
+        # acknowledge a passive procedural notice (being recorded, a disclaimer),
+        # which a real person never verbalises and the character never re-elicits
+        # → the beat strands `unmet` forever and freezes the HUD (the call-336
+        # `acknowledge_recorded_call` trap). Runtime canary only; the HARD gates
+        # are the builder + the test glob.
+        unsatisfiable = find_unsatisfiable_criteria(entry.get("success_criteria"))
+        if unsatisfiable:
+            from loguru import logger
+
+            logger.warning(
+                "scenario_unsatisfiable_criteria scenario={} checkpoint={} hits={} — "
+                "a success_criteria must not require the USER to acknowledge a "
+                "passive notice (being recorded/a disclaimer) a real person never "
+                "verbalises and the character never re-elicits (R9).",
+                scenario_id,
+                entry.get("id"),
+                unsatisfiable,
             )
     # Story 6.10 review patch — checkpoint ids MUST be unique. The
     # goal-tracking engine keys state by id (`CheckpointManager._goals` /

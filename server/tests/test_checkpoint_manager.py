@@ -1940,6 +1940,70 @@ def test_ordered_pursuit_framing_in_every_system_instruction_swap() -> None:
     _run(_drive())
 
 
+def test_focus_block_already_given_confirms_and_holds_not_advance() -> None:
+    """Story 10.8 Stream D (call 336, brief §8.7) — the reconciled "already-given"
+    branch must CONFIRM-and-HOLD on the still-pending beat and explicitly forbid
+    advancing on the model's own assumption that the beat is done (the proximate
+    call-336 strand). The old "keeps the conversation moving" advance license is
+    gone; 6.21's firm hold is preserved."""
+    from pipeline.checkpoint_manager import format_suggested_focus_block
+
+    block = format_suggested_focus_block({"prompt_segment": "Ask their name."})
+    low = block.lower()
+    # 6.21 invariants preserved.
+    assert "the only objective you may pursue is: ask their name." in low
+    assert "do not move on" in low
+    assert "exactly one ask this turn" in low
+    # The §8.7 reconcile: confirm-and-hold + an explicit ban on jumping ahead on
+    # the model's own assumption.
+    assert "confirm" in low
+    assert "hold here" in low
+    assert "jump ahead" in low
+    assert "assumption" in low
+    # The old advance license MUST be gone (it caused the call-336 strand).
+    assert "keeps the conversation moving" not in low
+
+
+def test_stranded_early_beat_envelope_truthful_and_focus_holds() -> None:
+    """Story 10.8 Stream E / AC19 (call 336) — when a LATER beat is credited
+    out of order while an EARLY beat stays pending (the stranded shape that
+    froze the HUD), the emitted `checkpoint_advanced` envelope carries the
+    TRUTHFUL out-of-order met set (no lying about what scored) AND the steering
+    HOLDS the lowest-unmet early beat. So the client's lowest-unmet activeIndex
+    (computed from `goals_met_indices` = first index not met) lands on the SAME
+    beat the character is steered to (`pending_goals[0]`) — they cannot disagree
+    by construction. (The freeze was a stranded UNSATISFIABLE beat — fixed by
+    Stream D + R9; here we lock that the HUD source-of-truth stays honest.)"""
+    checkpoints = _make_checkpoints(4)
+
+    def _fn(pending: list[dict], call_index: int) -> dict[str, bool | None]:
+        # Credit cp2 only (out of order); cp0 + cp1 stay pending (stranded early).
+        return {g["id"]: (g["id"] == "cp2") or None for g in pending}
+
+    manager, _classifier, _tracker, stub_llm, _ctx = _make_manager(
+        checkpoints=checkpoints,
+        multi_response_fn=_fn,
+    )
+    captured = _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("an out-of-order answer"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    envelopes = _flip_envelopes(captured)
+    assert len(envelopes) == 1
+    # Truthful out-of-order met set — the client renders EXACTLY what scored,
+    # so its `activeIndex` (first index not in [2]) computes to 0.
+    assert envelopes[0].message["data"]["goals_met_indices"] == [2]
+    # The server steers to the SAME lowest-unmet beat (cp0) the client will show.
+    si = stub_llm._settings.system_instruction
+    assert "the only objective you may pursue is: prompt segment 0" in si
+
+
 def test_pending_goals_property_preserves_author_order() -> None:
     """AC1 — `pending_goals` returns remaining checkpoints in original
     author order regardless of which goals were met out of order."""

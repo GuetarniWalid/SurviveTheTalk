@@ -603,14 +603,15 @@ def test_scenario_hash_changes_on_implies_edit(monkeypatch):
     assert engine.compute_scenario_hash("x") != h1
 
 
-def test_engine_version_bumped_for_global_only_difficulty():
-    """Story 6.28 — per-scenario authored difficulty is removed: calibration
-    now composes + bands on the RUN-level global difficulty and the loaders'
-    no-difficulty fallback changed (authored → server default). Every cached
-    PASS predates that anchor — the bump forces ledger revalidation on the
-    next sweep (same contract as the 6.29/6.27 bumps this test previously
-    pinned)."""
-    assert engine.ENGINE_VERSION == 6
+def test_engine_version_bumped_for_judge_and_steering_change():
+    """Story 10.8 — bumped 6 → 7: the judge prompt gained the polite/indirect/
+    question-form genuine-intent principle (Stream C, call-339 fix) and the
+    character steering block was reconciled to confirm-and-hold (Stream D). Both
+    are code constants OUTSIDE `scenario_hash` that change every scenario's
+    judged + steered behaviour, so every cached PASS predates them and must
+    revalidate on the next sweep (same contract as the 6.28/6.29/6.27 bumps this
+    test previously pinned)."""
+    assert engine.ENGINE_VERSION == 7
 
 
 # ============================================================

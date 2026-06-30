@@ -334,3 +334,101 @@ def test_soniox_interim_frame_type_contract() -> None:
         "pipecat SonioxSTTService no longer pushes TranscriptionFrame for "
         "final results — EndpointWatchdog's cancel condition needs re-check."
     )
+
+
+# ---------- Story 10.8 Stream A: continuous-growth hard cap (call 341) ----
+
+
+def test_hardcap_fires_on_continuously_growing_interim_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.8 Stream A (call 341) — a user speaking a long, no-pause
+    sentence streams interims that keep arriving, each REFRESHING the
+    stuck-partial timer (`_WATCHDOG_TIMEOUT_SECONDS`) so it never fires. The
+    continuous-growth hard cap (`_MAX_INTERIM_DURATION_SECONDS`), armed ONCE on
+    the first interim and NOT refreshed, MUST still force-finalize so the turn
+    completes and the bot can respond. Set the stuck timer LONG and the cap
+    SHORT so the cap is the one that wins — the exact call-341 distinction the
+    watchdog previously lacked."""
+    import pipeline.endpoint_watchdog as ew_mod
+
+    monkeypatch.setattr(ew_mod, "_WATCHDOG_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(ew_mod, "_MAX_INTERIM_DURATION_SECONDS", 0.2)
+
+    w = _make_watchdog()
+    captured = _capture_pushed(w)
+
+    async def _drive() -> None:
+        # 4 interims at 40 ms gaps (t=0/40/80/120 ms) — each refreshes the 1.0 s
+        # stuck timer so it never fires, but the 0.2 s hard cap (armed at t=0)
+        # fires at ~200 ms, after the last interim.
+        for i in range(4):
+            await w.process_frame(_make_interim(f"word{i}"), FrameDirection.DOWNSTREAM)
+            await asyncio.sleep(0.04)
+        # Wait past the (overridden) hard cap.
+        await asyncio.sleep(0.15)
+
+    _run(_drive())
+
+    synthetic = [f for f in captured if isinstance(f, TranscriptionFrame)]
+    assert len(synthetic) == 1, (
+        "the continuous-growth hard cap must force EXACTLY one synthetic "
+        "finalize on a never-pausing interim stream (call 341)"
+    )
+    assert getattr(synthetic[0], "finalized", False) is True
+    # Uses the LATEST interim text seen before the cap fired.
+    assert synthetic[0].text == "word3"
+    # Both timers cleared after the cap fired (no second finalize pending).
+    assert w._hardcap_task is None or w._hardcap_task.done()
+
+
+def test_hardcap_cancelled_on_real_finalize(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When Soniox DOES finalize before the hard cap, the cap must be cancelled
+    — no synthetic finalize, and the hard-cap task cleared so the next turn's
+    first interim re-arms it."""
+    import pipeline.endpoint_watchdog as ew_mod
+
+    monkeypatch.setattr(ew_mod, "_WATCHDOG_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(ew_mod, "_MAX_INTERIM_DURATION_SECONDS", 0.1)
+
+    w = _make_watchdog()
+    captured = _capture_pushed(w)
+
+    async def _drive() -> None:
+        await w.process_frame(_make_interim("hello"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.04)  # mid-cap
+        await w.process_frame(_make_final("hello world"), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.12)  # well past the (overridden) cap
+
+    _run(_drive())
+
+    # Exactly the interim + the real finalize — no synthetic.
+    assert len(captured) == 2
+    assert isinstance(captured[0], InterimTranscriptionFrame)
+    assert isinstance(captured[1], TranscriptionFrame)
+    assert w._hardcap_task is None or w._hardcap_task.done()
+    assert w._last_interim_text == ""
+
+
+def test_hardcap_drained_by_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`cleanup()` must cancel an in-flight hard-cap timer too (not just the
+    stuck-partial one) so pipeline teardown isn't blocked on a synthetic
+    finalize that no longer matters."""
+    import pipeline.endpoint_watchdog as ew_mod
+
+    monkeypatch.setattr(ew_mod, "_WATCHDOG_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(ew_mod, "_MAX_INTERIM_DURATION_SECONDS", 5.0)
+
+    w = _make_watchdog()
+    _capture_pushed(w)
+
+    async def _drive() -> None:
+        await w.process_frame(
+            _make_interim("about to disconnect"), FrameDirection.DOWNSTREAM
+        )
+        assert w._hardcap_task is not None
+        await w.cleanup()
+        assert w._hardcap_task is None or w._hardcap_task.done()
+        assert w._watchdog_task is None or w._watchdog_task.done()
+
+    _run(_drive())

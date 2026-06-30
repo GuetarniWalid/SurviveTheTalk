@@ -2003,6 +2003,96 @@ def test_shipped_scenarios_have_no_permissive_criteria() -> None:
     )
 
 
+def test_find_unsatisfiable_criteria_flags_acknowledge_recording() -> None:
+    """R9 (Story 10.8) — the helper flags a criterion that requires the USER to
+    acknowledge a passive procedural notice (being recorded, a disclaimer),
+    which a real person never verbalises and the character never re-elicits (the
+    call-336 `acknowledge_recorded_call` trap)."""
+    from pipeline.scenarios import find_unsatisfiable_criteria
+
+    # The ORIGINAL cop beat-0 part (b) — both phrasings present.
+    assert find_unsatisfiable_criteria(
+        "PASS if the turn both confirms identity AND acknowledges being told the "
+        "call is recorded. FAIL on confirming identity without acknowledging the "
+        "recording."
+    )
+    assert find_unsatisfiable_criteria("User acknowledges the recording.")
+    assert find_unsatisfiable_criteria("The learner acknowledges the disclaimer.")
+    assert find_unsatisfiable_criteria("acknowledging being recorded counts")
+
+
+def test_find_unsatisfiable_criteria_ignores_real_content_acknowledgements() -> None:
+    """ZERO false positives: acknowledging a real CONTENT move (a claim, a
+    feeling, a situation) is a genuine, satisfiable beat — never flagged. Only
+    an acknowledge-of-recording/disclaimer requirement trips R9."""
+    from pipeline.scenarios import find_unsatisfiable_criteria
+
+    assert (
+        find_unsatisfiable_criteria(
+            "PASS if the turn acknowledges the fingerprint claim as something that "
+            "needs explaining."
+        )
+        == []
+    )
+    assert (
+        find_unsatisfiable_criteria(
+            "User acknowledges Rachel's feelings or the humiliation she felt."
+        )
+        == []
+    )
+    assert (
+        find_unsatisfiable_criteria(
+            "User acknowledges the situation: admits they know about the damage."
+        )
+        == []
+    )
+    # The FIXED cop beat-0 criterion must NOT trip the lint.
+    assert (
+        find_unsatisfiable_criteria(
+            "PASS if the learner's turn confirms they are the person Mercer is "
+            "calling OR clearly agrees to talk. FAIL if the learner refuses to "
+            "engage or stays silent."
+        )
+        == []
+    )
+    # A period between "acknowledge" and "recorded" stays within neither match
+    # (different sentences are not the same required move).
+    assert (
+        find_unsatisfiable_criteria(
+            "User acknowledges the news. The call was recorded earlier."
+        )
+        == []
+    )
+
+
+def test_shipped_scenarios_have_no_unsatisfiable_criteria() -> None:
+    """R9 (Story 10.8, server/CLAUDE.md §9) — no shipped scenario has a
+    `success_criteria` that requires the USER to acknowledge a passive notice
+    (being recorded / a disclaimer) the character never re-elicits — the
+    call-336 strand that froze the HUD. Iterates the FULL index, so a NEW
+    scenario file is auto-covered."""
+    import yaml
+
+    from pipeline.scenarios import _SCENARIO_INDEX, find_unsatisfiable_criteria
+
+    offenders: dict[str, list[str]] = {}
+    for scenario_id, path in _SCENARIO_INDEX.items():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        hits: list[str] = []
+        for cp in data.get("checkpoints") or []:
+            if isinstance(cp, dict):
+                hits += find_unsatisfiable_criteria(cp.get("success_criteria"))
+        if hits:
+            offenders[scenario_id] = sorted(set(hits))
+    assert not offenders, (
+        f"unsatisfiable-in-natural-flow success_criteria in scenario(s): "
+        f"{offenders}. A criterion must not require the USER to acknowledge a "
+        "passive procedural notice (being recorded / a disclaimer) — a real "
+        "person never verbalises it and the character never re-elicits it, so "
+        "the beat strands unmet and freezes the lowest-unmet HUD (R9)."
+    )
+
+
 # Identity tokens that MUST survive any persona rewrite (a careless 'strip coded
 # phrases' pass that also gutted the name would silently break test_calls.py /
 # the env-threading tests downstream). Cheap tripwire.

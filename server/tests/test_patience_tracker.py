@@ -11,6 +11,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
+    InterimTranscriptionFrame,
     MetricsFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
@@ -2641,3 +2642,239 @@ def test_bot_speech_before_exit_push_does_not_mask_the_stall_retry(
 
     tts = [f for f in captured if isinstance(f, TTSSpeakFrame)]
     assert len(tts) == 2, "the silent-stall retry must still fire"
+
+
+# ============================================================
+# Story 10.8 Stream A3 — interim-aware silence ladder (call 341)
+# ============================================================
+
+
+def _make_soniox_interim(text: str) -> InterimTranscriptionFrame:
+    """The frame Soniox ACTUALLY streams while the user is mid-utterance (a
+    SEPARATE class from the finalized TranscriptionFrame — the §1 trap that let
+    call-341's never-finalizing long sentence run the ladder to a hang-up while
+    the user was still talking)."""
+    return InterimTranscriptionFrame(
+        text=text,
+        user_id="user",
+        timestamp="2026-06-30T12:00:00Z",
+    )
+
+
+def test_soniox_interim_with_text_cancels_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.8 Stream A3 (call 341) — an `InterimTranscriptionFrame` (the
+    REAL Soniox interim type) carrying text means the user has STARTED speaking,
+    so it MUST cancel the silence ladder. Before this branch interims never
+    reached the finalized-frame cancel path (sibling class), and Soniox emits no
+    `UserStartedSpeakingFrame`, so a long no-pause sentence Soniox never
+    finalized produced NO cancel signal and the ladder ran to a hang-up WHILE
+    the user was still talking."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.handle_playback_idle()
+        await asyncio.sleep(0.025)  # halfway through stage 1
+        await tracker.process_frame(
+            _make_soniox_interim("I would like to know"), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.10)  # past stage 1
+
+        impatience = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+            and f.message["data"]["emotion"] == "impatience"
+        ]
+        assert len(impatience) == 0, (
+            "a Soniox InterimTranscriptionFrame with text must cancel the ladder "
+            "(the call-341 fix)"
+        )
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_soniox_interim_empty_does_not_cancel_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty/whitespace Soniox interim (noise artifact) must NOT cancel the
+    ladder — otherwise ambient noise would reset the timer forever and a
+    genuinely silent user would never be prompted or hung up on."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.handle_playback_idle()
+        await asyncio.sleep(0.025)
+        await tracker.process_frame(
+            _make_soniox_interim("   "), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.10)
+
+        impatience = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+            and f.message["data"]["emotion"] == "impatience"
+        ]
+        assert len(impatience) == 1, (
+            "an empty Soniox interim must NOT cancel the ladder"
+        )
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_soniox_interim_during_self_speaking_does_not_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While WE play our own stage-2 prompt (`_self_speaking=True`), an interim
+    is almost certainly the user's mic echoing our prompt — it must NOT cancel
+    the hang-up escalation on a genuinely silent user. Same guard as the
+    finalized branch; a genuine barge-in still cancels when it FINALIZES."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(**_easy_kwargs(silence_prompt_seconds=2.0))
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.handle_playback_idle()
+        tracker._self_speaking = True  # simulate the stage-2 self-speaking window
+        await asyncio.sleep(0.025)
+        await tracker.process_frame(
+            _make_soniox_interim("echo of our own prompt"), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.10)
+
+        impatience = [
+            f
+            for f in captured
+            if isinstance(f, OutputTransportMessageFrame)
+            and f.message.get("type") == "emotion"
+            and f.message["data"]["emotion"] == "impatience"
+        ]
+        assert len(impatience) == 1, (
+            "an interim during self-speaking (prompt echo) must NOT cancel the "
+            "ladder — that would abort the hang-up on a silent user"
+        )
+        await _drain(tracker)
+
+    _run(_drive())
+
+
+def test_interim_cancels_silence_ladder_via_real_pipeline_drive() -> None:
+    """Story 10.8 Stream A3 — THE §1 real-pipeline drive (AC4): an
+    `InterimTranscriptionFrame` driven through a REAL PipelineTask containing
+    the production-ordered `checkpoint_manager → patience_tracker` chain must
+    REACH the PatienceTracker (CheckpointManager passes interims through, does
+    not absorb them) and cancel its silence ladder. If a future refactor makes
+    an upstream processor consume interims, this breaks loud — same trap class
+    as the Déviation-#28 contract test (server/CLAUDE.md §1). NOT direction-
+    mocked: real frame type, real directions, real `setup()` runs."""
+    import asyncio as _asyncio
+
+    from pipecat.frames.frames import EndFrame as _EndFrame
+    from pipecat.frames.frames import InterimTranscriptionFrame as _Interim
+    from pipecat.frames.frames import OutputTransportMessageFrame as _OTMF
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineTask
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from pipeline.checkpoint_manager import CheckpointManager
+    from pipeline.exchange_classifier import ExchangeClassifier
+
+    # Generous stage-1 anchor so the interim has time to propagate two
+    # processors and cancel the ladder BEFORE stage 1 would fire.
+    tracker = PatienceTracker(**_easy_kwargs(ladder_impatience_seconds=0.5))
+
+    class _StubSettings:
+        def __init__(self) -> None:
+            self.system_instruction = "initial"
+
+    class _StubLLM:
+        def __init__(self) -> None:
+            self._settings = _StubSettings()
+
+    classifier = ExchangeClassifier(api_key="test-key")
+
+    async def _stub_classify_multi(**kwargs):  # never hit (interim, not final)
+        return {g["id"]: False for g in kwargs["pending_goals"]}
+
+    classifier.classify_multi = _stub_classify_multi  # type: ignore[assignment]
+
+    manager = CheckpointManager(
+        base_prompt="BASE.",
+        checkpoints=[
+            dict(
+                id="cp0",
+                hint_text="hint",
+                prompt_segment="segment",
+                success_criteria="User said something.",
+            )
+        ],
+        llm=_StubLLM(),
+        llm_context=LLMContext(),
+        classifier=classifier,
+        patience_tracker=tracker,
+        scenario_description="interim-drive-test",
+        coherence_charter="CHARTER.",
+    )
+
+    class _Recorder(FrameProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.envelopes: list[dict] = []
+
+        async def process_frame(self, frame, direction) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, _OTMF):
+                self.envelopes.append(frame.message)
+            await self.push_frame(frame, direction)
+
+    recorder = _Recorder()
+    pipeline = Pipeline([manager, tracker, recorder])
+    task = PipelineTask(pipeline)
+
+    async def _drive() -> None:
+        runner = PipelineRunner()
+        run_task = _asyncio.create_task(runner.run(task))
+        await _asyncio.sleep(0.05)  # let StartFrame propagate
+        tracker.handle_playback_idle()  # arm the ladder
+        await task.queue_frame(
+            _Interim(
+                text="I would like to know if it is possible",
+                user_id="user",
+                timestamp="2026-06-30T12:00:00Z",
+            )
+        )
+        # Wait WELL past stage 1 (0.5 s): if the interim reached the tracker it
+        # cancelled the ladder, so no impatience envelope should appear.
+        await _asyncio.sleep(0.65)
+        await task.queue_frame(_EndFrame())
+        await run_task
+        if manager._in_flight is not None:
+            await _asyncio.gather(manager._in_flight, return_exceptions=True)
+
+    _asyncio.run(_drive())
+
+    impatience = [
+        e
+        for e in recorder.envelopes
+        if e.get("type") == "emotion"
+        and e.get("data", {}).get("emotion") == "impatience"
+    ]
+    assert impatience == [], (
+        "DÉVIATION-#28-CLASS REGRESSION: the InterimTranscriptionFrame did not "
+        "reach PatienceTracker through the real checkpoint_manager → "
+        "patience_tracker chain (or did not cancel the ladder), so the ladder "
+        "fired stage-1 impatience while the user was actively speaking — the "
+        "call-341 hang-up-mid-sentence bug."
+    )

@@ -132,7 +132,14 @@ from pipeline.reply_sanitizer import sanitize_reply_text  # noqa: E402
 # YAML's `metadata.difficulty`, and the loaders' no-difficulty fallback changed
 # (authored → server default) — every cached PASS predates that anchor and must
 # revalidate on the next sweep.
-ENGINE_VERSION = 6
+# Story 10.8 (2026-06-30) — bumped 6 → 7: the judge prompt
+# (`EXCHANGE_CLASSIFIER_MULTI_PROMPT`, Stream C) gained the polite/indirect/
+# question-form genuine-intent principle (the call-339 false-negative fix) and the
+# character steering block (`format_suggested_focus_block`, Stream D) was
+# reconciled to confirm-and-hold — both are code constants OUTSIDE `scenario_hash`
+# that change every scenario's judged + steered behaviour, so every cached PASS
+# predates them and must revalidate on the next sweep.
+ENGINE_VERSION = 7
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —

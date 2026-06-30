@@ -62,7 +62,30 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 # pauses (typical mid-utterance hesitation is ~1-3 s) while still
 # unblocking the call before a real human would hang up (smoke-test
 # call 142 hung 22 s before user abandoned).
+#
+# This timer is RESTARTED on every interim (`_restart_watchdog`), so it fires
+# only when interims STOP arriving for 8 s — the "stuck partial" case
+# (call 171: a 3-word interim that never grows and never finalizes).
 _WATCHDOG_TIMEOUT_SECONDS = 8.0
+
+# Story 10.8 (Stream A, call 341) — hard cap on the TOTAL duration of a single
+# continuously-streamed interim turn. The stuck-partial timer above is RESET on
+# every interim, so a user who speaks a long, no-pause sentence
+# (call 341: ~51 words, `num_spoken_words` 33→51, `interim_transcription=True`,
+# Soniox never declared endpoint) keeps refreshing it — it never fires and the
+# turn never finalizes, so the bot can't respond and (pre-Stream-A3) the silence
+# ladder ran to a hang-up WHILE the user was still talking. This SECOND timer is
+# armed ONCE on the first interim of a turn and is NOT restarted, so a
+# continuously-growing interim still force-finalizes within a bounded time —
+# the structural distinction the watchdog lacked between "stuck partial" (no new
+# interims → the 8 s timer) and "still talking" (new interims arriving → this
+# cap). 15 s is a generous backstop: B1 learners rarely produce 15 s of
+# unbroken speech (any pause Soniox catches finalizes earlier), and the user
+# gets a slightly truncated turn (the last few words may be mid-articulation)
+# rather than a turn that never completes. Stream A3 (interim-aware silence
+# ladder) is the primary fix for the hang-up; this cap guarantees the bot
+# eventually RESPONDS to a marathon utterance (Interaction #5).
+_MAX_INTERIM_DURATION_SECONDS = 15.0
 
 
 class EndpointWatchdog(FrameProcessor):
@@ -79,7 +102,14 @@ class EndpointWatchdog(FrameProcessor):
         self._last_interim_text: str = ""
         self._last_interim_user_id: str = ""
         self._last_interim_timestamp: str = ""
+        # Stuck-partial timer (restarted on every interim — fires when interims
+        # STOP). See `_WATCHDOG_TIMEOUT_SECONDS`.
         self._watchdog_task: asyncio.Task[None] | None = None
+        # Story 10.8 — continuous-growth hard-cap timer (armed ONCE per turn on
+        # the first interim, NOT restarted — fires when interims KEEP arriving
+        # past `_MAX_INTERIM_DURATION_SECONDS`). Distinct task so the per-interim
+        # `_restart_watchdog` can't refresh it. See `_arm_hardcap_if_needed`.
+        self._hardcap_task: asyncio.Task[None] | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -90,23 +120,27 @@ class EndpointWatchdog(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             # Soniox pushes `TranscriptionFrame` ONLY on a real endpoint
             # (always `finalized=True`). A finalize resolves the pending
-            # turn → cancel any armed watchdog + clear interim state.
+            # turn → cancel BOTH timers (the turn is over) + clear interim state.
             self._cancel_watchdog()
+            self._cancel_hardcap()
             self._last_interim_text = ""
             self._last_interim_user_id = ""
             self._last_interim_timestamp = ""
         elif isinstance(frame, InterimTranscriptionFrame):
             # Interim result (the frame Soniox actually streams while the
             # user is mid-utterance). Track the latest text so we have
-            # something to synthesise on timeout, and (re)arm the watchdog
-            # so a stuck interim stream that never finalizes still unblocks
-            # the call. See the module docstring's frame-type contract.
+            # something to synthesise on timeout, (re)arm the stuck-partial
+            # watchdog so a frozen interim stream that never finalizes still
+            # unblocks the call, AND arm the continuous-growth hard cap ONCE
+            # (Story 10.8) so a never-pausing long utterance still finalizes.
+            # See the module docstring's frame-type contract.
             text = (frame.text or "").strip()
             if text:
                 self._last_interim_text = text
                 self._last_interim_user_id = getattr(frame, "user_id", "") or ""
                 self._last_interim_timestamp = getattr(frame, "timestamp", "") or ""
                 self._restart_watchdog()
+                self._arm_hardcap_if_needed()
         await self.push_frame(frame, direction)
 
     def _cancel_watchdog(self) -> None:
@@ -119,6 +153,26 @@ class EndpointWatchdog(FrameProcessor):
         self._cancel_watchdog()
         self._watchdog_task = asyncio.create_task(self._watchdog_fire())
 
+    def _arm_hardcap_if_needed(self) -> None:
+        """Arm the continuous-growth hard cap ONCE per turn (Story 10.8).
+
+        Called on every interim, but only starts a timer when none is already
+        running — so subsequent interims do NOT refresh it (unlike
+        `_restart_watchdog`). That's the whole point: a continuously-growing
+        interim stream (call 341) keeps refreshing the stuck-partial timer so it
+        never fires; this cap, armed once and left to run, force-finalizes the
+        marathon turn within `_MAX_INTERIM_DURATION_SECONDS`. Cleared on a real
+        finalize (`_cancel_hardcap`) so the NEXT turn's first interim re-arms it.
+        """
+        if self._hardcap_task is None or self._hardcap_task.done():
+            self._hardcap_task = asyncio.create_task(self._hardcap_fire())
+
+    def _cancel_hardcap(self) -> None:
+        task = self._hardcap_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._hardcap_task = None
+
     async def _watchdog_fire(self) -> None:
         try:
             await asyncio.sleep(_WATCHDOG_TIMEOUT_SECONDS)
@@ -130,28 +184,63 @@ class EndpointWatchdog(FrameProcessor):
         logger.error(
             "endpoint_watchdog_fired text={!r} timeout={}s — synthesizing "
             "finalized TranscriptionFrame because Soniox never declared "
-            "endpoint (Story 6.9 Deviation #8 backstop)",
+            "endpoint (Story 6.9 Deviation #8 backstop — stuck partial)",
             text[:64],
             _WATCHDOG_TIMEOUT_SECONDS,
         )
+        # This timer won; clear its own ref + cancel the sibling hard cap so a
+        # single synthetic finalize fires, not two.
+        self._watchdog_task = None
+        self._cancel_hardcap()
+        await self._synthesize_finalize(text)
+
+    async def _hardcap_fire(self) -> None:
+        try:
+            await asyncio.sleep(_MAX_INTERIM_DURATION_SECONDS)
+        except asyncio.CancelledError:
+            return
+        text = self._last_interim_text
+        if not text:
+            return
+        logger.error(
+            "endpoint_watchdog_hardcap_fired text={!r} cap={}s — synthesizing "
+            "finalized TranscriptionFrame because a continuously-growing interim "
+            "stream never finalized (Story 10.8 Stream A, call 341)",
+            text[:64],
+            _MAX_INTERIM_DURATION_SECONDS,
+        )
+        # This timer won; clear its own ref + cancel the sibling stuck-partial
+        # timer so a single synthetic finalize fires, not two.
+        self._hardcap_task = None
+        self._cancel_watchdog()
+        await self._synthesize_finalize(text)
+
+    async def _synthesize_finalize(self, text: str) -> None:
+        """Push a synthetic `finalized=True` TranscriptionFrame from the last
+        interim text (shared by both timer paths). Clears interim state BEFORE
+        pushing so the frame's downstream propagation (which may trip into
+        TranscriptionFrame observers) can't re-arm a timer mid-fire."""
         synthetic = TranscriptionFrame(
             text=text,
             user_id=self._last_interim_user_id,
             timestamp=self._last_interim_timestamp,
             finalized=True,
         )
-        # Clear state BEFORE pushing so the synthetic frame's downstream
-        # propagation (which may itself trip into TranscriptionFrame
-        # observers) can't re-arm the watchdog mid-fire.
         self._last_interim_text = ""
         self._last_interim_user_id = ""
         self._last_interim_timestamp = ""
-        self._watchdog_task = None
         await self.push_frame(synthetic, FrameDirection.DOWNSTREAM)
 
     async def cleanup(self) -> None:
         await super().cleanup()
+        # Capture the live tasks BEFORE cancelling (the cancel helpers null the
+        # refs), then drain so a cancelled timer is reaped before teardown.
+        pending = [
+            t
+            for t in (self._watchdog_task, self._hardcap_task)
+            if t is not None and not t.done()
+        ]
         self._cancel_watchdog()
-        if self._watchdog_task is not None and not self._watchdog_task.done():
-            await asyncio.gather(self._watchdog_task, return_exceptions=True)
-        self._watchdog_task = None
+        self._cancel_hardcap()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)

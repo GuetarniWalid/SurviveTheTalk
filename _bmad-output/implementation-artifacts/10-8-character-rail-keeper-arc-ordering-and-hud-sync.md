@@ -1,6 +1,6 @@
 # Story 10.8: The character is the rail-keeper — reliable, on-arc conversation (turn-taking, judge resilience, patience↔judge decoupling, arc-ordered conduct & HUD sync)
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -239,25 +239,30 @@ permissiveness + progressive debrief) — do NOT redo it; build on it.
 > Implement in the recommended order (A → B → D4 lint + scenario fix → D → re-check E → C).
 > After A+B, deploy + a quick on-device confirm that a call completes before continuing.
 
-- [ ] **Task 1 — Stream A: STT long-utterance finalization + interim-aware ladder (AC: 1–4)**
-  - [ ] Reproduce/confirm the call-341 mechanism against real Soniox frames (real-pipeline drive, `server/CLAUDE.md §1`).
-  - [ ] Fix `EndpointWatchdog` (`pipeline/endpoint_watchdog.py`) so a continuously growing interim stream force-finalizes within a bounded time (don't reset forever on every interim); preserve the call-171 stuck-partial case.
-  - [ ] Make `PatienceTracker` silence ladder interim-aware (`pipeline/patience_tracker.py::process_frame`, the silence-timer start/cancel) — suppress while interims actively stream; keep the `_self_speaking` guard.
-  - [ ] Real-pipeline tests (`tests/test_endpoint_watchdog.py`, `tests/test_patience_tracker.py`, `tests/test_bot_pipeline_wiring.py`).
-- [ ] **Task 2 — Stream B: judge ReadTimeout resilience (AC: 5–8)**
-  - [ ] Implement the chosen recovery in `pipeline/exchange_classifier.py` (bounded retry / carry-forward / keepalive — confirm direction with Walid); keep strict json_schema; keep fail-open; don't widen 4.0/4.5.
-  - [ ] Reconcile with `checkpoint_manager.py::_classify_and_flip_goals` `None`-handling (5-consecutive force-drain stays).
-  - [ ] Tests for transient-timeout recovery + sustained-failure surfacing.
-- [ ] **Task 3 — Stream D4: the R9 construction-rule lint + scenario audit (AC: 15)**
-  - [ ] `scenarios.py::find_unsatisfiable_criteria` (or similar) — single source of truth; mirror R1/R2/R8.
-  - [ ] Builder HARD reject (`scenario_builder.validate_structure`) + loader WARN (`load_scenario_checkpoints`) + `tests/test_scenarios.py` glob; tune for zero false-positives.
-  - [ ] Audit the 6 scenarios; fix `cop_interrogation_01::acknowledge_recorded_call` (+ any sibling). Re-golden.
-  - [ ] Record **R9** in `server/CLAUDE.md §9`.
-- [ ] **Task 4 — Stream D: arc-ordered conduct (AC: 12–14, 16)**
-  - [ ] Reconcile the "already-given" branch in `format_suggested_focus_block` (fire only on genuinely-met); strengthen one-distinct-beat-in-order + confirm-not-re-ask; reconcile with `requires`/`implies` + COHERENCE_CHARTER + R4/R6.
-  - [ ] Validate behaviour on the prod model (golden + a calibration sweep + the smoke gate); naturalness is smoke-validated.
-- [ ] **Task 5 — Stream E: HUD sync (AC: 17–19)** — VERIFY-FIRST: re-check whether D + R9 already removed the strand; then the minimal residual decision (server authoritative `current_index` vs client-local) + the stranded/overtaken-beat regression tests (`checkpoint_snapshot.dart`/`checkpoint_step_hud.dart` + `test_checkpoint_manager.py`).
-- [ ] **Task 6 — Stream C: patience↔judge decoupling (AC: 9–11)** — confirm 339 still reproduces after B; implement the chosen decoupling in `patience_tracker.py`/`checkpoint_manager.py`; keep silence/abuse drains + 5-None force-drain + 6.25 coalescing; re-calibrate (AC21).
+- [x] **Task 1 — Stream A: STT long-utterance finalization + interim-aware ladder (AC: 1–4)**
+  - [x] Reproduce/confirm the call-341 mechanism against real Soniox frames (real-pipeline drive, `server/CLAUDE.md §1`). Confirmed: `SonioxSTTService` emits NO `UserStartedSpeakingFrame` (only `UserStoppedSpeakingFrame`), and `PatienceTracker` had no `InterimTranscriptionFrame` branch (L639 cancel-on-interim intent keyed on `TranscriptionFrame(finalized=False)`, which Soniox never emits) → a never-finalizing utterance had NO cancel signal.
+  - [x] Fix `EndpointWatchdog` (`pipeline/endpoint_watchdog.py`): NEW `_MAX_INTERIM_DURATION_SECONDS=15.0` continuous-growth hard cap (`_hardcap_task`), armed ONCE on the first interim of a turn and NOT refreshed, so a continuously-growing interim still force-finalizes; the per-interim-restarted 8s stuck-partial timer (call 171) is preserved. Shared `_synthesize_finalize`; each fire cancels its sibling so exactly one synthetic finalize fires; `cleanup` drains both.
+  - [x] Make `PatienceTracker` silence ladder interim-aware (`pipeline/patience_tracker.py::process_frame`): NEW `InterimTranscriptionFrame` branch cancels the ladder on real interim speech (`text and not self._self_speaking`) — the missing branch the §1 trap hid. Keeps the `_self_speaking` echo guard.
+  - [x] Real-pipeline tests: `tests/test_endpoint_watchdog.py` (+3: hardcap-fires-on-continuous-stream, hardcap-cancelled-on-finalize, hardcap-drained-by-cleanup), `tests/test_patience_tracker.py` (+4: soniox-interim-cancels/empty/self-speaking + a real PipelineTask drive proving the interim reaches PatienceTracker through `checkpoint_manager → patience_tracker`). 8/8 new pass; full watchdog+patience suite 86/86 green.
+- [x] **Task 2 — Stream B: judge ReadTimeout resilience (AC: 5–8)** — DECISION RESOLVED (Walid 2026-06-30): **bounded retry once**.
+  - [x] `pipeline/exchange_classifier.py`: a NEW `_last_failure_was_timeout` flag (set on httpx `TimeoutException` in `_post_for_content` + on the outer `asyncio.TimeoutError` in `_classify_multi_guarded`); `classify_multi` grants ONE bounded retry on a transient timeout via an `elif` after the cold-start branch (so at most ONE retry/turn, never stacked). Strict json_schema untouched; fail-open kept (a timeout still drains no patience); 4.0/4.5 s NOT widened (the retry re-runs the same guarded attempt with a fresh outer budget — fire-and-forget for non-terminal turns, so no felt latency added).
+  - [x] Reconcile with `checkpoint_manager.py::_classify_and_flip_goals` `None`-handling: unchanged — a sustained timeout still returns `None` after exactly one retry, so the 5-consecutive-None force-drain backstop is intact.
+  - [x] Tests: transient-timeout-after-first-success-is-retried (verdict lands), sustained-timeout-surfaces-as-None (one retry then None), non-timeout-after-success-NOT-retried (narrows the old D2b rule). 49/49 classifier tests green.
+- [x] **Task 3 — Stream D4: the R9 construction-rule lint + scenario audit (AC: 15)**
+  - [x] `scenarios.py::find_unsatisfiable_criteria` — single source of truth; mirrors R8 (a within-sentence `acknowledg… record(ed|ing)` / `acknowledg… disclaimer` regex tuple, the mechanically-detectable slice of "requires the user to acknowledge a passive notice the character never re-elicits").
+  - [x] Builder HARD reject (`scenario_builder.validate_structure`, +import) + loader WARN (`load_scenario_checkpoints`) + `tests/test_scenarios.py` glob (`test_shipped_scenarios_have_no_unsatisfiable_criteria`); zero false-positives verified — does NOT trip "acknowledges the fingerprint claim / her feelings / the situation" (3 dedicated false-positive tests).
+  - [x] Audited the 6 scenarios — only `cop_interrogation_01::acknowledge_recorded_call` tripped. Rewrote its `success_criteria` (dropped part (b) "acknowledge the recording"; now credits confirming identity OR agreeing to talk), `hint_text`, and `prompt_segment` (cop no longer re-states the recording, defers the name request to beat 1 — also reduces the call-336 beat-fusion at the construction level). Builder now HARD-rejects the ORIGINAL; the FIXED beat loads clean. Live re-golden owed at deploy (Task 7; no reviewed cop golden fixture, so no stale case — only the universal off-topic seed).
+  - [x] Recorded **R9** in `server/CLAUDE.md §9` (rule + enforcement + the "broader same-moment class stays builder guidance + smoke gate" caveat; Status line updated to 2026-06-30).
+- [x] **Task 4 — Stream D: arc-ordered conduct (AC: 12–14, 16)**
+  - [x] Reconciled the "already-given" branch in `format_suggested_focus_block` (brief §8.7): a genuinely-credited beat has already dropped off `pending_goals`, so the block only ever sees a STILL-PENDING beat → the already-given path now **CONFIRMS-and-HOLDS** (gives the judge a clean turn) and explicitly forbids advancing on the model's own assumption ("not even if you believe it is already handled", "NEVER jump ahead on your own assumption that it is done") — the old "keeps the conversation moving" advance license (the proximate call-336 strand cause) is removed. Confirm-not-re-ask (AC13) is the behaviour. R4/R6 preserved (the confirm is a spoken line; confirming-and-holding is still driving). `requires`/`implies` + the any-order credit engine are UNCHANGED (rail-keeping lives in the steering prompt only, per 6.21) — so hard ordering (AC14: identity → accusation) holds via the firm ordered steering + the existing `requires` gate; COHERENCE_CHARTER anti-repetition is unchanged above the block. The D4 cop beat-0 prompt_segment fix also de-fuses beat 0 from the name beat at the construction level (AC12).
+  - [x] Unit test pins the reconcile (confirm-and-hold, ban-on-assumption, old advance-license gone); the existing 6.21 ordered-pursuit tests stay green. Behavioural naturalness (AC16) is validated on the calibration sweep + the Pixel 9 smoke gate (Task 7).
+- [x] **Task 5 — Stream E: HUD sync (AC: 17–19)** — VERIFY-FIRST outcome: Interaction #1 HELD. The HUD froze ONLY because beat 0 stranded `unmet`; D (confirm-and-hold, no advance-on-assumption) + D4 (R9 + the satisfiable beat-0 criterion) stop the strand, so the lowest-unmet HUD is correct **by construction**. NO engine/rendering rewrite.
+  - [x] **DECISION (AC18) RESOLVED → keep CLIENT-computed lowest-unmet.** The client's `activeIndex` = "first index not in `metIndices`" (`checkpoint_snapshot.dart:39`) is ALWAYS the same beat as the server's steering target `pending_goals[0]` (= lowest author-order unmet), and the server sends the full truthful `goals_met_indices` on every envelope — so they CANNOT disagree by construction. A server-stamped `current_index` would be redundant (it'd recompute the identical value) and add wire surface; NOT added. Kept lowest-unmet (did NOT adopt the rejected "HUD follows the conversation"). Surfaced for Walid's awareness in the recap.
+  - [x] Regression tests (AC19): client `checkpoint_step_hud_test.dart` (+3 pure-snapshot: holds on the stranded early beat with later beats met / advances the instant it credits / null+allMet when all done) + server `test_checkpoint_manager.py` (+1: out-of-order flip → the envelope's `goals_met_indices` is the TRUTHFUL out-of-order set AND the steering holds the lowest-unmet beat → the client's activeIndex can't disagree). Client 12/12 + server 4/4 (Stream D+E subset) green.
+- [x] **Task 6 — Stream C: patience↔judge (AC: 9–11)** — DECISION RESOLVED (Walid 2026-06-30): **REJECTED softening the patience coupling** (it would dilute the "Survive the Talk" ADN). Instead, HARDEN judge reliability so the call-339 false-negative (a SYSTEMATIC judge error, not random) doesn't happen — then the spiral never starts and patience stays 100% coupled.
+  - [x] Judge prompt (`EXCHANGE_CLASSIFIER_MULTI_PROMPT`): principle 2 now credits a genuine move phrased POLITELY / INDIRECTLY / as a QUESTION-REQUEST ("I would like to know if I can order?" / "Could I get the chicken?") — judged by what the turn ACCOMPLISHES, not by whether it ends in a question mark (fixes 339). Principle 7 refined to distinguish a DODGE-question (performs none of the objective's move → unmet) from a genuine-move-question (→ met), and notes the dodge test is OBJECTIVE-dependent (so it never contradicts a beat whose criterion accepts "asks what you recommend"). The 10.7 anti-permissive content ("Default to UNMET", "PERFORM the move", the call-340 evasions) is PRESERVED — both poles held.
+  - [x] AC10 (timeout path already fail-open) + AC11 (5-None force-drain + 6.25 coalescing + stage-4 silence drain) — UNCHANGED; no patience code touched, so the survival mechanic keeps all its teeth (ADN intact).
+  - [x] Proof: golden fixture +1 case (the 339 polite-question order → must be `met`), deterministic prompt wiring test (`test_multi_prompt_credits_polite_indirect_question_form_intent`), `ENGINE_VERSION` 6 → 7 (forces a full revalidation sweep — judge prompt + steering are outside `scenario_hash`). Live golden 6/6 + cooperative band + off-topic-fails owed at deploy (Task 7).
 - [ ] **Task 7 — Validate + gate (AC: 20–23)** — golden 6/6, calibration band, server `ruff`/`format`/`pytest` + client `flutter analyze`/`flutter test`, deploy, Pixel 9 smoke on the 20-beat Detective.
 
 ## Interactions — verify these overlaps BEFORE building (binding, per Walid)
@@ -475,9 +480,46 @@ permissiveness + progressive debrief) — do NOT redo it; build on it.
 ## Dev Agent Record
 
 ### Agent Model Used
+claude-opus-4-8 (dev-story, 2026-06-30)
 
 ### Debug Log References
+- Mechanism confirmation (Stream A, AC1): `SonioxSTTService` emits NO `UserStartedSpeakingFrame` (only `UserStoppedSpeakingFrame`) — confirmed via `inspect.getsource` over the installed pipecat 0.0.108. So the silence ladder's only user-speech cancel during a never-finalizing utterance was a finalized `TranscriptionFrame`, which call 341 never produced.
+- Interactions verified (binding section): #1 D+R9 fix E **by construction** (verify-first → no HUD rewrite); #2 the R9 scenario fix is the single highest-leverage call-336 change; #3 B's timeout path is already fail-open so C stayed off the timeout path (and Walid redirected C to judge-reliability anyway); #4 A and C touch DIFFERENT patience paths (A = silence ladder cancel/suppress; C = no patience change at all); #5 A's two halves reinforce (A3 ladder suppression is the hang-up fix, A2 watchdog cap guarantees the bot eventually responds).
 
 ### Completion Notes List
+**Two dev-time DECISIONS resolved with Walid (2026-06-30):**
+- **B** → bounded **retry once** on a transient `ReadTimeout`.
+- **C** → Walid REJECTED softening the patience coupling (it would dilute the "Survive the Talk" ADN). Redirected to **harden judge reliability** instead: the call-339 spiral was a SYSTEMATIC judge false-negative (a polite/indirect order read as a dodge-question), fixable at the prompt; once fixed the spiral never starts, so patience stays 100% coupled and the survival game keeps its teeth.
+- **E** (AC18) → resolved by the verify-first outcome: keep CLIENT-computed lowest-unmet (it equals the server's steering target by construction; a server `current_index` would be redundant). Surfaced for Walid's awareness.
+
+**Per-stream:** A = EndpointWatchdog continuous-growth hard cap (`_MAX_INTERIM_DURATION_SECONDS=15`, armed once/turn) + PatienceTracker `InterimTranscriptionFrame` cancel branch (the missing §1-trap branch). B = `_last_failure_was_timeout` flag + an `elif` single bounded retry in `classify_multi` (≤1 retry/turn, strict json_schema + fail-open + 4.0/4.5 untouched). D4 = R9 `find_unsatisfiable_criteria` lint (builder reject + loader warn + glob test, zero false positives) + `cop_interrogation_01` beat-0 rewrite + `server/CLAUDE.md §9` R9. D = `format_suggested_focus_block` already-given reconcile (confirm-and-hold, never advance-on-assumption). E = verify-first (no rewrite) + stranded/overtaken regression tests (client + server). C = judge prompt principles 2/7 (polite/indirect/question-form genuine intent counts; dodge-question stays unmet, objective-dependent) + golden 339 fixture + `ENGINE_VERSION` 6→7.
+
+**Owed at deploy/review (Task 7 + the gates):** live VPS golden 6/6 (`calibrate_scenario.py --golden-only`, needs the OpenAI key absent locally) incl. the new 339 fixture; a cooperative easy calibration sweep in-band + off-topic fails; deploy via CI deploy-server; Pixel 9 smoke on the 20-beat Detective (the 5 money moments). NO new DB migration.
 
 ### File List
+**Server — pipeline:**
+- `server/pipeline/endpoint_watchdog.py` (A2 — continuous-growth hard cap)
+- `server/pipeline/patience_tracker.py` (A3 — interim-aware silence ladder)
+- `server/pipeline/exchange_classifier.py` (B — transient-timeout bounded retry)
+- `server/pipeline/scenarios.py` (D4 — R9 `find_unsatisfiable_criteria` + loader WARN)
+- `server/pipeline/scenarios/cop-interrogation-01.yaml` (D4 — beat-0 fix; D — beat-0 prompt_segment de-fusion)
+- `server/pipeline/checkpoint_manager.py` (D — `format_suggested_focus_block` reconcile)
+- `server/pipeline/prompts.py` (C — judge prompt principles 2/7)
+**Server — scripts / config / docs:**
+- `server/scripts/scenario_builder.py` (D4 — R9 HARD reject + import)
+- `server/scripts/calibration_engine.py` (`ENGINE_VERSION` 6→7)
+- `server/CLAUDE.md` (§9 R9 rule + Status)
+**Server — tests / fixtures:**
+- `server/tests/test_endpoint_watchdog.py` (+3 hard-cap)
+- `server/tests/test_patience_tracker.py` (+4 interim-aware incl. real-pipeline drive)
+- `server/tests/test_exchange_classifier.py` (+3 retry; 1 updated)
+- `server/tests/test_scenarios.py` (+3 R9)
+- `server/tests/test_checkpoint_manager.py` (+2: focus reconcile, stranded-beat envelope)
+- `server/tests/test_prompts.py` (+1 judge-reliability wiring)
+- `server/tests/test_calibration_engine.py` (1 updated — ENGINE_VERSION pin)
+- `server/tests/fixtures/golden/waiter_easy_01.json` (+1 call-339 positive case)
+**Client (tests only — Stream E was verify-first, no `lib/` change):**
+- `client/test/features/call/views/widgets/checkpoint_step_hud_test.dart` (+3 stranded/overtaken snapshot)
+**Story bookkeeping:**
+- `_bmad-output/implementation-artifacts/10-8-character-rail-keeper-arc-ordering-and-hud-sync.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`

@@ -73,6 +73,7 @@ from pipeline.scenarios import (  # noqa: E402
     find_model_specific_tokens,
     find_permissive_criteria_phrases,
     find_scripting_violations,
+    find_unsatisfiable_criteria,
     find_persona_difficulty_leaks,
 )
 
@@ -809,6 +810,20 @@ def validate_structure(scenario: dict) -> list[str]:
                     f"checkpoint[{i}].success_criteria contains blanket-permissive "
                     f"license {permissive} — state the GENUINE move and exclude the "
                     "non-committal/off-topic reply, never grant a catch-all pass (R8)"
+                )
+            # R9 (Story 10.8) — a criterion that requires the USER to acknowledge a
+            # passive procedural notice (being recorded, a disclaimer) strands the
+            # beat `unmet` forever (a real person never verbalises it, the
+            # character never re-elicits it) → the lowest-unmet HUD freezes (the
+            # call-336 `acknowledge_recorded_call` trap).
+            unsatisfiable = find_unsatisfiable_criteria(crit)
+            if unsatisfiable:
+                problems.append(
+                    f"checkpoint[{i}].success_criteria requires the USER to "
+                    f"acknowledge a passive notice {unsatisfiable} — a real person "
+                    "never verbalises a recording/disclaimer notice and the "
+                    "character never re-elicits it, so the beat strands unmet and "
+                    "freezes the HUD; credit the genuine move instead (R9)"
                 )
         if isinstance(cp.get("id"), str):
             ids.append(cp["id"])

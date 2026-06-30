@@ -51,9 +51,9 @@ base_prompt: |-
   - Detective Mercer is calling from the Riverside Police Department and the call is being recorded.
 checkpoints:
 - id: acknowledge_recorded_call
-  hint_text: Confirm you're the person he named and acknowledge the call is being recorded.
-  prompt_segment: Identify yourself as Detective Mercer with Riverside PD and warn that this call is being recorded. You do NOT have their name — never address them by a name or invent one; instead ask them to confirm you're speaking to the right person. Watch whether they confirm who they are and acknowledge the line is recorded.
-  success_criteria: PASS if the learner's turn both (a) confirms they are the person Mercer named (e.g. 'Yes, that's me', 'Speaking') AND (b) acknowledges being told the call is recorded (e.g. 'Okay, understood', 'Go ahead'). FAIL on a bare greeting/'hello', or confirming identity without acknowledging the recording.
+  hint_text: Confirm you're the person he's calling and agree to answer his questions.
+  prompt_segment: You have already said who you are and that the call is recorded, so do NOT repeat that. Confirm you are speaking to the right person and get their agreement to talk before you begin. You do NOT have their name — never address them by a name or invent one. Do NOT yet ask for their full name and address; that is the next beat. Watch whether they confirm they are the right person and agree to answer your questions.
+  success_criteria: PASS if the learner's turn confirms they are the person Mercer is calling OR clearly agrees to talk / answer questions (e.g. 'Yes, that's me', 'Speaking', 'Yeah, sure, go ahead', 'Okay, what's this about?'). FAIL if the learner refuses to engage, tries to end the call, stays silent, or gives only a bare 'hello' that neither confirms who they are nor agrees to talk.
 - id: give_name_and_address
   hint_text: State your full name and home address clearly so he can match the file.
   prompt_segment: Ask the learner to confirm their full name and home address so you can match it to the case file, noting how readily they answer. The moment they give it, take it in with one clipped line and keep the pressure on — never just confirm the address and fall silent waiting for them.

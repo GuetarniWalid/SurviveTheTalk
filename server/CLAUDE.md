@@ -566,10 +566,30 @@ reject bad ones → calibration golden net validates behavior):
   prompt `EXCHANGE_CLASSIFIER_MULTI_PROMPT` principle 7 ALSO caps this at the model: a
   permissive-sounding criterion never licenses crediting empty content. Write the rewritten
   criteria FIRST, then trust the lint to keep them honest.
+- **R9 — a `success_criteria` must be SATISFIABLE in natural conversational flow (Story
+  10.8, call 336).** A beat must not require the USER to explicitly ACKNOWLEDGE a passive
+  procedural NOTICE the character delivered — the call being recorded, a read-out
+  disclaimer/rights. A real person treats such a notice as rhetorical and never verbalises
+  an acknowledgement, and the character never re-elicits it, so the beat strands `unmet`
+  FOREVER — which freezes the lowest-unmet HUD behind the live conversation (the call-336
+  `cop_interrogation_01::acknowledge_recorded_call` trap: its part (b) demanded "acknowledges
+  being told the call is recorded" — the cop's opening already voiced the notice, the user
+  just says "yeah, sure", so the beat could never credit). Credit the GENUINE user move
+  (confirm identity / agree to talk) instead. **Enforced HARD (mechanically-detectable slice
+  only):** `scenarios.find_unsatisfiable_criteria` (an `acknowledg… record(ed|ing)` /
+  `acknowledg… disclaimer` within-sentence regex; tuned for ZERO false positives — never trips
+  "acknowledges the fingerprint claim/her feelings/the situation") is rejected by
+  `scenario_builder.validate_structure`, WARNED by the loader (`load_scenario_checkpoints`),
+  and fails the commit via `tests/test_scenarios.py::test_shipped_scenarios_have_no_unsatisfiable_criteria`.
+  The BROADER class — two beats being the SAME conversational moment (identity ≠ name; a beat
+  fused into the opening line) — is NOT lexically detectable and stays builder
+  `CHECKPOINTS_PROMPT` guidance + the smoke gate, reinforced by Story 10.8 Stream D's
+  rail-keeping steering (advance one DISTINCT beat in order). Add a pattern to
+  `_UNSATISFIABLE_CRITERIA_PATTERNS` as each new unsatisfiable-beat trap surfaces.
 
-**Status (2026-06-29):** R1 + R2 + R7(literal placeholder) + R8 are code-enforced via fail-fast
+**Status (2026-06-30):** R1 + R2 + R7(literal placeholder) + R8 + R9 are code-enforced via fail-fast
 lints over the FULL `_SCENARIO_INDEX` (`find_model_specific_tokens` + `find_scripting_violations`
-+ `find_permissive_criteria_phrases`, each in builder + loader + commit test); R4 + R6 are ENGINE-enforced (a scenario CANNOT
++ `find_permissive_criteria_phrases` + `find_unsatisfiable_criteria`, each in builder + loader + commit test); R4 + R6 are ENGINE-enforced (a scenario CANNOT
 produce dead air or acknowledge-and-stop no matter how it is written — `reply_sanitizer`
 never-silent floor + `checkpoint_manager` always-drive branch); R5 is embedded in the
 classifier prompt; R3 + R7(semantic) remain builder `CHECKPOINTS_PROMPT` guidance (not
@@ -578,7 +598,10 @@ lexically detectable) + the smoke gate. All SIX shipped scenarios are de-scripte
 also needed a judge-timeout bump for the SLOW Gemini era (`_HTTP/_CLASSIFIER_TIMEOUT_SECONDS`
 1.5/2.0→4.0/4.5 s); the 10.6 review (D3) briefly cut it to 2.0/2.5 s for OpenAI, but a live VPS
 golden sweep MEASURED the gpt-4.1-mini judge at ~2 s/call (a 2.0 s HTTP budget → ~2 % fail-open),
-so it was RESTORED to 4.0/4.5 s (felt `VERDICT_WAIT_BUDGET_MS` UNTOUCHED). Remaining: per-scenario
+so it was RESTORED to 4.0/4.5 s (felt `VERDICT_WAIT_BUDGET_MS` UNTOUCHED). Story 10.8 (R9 audit)
+re-audited all six against the unsatisfiable-criteria rule and rewrote `cop_interrogation_01`'s
+beat-0 `acknowledge_recorded_call` (dropped the unsatisfiable "acknowledge the recording"
+requirement; it now credits confirming identity / agreeing to talk). Remaining: per-scenario
 calibration + Pixel 9 smoke gate.
 
 **THE DURABLE LESSON (why bugs reached production — read before adding any rule).** They

@@ -74,6 +74,32 @@ def test_exchange_classifier_multi_prompt_present_and_shaped() -> None:
     assert "<character_line>" in p
 
 
+def test_multi_prompt_credits_polite_indirect_question_form_intent() -> None:
+    """Story 10.8 Stream C (call 339) — judge-reliability hardening. A genuine
+    move phrased POLITELY / INDIRECTLY / as a QUESTION-REQUEST must be credited
+    (the call-339 false-negative: "I would like to know if it is possible to
+    order?" was wrongly read as a precondition/dodge question and 'unmet',
+    spiralling patience to a hang-up). The prompt must carry that principle AND
+    the dodge-vs-genuine-question distinction — WITHOUT regressing the 10.7
+    anti-permissive line (a genuine question can be met; an evasive/contentless
+    one stays unmet)."""
+    from pipeline.prompts import EXCHANGE_CLASSIFIER_MULTI_PROMPT
+
+    p = EXCHANGE_CLASSIFIER_MULTI_PROMPT
+    low = p.lower()
+    # The 339 fix: polite/indirect/question-form genuine intent counts.
+    assert "question/request" in low
+    assert "ends in a question mark" in low
+    assert "indirectly" in low
+    # The distinction is explicit: a DODGE-question is still unmet, but a genuine
+    # move phrased as a question/request performs the move.
+    assert "dodge" in low
+    # 10.7 anti-permissive content is preserved (no regression to "plays itself").
+    assert "Default to UNMET" in p
+    assert "PERFORM the move" in p
+    assert '"No other choice"' in p  # the call-340 evasion still listed as unmet
+
+
 def test_multi_prompt_formats_without_error() -> None:
     """The multi prompt must `.format()` cleanly with the 4 named
     placeholders."""

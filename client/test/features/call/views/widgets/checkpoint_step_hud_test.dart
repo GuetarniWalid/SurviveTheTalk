@@ -172,4 +172,53 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     expect(tester.takeException(), isNull);
   });
+
+  // ====================================================================
+  // Story 10.8 Stream E (call 336) — stranded / overtaken early beat.
+  // Before Stream A/D/D4, an EARLY beat that never credited (the cop's
+  // `acknowledge_recorded_call`) froze the lowest-unmet HUD behind the live
+  // conversation. The HUD math is correct BY CONSTRUCTION (lowest author-order
+  // unmet == the server's steering target) — so once D + R9 stop the strand,
+  // the HUD advances. These pin the snapshot getters for the stranded shape:
+  // it truthfully HOLDS on the stranded early beat (no lying about what scored),
+  // and ADVANCES the instant that beat finally credits (never permanently stuck).
+  // ====================================================================
+  group('CheckpointSnapshot stranded/overtaken beat (Story 10.8 Stream E)', () {
+    test('holds on the stranded early beat while later beats are met', () {
+      // The call-336 shape on the 20-beat detective: beats 1 + 2 credited
+      // out of order, beat 0 still pending.
+      const snap = CheckpointSnapshot(
+        hints: ['b0', 'b1', 'b2', 'b3'],
+        metIndices: [1, 2],
+        total: 20,
+      );
+      // The HUD truthfully shows the LOWEST unmet (0), not a later beat — it
+      // holds on the stranded beat rather than jumping ahead.
+      expect(snap.activeIndex, 0);
+      // The dots render the REAL out-of-order met set (no lying about scored).
+      expect(snap.metCount, 2);
+      expect(snap.allMet, isFalse);
+    });
+
+    test('advances the instant the stranded early beat finally credits', () {
+      // Once beat 0 credits (D + R9 make it satisfiable), the active step
+      // moves to the next genuinely-unmet beat — never permanently stuck.
+      const snap = CheckpointSnapshot(
+        hints: ['b0', 'b1', 'b2', 'b3'],
+        metIndices: [0, 1, 2],
+        total: 20,
+      );
+      expect(snap.activeIndex, 3);
+    });
+
+    test('activeIndex is null and allMet once every beat is credited', () {
+      const snap = CheckpointSnapshot(
+        hints: ['b0', 'b1'],
+        metIndices: [0, 1],
+        total: 2,
+      );
+      expect(snap.activeIndex, isNull);
+      expect(snap.allMet, isTrue);
+    });
+  });
 }
