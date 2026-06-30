@@ -139,7 +139,12 @@ from pipeline.reply_sanitizer import sanitize_reply_text  # noqa: E402
 # reconciled to confirm-and-hold — both are code constants OUTSIDE `scenario_hash`
 # that change every scenario's judged + steered behaviour, so every cached PASS
 # predates them and must revalidate on the next sweep.
-ENGINE_VERSION = 7
+# Story 10.8 review (call 344, 2026-06-30) — bumped 7 → 8: the EASY preset
+# `fail_penalty` was lowered -15 → -9 (a continuous talker / slow B1 learner was
+# drained to a hang-up despite engaging). That changes the patience trajectory =>
+# the cooperative completion rate for every EASY scenario, so all cached easy
+# PASSes must revalidate against the new band.
+ENGINE_VERSION = 8
 
 # Difficulty → (low, high) inclusive cooperative-completion band, in percent.
 # Source of truth: `difficulty-calibration.md` §4.3 (line 175 —

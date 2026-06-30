@@ -604,14 +604,13 @@ def test_scenario_hash_changes_on_implies_edit(monkeypatch):
 
 
 def test_engine_version_bumped_for_judge_and_steering_change():
-    """Story 10.8 — bumped 6 → 7: the judge prompt gained the polite/indirect/
-    question-form genuine-intent principle (Stream C, call-339 fix) and the
-    character steering block was reconciled to confirm-and-hold (Stream D). Both
-    are code constants OUTSIDE `scenario_hash` that change every scenario's
-    judged + steered behaviour, so every cached PASS predates them and must
-    revalidate on the next sweep (same contract as the 6.28/6.29/6.27 bumps this
-    test previously pinned)."""
-    assert engine.ENGINE_VERSION == 7
+    """Story 10.8 — bumped 6 → 7 (judge prompt + steering, Streams C/D) then
+    7 → 8 (call-344 review: easy `fail_penalty` -15 → -9, which shifts the easy
+    completion band). All are code constants OUTSIDE `scenario_hash` that change
+    every scenario's judged / steered / survival behaviour, so every cached PASS
+    predates them and must revalidate on the next sweep (same contract as the
+    6.28/6.29/6.27 bumps this test previously pinned)."""
+    assert engine.ENGINE_VERSION == 8
 
 
 # ============================================================

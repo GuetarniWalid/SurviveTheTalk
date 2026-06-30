@@ -600,7 +600,8 @@ def test_resolve_patience_config_happy_path_easy() -> None:
 
     config = resolve_patience_config("waiter_easy_01")
     assert config["initial_patience"] == 100
-    assert config["fail_penalty"] == -15
+    # Story 10.8 review (call 344) — easy fail_penalty lowered -15 → -9.
+    assert config["fail_penalty"] == -9
     assert config["silence_penalty"] == -10
     assert config["recovery_bonus"] == 5
     assert config["silence_prompt_seconds"] == 6.0

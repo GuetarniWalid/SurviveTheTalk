@@ -155,7 +155,16 @@ DEFAULT_DIFFICULTY = "easy"
 _DIFFICULTY_PRESETS: dict[str, dict] = {
     "easy": {
         "initial_patience": 100,
-        "fail_penalty": -15,
+        # Story 10.8 review (call 344, 2026-06-30) — LOWERED -15 → -9. The first
+        # live smoke gate (the 20-beat Detective) drained an ENGAGED B1 learner
+        # (reached 10/20 beats) to a hang-up: at -15/miss a learner who needs 2-3
+        # turns per beat (clarification, an STT retry, a re-ask) runs out of meter
+        # before the arc completes. -9 keeps the survival mechanic's TEETH (an
+        # off-topic / non-engaging learner still LOSES — 100/9 ≈ 11 misses) while
+        # giving an imperfect-but-engaged easy learner room. Walid's call (the
+        # judge stays fully coupled — ADN intact; this softens only the MAGNITUDE,
+        # not the coupling). Re-calibrate the easy band after this change.
+        "fail_penalty": -9,
         "silence_penalty": -10,
         "recovery_bonus": 5,
         "silence_prompt_seconds": 6.0,

@@ -79,13 +79,23 @@ _WATCHDOG_TIMEOUT_SECONDS = 8.0
 # continuously-growing interim still force-finalizes within a bounded time —
 # the structural distinction the watchdog lacked between "stuck partial" (no new
 # interims → the 8 s timer) and "still talking" (new interims arriving → this
-# cap). 15 s is a generous backstop: B1 learners rarely produce 15 s of
-# unbroken speech (any pause Soniox catches finalizes earlier), and the user
-# gets a slightly truncated turn (the last few words may be mid-articulation)
-# rather than a turn that never completes. Stream A3 (interim-aware silence
-# ladder) is the primary fix for the hang-up; this cap guarantees the bot
-# eventually RESPONDS to a marathon utterance (Interaction #5).
-_MAX_INTERIM_DURATION_SECONDS = 15.0
+# cap). It is a BACKSTOP for the pathological "Soniox never finds a pause" case,
+# NOT a conversation-length limit: a normal speaker pauses within 1-2 s, Soniox
+# finalizes, and this never fires. It only bites a continuous, filler-heavy
+# talker who keeps the floor without a catchable pause.
+#
+# Story 10.8 review (call 344, 2026-06-30) — RAISED 15 s → 25 s + lowered the log
+# level ERROR → WARNING. The first live smoke gate on a SLOW, hesitant B1 speaker
+# fired the cap 3× in one call at 15 s: it truncated his long answers MID-thought
+# ("Friday, Saturday, and,") into fragments the judge then scored `unmet`,
+# draining patience for answers that were actually fine. 15 s was too tight for a
+# deliberate B1 pace; 25 s lets a long answer finish before the force-cut while
+# still bounding the dead-air on a genuine Soniox glitch. (The real "fluid" fix is
+# tuning Soniox to finalize on his pauses so this never fires — a separate STT/
+# turn-taking follow-up.) WARNING not ERROR: a cap fire is now EXPECTED on a
+# continuous talker (the backstop working), not a crash, so it must not read as an
+# error / page an operator.
+_MAX_INTERIM_DURATION_SECONDS = 25.0
 
 
 class EndpointWatchdog(FrameProcessor):
@@ -202,10 +212,11 @@ class EndpointWatchdog(FrameProcessor):
         text = self._last_interim_text
         if not text:
             return
-        logger.error(
+        logger.warning(
             "endpoint_watchdog_hardcap_fired text={!r} cap={}s — synthesizing "
             "finalized TranscriptionFrame because a continuously-growing interim "
-            "stream never finalized (Story 10.8 Stream A, call 341)",
+            "stream never finalized (Story 10.8 Stream A, call 341). Expected on a "
+            "continuous/filler-heavy talker; NOT an error.",
             text[:64],
             _MAX_INTERIM_DURATION_SECONDS,
         )
