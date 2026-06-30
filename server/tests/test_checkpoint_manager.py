@@ -351,6 +351,12 @@ def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() ->
     assert "as much or as little as a real person would" in composed
     assert "Right now the only objective you may pursue is" not in composed
     assert "Your remaining objectives are listed" not in composed
+    # SPIKE Phase 2 (Walid 2026-06-30) — the GENERAL end-call rule: every
+    # character can hang up, and it OVERRIDES a "relentless / never give up"
+    # persona (the cop never-ends bug). Locked so a future edit can't drop it.
+    assert "<end_call>" in composed
+    assert "OVERRIDES" in composed and "relentless" in composed
+    assert "going in circles" in composed
     assert "CHARTER-TOKEN." in composed
     assert composed.rstrip().endswith("MOOD-TOKEN.")
 
