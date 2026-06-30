@@ -169,6 +169,75 @@ def test_sanitize_reply_text_honors_fallback_line_arg() -> None:
     assert sanitize_reply_text("<mood:anger>")[0] == "Go on."
 
 
+# ---------- SPIKE (spike/character-led) — <end_call> marker -----------------
+
+
+def _wire_end_callback(sanitizer: ReplySanitizer) -> dict:
+    calls = {"n": 0}
+
+    def _cb() -> None:
+        calls["n"] += 1
+
+    sanitizer.set_character_led_end_callback(_cb)
+    return calls
+
+
+def test_spike_end_call_marker_stripped_and_fires_callback() -> None:
+    """SPIKE — the <end_call> marker is stripped (never spoken) and triggers the
+    character-led end callback exactly once at end-of-reply."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    calls = _wire_end_callback(sanitizer)
+    _run(_drive_reply(sanitizer, ["Alright, we're done here. <end_call>"]))
+    spoken = _spoken_text(captured)
+    assert "end_call" not in spoken and "<" not in spoken
+    assert "Alright, we're done here." in spoken
+    assert calls["n"] == 1
+
+
+def test_spike_end_call_split_across_frames_still_fires() -> None:
+    """SPIKE — a marker split across streamed chunks ("<end" + "_call>") is still
+    stripped and still triggers the callback (held-tail prefix logic)."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    calls = _wire_end_callback(sanitizer)
+    _run(_drive_reply(sanitizer, ["That's enough. <end", "_call>"]))
+    assert "<end" not in _spoken_text(captured)
+    assert calls["n"] == 1
+
+
+def test_spike_end_call_with_trailing_mood_both_stripped() -> None:
+    """SPIKE — <end_call> sitting next to the mood tag: both stripped, the mood
+    envelope still emits, and the end callback fires."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    calls = _wire_end_callback(sanitizer)
+    _run(_drive_reply(sanitizer, ["We're finished. <end_call><mood:anger>"]))
+    spoken = _spoken_text(captured)
+    assert "end_call" not in spoken and "mood" not in spoken
+    assert "We're finished." in spoken
+    assert _emotion_envelopes(captured)[-1]["data"]["emotion"] == "anger"
+    assert calls["n"] == 1
+
+
+def test_spike_no_marker_does_not_fire_callback() -> None:
+    """SPIKE control — a normal reply (no marker) never triggers the end."""
+    sanitizer = ReplySanitizer()
+    _capture_pushed(sanitizer)
+    calls = _wire_end_callback(sanitizer)
+    _run(_drive_reply(sanitizer, ["What would you like to drink?"]))
+    assert calls["n"] == 0
+
+
+def test_spike_end_call_stripped_even_without_callback() -> None:
+    """SPIKE flag-OFF parity — with no callback wired, the marker is STILL
+    stripped (never spoken); only the hang-up scheduling is skipped."""
+    sanitizer = ReplySanitizer()
+    captured = _capture_pushed(sanitizer)
+    _run(_drive_reply(sanitizer, ["Fine, goodbye. <end_call>"]))
+    assert "end_call" not in _spoken_text(captured)
+
+
 def test_unterminated_paren_span_dropped_at_end_of_reply() -> None:
     sanitizer = ReplySanitizer()
     captured = _capture_pushed(sanitizer)

@@ -12,6 +12,7 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     MetricsFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
@@ -1192,6 +1193,59 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
     assert data["total_checkpoints"] == 6
     # Story 6.20 AC3 — the REAL met SET ships alongside the count.
     assert data["goals_met_indices"] == [0, 1, 2, 3, 4, 5]
+
+
+def test_spike_character_led_bail_ends_in_character_with_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPIKE Phase 2 — `schedule_character_led_bail` ends the call in-character:
+    pushes an InterruptionFrame (to flush the in-flight <end_call> reply), speaks
+    the closing line, and emits `call_end` with reason='character_hung_up' and a
+    CHECKPOINT-based survival_pct (the meter is not the truth in spike mode)."""
+    _shrink_timers(monkeypatch)
+    tracker = PatienceTracker(
+        **_fast_easy(
+            initial_patience=100,
+            hang_up_line_silence="That's enough. We're done here.",
+        )
+    )
+    tracker._patience = 90  # high meter — must NOT drive survival_pct in spike mode
+    captured = _capture_pushed(tracker)
+
+    async def _drive() -> None:
+        tracker.set_checkpoints_passed(2)
+        tracker.set_goals_met_indices([0, 1])
+        tracker.schedule_character_led_bail()
+        await asyncio.sleep(0.02)
+        # Take the FAST delivery path: Started marks the line audible (no
+        # stall-retry), then Stopped releases the wait (BSF arrives UPSTREAM —
+        # §1 trap). Keeps the test quick + free of the retry timing race.
+        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await _drain(tracker)
+
+    _run(_drive())
+
+    assert any(isinstance(f, InterruptionFrame) for f in captured), (
+        "a character-led bail fires mid-reply → must interrupt the in-flight "
+        "<end_call> reply before the closing line (abuse-path shape)"
+    )
+    assert any(
+        isinstance(f, TTSSpeakFrame) and f.text == "That's enough. We're done here."
+        for f in captured
+    ), "must speak the in-character closing line"
+
+    call_end = [
+        f
+        for f in captured
+        if isinstance(f, OutputTransportMessageFrame)
+        and f.message.get("type") == "call_end"
+    ]
+    assert len(call_end) == 1
+    data = call_end[0].message["data"]
+    assert data["reason"] == "character_hung_up"
+    assert data["survival_pct"] == 33, "round(2/6*100) — checkpoint-based, NOT meter 90"
+    assert data["checkpoints_passed"] == 2
 
 
 def test_set_checkpoints_passed_threads_through_character_hung_up_envelope(

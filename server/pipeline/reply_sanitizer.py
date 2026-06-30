@@ -63,7 +63,7 @@ drive test in `test_bot_pipeline_wiring.py` runs this processor inside a
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -133,6 +133,21 @@ def _could_be_tag_prefix(s: str) -> bool:
     return re.fullmatch(r"[a-z_]*", s[len(_MOOD_TAG_PREFIX) :]) is not None
 
 
+# SPIKE (spike/character-led, 2026-06-30) — a character-led end-of-call marker.
+# Stripped from the stream EXACTLY like the mood tag (never spoken, never in the
+# transcript/context); its presence schedules the in-character hang-up. Throwaway.
+_END_CALL_RE = re.compile(r"<end_call>", re.IGNORECASE)
+_END_CALL_FULL = "<end_call>"
+
+
+def _could_be_end_call_prefix(s: str) -> bool:
+    """True if ``s`` (starting at ``<``) could still grow into ``<end_call>``."""
+    s = s.lower()
+    if len(s) >= len(_END_CALL_FULL):
+        return False
+    return _END_CALL_FULL.startswith(s)
+
+
 class _SpanScanner:
     """Pure streaming span/tag stripper (no pipecat, no I/O).
 
@@ -151,6 +166,8 @@ class _SpanScanner:
         self.mood: str | None = None
         # Spans stripped this reply (observability).
         self.stripped_spans = 0
+        # SPIKE — set True if the character wrote the <end_call> marker this reply.
+        self.end_call = False
 
     def feed(self, chunk: str) -> str:
         text = self.held_tail + chunk
@@ -210,9 +227,16 @@ class _SpanScanner:
                         )
                     i += match.end()
                     continue
-                if _could_be_tag_prefix(rest):
-                    # Possible split tag ("<mo" + "od:smirk>") — hold the
-                    # tail, bounded by _MAX_TAG_HOLD.
+                end_match = _END_CALL_RE.match(rest)
+                if end_match:
+                    # SPIKE — character-led end marker. Strip it (never spoken);
+                    # ReplySanitizer schedules the hang-up at end-of-reply.
+                    self.end_call = True
+                    i += end_match.end()
+                    continue
+                if _could_be_tag_prefix(rest) or _could_be_end_call_prefix(rest):
+                    # Possible split tag ("<mo" + "od:smirk>" / "<end" +
+                    # "_call>") — hold the tail, bounded by _MAX_TAG_HOLD.
                     self.held_tail = rest
                     break
                 out.append(ch)
@@ -232,6 +256,11 @@ class _SpanScanner:
         content (already never forwarded) stays dropped.
         """
         if self.held_tail:
+            # SPIKE — a <end_call> marker split across the final chunk (the ">"
+            # never arrived) still means the character asked to end; honor it
+            # before dropping the tail.
+            if self.held_tail.lower().startswith("<end"):
+                self.end_call = True
             logger.debug(
                 "reply_sanitizer dropped unterminated tail: {!r}", self.held_tail
             )
@@ -280,6 +309,16 @@ class ReplySanitizer(FrameProcessor):
         # generic "Go on." inviting the learner to keep talking after, e.g., a
         # threat. bot.py passes `load_scenario_never_silent_fallback(scenario_id)`.
         self._fallback_line = (fallback_line or "").strip() or _NEVER_SILENT_FALLBACK
+        # SPIKE (spike/character-led, 2026-06-30) — optional callback invoked once
+        # at end-of-reply when the character wrote <end_call> (it decided to end
+        # the call in-character). bot.py wires it to
+        # PatienceTracker.schedule_character_led_bail ONLY when SPIKE_CHARACTER_LED
+        # is on; None → the marker is still stripped but no hang-up is scheduled.
+        self._character_led_end_callback: Callable[[], None] | None = None
+
+    def set_character_led_end_callback(self, cb: Callable[[], None] | None) -> None:
+        """SPIKE — wire (post-construction) the character-led end trigger."""
+        self._character_led_end_callback = cb
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -343,7 +382,7 @@ class ReplySanitizer(FrameProcessor):
                 scanner.stripped_spans,
                 self._spoke_any,
             )
-        if not self._spoke_any:
+        if not self._spoke_any and not scanner.end_call:
             # call-335: the whole reply was non-spoken meta (a mood tag only),
             # which previously left the turn literally silent — the dead air a
             # user hung up on. A prompt-only "always speak" guard already
@@ -374,6 +413,17 @@ class ReplySanitizer(FrameProcessor):
             # Same observability contract as the retired EmotionEmitter: a
             # journalctl tail shows each emitted face in real time.
             logger.info("reply_sanitizer_mood_emit emotion={}", scanner.mood)
+        if scanner.end_call:
+            # SPIKE — the character decided to end the call in-character. Strip
+            # already removed the marker; now schedule the hang-up (the wired
+            # PatienceTracker generates + speaks the closing line, then ends).
+            logger.info(
+                "spike_character_led_end_call detected spoke_any={} "
+                "→ scheduling character-led hang-up",
+                self._spoke_any,
+            )
+            if self._character_led_end_callback is not None:
+                self._character_led_end_callback()
         self._reset_reply_state()
 
     def _reset_reply_state(self) -> None:

@@ -477,6 +477,13 @@ class PatienceTracker(FrameProcessor):
         self._silence_task: asyncio.Task[None] | None = None
         self._hang_up_task: asyncio.Task[None] | None = None
         self._hang_up_in_progress = False
+        # SPIKE (spike/character-led, 2026-06-30) — True for the duration of a
+        # character-LED hang-up (the character emitted <end_call>). It reuses the
+        # `_REASON_SILENCE` ("character_hung_up") teardown but adds the abuse-path
+        # InterruptionFrame (the trigger fires WHILE the character's reply is
+        # in-flight) and reports a checkpoint-based survival_pct (the meter is no
+        # longer the truth in spike mode). Reset in `_run_hang_up`'s finally.
+        self._spike_character_led_bail = False
         # Set by `cleanup()` so the hang-up coroutine's "wait for
         # client to disconnect" sleep can release immediately on
         # pipeline teardown instead of running the full 8 s safety
@@ -1064,6 +1071,31 @@ class PatienceTracker(FrameProcessor):
         """
         self._schedule_hang_up(_REASON_INAPPROPRIATE)
 
+    def schedule_character_led_bail(self) -> None:
+        """SPIKE (spike/character-led, 2026-06-30) — the character itself decided
+        to END the call in-character (it wrote the <end_call> marker, stripped by
+        `reply_sanitizer`). This is the Phase-2 stakes mechanic: a character can
+        walk away when the other person wastes its time / stonewalls / crosses a
+        line, WITHOUT the patience meter.
+
+        Reuses the existing `_REASON_SILENCE` (= client `character_hung_up`)
+        teardown — the Story 6.18 generator produces an in-character closing line
+        from the transcript + the "ran out of patience / stopped cooperating"
+        guidance, exactly the bail flavor. `_spike_character_led_bail` makes
+        `_run_hang_up` ALSO push the abuse-path InterruptionFrame (the marker
+        fires WHILE the character's reply is in-flight, so that reply must be
+        flushed) and report a checkpoint-based survival_pct. Idempotent (the
+        `_hang_up_in_progress` guard in `_schedule_hang_up`)."""
+        if self._hang_up_in_progress:
+            return
+        logger.info(
+            "spike_character_led_bail → in-character hang-up (checkpoints_passed={}/{})",
+            self._checkpoints_passed,
+            self._total_checkpoints,
+        )
+        self._spike_character_led_bail = True
+        self._schedule_hang_up(_REASON_SILENCE)
+
     # ---------- silence ladder ----------
 
     def _start_silence_timer(self) -> None:
@@ -1444,7 +1476,13 @@ class PatienceTracker(FrameProcessor):
             # TTS queue, so the exit line is the only thing that speaks. Silence
             # + survived stay un-interrupted
             # (test_silence_hangup_does_not_push_interruption).
-            if reason in (_REASON_NOISY_ENVIRONMENT, _REASON_INAPPROPRIATE):
+            # SPIKE — a character-led bail fires WHILE the character's <end_call>
+            # reply is in-flight (same shape as inappropriate), so it ALSO needs
+            # the InterruptionFrame to flush that reply before the closing line.
+            if (
+                reason in (_REASON_NOISY_ENVIRONMENT, _REASON_INAPPROPRIATE)
+                or self._spike_character_led_bail
+            ):
                 await self.push_frame(
                     InterruptionFrame(),
                     FrameDirection.DOWNSTREAM,
@@ -1499,6 +1537,20 @@ class PatienceTracker(FrameProcessor):
                 # Defensive reset keeps the field's lifetime scoped to
                 # one schedule_completion → _run_hang_up cycle.
                 self._pending_survival_pct = None
+            elif self._spike_character_led_bail:
+                # SPIKE — the meter is no longer the truth (fail-drain is off),
+                # so report progress as the share of checkpoints actually passed.
+                survival_pct = max(
+                    0,
+                    min(
+                        100,
+                        round(
+                            self._checkpoints_passed
+                            / max(1, self._total_checkpoints)
+                            * 100
+                        ),
+                    ),
+                )
             else:
                 survival_pct = max(
                     0,
@@ -1570,3 +1622,5 @@ class PatienceTracker(FrameProcessor):
             # On the happy path this clears post-EndFrame — pipeline
             # is dead, the reset is a no-op semantically.
             self._hang_up_in_progress = False
+            # SPIKE — scope the bail flag to this one teardown cycle.
+            self._spike_character_led_bail = False

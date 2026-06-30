@@ -602,6 +602,16 @@ async def run_bot(url: str, room: str, token: str) -> None:
         hang_up_line_generator=hang_up_line_generator,
     )
 
+    # SPIKE (spike/character-led, 2026-06-30) — Phase 2 wiring. When the character
+    # writes <end_call>, reply_sanitizer strips it and calls
+    # schedule_character_led_bail, which ends the call in-character (the stakes
+    # mechanic without the meter). Only when SPIKE_CHARACTER_LED is on; off → the
+    # marker is still stripped defensively but nothing schedules a hang-up.
+    if settings.spike_character_led:
+        reply_sanitizer.set_character_led_end_callback(
+            patience_tracker.schedule_character_led_bail
+        )
+
     # Story 6.11 — EnvironmentMonitor observes the user's finalized
     # TranscriptionFrames and detects a parasitic background VOICE via
     # Soniox speaker diarization (the cocktail-party case DTLN can't

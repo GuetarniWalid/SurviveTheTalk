@@ -359,6 +359,19 @@ def compose_spike_character_led_instruction(
         "way and at your own pace, raising whatever you naturally would, in "
         "whatever order feels natural. Stay completely in character and in-world "
         "at all times; never break the fourth wall."
+        "\n\n"
+        "Ending the call: you may END this conversation yourself, on your own "
+        "terms, exactly when a real person in your role genuinely would — either "
+        "you have what you need and it is naturally finished, OR the other person "
+        "is wasting your time, stonewalling, refusing to cooperate, or being "
+        "abusive and you would actually walk away or hang up on them. When you "
+        "decide to end it, deliver your final in-character line and then write "
+        "the marker <end_call> right after it (place it just before your mood "
+        "tag). That marker is removed before the other person hears you — never "
+        "say it aloud, never explain it. Do NOT end the call over a single "
+        "difficult, rude, or annoying moment; only end it when you truly would "
+        "in real life. Whenever you are continuing the conversation, never write "
+        "that marker."
     )
     composed = base + "\n\n" + coherence_charter + "\n\n" + holistic
     if mood_tag_directive:
