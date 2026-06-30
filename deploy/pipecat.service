@@ -27,6 +27,14 @@ Group=www-data
 WorkingDirectory=/opt/survive-the-talk/current/server
 EnvironmentFile=/opt/survive-the-talk/.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+# SPIKE (spike/character-led, 2026-06-30) — throwaway A/B flags. Set HERE (not in
+# the root-owned 0600 .env, which the deploy user can't write) so the deploy
+# workflow's unit-sync step installs them. These two lines exist ONLY on the
+# spike branch; redeploying `main` reinstalls the original unit (hash differs)
+# and removes them — the brief's one-CI-run revert. Both default OFF in code, so
+# they are inert wherever this exact unit is not installed.
+Environment=SPIKE_CHARACTER_LED=1
+Environment=SPIKE_NO_FAIL_DRAIN=1
 ExecStart=/opt/survive-the-talk/current/server/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5s
