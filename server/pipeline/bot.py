@@ -39,6 +39,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from config import Settings
 from pipeline.checkpoint_manager import (
     CheckpointManager,
+    compose_spike_character_led_instruction,
     format_remaining_goals_block,
     format_suggested_focus_block,
 )
@@ -176,18 +177,35 @@ async def run_bot(url: str, room: str, token: str) -> None:
     # persona deliberately does NOT carry it — exit/warning lines ride
     # `TTSSpeakFrame`s that bypass the sanitizer, so a tag there would be
     # SPOKEN.
+    # SPIKE (spike/character-led, 2026-06-30) — the scenario's optional holistic
+    # goal, consumed ONLY when SPIKE_CHARACTER_LED=1. A defensive default keeps a
+    # flagged-but-unauthored scenario from crashing the call. Inert when off.
+    spike_goal = (scenario_metadata.get("spike_goal") or "").strip() or (
+        "carry this conversation "
+        f"({scenario_metadata.get('scenario_title') or scenario_metadata.get('title', scenario_id)}) "
+        "through to its natural end"
+    )
     if scenario_base_prompt and scenario_checkpoints:
-        initial_system_prompt = (
-            scenario_base_prompt.rstrip()
-            + "\n\n"
-            + COHERENCE_CHARTER
-            + "\n\n"
-            + format_remaining_goals_block(scenario_checkpoints)
-            + "\n\n"
-            + format_suggested_focus_block(scenario_checkpoints[0])
-            + "\n\n"
-            + MOOD_TAG_DIRECTIVE
-        )
+        if settings.spike_character_led:
+            # SPIKE — holistic, free-flowing instruction (no per-beat steering,
+            # no reply-length cap). Identical to CheckpointManager's recompose.
+            initial_system_prompt = compose_spike_character_led_instruction(
+                base_prompt=scenario_base_prompt,
+                coherence_charter=COHERENCE_CHARTER,
+                spike_goal=spike_goal,
+            )
+        else:
+            initial_system_prompt = (
+                scenario_base_prompt.rstrip()
+                + "\n\n"
+                + COHERENCE_CHARTER
+                + "\n\n"
+                + format_remaining_goals_block(scenario_checkpoints)
+                + "\n\n"
+                + format_suggested_focus_block(scenario_checkpoints[0])
+                + "\n\n"
+                + MOOD_TAG_DIRECTIVE
+            )
         exit_line_persona = scenario_base_prompt.rstrip()
     elif env_system_prompt:
         initial_system_prompt = (
@@ -666,6 +684,13 @@ async def run_bot(url: str, room: str, token: str) -> None:
         # sees the turn; 0 disables (pure parallel = pre-6.29). Env
         # VERDICT_WAIT_BUDGET_MS, validated at boot in config.py.
         verdict_wait_budget_ms=settings.verdict_wait_budget_ms,
+        # SPIKE (spike/character-led, 2026-06-30) — both default False = today's
+        # behavior. ON: holistic character composition on recompose +
+        # checkpoint-fail patience drain neutralized. See
+        # spike-character-led-conversation-brief.md.
+        spike_character_led=settings.spike_character_led,
+        spike_no_fail_drain=settings.spike_no_fail_drain,
+        spike_goal=spike_goal,
     )
 
     # Story 6.8 Phase 1 AC3 — LLM→TTS streaming-overlap probe. Both

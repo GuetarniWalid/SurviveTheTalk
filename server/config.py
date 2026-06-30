@@ -332,6 +332,26 @@ class Settings(BaseSettings):
     # the fallback cold-spawn handles any overflow, no call is ever blocked).
     bot_pool_size: int = 1  # BOT_POOL_SIZE
 
+    # SPIKE (spike/character-led, 2026-06-30) — throwaway experiment flags, NOT a
+    # story. Both default False → byte-identical to today; flip ON in the VPS
+    # `.env` + restart to A/B the "free-flowing character + post-call debrief"
+    # hypothesis against the live per-turn-judge + patience meter. Revert =
+    # set back to 0 (no redeploy) or redeploy `main`. See
+    # `_bmad-output/implementation-artifacts/spike-character-led-conversation-brief.md`.
+    #
+    # SPIKE_CHARACTER_LED — when True, the character's per-beat steering blocks
+    # (format_remaining_goals_block / format_suggested_focus_block) and the
+    # persona's reply-length cap ("1-3 short sentences") are DROPPED from its
+    # system prompt; instead it gets ONE holistic instruction (persona + the
+    # scenario's `metadata.spike_goal` + "speak naturally, as much or as little
+    # as a real person would"). The COHERENCE_CHARTER + mood tag are kept.
+    spike_character_led: bool = False  # SPIKE_CHARACTER_LED
+    # SPIKE_NO_FAIL_DRAIN — when True, a checkpoint-FAIL verdict no longer drains
+    # the patience meter (an engaged learner who doesn't advance a beat is never
+    # hung up on). The silence ladder, max-duration backstop, and abuse hang-up
+    # all stay ON (a dead call still ends).
+    spike_no_fail_drain: bool = False  # SPIKE_NO_FAIL_DRAIN
+
     # Story 6.9b — `extra: "ignore"` so unrelated env vars don't trip the
     # default Pydantic-v2 forbid-extras rule at Settings() construction.
     #

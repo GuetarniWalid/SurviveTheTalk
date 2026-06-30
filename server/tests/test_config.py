@@ -90,6 +90,35 @@ def test_settings_classifier_model_overrides_via_env() -> None:
         assert s.classifier_model == "llama-3.3-70b-versatile-128k"
 
 
+# ---------- SPIKE (spike/character-led, 2026-06-30) — throwaway flags --------
+
+
+def test_settings_spike_flags_default_false() -> None:
+    """SPIKE — both flags default OFF so the spike is byte-identical to today
+    unless explicitly enabled in the VPS `.env`. `clear=True` so a developer's
+    exported SPIKE_* can't shadow the default."""
+    env = {**REQUIRED_ENV_VARS, "JWT_SECRET": "0" * 32}
+    with patch.dict(os.environ, env, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.spike_character_led is False
+        assert s.spike_no_fail_drain is False
+
+
+def test_settings_spike_flags_override_via_env() -> None:
+    """SPIKE — `SPIKE_CHARACTER_LED` / `SPIKE_NO_FAIL_DRAIN` flip ON via env
+    (Pydantic parses "1"/"true"), the one-line A/B switch the brief requires."""
+    overrides = {
+        **REQUIRED_ENV_VARS,
+        "JWT_SECRET": "0" * 32,
+        "SPIKE_CHARACTER_LED": "1",
+        "SPIKE_NO_FAIL_DRAIN": "true",
+    }
+    with patch.dict(os.environ, overrides, clear=True):
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert s.spike_character_led is True
+        assert s.spike_no_fail_drain is True
+
+
 # ---------- 2026-05-29 all-Groq migration — character + emotion models -----
 
 

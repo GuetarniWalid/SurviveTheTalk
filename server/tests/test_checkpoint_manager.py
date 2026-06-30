@@ -33,6 +33,7 @@ from pipeline.checkpoint_manager import (
     CheckpointManager,
     advance_goals,
     compose_goal_system_instruction,
+    compose_spike_character_led_instruction,
     judgeable_goals,
 )
 from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
@@ -134,6 +135,9 @@ def _make_manager(
     | None = None,
     abuse_detection_enabled: bool = True,
     verdict_wait_budget_ms: int = 800,
+    spike_character_led: bool = False,
+    spike_no_fail_drain: bool = False,
+    spike_goal: str | None = None,
 ) -> tuple[CheckpointManager, ExchangeClassifier, MagicMock, _StubLLM, LLMContext]:
     """Build a fully-mocked manager. The classifier's `classify_multi`
     is replaced with an async stub.
@@ -235,6 +239,9 @@ def _make_manager(
         coherence_charter=coherence_charter,
         abuse_detection_enabled=abuse_detection_enabled,
         verdict_wait_budget_ms=verdict_wait_budget_ms,
+        spike_character_led=spike_character_led,
+        spike_no_fail_drain=spike_no_fail_drain,
+        spike_goal=spike_goal,
     )
 
     classifier._test_calls = classifier_calls  # type: ignore[attr-defined]
@@ -314,6 +321,122 @@ def test_empty_text_does_not_schedule() -> None:
     _run(_drive())
 
     assert classifier._test_calls == []  # type: ignore[attr-defined]
+
+
+# ---------- SPIKE (spike/character-led, 2026-06-30) — throwaway behavior -----
+
+
+def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() -> None:
+    """SPIKE — the holistic composer strips the persona's reply-length cap and
+    omits BOTH per-beat steering blocks, while keeping the persona body, the
+    goal, the charter, and the trailing mood tag (positional invariants)."""
+    base = (
+        "You are Tina, a tired waitress.\n"
+        "Rules you MUST follow:\n"
+        "- Keep every response to 1-3 short sentences, as if talking to a real customer\n"
+        "- Speak English only.\n"
+        "Menu: grilled chicken, pasta."
+    )
+    composed = compose_spike_character_led_instruction(
+        base_prompt=base,
+        coherence_charter="CHARTER-TOKEN.",
+        spike_goal="take the whole order and close out the table",
+        mood_tag_directive="MOOD-TOKEN.",
+    )
+    assert "1-3 short sentences" not in composed
+    assert "You are Tina, a tired waitress." in composed
+    assert "Speak English only." in composed
+    assert "Menu: grilled chicken, pasta." in composed
+    assert "take the whole order and close out the table" in composed
+    assert "as much or as little as a real person would" in composed
+    assert "Right now the only objective you may pursue is" not in composed
+    assert "Your remaining objectives are listed" not in composed
+    assert "CHARTER-TOKEN." in composed
+    assert composed.rstrip().endswith("MOOD-TOKEN.")
+
+
+def test_spike_compose_leaves_difficulty_short_sentence_aid_untouched() -> None:
+    """SPIKE — only the reply-COUNT cap ("Keep … sentences") is stripped; the
+    difficulty block's per-sentence simplicity aid ("Speak in simple … short
+    sentences (about 5-8 words)") starts with "Speak" and must survive."""
+    base = (
+        "You are a cop.\n"
+        "- Keep every response to 1-3 short sentences.\n"
+        "Difficulty behavior (easy):\n"
+        "- Speak in simple, common words and short sentences (about 5-8 words)."
+    )
+    composed = compose_spike_character_led_instruction(
+        base_prompt=base,
+        coherence_charter="C.",
+        spike_goal="get a statement",
+    )
+    assert "1-3 short sentences" not in composed
+    assert "short sentences (about 5-8 words)" in composed
+
+
+def test_spike_character_led_recompose_uses_holistic_instruction() -> None:
+    """SPIKE (change 1) — with the flag ON, a successful flip recomposes the LLM
+    system instruction via the holistic composer (goal present, per-beat steering
+    absent), instead of the prod per-beat steering composition."""
+    manager, _classifier, _tracker, stub_llm, _ctx = _make_manager(
+        spike_character_led=True,
+        spike_goal="GOAL-MARKER take the order",
+        classify_response=True,  # first turn flips cp0 → triggers recompose
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("I want chicken."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    composed = stub_llm._settings.system_instruction
+    assert "GOAL-MARKER take the order" in composed
+    assert "as much or as little as a real person would" in composed
+    assert "Right now the only objective you may pursue is" not in composed
+
+
+def test_spike_no_fail_drain_skips_patience_drain_on_checkpoint_fail() -> None:
+    """SPIKE (change 2) — with SPIKE_NO_FAIL_DRAIN on, an off-topic miss does NOT
+    call apply_exchange_outcome (an engaged learner is never hung up on a miss)."""
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(
+        spike_no_fail_drain=True,
+        classify_response=False,  # off-topic miss → fail branch
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("nice weather today."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    tracker.apply_exchange_outcome.assert_not_called()
+
+
+def test_fail_drain_still_fires_when_spike_flag_off() -> None:
+    """SPIKE control — flag OFF (default): the SAME off-topic miss drains patience
+    exactly as today. Flag-OFF parity regression guard."""
+    manager, _classifier, tracker, _llm, _ctx = _make_manager(
+        spike_no_fail_drain=False,
+        classify_response=False,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("nice weather today."), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    _run(_drive())
+
+    tracker.apply_exchange_outcome.assert_called_once_with(success=False)
 
 
 # ---------- Test 4: pass-through for every frame type --------------------

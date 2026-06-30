@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -289,6 +290,77 @@ def compose_goal_system_instruction(
             + "\n\n"
             + format_suggested_focus_block(pending_goals[0])
         )
+    if mood_tag_directive:
+        composed += "\n\n" + mood_tag_directive
+    return composed
+
+
+# ============================================================
+# SPIKE (spike/character-led, 2026-06-30) — holistic, free-flowing
+# character composition. Gated by SPIKE_CHARACTER_LED. NOT a story.
+# ============================================================
+#
+# Drops the per-beat steering blocks (format_remaining_goals_block +
+# format_suggested_focus_block) and the persona's reply-length cap, handing the
+# character ONE holistic instruction instead: persona + the scenario's
+# `spike_goal` + "speak naturally, as much or as little as a real person would".
+# The COHERENCE_CHARTER (anti-hallucination + never-silent) and the
+# MOOD_TAG_DIRECTIVE are KEPT (same positional invariance as the prod path). The
+# checkpoint ENGINE is untouched — it still judges turns and ticks the HUD; this
+# only changes what the character is TOLD, never how progress is scored. Flip
+# SPIKE_CHARACTER_LED=0 to revert (no redeploy). See
+# spike-character-led-conversation-brief.md.
+
+# A reply-length-cap line in a persona base_prompt (the waiter's "Keep every
+# response to 1-3 short sentences …"). Stripped ONLY in the spike path so the
+# character speaks at a natural, unconstrained length. Matches a line carrying
+# keep + response(s) + sentence(s); the difficulty block's per-sentence
+# simplicity ("Speak in simple … short sentences (about 5-8 words)") is left
+# intact — it starts with "Speak", not "Keep", and is a B1 comprehension aid,
+# not a length muzzle.
+_LENGTH_CAP_LINE_RE = re.compile(
+    r"(?im)^[ \t]*-?[ \t]*keep\b[^\n]*\bresponses?\b[^\n]*\bsentences?\b[^\n]*$\n?"
+)
+
+
+def _strip_reply_length_cap(text: str) -> tuple[str, int]:
+    """Remove any reply-length-cap line from a persona prompt (SPIKE).
+
+    Returns ``(stripped_text, n_removed)`` so the caller can log what it dropped.
+    """
+    return _LENGTH_CAP_LINE_RE.subn("", text)
+
+
+def compose_spike_character_led_instruction(
+    *,
+    base_prompt: str,
+    coherence_charter: str,
+    spike_goal: str,
+    mood_tag_directive: str = MOOD_TAG_DIRECTIVE,
+) -> str:
+    """SPIKE — compose a holistic, character-led system instruction.
+
+    ``base_prompt (reply-length-cap line stripped) + COHERENCE_CHARTER +
+    holistic goal block + MOOD_TAG_DIRECTIVE``. No per-beat steering: the
+    character pursues the whole `spike_goal` in its own way, at natural length.
+    """
+    base, n_stripped = _strip_reply_length_cap(base_prompt.rstrip())
+    base = base.rstrip()
+    if n_stripped:
+        logger.info(
+            "spike_character_led stripped reply-length-cap lines n={}", n_stripped
+        )
+    goal = spike_goal.strip().rstrip(".")
+    holistic = (
+        "Your goal in this conversation is: " + goal + ".\n"
+        "Speak and behave naturally — say as much or as little as a real person "
+        "would in your situation, at whatever length feels right; there is no "
+        "sentence limit and no script to follow. Pursue your goal in your own "
+        "way and at your own pace, raising whatever you naturally would, in "
+        "whatever order feels natural. Stay completely in character and in-world "
+        "at all times; never break the fourth wall."
+    )
+    composed = base + "\n\n" + coherence_charter + "\n\n" + holistic
     if mood_tag_directive:
         composed += "\n\n" + mood_tag_directive
     return composed
@@ -490,6 +562,9 @@ class CheckpointManager(FrameProcessor):
         coherence_charter: str,
         abuse_detection_enabled: bool = True,
         verdict_wait_budget_ms: int = 800,
+        spike_character_led: bool = False,
+        spike_no_fail_drain: bool = False,
+        spike_goal: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -533,6 +608,17 @@ class CheckpointManager(FrameProcessor):
         # verdicts regardless of this flag so it never reaches the goal-advance
         # rule; the flag only gates the hang-up action.
         self._abuse_detection_enabled = abuse_detection_enabled
+
+        # SPIKE (spike/character-led, 2026-06-30) — both default False = today's
+        # behavior. `_spike_character_led` swaps `_update_system_instruction` to
+        # the holistic composer (`compose_spike_character_led_instruction`);
+        # `_spike_no_fail_drain` neutralizes the checkpoint-fail patience drain
+        # (the silence ladder + abuse hang-up stay on). `_spike_goal` is the
+        # scenario's `metadata.spike_goal`; only read when `_spike_character_led`
+        # is on (a defensive default is used if the YAML omits it).
+        self._spike_character_led = spike_character_led
+        self._spike_no_fail_drain = spike_no_fail_drain
+        self._spike_goal = (spike_goal or "").strip()
 
         # Story 6.10 — goal-tracking state model. `self._goals` maps each
         # checkpoint id to "pending" | "met"; `self._id_to_index` maps id
@@ -1331,6 +1417,18 @@ class CheckpointManager(FrameProcessor):
                     len(pending),
                 )
                 return
+            if self._spike_no_fail_drain:
+                # SPIKE — non-advancement never drains the meter. An engaged
+                # learner who doesn't tick a beat is no longer hung up on; only
+                # the silence ladder / max-duration backstop / abuse path can end
+                # the call. Flip SPIKE_NO_FAIL_DRAIN=0 to restore the drain.
+                logger.info(
+                    "spike_no_fail_drain checkpoint_fail patience UNCHANGED "
+                    "met_count={} pending={}",
+                    self.met_count,
+                    len(pending),
+                )
+                return
             self._patience_tracker.apply_exchange_outcome(success=False)
             return
 
@@ -1508,11 +1606,20 @@ class CheckpointManager(FrameProcessor):
         pending-goals set (Deviation #2 + AC4). Called at construction and
         after every successful flip.
         """
-        composed = compose_goal_system_instruction(
-            base_prompt=self._base_prompt,
-            coherence_charter=self._coherence_charter,
-            pending_goals=self.pending_goals,
-        )
+        if self._spike_character_led:
+            # SPIKE — holistic, free-flowing composition (no per-beat steering).
+            # The goal is fixed for the call, so `pending_goals` is not consulted.
+            composed = compose_spike_character_led_instruction(
+                base_prompt=self._base_prompt,
+                coherence_charter=self._coherence_charter,
+                spike_goal=self._spike_goal or self._scenario_description,
+            )
+        else:
+            composed = compose_goal_system_instruction(
+                base_prompt=self._base_prompt,
+                coherence_charter=self._coherence_charter,
+                pending_goals=self.pending_goals,
+            )
         # Story 6.8 Phase 2 (AC15 box 3 / smoke-gate guard) — WARN if the
         # composed prompt accidentally contains the charter twice (e.g. a
         # future refactor pre-pends it inside base_prompt AND lets the

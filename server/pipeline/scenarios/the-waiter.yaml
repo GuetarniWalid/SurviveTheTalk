@@ -16,6 +16,17 @@ metadata:
   opening_line: "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
   content_warning: null
 
+  # SPIKE (spike/character-led, 2026-06-30) — holistic, free-flowing goal handed
+  # to the character ONLY when SPIKE_CHARACTER_LED=1 (otherwise inert: nothing
+  # reads it). Replaces the per-beat steering with one mission statement so Tina
+  # speaks naturally and pursues the whole order in her own way. Throwaway field;
+  # see spike-character-led-conversation-brief.md.
+  spike_goal: >
+    Take this customer's dinner order from start to finish: find out what main
+    course they want, sort out any choice it needs, settle their drink, read the
+    order back so you know it's right, and close out the table — then get on with
+    the rest of your shift.
+
   # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
   # content-is-server-side rule; editing these never requires an app update).
   end_phrases:
