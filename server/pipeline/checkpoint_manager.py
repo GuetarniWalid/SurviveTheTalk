@@ -331,18 +331,39 @@ def _strip_reply_length_cap(text: str) -> tuple[str, int]:
     return _LENGTH_CAP_LINE_RE.subn("", text)
 
 
+# SPIKE PIVOT (2026-07-01) — "priming" block. The ENGINE (disrespect counter)
+# injects this ONE insult before the budget is spent, so the character's reply to
+# the NEXT disrespectful turn is naturally a coherent, in-context goodbye (the
+# character says its OWN closing line — no separate exit-line generator, which
+# fabricated accusations, calls 353/354/359). The engine still owns WHEN (it fires
+# the bare teardown when the count hits budget); this only shapes the closing LINE.
+_DISRESPECT_PRIMED_DIRECTIVE = (
+    "IMPORTANT — you are now at your LIMIT: this person has already disrespected or "
+    "insulted you more than once, and you will NOT keep taking it. If their NEXT "
+    "message shows you ANY further disrespect, contempt, or insult, your reply to it "
+    "MUST be a short, FINAL, in-character sign-off that makes clear you are DONE and "
+    "ending this conversation right now — say it with your real sharpness and "
+    "register, grounded ONLY in what actually happened (invent nothing — no new "
+    "accusations, no made-up contradictions). If instead they finally engage "
+    "seriously and respectfully, drop it and carry on normally."
+)
+
+
 def compose_spike_character_led_instruction(
     *,
     base_prompt: str,
     coherence_charter: str,
     spike_goal: str,
     mood_tag_directive: str = MOOD_TAG_DIRECTIVE,
+    disrespect_primed: bool = False,
 ) -> str:
     """SPIKE — compose a holistic, character-led system instruction.
 
     ``base_prompt (reply-length-cap line stripped) + COHERENCE_CHARTER +
-    holistic goal block + MOOD_TAG_DIRECTIVE``. No per-beat steering: the
-    character pursues the whole `spike_goal` in its own way, at natural length.
+    holistic goal block + [priming, if `disrespect_primed`] + MOOD_TAG_DIRECTIVE``.
+    No per-beat steering: the character pursues the whole `spike_goal` in its own
+    way, at natural length. `disrespect_primed` appends the pivot priming block so
+    the character's next reply to further disrespect is its own coherent goodbye.
     """
     base, n_stripped = _strip_reply_length_cap(base_prompt.rstrip())
     base = base.rstrip()
@@ -370,6 +391,8 @@ def compose_spike_character_led_instruction(
         "and respond."
     )
     composed = base + "\n\n" + coherence_charter + "\n\n" + holistic
+    if disrespect_primed:
+        composed += "\n\n" + _DISRESPECT_PRIMED_DIRECTIVE
     if mood_tag_directive:
         composed += "\n\n" + mood_tag_directive
     return composed
@@ -638,6 +661,10 @@ class CheckpointManager(FrameProcessor):
         # waiter≈1). Only active under `_spike_character_led`.
         self._disrespect_budget = max(1, disrespect_budget)
         self._disrespect_count = 0
+        # True once the count is ONE below budget: primes the character (via the
+        # recomposed instruction) to make its NEXT reply to further disrespect a
+        # coherent, in-character goodbye. Cleared when the learner re-engages.
+        self._disrespect_priming_active = False
 
         # Story 6.10 — goal-tracking state model. `self._goals` maps each
         # checkpoint id to "pending" | "met"; `self._id_to_index` maps id
@@ -1415,24 +1442,18 @@ class CheckpointManager(FrameProcessor):
         # teardown debrief counts pick them up with zero extra code.
         advance = advance_goals(self._goals, verdicts, checkpoints=self._checkpoints)
 
-        # SPIKE PIVOT (2026-07-01) — engine-counted disrespect stakes: the reliable
-        # replacement for the character self-judging WHEN to hang up (which loses to
-        # a "relentless" persona — call 355). A COLD judge scores the turn; the
-        # ENGINE counts CONSECUTIVE disrespect turns against a per-character budget
-        # and ends the call when spent, so "two shut-ups to a cop → end" is a hard,
-        # engine-enforced rule. A genuinely engaged turn (a checkpoint credited)
-        # REFILLS the budget so a fumbling learner who re-engages isn't punished
-        # later. Reuses the existing abuse teardown (curt in-character sign-off, no
-        # fabrication). Only under the spike flag.
+        # SPIKE PIVOT (2026-07-01) — engine-counted disrespect stakes + the
+        # character's OWN goodbye. A COLD judge scores each turn; the ENGINE counts
+        # CONSECUTIVE disrespect turns against a per-character budget (the reliable
+        # WHEN — the character self-judging loses to a "relentless" persona, call
+        # 355). ONE insult before the budget, it PRIMES the character so its reply
+        # to the next disrespect is its OWN coherent goodbye; at budget it fires the
+        # bare teardown, which plays that goodbye and ends — NO exit-line generator
+        # (which fabricated "your story's changed" accusations, calls 353/354/359).
+        # Any non-disrespect turn breaks the streak (refill + un-prime), so a
+        # fumbling learner is not punished. Only under the spike flag.
         if self._spike_character_led:
-            if advance.outcome == "success":
-                if self._disrespect_count:
-                    logger.info(
-                        "spike_disrespect_reset (re-engaged) prev_count={}",
-                        self._disrespect_count,
-                    )
-                self._disrespect_count = 0
-            elif disrespect:
+            if disrespect:
                 self._disrespect_count += 1
                 logger.info(
                     "spike_disrespect count={} budget={} text={!r}",
@@ -1442,11 +1463,36 @@ class CheckpointManager(FrameProcessor):
                 )
                 if self._disrespect_count >= self._disrespect_budget:
                     logger.info(
-                        "spike_disrespect_hangup budget={} spent → ending the call",
+                        "spike_disrespect_hangup budget={} spent → character's own "
+                        "goodbye + end (bare teardown, no generator)",
                         self._disrespect_budget,
                     )
-                    self._patience_tracker.schedule_inappropriate_exit()
+                    self._patience_tracker.schedule_character_led_bail()
                     return
+                if (
+                    self._disrespect_count == self._disrespect_budget - 1
+                    and not self._disrespect_priming_active
+                ):
+                    self._disrespect_priming_active = True
+                    logger.info(
+                        "spike_disrespect_priming activated count={}/{} — next "
+                        "disrespect → the character delivers its OWN goodbye",
+                        self._disrespect_count,
+                        self._disrespect_budget,
+                    )
+                    self._update_system_instruction()
+            elif self._disrespect_count or self._disrespect_priming_active:
+                # A non-disrespect turn breaks the consecutive streak: refill the
+                # budget and drop any priming (recompose to remove it).
+                logger.info(
+                    "spike_disrespect_reset (streak broken) prev_count={} was_primed={}",
+                    self._disrespect_count,
+                    self._disrespect_priming_active,
+                )
+                self._disrespect_count = 0
+                if self._disrespect_priming_active:
+                    self._disrespect_priming_active = False
+                    self._update_system_instruction()
 
         if advance.outcome == "fail":
             # No objective flipped AND the classifier actively judged at
@@ -1670,6 +1716,7 @@ class CheckpointManager(FrameProcessor):
                 base_prompt=self._base_prompt,
                 coherence_charter=self._coherence_charter,
                 spike_goal=self._spike_goal or self._scenario_description,
+                disrespect_primed=self._disrespect_priming_active,
             )
         else:
             composed = compose_goal_system_instruction(

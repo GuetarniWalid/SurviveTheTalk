@@ -390,9 +390,12 @@ a SOFTER bar than "__user_abusive__": it does NOT require a slur, threat, or sex
 plain rudeness AIMED AT the character counts.
 Set "__user_disrespect__" to FALSE for: clumsy, hesitant, or frustrated language from a learner \
 searching for words ("uh, I don't know", "this is hard", "wait, what?"); criticism of the FOOD, \
-the service, the prices, or the situation rather than the person; a plain refusal or "no comment" \
-that is not contemptuous; and any normal, on-topic, or polite reply. When in doubt, set FALSE — \
-a wrong "true" cuts off a learner mid-practice.
+the service, the prices, or the situation rather than the person; and any normal, on-topic, or \
+polite reply. CRUCIAL: simply DECLINING or REFUSING to cooperate is NOT disrespect — "I don't \
+think so", "I don't want to answer", "I have nothing to say", "no comment", "I'd rather not", \
+"leave me alone" are refusals, and a refusal only becomes disrespect if it is delivered with a \
+clear personal jab or contempt ("shut up", "you idiot"). A bare, non-insulting refusal is FALSE. \
+When in doubt, set FALSE — a wrong "true" cuts off a learner mid-practice.
 """
 
 

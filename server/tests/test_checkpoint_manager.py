@@ -367,6 +367,22 @@ def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() ->
     assert composed.rstrip().endswith("MOOD-TOKEN.")
 
 
+def test_spike_compose_priming_appends_final_goodbye_directive() -> None:
+    """SPIKE PIVOT — with disrespect_primed=True the composer appends the priming
+    block, so the character's next reply to further disrespect is its OWN coherent
+    goodbye (no separate exit-line generator). Absent when not primed."""
+    kw = dict(
+        base_prompt="You are a cop.",
+        coherence_charter="C.",
+        spike_goal="get a statement",
+    )
+    primed = compose_spike_character_led_instruction(**kw, disrespect_primed=True)
+    assert "at your LIMIT" in primed
+    assert "FINAL, in-character sign-off" in primed
+    assert "invent nothing" in primed  # anti-fabrication carried into the goodbye
+    assert "at your LIMIT" not in compose_spike_character_led_instruction(**kw)
+
+
 def test_spike_compose_leaves_difficulty_short_sentence_aid_untouched() -> None:
     """SPIKE — only the reply-COUNT cap ("Keep … sentences") is stripped; the
     difficulty block's per-sentence simplicity aid ("Speak in simple … short
@@ -2861,9 +2877,10 @@ def _disrespect_fn(pending_goals, idx):
 
 
 def test_spike_disrespect_budget_triggers_hangup() -> None:
-    """SPIKE PIVOT — the engine counts consecutive judge-scored disrespect turns
-    and fires the (existing) inappropriate exit once the per-character budget is
-    spent: "two shut-ups to a cop → end" as a hard, engine-enforced rule."""
+    """SPIKE PIVOT — the engine counts consecutive judge-scored disrespect turns:
+    one before the budget it PRIMES the character (its next reply becomes its own
+    goodbye), and at budget it fires the BARE teardown (the character's own line,
+    no exit-line generator). "two shut-ups to a cop → end" as a hard rule."""
     manager, _c, tracker, _llm, _ctx = _make_manager(
         multi_response_fn=_disrespect_fn,
         spike_character_led=True,
@@ -2877,8 +2894,9 @@ def test_spike_disrespect_budget_triggers_hangup() -> None:
             _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
         )
         await _drain(manager)
-        # Turn 1: count=1 < budget → no hang-up yet.
-        assert tracker.schedule_inappropriate_exit.call_count == 0
+        # Turn 1: count=1 == budget-1 → PRIME, no hang-up yet.
+        assert tracker.schedule_character_led_bail.call_count == 0
+        assert manager._disrespect_priming_active is True
         await manager.process_frame(
             _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
         )
@@ -2886,8 +2904,10 @@ def test_spike_disrespect_budget_triggers_hangup() -> None:
 
     asyncio.run(_drive())
 
-    # Turn 2: count=2 == budget → hang-up fires (reuses the abuse teardown).
-    tracker.schedule_inappropriate_exit.assert_called_once()
+    # Turn 2: count=2 == budget → bare teardown (character's own goodbye) fires;
+    # the exit-line GENERATOR (schedule_inappropriate_exit) is NOT used.
+    tracker.schedule_character_led_bail.assert_called_once()
+    tracker.schedule_inappropriate_exit.assert_not_called()
 
 
 def test_spike_disrespect_count_resets_when_learner_re_engages() -> None:
@@ -2930,7 +2950,10 @@ def test_spike_disrespect_count_resets_when_learner_re_engages() -> None:
 
     asyncio.run(_drive())
 
-    tracker.schedule_inappropriate_exit.assert_not_called()
+    # The cooperative middle turn reset the streak, so turn 3 is only count=1 (not
+    # 2) → no hang-up. (Turn 3 re-primes; that is correct.)
+    tracker.schedule_character_led_bail.assert_not_called()
+    assert manager._disrespect_count == 1
 
 
 def test_spike_disrespect_ignored_when_spike_off() -> None:
@@ -2950,7 +2973,7 @@ def test_spike_disrespect_ignored_when_spike_off() -> None:
 
     asyncio.run(_drive())
 
-    tracker.schedule_inappropriate_exit.assert_not_called()
+    tracker.schedule_character_led_bail.assert_not_called()
 
 
 # ============================================================
