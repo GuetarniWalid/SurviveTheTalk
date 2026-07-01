@@ -353,14 +353,16 @@ def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() ->
     assert "as much or as little as a real person would" in composed
     assert "Right now the only objective you may pursue is" not in composed
     assert "Your remaining objectives are listed" not in composed
-    # SPIKE Phase 2 (Walid 2026-06-30/07-01) — the GENERAL end-call rule: every
-    # character can hang up; it OVERRIDES a "relentless / professional / never give
-    # up" persona (the cop never-ends bug), and it is THIN-SKINNED about disrespect
-    # — one warning max, then end (the "too lax on insults" tune). Locked so a
-    # future edit can't soften either half.
-    assert "<end_call>" in composed
-    assert "OVERRIDES" in composed and "relentless" in composed
-    assert "THIN-SKINNED" in composed and "insulting you" in composed
+    # SPIKE PIVOT (Walid 2026-07-01) — the character NO LONGER self-judges when to
+    # end (unreliable, pre-empted the engine count in call 358). The ENGINE owns
+    # WHEN (judge-scored disrespect budget); the character only REACTS in character.
+    # So the holistic prompt must NOT carry the self-end marker/instruction, but
+    # MUST tell the character to react to rudeness (not absorb it) without hanging
+    # up itself.
+    assert "<end_call>" not in composed
+    assert "THIN-SKINNED" not in composed
+    assert "do NOT decide to hang up on them yourself" in composed
+    assert "REACT to it in character" in composed
     assert "CHARTER-TOKEN." in composed
     assert composed.rstrip().endswith("MOOD-TOKEN.")
 

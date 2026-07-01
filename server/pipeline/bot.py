@@ -602,15 +602,12 @@ async def run_bot(url: str, room: str, token: str) -> None:
         hang_up_line_generator=hang_up_line_generator,
     )
 
-    # SPIKE (spike/character-led, 2026-06-30) — Phase 2 wiring. When the character
-    # writes <end_call>, reply_sanitizer strips it and calls
-    # schedule_character_led_bail, which ends the call in-character (the stakes
-    # mechanic without the meter). Only when SPIKE_CHARACTER_LED is on; off → the
-    # marker is still stripped defensively but nothing schedules a hang-up.
-    if settings.spike_character_led:
-        reply_sanitizer.set_character_led_end_callback(
-            patience_tracker.schedule_character_led_bail
-        )
+    # SPIKE PIVOT (2026-07-01) — the character no longer SELF-JUDGES when to end
+    # (unreliable: it fired on turn 1 in call 358, pre-empting the engine count).
+    # The ENGINE now owns WHEN (judge-scored disrespect budget in CheckpointManager);
+    # the character only REACTS in character. So the <end_call> callback is left
+    # UNWIRED — reply_sanitizer still strips the marker defensively, but nothing
+    # schedules a character-led hang-up. (Dormant code kept for the throwaway spike.)
 
     # Story 6.11 — EnvironmentMonitor observes the user's finalized
     # TranscriptionFrames and detects a parasitic background VOICE via
