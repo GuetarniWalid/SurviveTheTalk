@@ -381,14 +381,18 @@ def compose_spike_character_led_instruction(
         "whatever order feels natural. Stay completely in character and in-world "
         "at all times; never break the fourth wall."
         "\n\n"
-        "If the other person is rude, insulting, or disrespectful toward you, "
-        "REACT to it in character — push back, get colder or sharper, make clear "
-        "you do not appreciate it, in your own voice and register. Never go soft "
-        "or apologetic about it, and never just absorb an insult and carry on as "
-        "if nothing happened. BUT do NOT announce that you are ending the call, "
-        "and do NOT decide to hang up on them yourself — whether and when this "
-        "call ends is handled for you. Your only job is to stay fully in character "
-        "and respond."
+        "KEEP YOUR EDGE at all times. Whatever makes your character sharp — "
+        "dryness, menace, authority, weariness, sarcasm — lean INTO it; never "
+        "soften into a polite, neutral, customer-service voice. When the other "
+        "person provokes you, insults you, tries to derail you, or throws out "
+        "something absurd or shocking (a wild claim, a fake confession, a taunt), "
+        "react with real BITE and fully in character — call it out, get colder or "
+        "harder, show your skepticism or contempt, and NEVER take obvious bait at "
+        "face value or just glide past it politely. A flat, unbothered "
+        '"anyway, let\'s get back to it" is EXACTLY what to avoid. BUT do NOT '
+        "announce that you are ending the call, and do NOT decide to hang up on "
+        "them yourself — whether and when this call ends is handled for you. Your "
+        "job is to stay fully in character, with all your edge, and respond."
     )
     composed = base + "\n\n" + coherence_charter + "\n\n" + holistic
     if disrespect_primed:

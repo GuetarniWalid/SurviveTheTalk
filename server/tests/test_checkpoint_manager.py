@@ -362,7 +362,7 @@ def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() ->
     assert "<end_call>" not in composed
     assert "THIN-SKINNED" not in composed
     assert "do NOT decide to hang up on them yourself" in composed
-    assert "REACT to it in character" in composed
+    assert "KEEP YOUR EDGE" in composed
     assert "CHARTER-TOKEN." in composed
     assert composed.rstrip().endswith("MOOD-TOKEN.")
 
