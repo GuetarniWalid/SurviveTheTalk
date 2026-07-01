@@ -242,6 +242,14 @@ _VALID_REASONS = frozenset(
 # generation guidance in `_resolve_exit_line` / `_emit_patience_warning`.
 _REASON_PATIENCE_WARNING = "patience_warning"
 
+# SPIKE (spike/character-led, 2026-07-01) — generation-guidance-only pseudo-reason
+# for the character-led bail. NOT a client/wire reason (the bail still sends
+# `character_hung_up` to the client); it only selects the disrespect-appropriate,
+# anti-fabrication exit-line guidance so the generator stops inventing a "your
+# story's changed" accusation (call 353). Excluded from `_VALID_REASONS`, like
+# `_REASON_PATIENCE_WARNING`.
+_REASON_SPIKE_BAIL = "spike_character_led_bail"
+
 
 def step_patience(
     meter: int,
@@ -1441,8 +1449,13 @@ class PatienceTracker(FrameProcessor):
         winning_user_text = (
             self._pending_winning_user_text if reason == _REASON_SURVIVED else None
         )
+        # SPIKE — the character-led bail keeps its CLIENT reason (character_hung_up)
+        # but generates its closing line from the disrespect-appropriate guidance,
+        # not the meter's "you stopped giving clear answers" one (which fabricated a
+        # "changed story" accusation — call 353).
+        gen_reason = _REASON_SPIKE_BAIL if self._spike_character_led_bail else reason
         exit_line_task = asyncio.create_task(
-            self._resolve_exit_line(reason, line, extra_user_text=winning_user_text)
+            self._resolve_exit_line(gen_reason, line, extra_user_text=winning_user_text)
         )
         self._pending_winning_user_text = None
         try:
