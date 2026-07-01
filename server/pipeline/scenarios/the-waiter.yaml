@@ -16,6 +16,10 @@ metadata:
   opening_line: "Hi. Welcome to The Golden Fork. I'll be taking your order. What can I get you?"
   content_warning: null
 
+  # SPIKE PIVOT (2026-07-01) — consecutive disrespectful turns before Tina walks off.
+  # A waiter tolerates less than a detective. Only read under SPIKE_CHARACTER_LED.
+  disrespect_budget: 1
+
   # SPIKE (spike/character-led, 2026-06-30) — holistic, free-flowing goal handed
   # to the character ONLY when SPIKE_CHARACTER_LED=1 (otherwise inert: nothing
   # reads it). Replaces the per-beat steering with one mission statement so Tina

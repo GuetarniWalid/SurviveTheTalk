@@ -701,6 +701,11 @@ async def run_bot(url: str, room: str, token: str) -> None:
         spike_character_led=settings.spike_character_led,
         spike_no_fail_drain=settings.spike_no_fail_drain,
         spike_goal=spike_goal,
+        # SPIKE PIVOT (2026-07-01) — per-character disrespect budget: how many
+        # CONSECUTIVE disrespectful turns (judge-scored) before the character ends
+        # the call. From `metadata.disrespect_budget` (default 2); only counts
+        # under `spike_character_led`. Inert when the spike is OFF.
+        disrespect_budget=int(scenario_metadata.get("disrespect_budget", 2) or 2),
     )
 
     # Story 6.8 Phase 1 AC3 — LLM→TTS streaming-overlap probe. Both

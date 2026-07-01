@@ -136,7 +136,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
+from pipeline.exchange_classifier import ABUSE_KEY, DISRESPECT_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 from pipeline.prompts import MOOD_TAG_DIRECTIVE
 
@@ -611,6 +611,7 @@ class CheckpointManager(FrameProcessor):
         spike_character_led: bool = False,
         spike_no_fail_drain: bool = False,
         spike_goal: str | None = None,
+        disrespect_budget: int = 2,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -665,6 +666,15 @@ class CheckpointManager(FrameProcessor):
         self._spike_character_led = spike_character_led
         self._spike_no_fail_drain = spike_no_fail_drain
         self._spike_goal = (spike_goal or "").strip()
+
+        # SPIKE PIVOT (2026-07-01) — engine-counted disrespect stakes. The judge
+        # scores each turn `__user_disrespect__` (softer than abuse); the engine
+        # counts CONSECUTIVE disrespect turns against this per-character budget and
+        # fires the hang-up when spent (a genuinely engaged/cooperative turn refills
+        # it). `disrespect_budget` comes from `metadata.disrespect_budget` (cop≈2,
+        # waiter≈1). Only active under `_spike_character_led`.
+        self._disrespect_budget = max(1, disrespect_budget)
+        self._disrespect_count = 0
 
         # Story 6.10 — goal-tracking state model. `self._goals` maps each
         # checkpoint id to "pending" | "met"; `self._id_to_index` maps id
@@ -1426,6 +1436,11 @@ class CheckpointManager(FrameProcessor):
             self._patience_tracker.schedule_inappropriate_exit()
             return
 
+        # SPIKE PIVOT (2026-07-01) — pop the softer disrespect flag BEFORE goal
+        # advance (same reason as abuse: a leftover bool would read as a goal
+        # verdict). The counting/hang-up decision is applied after `advance_goals`.
+        disrespect = bool(verdicts.pop(DISRESPECT_KEY, False))
+
         # A real (parsed) verdict landed — reset the infra backstop.
         self._consecutive_none_count = 0
 
@@ -1436,6 +1451,39 @@ class CheckpointManager(FrameProcessor):
         # ride `flipped_ids`, so the per-flip envelope loop below and the
         # teardown debrief counts pick them up with zero extra code.
         advance = advance_goals(self._goals, verdicts, checkpoints=self._checkpoints)
+
+        # SPIKE PIVOT (2026-07-01) — engine-counted disrespect stakes: the reliable
+        # replacement for the character self-judging WHEN to hang up (which loses to
+        # a "relentless" persona — call 355). A COLD judge scores the turn; the
+        # ENGINE counts CONSECUTIVE disrespect turns against a per-character budget
+        # and ends the call when spent, so "two shut-ups to a cop → end" is a hard,
+        # engine-enforced rule. A genuinely engaged turn (a checkpoint credited)
+        # REFILLS the budget so a fumbling learner who re-engages isn't punished
+        # later. Reuses the existing abuse teardown (curt in-character sign-off, no
+        # fabrication). Only under the spike flag.
+        if self._spike_character_led:
+            if advance.outcome == "success":
+                if self._disrespect_count:
+                    logger.info(
+                        "spike_disrespect_reset (re-engaged) prev_count={}",
+                        self._disrespect_count,
+                    )
+                self._disrespect_count = 0
+            elif disrespect:
+                self._disrespect_count += 1
+                logger.info(
+                    "spike_disrespect count={} budget={} text={!r}",
+                    self._disrespect_count,
+                    self._disrespect_budget,
+                    user_text[:60],
+                )
+                if self._disrespect_count >= self._disrespect_budget:
+                    logger.info(
+                        "spike_disrespect_hangup budget={} spent → ending the call",
+                        self._disrespect_budget,
+                    )
+                    self._patience_tracker.schedule_inappropriate_exit()
+                    return
 
         if advance.outcome == "fail":
             # No objective flipped AND the classifier actively judged at

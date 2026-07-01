@@ -134,6 +134,15 @@ _VERDICT_TO_BOOL: dict[str, bool | None] = {"met": True, "unmet": False, "unsure
 # (`CheckpointManager`) pops it before the goal-advance rule.
 ABUSE_KEY = "__user_abusive__"
 
+# SPIKE (spike/character-led pivot, 2026-07-01) — a SOFTER companion to ABUSE_KEY.
+# The judge (a cold third-person observer, no persona to defend) flags a turn that
+# is CLEARLY disrespectful/dismissive TOWARD the character ("shut up", mocking,
+# contempt) WITHOUT requiring a slur/threat (which stays ABUSE_KEY's narrow bar).
+# `CheckpointManager` counts these against a per-character budget and fires the
+# hang-up when the budget is spent — so "two shut-ups to a cop → end" is a hard,
+# engine-enforced rule instead of the character's unreliable self-judgment.
+DISRESPECT_KEY = "__user_disrespect__"
+
 # Story 6.10 (2026-05-29 structured-output) — the multi-goal classifier emits a
 # schema-pinned JSON object with ONE key per pending goal_id, each valued
 # `"met"|"unmet"|"unsure"`. The output length grows with the objective count
@@ -150,14 +159,16 @@ ABUSE_KEY = "__user_abusive__"
 # FR37 — base bumped 64 → 96 to cover the extra `"__user_abusive__": false`
 # entry (~12 tokens) so the schema-pinned document can't truncate (Groq returns
 # HTTP 400 json_validate_failed on truncation — Story 6.16).
-_MULTI_MAX_TOKENS_BASE = 96
+# SPIKE PIVOT (2026-07-01) — bumped 96 → 112 for the second reserved boolean
+# `"__user_disrespect__": false` (~14 tokens), same anti-truncation reason.
+_MULTI_MAX_TOKENS_BASE = 112
 _MULTI_MAX_TOKENS_PER_GOAL = 24
 
 
 def _multi_max_tokens(num_goals: int) -> int:
     """Completion-token budget for `classify_multi`, scaled to the pending-goal
     count so the schema-pinned verdict object can't be truncated mid-document
-    (Story 6.16). At 6 goals → 240; at 20 goals → 576. gpt-4.1-mini is not a
+    (Story 6.16). At 6 goals → 256; at 20 goals → 592. gpt-4.1-mini is not a
     reasoning model, so the verdict-only sizing is exact (no reasoning-trace
     headroom needed — the gpt-oss headroom was removed in Story 10.6 review D2)."""
     return _MULTI_MAX_TOKENS_BASE + _MULTI_MAX_TOKENS_PER_GOAL * max(1, num_goals)
@@ -819,10 +830,14 @@ def _build_verdict_schema(goal_ids: list[str]) -> dict:
     # goal-advance rule, so it never pollutes goal judging; its `__`-wrapped
     # name can never collide with a checkpoint id.
     properties[ABUSE_KEY] = {"type": "boolean"}
+    # SPIKE — softer disrespect flag folded into the SAME strict call (one more
+    # boolean, no extra latency/cost). Popped by CheckpointManager before goal
+    # advance, like ABUSE_KEY.
+    properties[DISRESPECT_KEY] = {"type": "boolean"}
     return {
         "type": "object",
         "properties": properties,
-        "required": list(goal_ids) + [ABUSE_KEY],
+        "required": list(goal_ids) + [ABUSE_KEY, DISRESPECT_KEY],
         "additionalProperties": False,
     }
 
@@ -931,4 +946,8 @@ def _parse_multi_classifier_output(
     # reaches the goal-advance/outcome rule. A missing/non-bool value → False
     # (conservative: never hang up on an ambiguous classifier output).
     verdicts[ABUSE_KEY] = data.get(ABUSE_KEY) is True
+    # SPIKE — surface the softer disrespect flag the same way (strict bool; a
+    # missing/non-bool value → False, conservative). Popped by the caller before
+    # goal advance.
+    verdicts[DISRESPECT_KEY] = data.get(DISRESPECT_KEY) is True
     return verdicts

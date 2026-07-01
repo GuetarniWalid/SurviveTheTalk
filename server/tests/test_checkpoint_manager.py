@@ -36,7 +36,7 @@ from pipeline.checkpoint_manager import (
     compose_spike_character_led_instruction,
     judgeable_goals,
 )
-from pipeline.exchange_classifier import ABUSE_KEY, ExchangeClassifier
+from pipeline.exchange_classifier import ABUSE_KEY, DISRESPECT_KEY, ExchangeClassifier
 from pipeline.patience_tracker import PatienceTracker
 
 
@@ -138,6 +138,7 @@ def _make_manager(
     spike_character_led: bool = False,
     spike_no_fail_drain: bool = False,
     spike_goal: str | None = None,
+    disrespect_budget: int = 2,
 ) -> tuple[CheckpointManager, ExchangeClassifier, MagicMock, _StubLLM, LLMContext]:
     """Build a fully-mocked manager. The classifier's `classify_multi`
     is replaced with an async stub.
@@ -242,6 +243,7 @@ def _make_manager(
         spike_character_led=spike_character_led,
         spike_no_fail_drain=spike_no_fail_drain,
         spike_goal=spike_goal,
+        disrespect_budget=disrespect_budget,
     )
 
     classifier._test_calls = classifier_calls  # type: ignore[attr-defined]
@@ -2844,6 +2846,109 @@ def test_abuse_ignored_when_detection_disabled() -> None:
     tracker.schedule_inappropriate_exit.assert_not_called()
     # Popped, so no spurious goal outcome from the abuse key either.
     tracker.apply_exchange_outcome.assert_not_called()
+
+
+# ---------- SPIKE PIVOT (2026-07-01): engine-counted disrespect stakes ------
+
+
+def _disrespect_fn(pending_goals, idx):
+    out = {g["id"]: None for g in pending_goals}
+    out[ABUSE_KEY] = False
+    out[DISRESPECT_KEY] = True
+    return out
+
+
+def test_spike_disrespect_budget_triggers_hangup() -> None:
+    """SPIKE PIVOT — the engine counts consecutive judge-scored disrespect turns
+    and fires the (existing) inappropriate exit once the per-character budget is
+    spent: "two shut-ups to a cop → end" as a hard, engine-enforced rule."""
+    manager, _c, tracker, _llm, _ctx = _make_manager(
+        multi_response_fn=_disrespect_fn,
+        spike_character_led=True,
+        spike_no_fail_drain=True,
+        disrespect_budget=2,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+        # Turn 1: count=1 < budget → no hang-up yet.
+        assert tracker.schedule_inappropriate_exit.call_count == 0
+        await manager.process_frame(
+            _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    # Turn 2: count=2 == budget → hang-up fires (reuses the abuse teardown).
+    tracker.schedule_inappropriate_exit.assert_called_once()
+
+
+def test_spike_disrespect_count_resets_when_learner_re_engages() -> None:
+    """SPIKE PIVOT — a genuinely engaged turn (a checkpoint credited) REFILLS the
+    budget, so a learner who slips once then cooperates is not hung up later."""
+
+    def _fn(pending_goals, idx):
+        out = {g["id"]: None for g in pending_goals}
+        out[ABUSE_KEY] = False
+        if idx == 1:
+            # Turn 2 — cooperative: first goal met, not disrespectful.
+            out[pending_goals[0]["id"]] = True
+            out[DISRESPECT_KEY] = False
+        else:
+            # Turns 1 and 3 — disrespectful.
+            out[DISRESPECT_KEY] = True
+        return out
+
+    manager, _c, tracker, _llm, _ctx = _make_manager(
+        multi_response_fn=_fn,
+        spike_character_led=True,
+        spike_no_fail_drain=True,
+        disrespect_budget=2,
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
+        )  # count 1
+        await _drain(manager)
+        await manager.process_frame(
+            _make_user_frame("I'll have the chicken"), FrameDirection.DOWNSTREAM
+        )  # engaged → reset to 0
+        await _drain(manager)
+        await manager.process_frame(
+            _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
+        )  # count 1 again — still < budget 2
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_not_called()
+
+
+def test_spike_disrespect_ignored_when_spike_off() -> None:
+    """SPIKE control — with SPIKE_CHARACTER_LED off, the disrespect flag is still
+    popped (never pollutes goals) but is never counted or acted on."""
+    manager, _c, tracker, _llm, _ctx = _make_manager(
+        multi_response_fn=_disrespect_fn,
+        disrespect_budget=1,  # spike OFF (spike_character_led defaults False)
+    )
+    _capture_pushed(manager)
+
+    async def _drive() -> None:
+        await manager.process_frame(
+            _make_user_frame("shut up"), FrameDirection.DOWNSTREAM
+        )
+        await _drain(manager)
+
+    asyncio.run(_drive())
+
+    tracker.schedule_inappropriate_exit.assert_not_called()
 
 
 # ============================================================

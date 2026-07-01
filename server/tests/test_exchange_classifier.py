@@ -11,6 +11,7 @@ import pytest
 
 from pipeline.exchange_classifier import (
     ABUSE_KEY,
+    DISRESPECT_KEY,
     ExchangeClassifier,
     _PROVIDER_MODEL,
     _parse_classifier_output,
@@ -741,10 +742,22 @@ def test_classify_multi_returns_per_goal_verdict(
         schema = body["response_format"]["json_schema"]["schema"]
         assert body["response_format"]["json_schema"]["strict"] is True
         # FR37 — the strict schema also pins the reserved abuse boolean.
-        assert set(schema["properties"]) == {"greet", "main", "drink", ABUSE_KEY}
+        assert set(schema["properties"]) == {
+            "greet",
+            "main",
+            "drink",
+            ABUSE_KEY,
+            DISRESPECT_KEY,
+        }
         assert schema["properties"]["greet"]["enum"] == ["met", "unmet", "unsure"]
         assert schema["properties"][ABUSE_KEY]["type"] == "boolean"
-        assert set(schema["required"]) == {"greet", "main", "drink", ABUSE_KEY}
+        assert set(schema["required"]) == {
+            "greet",
+            "main",
+            "drink",
+            ABUSE_KEY,
+            DISRESPECT_KEY,
+        }
         assert schema["additionalProperties"] is False
         assert request.url.host == "api.openai.com"
         return httpx.Response(
@@ -762,7 +775,13 @@ def test_classify_multi_returns_per_goal_verdict(
 
     _mock_http(monkeypatch, handler=_handler)
     out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
-    assert out == {"greet": True, "main": False, "drink": True, ABUSE_KEY: False}
+    assert out == {
+        "greet": True,
+        "main": False,
+        "drink": True,
+        ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
+    }
 
 
 def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +800,13 @@ def test_classify_multi_omitted_goal_is_none(monkeypatch: pytest.MonkeyPatch) ->
 
     _mock_http(monkeypatch, handler=_handler)
     out = _run(_make_classifier().classify_multi(**_multi_kwargs()))
-    assert out == {"greet": True, "main": None, "drink": None, ABUSE_KEY: False}
+    assert out == {
+        "greet": True,
+        "main": None,
+        "drink": None,
+        ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
+    }
 
 
 def test_classify_multi_returns_none_on_http_error(
@@ -915,7 +940,7 @@ def test_classify_multi_parsed_all_unsure_returns_dict(
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": None, "b": None, ABUSE_KEY: False}
+    assert out == {"a": None, "b": None, ABUSE_KEY: False, DISRESPECT_KEY: False}
 
 
 def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -938,7 +963,7 @@ def test_classify_multi_markdown_fenced_parses(monkeypatch: pytest.MonkeyPatch) 
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": True, "b": False, ABUSE_KEY: False}
+    assert out == {"a": True, "b": False, ABUSE_KEY: False, DISRESPECT_KEY: False}
 
 
 def test_classify_multi_surfaces_abuse_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -970,7 +995,7 @@ def test_classify_multi_surfaces_abuse_flag(monkeypatch: pytest.MonkeyPatch) -> 
             **_multi_kwargs(pending_goals=_multi_pending("a", "b"))
         )
     )
-    assert out == {"a": False, "b": False, ABUSE_KEY: True}
+    assert out == {"a": False, "b": False, ABUSE_KEY: True, DISRESPECT_KEY: False}
 
 
 def test_legacy_classify_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1011,10 +1036,10 @@ def test_multi_output_parser_helpers() -> None:
     # Strict schema: one enum-constrained property per id, all required, PLUS the
     # FR37 reserved abuse boolean. No other extras.
     schema = _build_verdict_schema(["a", "b"])
-    assert set(schema["properties"]) == {"a", "b", ABUSE_KEY}
+    assert set(schema["properties"]) == {"a", "b", ABUSE_KEY, DISRESPECT_KEY}
     assert schema["properties"]["a"]["enum"] == ["met", "unmet", "unsure"]
     assert schema["properties"][ABUSE_KEY]["type"] == "boolean"
-    assert set(schema["required"]) == {"a", "b", ABUSE_KEY}
+    assert set(schema["required"]) == {"a", "b", ABUSE_KEY, DISRESPECT_KEY}
     assert schema["additionalProperties"] is False
 
     # A PARSE failure (non-JSON / non-dict body) → None (infra-grade,
@@ -1025,14 +1050,17 @@ def test_multi_output_parser_helpers() -> None:
     assert _parse_multi_classifier_output('{"a": "met"}', ["a"], model="m") == {
         "a": True,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     assert _parse_multi_classifier_output('{"a": "unmet"}', ["a"], model="m") == {
         "a": False,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     assert _parse_multi_classifier_output('{"a": "unsure"}', ["a"], model="m") == {
         "a": None,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     # Missing key → None; unknown extra key ignored; abuse flag default False.
     assert _parse_multi_classifier_output(
@@ -1041,15 +1069,26 @@ def test_multi_output_parser_helpers() -> None:
         "a": None,
         "b": False,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     # FR37 — the abuse flag is surfaced when the model sets it true (and only a
     # strict `true` boolean counts — a non-bool is treated as not-abusive).
     assert _parse_multi_classifier_output(
         '{"a": "unmet", "__user_abusive__": true}', ["a"], model="m"
-    ) == {"a": False, ABUSE_KEY: True}
+    ) == {"a": False, ABUSE_KEY: True, DISRESPECT_KEY: False}
     assert _parse_multi_classifier_output(
         '{"a": "met", "__user_abusive__": "true"}', ["a"], model="m"
-    ) == {"a": True, ABUSE_KEY: False}
+    ) == {"a": True, ABUSE_KEY: False, DISRESPECT_KEY: False}
+    # SPIKE PIVOT — the disrespect flag is surfaced independently (strict `true`
+    # only); a turn can be both abusive AND disrespectful.
+    assert _parse_multi_classifier_output(
+        '{"a": "unmet", "__user_disrespect__": true}', ["a"], model="m"
+    ) == {"a": False, ABUSE_KEY: False, DISRESPECT_KEY: True}
+    assert _parse_multi_classifier_output(
+        '{"a": "unmet", "__user_abusive__": true, "__user_disrespect__": true}',
+        ["a"],
+        model="m",
+    ) == {"a": False, ABUSE_KEY: True, DISRESPECT_KEY: True}
 
 
 # ============================================================
@@ -1158,7 +1197,12 @@ def test_first_call_retry_recovers_verdicts(monkeypatch: pytest.MonkeyPatch) -> 
         loguru_logger.remove(sink_id)
 
     assert len(attempts) == 2
-    assert out == {"greet": True, "main": False, ABUSE_KEY: False}
+    assert out == {
+        "greet": True,
+        "main": False,
+        ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
+    }
     assert any("first-call retry" in entry for entry in captured)
 
 
@@ -1187,7 +1231,7 @@ def test_no_retry_after_first_success_for_non_timeout_failure(
     kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
 
     first = _run(classifier.classify_multi(**kwargs))
-    assert first == {"greet": True, ABUSE_KEY: False}
+    assert first == {"greet": True, ABUSE_KEY: False, DISRESPECT_KEY: False}
 
     second = _run(classifier.classify_multi(**kwargs))
     assert second is None
@@ -1219,11 +1263,11 @@ def test_transient_timeout_after_first_success_is_retried(
     kwargs = _multi_kwargs(pending_goals=_multi_pending("greet"))
 
     first = _run(classifier.classify_multi(**kwargs))
-    assert first == {"greet": True, ABUSE_KEY: False}
+    assert first == {"greet": True, ABUSE_KEY: False, DISRESPECT_KEY: False}
 
     # turn 2: attempt 2 times out → Stream B retry → attempt 3 parses the verdict.
     second = _run(classifier.classify_multi(**kwargs))
-    assert second == {"greet": True, ABUSE_KEY: False}
+    assert second == {"greet": True, ABUSE_KEY: False, DISRESPECT_KEY: False}
     assert len(attempts) == 3  # one success + (timeout + its single retry)
 
 
@@ -1253,6 +1297,7 @@ def test_sustained_timeout_after_success_surfaces_as_none(
     assert _run(classifier.classify_multi(**kwargs)) == {
         "greet": True,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     # turn 2: timeout + one retry both fail → None, exactly two POSTs this turn.
     assert _run(classifier.classify_multi(**kwargs)) is None
@@ -1311,6 +1356,7 @@ def test_retry_rearms_on_next_call_until_first_success(
     assert _run(classifier.classify_multi(**kwargs)) == {
         "greet": True,
         ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
     }
     assert len(attempts) == 4
 
@@ -1334,7 +1380,7 @@ def test_checkpoint_verdicts_log_caps_pathological_values() -> None:
         loguru_logger.remove(sink_id)
 
     # An unknown (non-enum) value still maps to None — no verdict.
-    assert out == {"greet": None, ABUSE_KEY: False}
+    assert out == {"greet": None, ABUSE_KEY: False, DISRESPECT_KEY: False}
     line = next(e for e in captured if "checkpoint_verdicts" in e)
     assert "x" * 50 not in line  # the 200-char payload was capped, not echoed
 
@@ -1373,7 +1419,13 @@ def test_checkpoint_verdicts_logged_with_raw_enum_values(
     finally:
         loguru_logger.remove(sink_id)
 
-    assert out == {"greet": None, "main": True, "drink": False, ABUSE_KEY: False}
+    assert out == {
+        "greet": None,
+        "main": True,
+        "drink": False,
+        ABUSE_KEY: False,
+        DISRESPECT_KEY: False,
+    }
     verdict_lines = [e for e in captured if "checkpoint_verdicts" in e]
     assert len(verdict_lines) == 1  # ONE line per successful classify
     line = verdict_lines[0]

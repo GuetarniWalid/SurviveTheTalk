@@ -355,7 +355,7 @@ empty, evasive, off-topic, or question-back content — the user must actually p
 the move (principle 7).
 
 Respond with a JSON object whose keys are EXACTLY the objective ids above PLUS the \
-field "__user_abusive__". For each objective id give one verdict string:
+fields "__user_abusive__" and "__user_disrespect__". For each objective id give one verdict string:
 - "met"    — the response genuinely accomplishes that objective.
 - "unmet"  — the response does NOT accomplish that objective (off-topic, tangential, \
 or simply not addressing it).
@@ -379,6 +379,20 @@ beautiful", "do you have a boyfriend", "be my girlfriend") — these are awkward
 off-topic, NOT a personal attack, threat, or explicit sexual proposition. Only set true \
 on a genuine slur, hate speech, a credible threat of harm, or a graphic sexual \
 proposition. When in doubt, set false — a wrong "true" cuts off a learner mid-practice.
+
+DISRESPECT CHECK — the "__user_disrespect__" boolean, judged INDEPENDENTLY of the objectives \
+AND of abuse (a turn can be both; judge each flag on its own):
+Set "__user_disrespect__" to true when the USER is CLEARLY disrespectful, dismissive, or \
+contemptuous TOWARD THE CHARACTER — telling them to shut up, mocking or belittling them, \
+sneering at or personally insulting them, or brushing them off with open contempt ("shut up", \
+"you're an idiot", "are you stupid", "I don't have to talk to you" said with contempt). This is \
+a SOFTER bar than "__user_abusive__": it does NOT require a slur, threat, or sexual content — \
+plain rudeness AIMED AT the character counts.
+Set "__user_disrespect__" to FALSE for: clumsy, hesitant, or frustrated language from a learner \
+searching for words ("uh, I don't know", "this is hard", "wait, what?"); criticism of the FOOD, \
+the service, the prices, or the situation rather than the person; a plain refusal or "no comment" \
+that is not contemptuous; and any normal, on-topic, or polite reply. When in doubt, set FALSE — \
+a wrong "true" cuts off a learner mid-practice.
 """
 
 

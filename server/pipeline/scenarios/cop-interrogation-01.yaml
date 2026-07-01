@@ -11,6 +11,11 @@ metadata:
   tts_voice_id: 5ee9feff-1265-424a-9d7f-8e4d431a12c7  # Cartesia "Ronald - Thinker" — intense, deep male; fits the dry, relentless detective. (Story 6.17; re-run the live voice-matcher to override.)
   opening_line: "This is Detective Frank Mercer with the Riverside Police Department. This call is being recorded. Do you have a minute to answer a few questions?"
   content_warning: null
+
+  # SPIKE PIVOT (2026-07-01) — how many CONSECUTIVE disrespectful turns (judge-scored)
+  # before the detective ends the call. A detective tolerates more than a waiter.
+  # Only read under SPIKE_CHARACTER_LED; inert otherwise. Throwaway.
+  disrespect_budget: 2
   # Story 7.2 — Call Ended overlay theatrical phrases (server-side per the
   # content-is-server-side rule; editing these never requires an app update).
   end_phrases:
