@@ -353,12 +353,12 @@ def test_spike_compose_drops_steering_and_length_cap_keeps_charter_and_goal() ->
     assert "Your remaining objectives are listed" not in composed
     # SPIKE Phase 2 (Walid 2026-06-30/07-01) — the GENERAL end-call rule: every
     # character can hang up; it OVERRIDES a "relentless / professional / never give
-    # up" persona (the cop never-ends bug) AND triggers on personal hostility /
-    # insults, not just silent stonewalling (the "shut up" too-patient bug). Locked
-    # so a future edit can't drop either half.
+    # up" persona (the cop never-ends bug), and it is THIN-SKINNED about disrespect
+    # — one warning max, then end (the "too lax on insults" tune). Locked so a
+    # future edit can't soften either half.
     assert "<end_call>" in composed
     assert "OVERRIDES" in composed and "relentless" in composed
-    assert "hostile" in composed and "insulting you" in composed
+    assert "THIN-SKINNED" in composed and "insulting you" in composed
     assert "CHARTER-TOKEN." in composed
     assert composed.rstrip().endswith("MOOD-TOKEN.")
 
