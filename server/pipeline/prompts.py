@@ -443,22 +443,6 @@ EXIT_LINE_REASON_GUIDANCE: dict[str, str] = {
         "actually still missing in this conversation; do NOT introduce a topic "
         "that has not come up."
     ),
-    # SPIKE (spike/character-led, 2026-07-01) — the character-led bail (the
-    # character wrote <end_call>). Its reason is "you treated me badly", NOT the
-    # meter's "you stopped giving clear answers": routing it through the
-    # character_hung_up guidance made the cop generator FABRICATE a "your story's
-    # changed / three versions" accusation (call 353 — the recurring call-212
-    # bug). This guidance states the REAL reason + forbids inventing anything.
-    "spike_character_led_bail": (
-        "You are ENDING this call right now, on your OWN terms, because of HOW "
-        "the other person just treated you — they were disrespectful or insulting "
-        "to you, or they refused to engage and wasted your time. Deliver a short, "
-        "in-character parting line that makes clear you are done because of their "
-        "BEHAVIOUR. Do NOT invent or reference any accusation, contradiction, "
-        "changed story, 'versions', alibi, evidence, fact, or detail that did not "
-        "literally happen in the conversation above — you are ending this purely "
-        "because of how they behaved toward you, nothing more."
-    ),
 }
 
 # Fallback guidance for an unmapped reason (defensive — every shipping caller

@@ -242,13 +242,12 @@ _VALID_REASONS = frozenset(
 # generation guidance in `_resolve_exit_line` / `_emit_patience_warning`.
 _REASON_PATIENCE_WARNING = "patience_warning"
 
-# SPIKE (spike/character-led, 2026-07-01) — generation-guidance-only pseudo-reason
-# for the character-led bail. NOT a client/wire reason (the bail still sends
-# `character_hung_up` to the client); it only selects the disrespect-appropriate,
-# anti-fabrication exit-line guidance so the generator stops inventing a "your
-# story's changed" accusation (call 353). Excluded from `_VALID_REASONS`, like
-# `_REASON_PATIENCE_WARNING`.
-_REASON_SPIKE_BAIL = "spike_character_led_bail"
+# SPIKE (spike/character-led, 2026-07-01) — the character-led bail speaks NO new
+# line: the character's own <end_call> reply IS the closing line (already
+# streaming). The bare teardown waits up to this long for that reply's
+# BotStoppedSpeakingFrame before emitting call_end, so a missing BSF can't wedge
+# the call. Generous because the character's sign-off can be a few sentences.
+_CHARACTER_LED_END_SPEECH_TIMEOUT_SECONDS = 10.0
 
 
 def step_patience(
@@ -1086,23 +1085,106 @@ class PatienceTracker(FrameProcessor):
         walk away when the other person wastes its time / stonewalls / crosses a
         line, WITHOUT the patience meter.
 
-        Reuses the existing `_REASON_SILENCE` (= client `character_hung_up`)
-        teardown — the Story 6.18 generator produces an in-character closing line
-        from the transcript + the "ran out of patience / stopped cooperating"
-        guidance, exactly the bail flavor. `_spike_character_led_bail` makes
-        `_run_hang_up` ALSO push the abuse-path InterruptionFrame (the marker
-        fires WHILE the character's reply is in-flight, so that reply must be
-        flushed) and report a checkpoint-based survival_pct. Idempotent (the
-        `_hang_up_in_progress` guard in `_schedule_hang_up`)."""
+        The character's OWN <end_call> reply IS the closing line and is already
+        streaming to TTS, so we do NOT regenerate or re-speak anything: a bare
+        teardown lets that line play, then emits `call_end`. Regenerating (the
+        first design) discarded the character's grounded, punchy sign-off and
+        replaced it with an invented accusation ("your story's changed" — call
+        353) or a lame warning ("this is your last warning…" — call 354). Client
+        reason = `character_hung_up`; survival_pct is checkpoint-based. Idempotent
+        via the `_hang_up_in_progress` guard."""
         if self._hang_up_in_progress:
             return
         logger.info(
-            "spike_character_led_bail → in-character hang-up (checkpoints_passed={}/{})",
+            "spike_character_led_bail → in-character hang-up on the character's OWN "
+            "line (checkpoints_passed={}/{})",
             self._checkpoints_passed,
             self._total_checkpoints,
         )
+        self._hang_up_in_progress = True
         self._spike_character_led_bail = True
-        self._schedule_hang_up(_REASON_SILENCE)
+        # Create the completion event NOW (sync), before any BotStoppedSpeakingFrame
+        # for the in-flight closing line can arrive, so process_frame's
+        # `_hang_up_in_progress` set() lands on a live event.
+        self._speaking_done = asyncio.Event()
+        self._exit_line_audio_started = False
+        self._hang_up_task = asyncio.create_task(self._run_character_led_end())
+
+    async def _run_character_led_end(self) -> None:
+        """SPIKE — bare teardown for the character-led bail (no new line spoken).
+
+        The character's own <end_call> reply is already streaming to TTS. Wait for
+        it to finish playing (its `BotStoppedSpeakingFrame` sets `_speaking_done`,
+        gated on `_hang_up_in_progress` in `process_frame`), then emit `call_end`
+        and tear down — speaking NOTHING new. No InterruptionFrame (that would cut
+        the character's own line), no generation (that fabricated accusations /
+        warnings). Mirrors `_run_hang_up`'s call_end + client-drain tail."""
+        try:
+            await self.push_frame(
+                OutputTransportMessageFrame(
+                    message={
+                        "type": "hang_up_warning",
+                        "data": {"seconds_remaining": 5},
+                    }
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+            try:
+                await asyncio.wait_for(
+                    self._speaking_done.wait(),
+                    timeout=_CHARACTER_LED_END_SPEECH_TIMEOUT_SECONDS,
+                )
+                logger.info("spike bare-end: character's closing line delivered")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "spike bare-end: closing line BotStoppedSpeaking not seen "
+                    "within {}s — ending anyway",
+                    _CHARACTER_LED_END_SPEECH_TIMEOUT_SECONDS,
+                )
+            # Checkpoint-based survival (the meter is not the truth in spike mode).
+            survival_pct = max(
+                0,
+                min(
+                    100,
+                    round(
+                        self._checkpoints_passed / max(1, self._total_checkpoints) * 100
+                    ),
+                ),
+            )
+            self._call_end_reason = _REASON_SILENCE  # client 'character_hung_up'
+            await self.push_frame(
+                OutputTransportMessageFrame(
+                    message={
+                        "type": "call_end",
+                        "data": {
+                            "reason": _REASON_SILENCE,
+                            "survival_pct": survival_pct,
+                            "checkpoints_passed": self._checkpoints_passed,
+                            "total_checkpoints": self._total_checkpoints,
+                            "goals_met_indices": list(self._goals_met_indices),
+                        },
+                    }
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=_HANG_UP_CLIENT_DRAIN_TIMEOUT_SECONDS,
+                )
+                logger.info("spike bare-end: client disconnected cleanly")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "spike bare-end: client did not disconnect within {}s — "
+                    "force-terminating pipeline",
+                    _HANG_UP_CLIENT_DRAIN_TIMEOUT_SECONDS,
+                )
+                await self.push_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._hang_up_in_progress = False
+            self._spike_character_led_bail = False
 
     # ---------- silence ladder ----------
 
@@ -1449,13 +1531,8 @@ class PatienceTracker(FrameProcessor):
         winning_user_text = (
             self._pending_winning_user_text if reason == _REASON_SURVIVED else None
         )
-        # SPIKE — the character-led bail keeps its CLIENT reason (character_hung_up)
-        # but generates its closing line from the disrespect-appropriate guidance,
-        # not the meter's "you stopped giving clear answers" one (which fabricated a
-        # "changed story" accusation — call 353).
-        gen_reason = _REASON_SPIKE_BAIL if self._spike_character_led_bail else reason
         exit_line_task = asyncio.create_task(
-            self._resolve_exit_line(gen_reason, line, extra_user_text=winning_user_text)
+            self._resolve_exit_line(reason, line, extra_user_text=winning_user_text)
         )
         self._pending_winning_user_text = None
         try:
@@ -1489,13 +1566,7 @@ class PatienceTracker(FrameProcessor):
             # TTS queue, so the exit line is the only thing that speaks. Silence
             # + survived stay un-interrupted
             # (test_silence_hangup_does_not_push_interruption).
-            # SPIKE — a character-led bail fires WHILE the character's <end_call>
-            # reply is in-flight (same shape as inappropriate), so it ALSO needs
-            # the InterruptionFrame to flush that reply before the closing line.
-            if (
-                reason in (_REASON_NOISY_ENVIRONMENT, _REASON_INAPPROPRIATE)
-                or self._spike_character_led_bail
-            ):
+            if reason in (_REASON_NOISY_ENVIRONMENT, _REASON_INAPPROPRIATE):
                 await self.push_frame(
                     InterruptionFrame(),
                     FrameDirection.DOWNSTREAM,
@@ -1550,20 +1621,6 @@ class PatienceTracker(FrameProcessor):
                 # Defensive reset keeps the field's lifetime scoped to
                 # one schedule_completion → _run_hang_up cycle.
                 self._pending_survival_pct = None
-            elif self._spike_character_led_bail:
-                # SPIKE — the meter is no longer the truth (fail-drain is off),
-                # so report progress as the share of checkpoints actually passed.
-                survival_pct = max(
-                    0,
-                    min(
-                        100,
-                        round(
-                            self._checkpoints_passed
-                            / max(1, self._total_checkpoints)
-                            * 100
-                        ),
-                    ),
-                )
             else:
                 survival_pct = max(
                     0,

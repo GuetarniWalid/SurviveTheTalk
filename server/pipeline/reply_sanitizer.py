@@ -382,7 +382,7 @@ class ReplySanitizer(FrameProcessor):
                 scanner.stripped_spans,
                 self._spoke_any,
             )
-        if not self._spoke_any and not scanner.end_call:
+        if not self._spoke_any:
             # call-335: the whole reply was non-spoken meta (a mood tag only),
             # which previously left the turn literally silent — the dead air a
             # user hung up on. A prompt-only "always speak" guard already

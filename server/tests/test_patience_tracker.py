@@ -1195,18 +1195,22 @@ def test_schedule_completion_speaks_survived_line_and_emits_envelope(
     assert data["goals_met_indices"] == [0, 1, 2, 3, 4, 5]
 
 
-def test_spike_character_led_bail_ends_in_character_with_interrupt(
+def test_spike_character_led_bail_ends_on_own_line_no_regeneration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SPIKE Phase 2 — `schedule_character_led_bail` ends the call in-character:
-    pushes an InterruptionFrame (to flush the in-flight <end_call> reply), speaks
-    the closing line, and emits `call_end` with reason='character_hung_up' and a
-    CHECKPOINT-based survival_pct (the meter is not the truth in spike mode)."""
+    """SPIKE Phase 2 — the character-led bail is a BARE teardown: the character's
+    own <end_call> reply already played, so the tracker speaks NOTHING new (no
+    generation → no fabricated 'your story's changed' accusation, no lame 'last
+    warning' line — calls 353/354) and does NOT interrupt it. It waits for that
+    reply to finish (BotStoppedSpeaking), then emits `call_end` with
+    reason='character_hung_up' + a CHECKPOINT-based survival_pct."""
     _shrink_timers(monkeypatch)
+    record: list[str] = []
     tracker = PatienceTracker(
         **_fast_easy(
             initial_patience=100,
-            hang_up_line_silence="That's enough. We're done here.",
+            hang_up_line_silence="CANNED goodbye.",
+            hang_up_line_generator=_recording_gen("REGEN line.", record),
         )
     )
     tracker._patience = 90  # high meter — must NOT drive survival_pct in spike mode
@@ -1217,24 +1221,20 @@ def test_spike_character_led_bail_ends_in_character_with_interrupt(
         tracker.set_goals_met_indices([0, 1])
         tracker.schedule_character_led_bail()
         await asyncio.sleep(0.02)
-        # Take the FAST delivery path: Started marks the line audible (no
-        # stall-retry), then Stopped releases the wait (BSF arrives UPSTREAM —
-        # §1 trap). Keeps the test quick + free of the retry timing race.
-        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        # The character's OWN closing line finishes → BotStoppedSpeaking (UPSTREAM,
+        # §1 trap) sets `_speaking_done`, releasing the bare teardown.
         await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await _drain(tracker)
 
     _run(_drive())
 
-    assert any(isinstance(f, InterruptionFrame) for f in captured), (
-        "a character-led bail fires mid-reply → must interrupt the in-flight "
-        "<end_call> reply before the closing line (abuse-path shape)"
+    assert record == [], "the bail must NOT call the exit-line generator"
+    assert not any(isinstance(f, TTSSpeakFrame) for f in captured), (
+        "the bail must NOT speak a new line — the character's own line already played"
     )
-    assert any(
-        isinstance(f, TTSSpeakFrame) and f.text == "That's enough. We're done here."
-        for f in captured
-    ), "must speak the in-character closing line"
-
+    assert not any(isinstance(f, InterruptionFrame) for f in captured), (
+        "the bail must NOT interrupt the character's own closing line"
+    )
     call_end = [
         f
         for f in captured
@@ -1246,52 +1246,6 @@ def test_spike_character_led_bail_ends_in_character_with_interrupt(
     assert data["reason"] == "character_hung_up"
     assert data["survival_pct"] == 33, "round(2/6*100) — checkpoint-based, NOT meter 90"
     assert data["checkpoints_passed"] == 2
-
-
-def test_spike_bail_generates_from_disrespect_guidance_not_character_hung_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SPIKE — the character-led bail generates its closing line from the
-    disrespect-appropriate guidance (reason 'spike_character_led_bail'), NOT the
-    meter's 'character_hung_up' guidance that fabricated a 'your story's changed'
-    accusation (call 353). The CLIENT still receives reason='character_hung_up'."""
-    _shrink_timers(monkeypatch)
-    record: list[str] = []
-    tracker = PatienceTracker(
-        **_fast_easy(
-            hang_up_line_silence="CANNED goodbye.",
-            hang_up_line_generator=_recording_gen("You were rude. Goodbye.", record),
-        )
-    )
-    captured = _capture_pushed(tracker)
-
-    async def _drive() -> None:
-        tracker.set_checkpoints_passed(1)
-        tracker.schedule_character_led_bail()
-        await asyncio.sleep(0.02)
-        await tracker.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-        await tracker.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
-        await _drain(tracker)
-
-    _run(_drive())
-
-    assert record == ["spike_character_led_bail"], (
-        "the bail must generate from the disrespect guidance, not character_hung_up "
-        "(the fabricated-accusation reason)"
-    )
-    assert any(
-        isinstance(f, TTSSpeakFrame) and f.text == "You were rude. Goodbye."
-        for f in captured
-    )
-    call_end = [
-        f
-        for f in captured
-        if isinstance(f, OutputTransportMessageFrame)
-        and f.message.get("type") == "call_end"
-    ]
-    assert call_end and call_end[0].message["data"]["reason"] == "character_hung_up", (
-        "client still gets the known wire reason, not the guidance-only pseudo-reason"
-    )
 
 
 def test_set_checkpoints_passed_threads_through_character_hung_up_envelope(
